@@ -1,9 +1,16 @@
 {
-  "library_paths": [],
+  "library_paths": ["/path/to/your/audiobooks"],
+  "ai_provider": "gemini",
+  "gemini_model": "gemini-2.0-flash-exp",
   "openrouter_model": "google/gemma-3n-e4b-it:free",
   "scan_interval_hours": 6,
   "batch_size": 3,
-  "max_requests_per_hour": 30,
+  "max_requests_per_hour": 2000,
   "auto_fix": false,
-  "enabled": true
+  "protect_author_changes": true,
+  "enabled": true,
+  "update_channel": "stable",
+  "naming_format": "author/title",
+  "series_grouping": true,
+  "google_books_api_key": null
 }

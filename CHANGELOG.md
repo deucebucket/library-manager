@@ -2,6 +2,17 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.8] - 2025-12-10
+
+### Fixed
+- **Full portability audit** - Scanned entire codebase for hardcoded paths
+  - Changed OpenRouter HTTP-Referer to use GitHub repo URL instead of personal domain
+  - Updated `config.example.json` with all current settings for new users
+  - Verified no other user-specific paths remain
+
+### Changed
+- `config.example.json` now includes all available settings with sensible defaults
+
 ## [0.9.0-beta.7] - 2025-12-10
 
 ### Fixed

@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.7"
+APP_VERSION = "0.9.0-beta.8"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -1191,7 +1191,7 @@ def call_openrouter(prompt, config):
             headers={
                 "Authorization": f"Bearer {config['openrouter_api_key']}",
                 "Content-Type": "application/json",
-                "HTTP-Referer": "https://deucebucket.com",
+                "HTTP-Referer": "https://github.com/deucebucket/library-manager",
                 "X-Title": "Library Metadata Manager"
             },
             json={
