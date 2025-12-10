@@ -48,7 +48,7 @@ DEFAULT_CONFIG = {
     "library_paths": [],  # Empty by default - user configures via Settings
     "ai_provider": "openrouter",  # "openrouter" or "gemini"
     "openrouter_model": "google/gemma-3n-e4b-it:free",
-    "gemini_model": "gemini-1.5-flash",
+    "gemini_model": "gemini-2.0-flash",
     "scan_interval_hours": 6,
     "batch_size": 3,
     "max_requests_per_hour": 30,
