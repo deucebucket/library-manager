@@ -1083,7 +1083,7 @@ def dashboard():
     c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'verified'")
     verified_count = c.fetchone()['count']
 
-    c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'pending_fix'")
+    c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'pending_fix'")
     pending_fixes = c.fetchone()['count']
 
     # Get recent history
@@ -1261,7 +1261,7 @@ def api_stats():
     c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'fixed'")
     fixed = c.fetchone()['count']
 
-    c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'pending_fix'")
+    c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'pending_fix'")
     pending = c.fetchone()['count']
 
     c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'verified'")
