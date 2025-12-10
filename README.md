@@ -240,40 +240,43 @@ That's it! Watch as your messy library gets organized.
 
 ## Docker Installation
 
-### Docker Compose (Recommended for UnRaid/Dockge/Portainer)
+> **Full Docker Guide:** See [docs/DOCKER.md](docs/DOCKER.md) for complete instructions including UnRaid, Synology, Dockge, and Portainer setup.
 
-```yaml
-version: "3.8"
-
-services:
-  library-manager:
-    build: .
-    container_name: library-manager
-    restart: unless-stopped
-    ports:
-      - "5060:5060"
-    volumes:
-      # Your audiobook library - CHANGE THIS
-      - /mnt/user/media/audiobooks:/audiobooks
-      # Data persistence
-      - ./data:/data
-    environment:
-      - TZ=America/Chicago
-```
-
-**Setup:**
-1. Clone the repo: `git clone https://github.com/deucebucket/library-manager.git`
-2. Edit `docker-compose.yml` - change `/mnt/user/media/audiobooks` to your audiobook path
-3. Run: `docker-compose up -d`
-4. Open **http://your-server:5060**
-5. In Settings, set library path to: `/audiobooks` (the path inside the container)
-6. Add your API key and start scanning!
-
-### Pre-built Image (Coming Soon)
+### Quick Start
 
 ```bash
-docker pull ghcr.io/deucebucket/library-manager:latest
+git clone https://github.com/deucebucket/library-manager.git
+cd library-manager
+
+# Edit docker-compose.yml - change the audiobook path to YOUR path
+# Then:
+docker-compose up -d
 ```
+
+Open **http://your-server:5060** and set library path to `/audiobooks` in Settings.
+
+### Important: Volume Mounts
+
+Docker containers are isolated. You **must** mount your audiobook folder in `docker-compose.yml`:
+
+```yaml
+volumes:
+  # LEFT = your host path, RIGHT = container path
+  - /your/audiobooks/folder:/audiobooks
+```
+
+Then use `/audiobooks` (the container path) in Settings. The Settings page cannot access paths that aren't mounted!
+
+### Platform Examples
+
+| Platform | Volume Mount Example |
+|----------|---------------------|
+| **UnRaid** | `/mnt/user/media/audiobooks:/audiobooks` |
+| **Synology** | `/volume1/media/audiobooks:/audiobooks` |
+| **Linux** | `/home/user/audiobooks:/audiobooks` |
+| **Windows** | `C:/Users/Name/Audiobooks:/audiobooks` |
+
+See [docs/DOCKER.md](docs/DOCKER.md) for detailed platform-specific instructions.
 
 ---
 

@@ -2,6 +2,17 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.10] - 2025-12-10
+
+### Added
+- **Complete Docker documentation** - New `docs/DOCKER.md` guide
+  - Platform-specific instructions for UnRaid, Synology, Linux, Windows/Mac
+  - Dockge and Portainer setup guides
+  - Volume mount explanation (why Settings can't access unmounted paths)
+  - Multiple library configuration
+  - Troubleshooting section
+  - Updated README to link to full Docker guide
+
 ## [0.9.0-beta.9] - 2025-12-10
 
 ### Added
