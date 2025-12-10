@@ -199,13 +199,141 @@ def save_secrets(secrets):
     with open(SECRETS_PATH, 'w') as f:
         json.dump(secrets, f, indent=2)
 
+# ============== BOOK METADATA APIs ==============
+
+def clean_search_title(messy_name):
+    """Clean up a messy filename to extract searchable title."""
+    import re
+    # Remove common junk patterns
+    clean = messy_name
+    # Remove bracketed content like [bitsearch.to], [64k], [r1.1]
+    clean = re.sub(r'\[.*?\]', '', clean)
+    # Remove parenthetical junk like (Unabridged), (2019)
+    clean = re.sub(r'\((?:Unabridged|Abridged|\d{4}|MP3|M4B|EPUB|PDF|64k|128k|r\d+\.\d+).*?\)', '', clean, flags=re.IGNORECASE)
+    # Remove file extensions
+    clean = re.sub(r'\.(mp3|m4b|m4a|epub|pdf|mobi)$', '', clean, flags=re.IGNORECASE)
+    # Remove "by Author" at the end temporarily for searching
+    clean = re.sub(r'\s+by\s+[\w\s]+$', '', clean, flags=re.IGNORECASE)
+    # Remove leading/trailing junk
+    clean = clean.strip(' -_.')
+    return clean
+
+def search_openlibrary(title, author=None):
+    """Search OpenLibrary for book metadata. Free, no API key needed."""
+    try:
+        import urllib.parse
+        query = urllib.parse.quote(title)
+        url = f"https://openlibrary.org/search.json?title={query}&limit=5"
+        if author:
+            url += f"&author={urllib.parse.quote(author)}"
+
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        docs = data.get('docs', [])
+
+        if not docs:
+            return None
+
+        # Get the best match (first result usually best)
+        best = docs[0]
+        result = {
+            'title': best.get('title', ''),
+            'author': best.get('author_name', [''])[0] if best.get('author_name') else '',
+            'year': best.get('first_publish_year'),
+            'source': 'openlibrary'
+        }
+
+        # Only return if we got useful data
+        if result['title'] and result['author']:
+            logger.info(f"OpenLibrary found: {result['author']} - {result['title']}")
+            return result
+        return None
+    except Exception as e:
+        logger.debug(f"OpenLibrary search failed: {e}")
+        return None
+
+def search_google_books(title, author=None, api_key=None):
+    """Search Google Books for book metadata."""
+    try:
+        import urllib.parse
+        query = title
+        if author:
+            query += f" inauthor:{author}"
+
+        url = f"https://www.googleapis.com/books/v1/volumes?q={urllib.parse.quote(query)}&maxResults=5"
+        if api_key:
+            url += f"&key={api_key}"
+
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        items = data.get('items', [])
+
+        if not items:
+            return None
+
+        # Get best match
+        best = items[0].get('volumeInfo', {})
+        authors = best.get('authors', [])
+
+        result = {
+            'title': best.get('title', ''),
+            'author': authors[0] if authors else '',
+            'year': best.get('publishedDate', '')[:4] if best.get('publishedDate') else None,
+            'source': 'googlebooks'
+        }
+
+        if result['title'] and result['author']:
+            logger.info(f"Google Books found: {result['author']} - {result['title']}")
+            return result
+        return None
+    except Exception as e:
+        logger.debug(f"Google Books search failed: {e}")
+        return None
+
+def lookup_book_metadata(messy_name, config):
+    """Try to look up book metadata from APIs before falling back to AI."""
+    clean_title = clean_search_title(messy_name)
+
+    if not clean_title or len(clean_title) < 3:
+        return None
+
+    # Try OpenLibrary first (free, no key needed)
+    result = search_openlibrary(clean_title)
+    if result:
+        return result
+
+    # Try Google Books if we have an API key
+    google_key = config.get('google_books_api_key')
+    if google_key:
+        result = search_google_books(clean_title, api_key=google_key)
+        if result:
+            return result
+    else:
+        # Try without API key (limited but works)
+        result = search_google_books(clean_title)
+        if result:
+            return result
+
+    return None
+
 # ============== AI API ==============
 
-def build_prompt(messy_names):
-    """Build the parsing prompt for AI."""
+def build_prompt(messy_names, api_results=None):
+    """Build the parsing prompt for AI, including any API lookup results."""
     items = []
     for i, name in enumerate(messy_names):
-        items.append(f"ITEM_{i+1}: {name}")
+        item_text = f"ITEM_{i+1}: {name}"
+        # Add API lookup result if available
+        if api_results and i < len(api_results) and api_results[i]:
+            result = api_results[i]
+            item_text += f"\n  -> API found: {result['author']} - {result['title']} (from {result['source']})"
+        items.append(item_text)
     names_list = "\n".join(items)
 
     return f"""You are a book metadata expert. For each filename, identify the REAL author and title.
@@ -213,12 +341,15 @@ def build_prompt(messy_names):
 {names_list}
 
 YOUR JOB:
-1. USE YOUR KNOWLEDGE of real books and authors to identify correct metadata
-2. If you recognize the book title, provide the CORRECT author even if the filename is wrong
-3. If you only see a title with no author, LOOK UP who actually wrote that book
-4. Verify authors are REAL people who write books, not random words from the filename
+1. If "API found" data is shown, USE IT - this is verified metadata from book databases
+2. USE YOUR KNOWLEDGE of real books and authors to identify correct metadata
+3. If you recognize the book title, provide the CORRECT author even if the filename is wrong
+4. If you only see a title with no author, LOOK UP who actually wrote that book
+5. Verify authors are REAL people who write books, not random words from the filename
 
 CRITICAL RULES:
+- TRUST API results when provided - they come from real book databases
+- If API result looks correct, use that author/title
 - Authors are REAL people (e.g. "Brandon Sanderson", "Stephen King", "Cebelius")
 - If the filename already has "Author / Title" format and looks correct, KEEP IT
 - Do NOT swap author and title - if "Cebelius / Book Title" the author is Cebelius
@@ -251,8 +382,17 @@ def parse_json_response(text):
     return json.loads(text.strip())
 
 def call_ai(messy_names, config):
-    """Call AI API to parse book names."""
-    prompt = build_prompt(messy_names)
+    """Call AI API to parse book names, with API lookups for context."""
+    # First, try to look up each book in metadata APIs
+    api_results = []
+    for name in messy_names:
+        result = lookup_book_metadata(name, config)
+        api_results.append(result)
+        if result:
+            logger.info(f"API lookup success for: {name[:50]}...")
+
+    # Build prompt with API results included
+    prompt = build_prompt(messy_names, api_results)
     provider = config.get('ai_provider', 'openrouter')
 
     # Use selected provider
