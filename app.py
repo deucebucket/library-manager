@@ -1324,6 +1324,77 @@ def api_reset_database():
         return jsonify({'success': False, 'message': str(e)})
 
 
+@app.route('/api/bug_report')
+def api_bug_report():
+    """Generate a bug report with system info and sanitized config."""
+    import platform
+    import sys
+
+    # Get config (sanitize API keys)
+    config = load_config()
+    safe_config = {k: v for k, v in config.items()}
+    if safe_config.get('openrouter_api_key'):
+        safe_config['openrouter_api_key'] = '***REDACTED***'
+    if safe_config.get('gemini_api_key'):
+        safe_config['gemini_api_key'] = '***REDACTED***'
+
+    # Get database stats
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) as count FROM books')
+    total_books = c.fetchone()['count']
+    c.execute('SELECT COUNT(*) as count FROM queue')
+    queue_size = c.fetchone()['count']
+    c.execute('SELECT COUNT(*) as count FROM history')
+    history_count = c.fetchone()['count']
+    c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'error'")
+    error_count = c.fetchone()['count']
+    conn.close()
+
+    # Get recent error/warning logs
+    log_file = BASE_DIR / 'app.log'
+    recent_errors = []
+    if log_file.exists():
+        with open(log_file, 'r') as f:
+            lines = f.readlines()[-200:]
+            recent_errors = [l.strip() for l in lines if 'ERROR' in l or 'WARNING' in l][-30:]
+
+    # Build report
+    report = f"""## Bug Report - Library Manager
+
+### System Info
+- **Python:** {sys.version}
+- **Platform:** {platform.system()} {platform.release()}
+- **App Version:** 1.0.0
+
+### Configuration
+```json
+{json.dumps(safe_config, indent=2)}
+```
+
+### Database Stats
+- Total Books: {total_books}
+- Queue Size: {queue_size}
+- History Entries: {history_count}
+- Books with Errors: {error_count}
+
+### Recent Errors/Warnings
+```
+{chr(10).join(recent_errors) if recent_errors else 'No recent errors'}
+```
+
+### Description
+[Please describe the issue you're experiencing]
+
+### Steps to Reproduce
+1. [First step]
+2. [Second step]
+3. [What happened vs what you expected]
+"""
+
+    return jsonify({'report': report})
+
+
 # ============== MAIN ==============
 
 if __name__ == '__main__':

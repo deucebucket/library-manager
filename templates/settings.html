@@ -135,10 +135,11 @@
                     </div>
                     <div class="form-check form-switch mb-3">
                         <input class="form-check-input" type="checkbox" name="auto_fix" id="auto_fix"
-                               {% if config.auto_fix %}checked{% endif %}>
+                               {% if config.auto_fix %}checked{% endif %} onchange="warnAutoFix(this)">
                         <label class="form-check-label" for="auto_fix">
-                            <strong>Auto-Fix Mode</strong><br>
-                            <small class="text-muted">Automatically rename folders without approval</small>
+                            <strong>Auto-Fix Mode</strong> <span class="badge bg-warning text-dark">Caution</span><br>
+                            <small class="text-muted">Automatically rename folders without approval</small><br>
+                            <small class="text-danger"><i class="bi bi-exclamation-triangle"></i> This will modify your library files directly!</small>
                         </label>
                     </div>
                 </div>
@@ -162,6 +163,28 @@
     </div>
     <div class="card-body bg-dark p-2" style="max-height: 300px; overflow-y: auto;">
         <pre id="log-output" class="mb-0 text-light" style="font-size: 0.8rem; white-space: pre-wrap;">Loading logs...</pre>
+    </div>
+</div>
+
+<div class="card mt-4">
+    <div class="card-header">
+        <i class="bi bi-bug"></i> Bug Report
+    </div>
+    <div class="card-body">
+        <p class="text-muted mb-3">Having issues? Generate a bug report to share with the developer.</p>
+        <button class="btn btn-outline-primary" onclick="generateBugReport()">
+            <i class="bi bi-clipboard"></i> Generate Bug Report
+        </button>
+        <a href="https://github.com/deucebucket/library-manager/issues/new" target="_blank" class="btn btn-outline-secondary ms-2">
+            <i class="bi bi-github"></i> Open GitHub Issue
+        </a>
+        <div id="bug-report-output" class="mt-3 d-none">
+            <label class="form-label">Copy this to your GitHub issue:</label>
+            <textarea class="form-control bg-dark text-light" id="bug-report-text" rows="10" readonly></textarea>
+            <button class="btn btn-sm btn-success mt-2" onclick="copyBugReport()">
+                <i class="bi bi-clipboard-check"></i> Copy to Clipboard
+            </button>
+        </div>
     </div>
 </div>
 
@@ -267,5 +290,38 @@ function resetDatabase() {
 
 // Auto-refresh logs every 10 seconds
 setInterval(refreshLogs, 10000);
+
+// Warn when enabling auto-fix
+function warnAutoFix(checkbox) {
+    if (checkbox.checked) {
+        const confirmed = confirm(
+            '⚠️ AUTO-FIX MODE WARNING ⚠️\n\n' +
+            'This will AUTOMATICALLY rename folders in your library without asking for approval.\n\n' +
+            'Make sure you have a backup before enabling this!\n\n' +
+            'Are you sure you want to enable auto-fix?'
+        );
+        if (!confirmed) {
+            checkbox.checked = false;
+        }
+    }
+}
+
+// Generate bug report
+function generateBugReport() {
+    fetch('/api/bug_report')
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('bug-report-output').classList.remove('d-none');
+            document.getElementById('bug-report-text').value = data.report;
+        })
+        .catch(e => alert('Error generating report: ' + e));
+}
+
+function copyBugReport() {
+    const textarea = document.getElementById('bug-report-text');
+    textarea.select();
+    document.execCommand('copy');
+    alert('Bug report copied to clipboard!');
+}
 </script>
 {% endblock %}
