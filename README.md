@@ -242,8 +242,7 @@ That's it! Watch as your messy library gets organized.
 |-----|----------|
 | **General** | Library paths, naming format, series grouping, auto-fix toggle, scan interval |
 | **AI Setup** | Provider selection, API keys, model choice |
-| **Advanced** | Danger zone (reset database, clear history) |
-| **Tools** | Bug report generator, live logs |
+| **Advanced** | Danger zone, bug reports, live logs |
 
 ### Key Options
 

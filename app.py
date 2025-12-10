@@ -11,12 +11,13 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.2"
+APP_VERSION = "0.9.0-beta.3"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
 # 0.9.0-beta.1  = Initial beta (basic features)
-# 0.9.0-beta.2  = Current (garbage filtering, series grouping, dismiss errors)
+# 0.9.0-beta.2  = Garbage filtering, series grouping, dismiss errors
+# 0.9.0-beta.3  = Current (UI cleanup - merged Advanced/Tools tabs)
 # 0.9.0-rc.1    = Release candidate (feature complete, final testing)
 # 1.0.0         = First stable release (everything works!)
 
