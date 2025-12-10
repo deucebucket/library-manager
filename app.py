@@ -34,6 +34,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Silence Flask's HTTP request logging (only show errors)
+logging.getLogger('werkzeug').setLevel(logging.ERROR)
+
 app = Flask(__name__)
 app.secret_key = 'library-manager-secret-key-2024'
 
