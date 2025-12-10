@@ -8,7 +8,9 @@ services:
     ports:
       - "5060:5060"
     volumes:
-      # Your audiobook library - CHANGE THIS to your path
+      # ⚠️  REQUIRED - Your audiobook library
+      # The container CANNOT see your files unless you mount them here!
+      # Format: /your/host/path:/audiobooks
       - /path/to/your/audiobooks:/audiobooks
 
       # Data persistence (config.json, secrets.json, library.db)
@@ -24,26 +26,51 @@ services:
       start_period: 10s
 
 # =============================================================
+#  ⚠️  IMPORTANT: YOU MUST EDIT THE VOLUME MOUNT ABOVE!
+# =============================================================
+#
+#  The Settings page CANNOT access paths that aren't mounted here.
+#  Docker containers are isolated - they can only see mounted paths.
+#
+#  WRONG:  Skipping the mount and typing your path in Settings
+#          → "Path doesn't exist" error (container can't see it)
+#
+#  RIGHT:  Mount your path here, THEN use /audiobooks in Settings
+#
+# =============================================================
 # QUICK START FOR DOCKGE / PORTAINER / UNRAID USERS:
 # =============================================================
 #
-# 1. Copy this file to your stacks directory
+# 1. Edit the volumes section above:
+#    - Change /path/to/your/audiobooks to your ACTUAL audiobook folder
 #
-# 2. Edit the volumes section:
-#    - Change /path/to/your/audiobooks to your actual audiobook folder
-#    - Example for UnRaid: /mnt/user/media/audiobooks:/audiobooks
+#    Examples:
+#    - UnRaid:  /mnt/user/media/audiobooks:/audiobooks
+#    - Linux:   /home/user/audiobooks:/audiobooks
+#    - Synology: /volume1/media/audiobooks:/audiobooks
 #
-# 3. Change timezone (TZ) to your location
-#    - Example: America/New_York, Europe/London, etc.
+# 2. Change timezone (TZ) to your location
+#    - America/New_York, America/Chicago, Europe/London, etc.
 #
-# 4. Deploy the stack
+# 3. Deploy the stack
 #
-# 5. Access the web UI at: http://your-server-ip:5060
+# 4. Access the web UI at: http://your-server-ip:5060
 #
-# 6. In Settings, set your library path to: /audiobooks
-#    (This is the path INSIDE the container)
+# 5. In Settings, set your library path to: /audiobooks
+#    (This is the path INSIDE the container, not your host path!)
 #
-# 7. Add your API key (Gemini recommended - free 14,400 calls/day)
+# 6. Add your API key (Gemini recommended - free 14,400 calls/day)
 #    Get one at: https://aistudio.google.com
+#
+# =============================================================
+#  MULTIPLE LIBRARIES? Add more volume mounts:
+# =============================================================
+#
+#    volumes:
+#      - /mnt/disk1/audiobooks:/audiobooks
+#      - /mnt/disk2/more-audiobooks:/audiobooks2
+#      - ./data:/data
+#
+#    Then in Settings, add both: /audiobooks and /audiobooks2
 #
 # =============================================================
