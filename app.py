@@ -236,6 +236,21 @@ def call_ai(messy_names, config):
         return None
 
 
+def explain_http_error(status_code, provider):
+    """Convert HTTP status codes to human-readable errors."""
+    errors = {
+        400: "Bad request - the API didn't understand our request",
+        401: "Invalid API key - check your key in Settings",
+        403: "Access denied - your API key doesn't have permission",
+        404: "Model not found - the selected model may not exist",
+        429: "Rate limit exceeded - too many requests, waiting before retry",
+        500: f"{provider} server error - their servers are having issues",
+        502: f"{provider} is temporarily down - try again later",
+        503: f"{provider} is overloaded - try again in a few minutes",
+    }
+    return errors.get(status_code, f"Unknown error (HTTP {status_code})")
+
+
 def call_openrouter(prompt, config):
     """Call OpenRouter API."""
     try:
@@ -261,9 +276,21 @@ def call_openrouter(prompt, config):
             if text:
                 return parse_json_response(text)
         else:
-            logger.warning(f"OpenRouter error: {resp.status_code}")
+            error_msg = explain_http_error(resp.status_code, "OpenRouter")
+            logger.warning(f"OpenRouter: {error_msg}")
+            # Try to get more detail from response
+            try:
+                detail = resp.json().get('error', {}).get('message', '')
+                if detail:
+                    logger.warning(f"OpenRouter detail: {detail}")
+            except:
+                pass
+    except requests.exceptions.Timeout:
+        logger.error("OpenRouter: Request timed out after 90 seconds")
+    except requests.exceptions.ConnectionError:
+        logger.error("OpenRouter: Connection failed - check your internet")
     except Exception as e:
-        logger.error(f"OpenRouter error: {e}")
+        logger.error(f"OpenRouter: {e}")
     return None
 
 
@@ -289,9 +316,21 @@ def call_gemini(prompt, config):
             if text:
                 return parse_json_response(text)
         else:
-            logger.warning(f"Gemini error: {resp.status_code} - {resp.text[:200]}")
+            error_msg = explain_http_error(resp.status_code, "Gemini")
+            logger.warning(f"Gemini: {error_msg}")
+            # Try to get more detail from response
+            try:
+                detail = resp.json().get('error', {}).get('message', '')
+                if detail:
+                    logger.warning(f"Gemini detail: {detail}")
+            except:
+                pass
+    except requests.exceptions.Timeout:
+        logger.error("Gemini: Request timed out after 90 seconds")
+    except requests.exceptions.ConnectionError:
+        logger.error("Gemini: Connection failed - check your internet")
     except Exception as e:
-        logger.error(f"Gemini error: {e}")
+        logger.error(f"Gemini: {e}")
     return None
 
 # ============== DEEP SCANNER ==============
