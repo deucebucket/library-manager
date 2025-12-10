@@ -1454,6 +1454,7 @@ def settings_page():
         config['max_requests_per_hour'] = int(request.form.get('max_requests_per_hour', 30))
         config['auto_fix'] = 'auto_fix' in request.form
         config['enabled'] = 'enabled' in request.form
+        config['google_books_api_key'] = request.form.get('google_books_api_key', '').strip() or None
 
         # Save config (without secrets)
         save_config(config)

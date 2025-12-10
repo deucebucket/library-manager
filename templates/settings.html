@@ -168,6 +168,68 @@
         </div>
     </div>
 
+    <div class="row">
+        <div class="col-12">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <i class="bi bi-cloud-download"></i> Book Metadata Sources
+                    <span class="badge bg-success float-end">All Free - No Setup Required</span>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted mb-3">
+                        Metadata is looked up automatically from these sources (in order). No API keys required!
+                    </p>
+                    <table class="table table-sm table-dark">
+                        <thead>
+                            <tr><th>Source</th><th>Best For</th><th>Status</th><th>Optional API Key</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>Audnexus</strong></td>
+                                <td>Audiobooks (from Audible)</td>
+                                <td><span class="badge bg-success">Active</span></td>
+                                <td><small class="text-muted">Not needed</small></td>
+                            </tr>
+                            <tr>
+                                <td><strong>OpenLibrary</strong></td>
+                                <td>General books</td>
+                                <td><span class="badge bg-success">Active</span></td>
+                                <td><small class="text-muted">Not needed</small></td>
+                            </tr>
+                            <tr>
+                                <td><strong>Google Books</strong></td>
+                                <td>Wide coverage</td>
+                                <td><span class="badge bg-success">Active</span></td>
+                                <td>
+                                    <a href="https://console.cloud.google.com/apis/credentials" target="_blank" class="text-info">
+                                        Get key (optional, higher limits)
+                                    </a>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>Hardcover</strong></td>
+                                <td>Indie/modern books</td>
+                                <td><span class="badge bg-success">Active</span></td>
+                                <td><small class="text-muted">Not needed</small></td>
+                            </tr>
+                            <tr>
+                                <td><strong>AI Fallback</strong></td>
+                                <td>When APIs fail</td>
+                                <td><span class="badge bg-info">Fallback</span></td>
+                                <td><small class="text-muted">Uses selected AI model</small></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <div class="mb-3">
+                        <label class="form-label">Google Books API Key <small class="text-muted">(optional - for higher rate limits)</small></label>
+                        <input type="password" class="form-control bg-dark text-light" name="google_books_api_key"
+                               value="{{ config.google_books_api_key or '' }}" placeholder="Leave empty to use without key">
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="d-grid gap-2 d-md-flex justify-content-md-end">
         <button type="submit" class="btn btn-primary btn-lg">
             <i class="bi bi-save"></i> Save Settings
