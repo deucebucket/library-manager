@@ -2,6 +2,18 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.6] - 2025-12-10
+
+### Added
+- **Series folder detection** - Folders containing 2+ book-like subfolders are now recognized as series containers
+  - Detects patterns like `01 Title`, `Book 1`, `#1 - Title`, `Volume 1`
+  - Marked as `series_folder` status and skipped from processing
+  - Prevents `Warriors: The New Prophecy/` from being treated as a single book
+
+### Fixed
+- Restored Warriors sub-series structure (A Vision of Shadows, Omen of the Stars, The New Prophecy)
+- Series folders no longer renamed into parent series
+
 ## [0.9.0-beta.5] - 2025-12-10
 
 ### Added

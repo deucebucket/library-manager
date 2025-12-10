@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.5"
+APP_VERSION = "0.9.0-beta.6"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -1771,6 +1771,36 @@ def deep_scan_library(config):
                     # But flag the parent!
                     issues_found[str(author_dir)] = issues_found.get(str(author_dir), []) + [f"has_disc_folder:{title}"]
                     continue
+
+                # Check if this is a SERIES folder containing multiple book subfolders
+                # If so, skip it - we should process the books inside, not the series folder itself
+                subdirs = [d for d in title_dir.iterdir() if d.is_dir()]
+                if len(subdirs) >= 2:
+                    # Count how many look like book folders (numbered, "Book N", etc.)
+                    book_folder_patterns = [
+                        r'^\d+\s*[-–—:.]?\s*\w',     # "01 Title", "1 - Title", "01. Title"
+                        r'^#?\d+\s*[-–—:]',          # "#1 - Title"
+                        r'book\s*\d+',               # "Book 1", "Book1"
+                        r'vol(ume)?\s*\d+',          # "Volume 1", "Vol 1"
+                        r'part\s*\d+',               # "Part 1"
+                    ]
+                    book_like_count = sum(
+                        1 for d in subdirs
+                        if any(re.search(p, d.name, re.IGNORECASE) for p in book_folder_patterns)
+                    )
+                    if book_like_count >= 2:
+                        # This is a series folder, not a book - skip it
+                        logger.info(f"Skipping series folder (contains {book_like_count} book subfolders): {path}")
+                        # Mark in database as series_folder so we don't keep checking it
+                        c.execute('SELECT id FROM books WHERE path = ?', (path,))
+                        existing = c.fetchone()
+                        if existing:
+                            c.execute('UPDATE books SET status = ? WHERE id = ?', ('series_folder', existing['id']))
+                        else:
+                            c.execute('''INSERT INTO books (path, current_author, current_title, status)
+                                         VALUES (?, ?, ?, 'series_folder')''', (path, author, title))
+                        conn.commit()
+                        continue
 
                 # Analyze title
                 title_issues = analyze_title(title, author)
