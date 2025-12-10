@@ -266,10 +266,9 @@ function refreshDashboard() {
             document.getElementById('total-books').textContent = data.total_books;
             document.getElementById('queue-count').textContent = data.queue_size;
             document.getElementById('fixed-count').textContent = data.fixed;
-            if (data.pending_fixes !== undefined) {
-                document.getElementById('pending-fixes').textContent = data.pending_fixes;
-            }
-        });
+            document.getElementById('pending-fixes').textContent = data.pending_fixes || 0;
+        })
+        .catch(e => console.error('Stats refresh error:', e));
 
     fetch('/api/recent_history')
         .then(r => r.json())
@@ -296,7 +295,8 @@ function refreshDashboard() {
                     </tr>
                 `).join('');
             }
-        });
+        })
+        .catch(e => console.error('History refresh error:', e));
 }
 
 function escapeHtml(text) {
@@ -306,7 +306,9 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// Refresh every 5 seconds
+// Start auto-refresh immediately and every 5 seconds
+refreshDashboard();
 setInterval(refreshDashboard, 5000);
+console.log('Dashboard auto-refresh active (every 5s)');
 </script>
 {% endblock %}
