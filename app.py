@@ -46,7 +46,9 @@ SECRETS_PATH = BASE_DIR / 'secrets.json'
 
 DEFAULT_CONFIG = {
     "library_paths": [],  # Empty by default - user configures via Settings
+    "ai_provider": "openrouter",  # "openrouter" or "gemini"
     "openrouter_model": "google/gemma-3n-e4b-it:free",
+    "gemini_model": "gemini-1.5-flash",
     "scan_interval_hours": 6,
     "batch_size": 3,
     "max_requests_per_hour": 30,
@@ -222,36 +224,74 @@ def parse_json_response(text):
 def call_ai(messy_names, config):
     """Call AI API to parse book names."""
     prompt = build_prompt(messy_names)
+    provider = config.get('ai_provider', 'openrouter')
 
-    # Try OpenRouter first
-    if config.get('openrouter_api_key'):
-        try:
-            resp = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {config['openrouter_api_key']}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://deucebucket.com",
-                    "X-Title": "Library Metadata Manager"
-                },
-                json={
-                    "model": config.get('openrouter_model', 'google/gemma-3n-e4b-it:free'),
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.1
-                },
-                timeout=90
-            )
+    # Use selected provider
+    if provider == 'gemini' and config.get('gemini_api_key'):
+        return call_gemini(prompt, config)
+    elif config.get('openrouter_api_key'):
+        return call_openrouter(prompt, config)
+    else:
+        logger.error("No API key configured!")
+        return None
 
-            if resp.status_code == 200:
-                result = resp.json()
-                text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-                if text:
-                    return parse_json_response(text)
-            else:
-                logger.warning(f"OpenRouter error: {resp.status_code}")
-        except Exception as e:
-            logger.error(f"OpenRouter error: {e}")
 
+def call_openrouter(prompt, config):
+    """Call OpenRouter API."""
+    try:
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {config['openrouter_api_key']}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://deucebucket.com",
+                "X-Title": "Library Metadata Manager"
+            },
+            json={
+                "model": config.get('openrouter_model', 'google/gemma-3n-e4b-it:free'),
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1
+            },
+            timeout=90
+        )
+
+        if resp.status_code == 200:
+            result = resp.json()
+            text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            if text:
+                return parse_json_response(text)
+        else:
+            logger.warning(f"OpenRouter error: {resp.status_code}")
+    except Exception as e:
+        logger.error(f"OpenRouter error: {e}")
+    return None
+
+
+def call_gemini(prompt, config):
+    """Call Google Gemini API directly."""
+    try:
+        api_key = config.get('gemini_api_key')
+        model = config.get('gemini_model', 'gemini-1.5-flash')
+
+        resp = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
+            headers={"Content-Type": "application/json"},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.1}
+            },
+            timeout=90
+        )
+
+        if resp.status_code == 200:
+            result = resp.json()
+            text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+            if text:
+                return parse_json_response(text)
+        else:
+            logger.warning(f"Gemini error: {resp.status_code} - {resp.text[:200]}")
+    except Exception as e:
+        logger.error(f"Gemini error: {e}")
     return None
 
 # ============== DEEP SCANNER ==============
@@ -851,13 +891,10 @@ def process_all_queue(config):
         allowed, calls_made, max_calls = check_rate_limit(config)
         if not allowed:
             rate_limit_hits += 1
-            if rate_limit_hits >= 3:
-                logger.warning(f"Rate limit hit {rate_limit_hits} times, stopping for now")
-                processing_status["errors"].append(f"Rate limit reached: {calls_made}/{max_calls}")
-                break
-            logger.info(f"Rate limit reached ({calls_made}/{max_calls}), waiting 5 minutes...")
-            processing_status["current"] = f"Rate limited, waiting... ({calls_made}/{max_calls})"
-            time.sleep(300)  # Wait 5 minutes
+            wait_time = min(300 * rate_limit_hits, 1800)  # 5 min, 10 min, 15 min... max 30 min
+            logger.info(f"Rate limit reached ({calls_made}/{max_calls}), waiting {wait_time//60} minutes... (hit #{rate_limit_hits})")
+            processing_status["current"] = f"Rate limited, waiting {wait_time//60}min... ({calls_made}/{max_calls})"
+            time.sleep(wait_time)
             continue
 
         batch_num += 1
@@ -1059,7 +1096,9 @@ def settings_page():
 
         # Update config values
         config['library_paths'] = [p.strip() for p in request.form.get('library_paths', '').split('\n') if p.strip()]
+        config['ai_provider'] = request.form.get('ai_provider', 'openrouter')
         config['openrouter_model'] = request.form.get('openrouter_model', 'google/gemma-3n-e4b-it:free')
+        config['gemini_model'] = request.form.get('gemini_model', 'gemini-1.5-flash')
         config['scan_interval_hours'] = int(request.form.get('scan_interval_hours', 6))
         config['batch_size'] = int(request.form.get('batch_size', 3))
         config['max_requests_per_hour'] = int(request.form.get('max_requests_per_hour', 30))
@@ -1196,6 +1235,55 @@ def api_stop_worker():
     """Stop background worker."""
     stop_worker()
     return jsonify({'success': True})
+
+
+@app.route('/api/logs')
+def api_logs():
+    """Get recent log entries."""
+    try:
+        log_file = BASE_DIR / 'app.log'
+        if log_file.exists():
+            with open(log_file, 'r') as f:
+                # Read last 100 lines
+                lines = f.readlines()[-100:]
+                return jsonify({'logs': [line.strip() for line in lines]})
+        return jsonify({'logs': []})
+    except Exception as e:
+        return jsonify({'logs': [f'Error reading logs: {e}']})
+
+
+@app.route('/api/clear_history', methods=['POST'])
+def api_clear_history():
+    """Clear all history entries."""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('DELETE FROM history')
+        conn.commit()
+        conn.close()
+        logger.info("History cleared by user")
+        return jsonify({'success': True, 'message': 'History cleared'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/api/reset_database', methods=['POST'])
+def api_reset_database():
+    """Reset entire database - DANGER!"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('DELETE FROM queue')
+        c.execute('DELETE FROM history')
+        c.execute('DELETE FROM books')
+        c.execute('DELETE FROM stats')
+        conn.commit()
+        conn.close()
+        logger.warning("DATABASE RESET by user!")
+        return jsonify({'success': True, 'message': 'Database reset complete'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
 
 # ============== MAIN ==============
 

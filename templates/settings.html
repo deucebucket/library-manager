@@ -29,33 +29,66 @@
                 </div>
                 <div class="card-body">
                     <div class="mb-3">
-                        <label class="form-label">OpenRouter API Key</label>
-                        <input type="password" class="form-control bg-dark text-light" name="openrouter_api_key"
-                               value="{{ config.openrouter_api_key or '' }}" placeholder="sk-or-v1-...">
-                        <small class="text-muted">Get free key at <a href="https://openrouter.ai" target="_blank">openrouter.ai</a></small>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label">AI Model</label>
-                        <select class="form-select bg-dark text-light" name="openrouter_model">
-                            <option value="google/gemma-3n-e4b-it:free" {% if config.openrouter_model == 'google/gemma-3n-e4b-it:free' %}selected{% endif %}>
-                                Google Gemma 3N (Free)
+                        <label class="form-label">AI Provider</label>
+                        <select class="form-select bg-dark text-light" name="ai_provider" id="ai_provider" onchange="toggleProviderFields()">
+                            <option value="openrouter" {% if config.ai_provider == 'openrouter' %}selected{% endif %}>
+                                OpenRouter (Free models available)
                             </option>
-                            <option value="google/gemini-2.0-flash-exp:free" {% if config.openrouter_model == 'google/gemini-2.0-flash-exp:free' %}selected{% endif %}>
-                                Google Gemini 2.0 Flash (Free)
-                            </option>
-                            <option value="meta-llama/llama-3.3-70b-instruct:free" {% if config.openrouter_model == 'meta-llama/llama-3.3-70b-instruct:free' %}selected{% endif %}>
-                                Llama 3.3 70B (Free)
-                            </option>
-                            <option value="mistralai/devstral-2512:free" {% if config.openrouter_model == 'mistralai/devstral-2512:free' %}selected{% endif %}>
-                                Mistral Devstral (Free)
+                            <option value="gemini" {% if config.ai_provider == 'gemini' %}selected{% endif %}>
+                                Google Gemini (Direct API)
                             </option>
                         </select>
                     </div>
-                    <div class="mb-3">
-                        <label class="form-label">Gemini API Key (Optional)</label>
-                        <input type="password" class="form-control bg-dark text-light" name="gemini_api_key"
-                               value="{{ config.gemini_api_key or '' }}" placeholder="AIza...">
-                        <small class="text-muted">Optional backup. Get at <a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a></small>
+
+                    <!-- OpenRouter Settings -->
+                    <div id="openrouter-settings">
+                        <div class="mb-3">
+                            <label class="form-label">OpenRouter API Key</label>
+                            <input type="password" class="form-control bg-dark text-light" name="openrouter_api_key"
+                                   value="{{ config.openrouter_api_key or '' }}" placeholder="sk-or-v1-...">
+                            <small class="text-muted">Get free key at <a href="https://openrouter.ai" target="_blank">openrouter.ai</a></small>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">OpenRouter Model</label>
+                            <select class="form-select bg-dark text-light" name="openrouter_model">
+                                <option value="google/gemma-3n-e4b-it:free" {% if config.openrouter_model == 'google/gemma-3n-e4b-it:free' %}selected{% endif %}>
+                                    Google Gemma 3N (Free)
+                                </option>
+                                <option value="google/gemini-2.0-flash-exp:free" {% if config.openrouter_model == 'google/gemini-2.0-flash-exp:free' %}selected{% endif %}>
+                                    Google Gemini 2.0 Flash (Free)
+                                </option>
+                                <option value="meta-llama/llama-3.3-70b-instruct:free" {% if config.openrouter_model == 'meta-llama/llama-3.3-70b-instruct:free' %}selected{% endif %}>
+                                    Llama 3.3 70B (Free)
+                                </option>
+                                <option value="mistralai/devstral-2512:free" {% if config.openrouter_model == 'mistralai/devstral-2512:free' %}selected{% endif %}>
+                                    Mistral Devstral (Free)
+                                </option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Gemini Settings -->
+                    <div id="gemini-settings">
+                        <div class="mb-3">
+                            <label class="form-label">Gemini API Key</label>
+                            <input type="password" class="form-control bg-dark text-light" name="gemini_api_key"
+                                   value="{{ config.gemini_api_key or '' }}" placeholder="AIza...">
+                            <small class="text-muted">Get at <a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a> - Free tier available</small>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Gemini Model</label>
+                            <select class="form-select bg-dark text-light" name="gemini_model">
+                                <option value="gemini-1.5-flash" {% if config.gemini_model == 'gemini-1.5-flash' %}selected{% endif %}>
+                                    Gemini 1.5 Flash (Fast, free tier)
+                                </option>
+                                <option value="gemini-1.5-pro" {% if config.gemini_model == 'gemini-1.5-pro' %}selected{% endif %}>
+                                    Gemini 1.5 Pro (Better quality)
+                                </option>
+                                <option value="gemini-2.0-flash-exp" {% if config.gemini_model == 'gemini-2.0-flash-exp' %}selected{% endif %}>
+                                    Gemini 2.0 Flash (Experimental)
+                                </option>
+                            </select>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -121,6 +154,18 @@
 </form>
 
 <div class="card mt-4">
+    <div class="card-header">
+        <i class="bi bi-terminal"></i> Recent Logs
+        <button class="btn btn-sm btn-outline-secondary float-end" onclick="refreshLogs()">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+    </div>
+    <div class="card-body bg-dark p-2" style="max-height: 300px; overflow-y: auto;">
+        <pre id="log-output" class="mb-0 text-light" style="font-size: 0.8rem; white-space: pre-wrap;">Loading logs...</pre>
+    </div>
+</div>
+
+<div class="card mt-4">
     <div class="card-header text-danger">
         <i class="bi bi-exclamation-triangle"></i> Danger Zone
     </div>
@@ -137,16 +182,77 @@
 
 {% block scripts %}
 <script>
+// Toggle provider settings visibility
+function toggleProviderFields() {
+    const provider = document.getElementById('ai_provider').value;
+    document.getElementById('openrouter-settings').style.display = provider === 'openrouter' ? 'block' : 'none';
+    document.getElementById('gemini-settings').style.display = provider === 'gemini' ? 'block' : 'none';
+}
+
+// Run on page load
+document.addEventListener('DOMContentLoaded', function() {
+    toggleProviderFields();
+    refreshLogs();
+});
+
+// Fetch and display logs
+function refreshLogs() {
+    fetch('/api/logs')
+        .then(r => r.json())
+        .then(data => {
+            const logEl = document.getElementById('log-output');
+            if (data.logs && data.logs.length > 0) {
+                // Color-code log lines
+                let html = data.logs.map(line => {
+                    if (line.includes('ERROR')) {
+                        return `<span class="text-danger">${escapeHtml(line)}</span>`;
+                    } else if (line.includes('WARNING')) {
+                        return `<span class="text-warning">${escapeHtml(line)}</span>`;
+                    } else if (line.includes('INFO')) {
+                        return `<span class="text-info">${escapeHtml(line)}</span>`;
+                    }
+                    return escapeHtml(line);
+                }).join('\n');
+                logEl.innerHTML = html;
+            } else {
+                logEl.textContent = 'No recent logs';
+            }
+            // Scroll to bottom
+            logEl.parentElement.scrollTop = logEl.parentElement.scrollHeight;
+        })
+        .catch(e => {
+            document.getElementById('log-output').textContent = 'Error loading logs: ' + e;
+        });
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
 function clearHistory() {
     if (!confirm('Are you sure you want to clear all history? This cannot be undone.')) return;
-    // Would need API endpoint
-    alert('Not implemented yet');
+    fetch('/api/clear_history', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            alert(data.message || 'History cleared');
+            location.reload();
+        });
 }
 
 function resetDatabase() {
     if (!confirm('Are you sure you want to reset the entire database? All data will be lost!')) return;
-    // Would need API endpoint
-    alert('Not implemented yet');
+    if (!confirm('REALLY? This will delete everything!')) return;
+    fetch('/api/reset_database', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            alert(data.message || 'Database reset');
+            location.reload();
+        });
 }
+
+// Auto-refresh logs every 10 seconds
+setInterval(refreshLogs, 10000);
 </script>
 {% endblock %}
