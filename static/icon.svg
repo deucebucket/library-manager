@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4F46E5;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#7C3AED;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <!-- Background circle -->
+  <circle cx="256" cy="256" r="240" fill="url(#grad)"/>
+  <!-- Book shape -->
+  <g transform="translate(110, 100)">
+    <!-- Book cover -->
+    <path d="M40 0 L250 0 Q270 0 270 20 L270 300 Q270 320 250 320 L40 320 Q20 320 20 300 L20 20 Q20 0 40 0" fill="#fff" opacity="0.9"/>
+    <!-- Spine -->
+    <rect x="20" y="0" width="30" height="320" fill="#E5E7EB"/>
+    <!-- Pages -->
+    <rect x="55" y="10" width="200" height="300" fill="#F9FAFB" rx="5"/>
+    <!-- Headphone/audio symbol -->
+    <g transform="translate(100, 90)">
+      <circle cx="55" cy="60" r="45" fill="none" stroke="#4F46E5" stroke-width="8"/>
+      <rect x="5" y="55" width="20" height="40" rx="5" fill="#4F46E5"/>
+      <rect x="85" y="55" width="20" height="40" rx="5" fill="#4F46E5"/>
+      <path d="M10 60 Q10 20 55 20 Q100 20 100 60" fill="none" stroke="#4F46E5" stroke-width="8" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>library-manager</Name>
+  <Repository>deucebucket/library-manager:latest</Repository>
+  <Registry>https://hub.docker.com/r/deucebucket/library-manager</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/deucebucket/library-manager/issues</Support>
+  <Project>https://github.com/deucebucket/library-manager</Project>
+  <Overview>Library Manager - Audiobook library management with smart metadata matching, series detection, and organization. Scans your audiobook library, matches metadata from multiple sources (Audible, OpenLibrary, etc.), detects series order, and helps organize your collection. Features a modern web UI for browsing and managing your audiobooks.</Overview>
+  <Category>MediaApp:Books MediaServer:Books Tools:Utilities</Category>
+  <WebUI>http://[IP]:[PORT:5000]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/deucebucket/library-manager/main/unraid/library-manager.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/deucebucket/library-manager/main/static/icon.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText>Buy me a coffee</DonateText>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="Web UI Port" Target="5000" Default="5000" Mode="tcp" Description="Port for the web interface" Type="Port" Display="always" Required="true" Mask="false">5000</Config>
+  <Config Name="Audiobook Library" Target="/library" Default="/mnt/user/media/audiobooks" Mode="rw" Description="Path to your audiobook library (read/write for organization features)" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/media/audiobooks</Config>
+  <Config Name="Config Directory" Target="/config" Default="/mnt/user/appdata/library-manager" Mode="rw" Description="Configuration and database storage" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/library-manager</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID for file permissions" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID for file permissions" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="Timezone" Target="TZ" Default="America/New_York" Mode="" Description="Your timezone" Type="Variable" Display="advanced" Required="false" Mask="false">America/New_York</Config>
+</Container>
