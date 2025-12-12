@@ -1967,6 +1967,43 @@ def deep_scan_library(config):
                 file_names[basename] = []
             file_names[basename].append(audio_file)
 
+        # NEW: Detect loose files in library root (no folder structure)
+        loose_files = []
+        for item in lib_path.iterdir():
+            if item.is_file() and item.suffix.lower() in AUDIO_EXTENSIONS:
+                loose_files.append(item)
+
+        if loose_files:
+            logger.info(f"Found {len(loose_files)} loose audio files in library root")
+            for loose_file in loose_files:
+                # Parse filename to extract searchable title
+                filename = loose_file.stem  # filename without extension
+                clean_title = clean_search_title(filename)
+                path_str = str(loose_file)
+
+                # Check if already in books table
+                c.execute('SELECT id FROM books WHERE path = ?', (path_str,))
+                existing = c.fetchone()
+
+                if existing:
+                    book_id = existing['id']
+                else:
+                    # Create books record for the loose file
+                    c.execute('''INSERT INTO books (path, current_author, current_title, status)
+                                VALUES (?, ?, ?, ?)''',
+                             (path_str, 'Unknown', clean_title, 'loose_file'))
+                    book_id = c.lastrowid
+
+                # Add to queue with special "loose_file" reason
+                c.execute('''INSERT OR REPLACE INTO queue
+                            (book_id, reason, added_at, priority)
+                            VALUES (?, ?, ?, ?)''',
+                         (book_id, f'loose_file_needs_folder:{filename}',
+                          datetime.now().isoformat(), 1))  # High priority
+                queued += 1
+                issues_found[path_str] = ['loose_file_no_folder']
+                logger.info(f"Queued loose file: {filename} -> search for: {clean_title}")
+
         # Second pass: Analyze folder structure
         for author_dir in lib_path.iterdir():
             if not author_dir.is_dir():
@@ -2361,6 +2398,13 @@ def process_queue(config, limit=None):
                                       series=new_series, series_num=new_series_num,
                                       narrator=new_narrator, year=new_year,
                                       edition=new_edition, variant=new_variant, config=config)
+
+            # For loose files, new_path should include the filename
+            is_loose_file = row['reason'] and row['reason'].startswith('loose_file_needs_folder')
+            if is_loose_file and old_path.is_file():
+                # Append original filename to the new folder path
+                new_path = new_path / old_path.name
+                logger.info(f"Loose file: will move {old_path.name} to {new_path}")
 
             # CRITICAL SAFETY: If path building failed, skip this item
             if new_path is None:
