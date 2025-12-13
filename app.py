@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.16"
+APP_VERSION = "0.9.0-beta.18"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -36,6 +36,72 @@ import re
 from pathlib import Path
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
+
+
+# ============== SEARCH QUEUE / PROGRESS TRACKING ==============
+# Tracks progress of chaos scans and batch operations for UI feedback
+
+class SearchProgress:
+    """Thread-safe progress tracker for chaos handler and batch operations."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._state = {
+            'active': False,
+            'operation': None,
+            'total': 0,
+            'processed': 0,
+            'current_item': None,
+            'results': [],
+            'started_at': None,
+            'queue': []  # Items waiting to be processed
+        }
+
+    def start(self, operation, total, queue_items=None):
+        """Start a new operation."""
+        with self._lock:
+            self._state = {
+                'active': True,
+                'operation': operation,
+                'total': total,
+                'processed': 0,
+                'current_item': None,
+                'results': [],
+                'started_at': datetime.now().isoformat(),
+                'queue': queue_items or []
+            }
+
+    def update(self, current_item, result=None):
+        """Update progress with current item being processed."""
+        with self._lock:
+            self._state['processed'] += 1
+            self._state['current_item'] = current_item
+            if result:
+                self._state['results'].append(result)
+            # Remove from queue
+            if current_item in self._state['queue']:
+                self._state['queue'].remove(current_item)
+
+    def finish(self):
+        """Mark operation as complete."""
+        with self._lock:
+            self._state['active'] = False
+            self._state['current_item'] = None
+            self._state['queue'] = []
+
+    def get_state(self):
+        """Get current progress state."""
+        with self._lock:
+            state = self._state.copy()
+            if state['total'] > 0:
+                state['percent'] = round((state['processed'] / state['total']) * 100, 1)
+            else:
+                state['percent'] = 0
+            state['queue_position'] = len(state['queue'])
+            return state
+
+# Global progress tracker
+search_progress = SearchProgress()
 
 
 # ============== LOCAL BOOKDB CONNECTION ==============
@@ -136,6 +202,43 @@ def extract_series_from_title(title):
         return None, int(match.group(2)), title_clean  # Series unknown, just got number
 
     return None, None, title
+
+
+def is_unsearchable_query(title):
+    """
+    Check if a title is clearly not a book title and shouldn't be searched.
+    Returns True for things like:
+    - chapter1, chapter2, Chapter 19
+    - 01.mp3, track_05
+    - audiobook, full audiobook
+    - disc1, cd2, part3
+    """
+    if not title:
+        return True
+
+    title_lower = title.lower().strip()
+
+    # Just numbers (01, 001, 1)
+    if re.match(r'^\d+$', title_lower):
+        return True
+
+    # Chapter + number patterns (chapter1, chapter 5, ch01)
+    if re.match(r'^(?:chapter|ch|chap)\s*\d+$', title_lower):
+        return True
+
+    # Track/disc/part patterns (track01, disc2, part 3, cd1)
+    if re.match(r'^(?:track|disc|cd|part|pt)\s*\d+$', title_lower):
+        return True
+
+    # Just "audiobook" or "full audiobook"
+    if re.match(r'^(?:full\s+)?audiobook$', title_lower):
+        return True
+
+    # Very short titles (1-2 chars) are usually garbage
+    if len(title_lower) <= 2:
+        return True
+
+    return False
 
 
 def is_garbage_match(original_title, suggested_title, threshold=0.3):
@@ -421,6 +524,16 @@ def save_secrets(secrets):
     """Save API keys to secrets file."""
     with open(SECRETS_PATH, 'w') as f:
         json.dump(secrets, f, indent=2)
+
+def load_secrets():
+    """Load API keys from secrets file."""
+    if SECRETS_PATH.exists():
+        try:
+            with open(SECRETS_PATH) as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Error loading secrets: {e}")
+    return {}
 
 # ============== DRASTIC CHANGE DETECTION ==============
 
@@ -1713,6 +1826,649 @@ def organize_orphan_files(author_path, book_title, files, config=None):
 
     logger.info(f"Organized {moved} orphan files into: {book_dir}")
     return True, f"Created {book_dir.name} with {moved} files"
+
+
+# ============== CHAOS HANDLER - For completely unorganized libraries ==============
+
+def read_audio_metadata_deep(file_path):
+    """
+    Read all available metadata from an audio file.
+    Returns dict with: album, artist, title, track, duration, etc.
+    """
+    try:
+        from mutagen import File
+        from mutagen.mp4 import MP4
+        from mutagen.mp3 import MP3
+        from mutagen.id3 import ID3
+
+        audio = File(file_path)
+        if audio is None:
+            return None
+
+        metadata = {
+            'album': None,
+            'artist': None,
+            'title': None,
+            'track': None,
+            'duration': None,
+            'bitrate': None
+        }
+
+        # Get duration
+        if hasattr(audio, 'info') and hasattr(audio.info, 'length'):
+            metadata['duration'] = audio.info.length
+        if hasattr(audio, 'info') and hasattr(audio.info, 'bitrate'):
+            metadata['bitrate'] = audio.info.bitrate
+
+        # Handle different formats
+        if isinstance(audio, MP4):
+            # M4A/M4B files
+            metadata['album'] = audio.tags.get('\xa9alb', [None])[0] if audio.tags else None
+            metadata['artist'] = audio.tags.get('\xa9ART', [None])[0] if audio.tags else None
+            metadata['title'] = audio.tags.get('\xa9nam', [None])[0] if audio.tags else None
+        elif isinstance(audio, MP3) and audio.tags:
+            # MP3 files with ID3 tags - use raw tag names
+            tags = audio.tags
+            # ID3v2 tag names: TALB=album, TPE1=artist, TIT2=title, TRCK=track
+            if tags.get('TALB'):
+                metadata['album'] = str(tags['TALB'].text[0])
+            if tags.get('TPE1'):
+                metadata['artist'] = str(tags['TPE1'].text[0])
+            if tags.get('TIT2'):
+                metadata['title'] = str(tags['TIT2'].text[0])
+            if tags.get('TRCK'):
+                metadata['track'] = str(tags['TRCK'].text[0])
+        elif hasattr(audio, 'tags') and audio.tags:
+            # Other formats - try EasyID3 style
+            tags = audio.tags
+            if hasattr(tags, 'get'):
+                metadata['album'] = str(tags.get('album', [None])[0]) if tags.get('album') else None
+                metadata['artist'] = str(tags.get('artist', [None])[0]) if tags.get('artist') else None
+                metadata['title'] = str(tags.get('title', [None])[0]) if tags.get('title') else None
+                metadata['track'] = str(tags.get('tracknumber', [None])[0]) if tags.get('tracknumber') else None
+
+        return metadata
+    except Exception as e:
+        logger.debug(f"Could not read metadata from {file_path}: {e}")
+        return None
+
+
+def group_loose_files(files):
+    """
+    Intelligently group loose files that likely belong to the same book.
+    Groups by: metadata album > filename pattern > file characteristics
+
+    Returns: list of groups, each group is dict with:
+        - files: list of file paths
+        - group_type: how they were grouped (metadata, pattern, proximity)
+        - detected_info: any detected book info
+    """
+    groups = []
+    ungrouped = list(files)
+
+    # === PHASE 1: Group by ID3 album tag ===
+    album_groups = {}
+    no_album = []
+
+    for f in ungrouped:
+        meta = read_audio_metadata_deep(str(f))
+        if meta and meta.get('album') and meta['album'].lower() not in ['unknown', 'audiobook', 'untitled']:
+            album = meta['album']
+            if album not in album_groups:
+                album_groups[album] = {
+                    'files': [],
+                    'artist': meta.get('artist'),
+                    'total_duration': 0
+                }
+            album_groups[album]['files'].append(f)
+            if meta.get('duration'):
+                album_groups[album]['total_duration'] += meta['duration']
+        else:
+            no_album.append(f)
+
+    # Add album groups
+    for album, data in album_groups.items():
+        groups.append({
+            'files': data['files'],
+            'group_type': 'metadata',
+            'detected_info': {
+                'title': album,
+                'author': data.get('artist'),
+                'duration_hours': round(data['total_duration'] / 3600, 1) if data['total_duration'] else None
+            }
+        })
+
+    ungrouped = no_album
+
+    # === PHASE 2: Group by filename pattern ===
+    # Look for: chapter01, part1, disc1, track01, 01, etc.
+    pattern_groups = {}
+    still_ungrouped = []
+
+    for f in ungrouped:
+        fname = f.stem.lower()
+
+        # Extract base name (remove numbers and common suffixes)
+        base = re.sub(r'[\s_-]*(chapter|part|track|disc|cd|side)[\s_-]*\d+.*$', '', fname, flags=re.IGNORECASE)
+        base = re.sub(r'[\s_-]*\d+[\s_-]*$', '', base)  # Remove trailing numbers
+        base = re.sub(r'^\d+[\s_-]*', '', base)  # Remove leading numbers
+        base = base.strip(' _-')
+
+        if base and len(base) > 2:
+            if base not in pattern_groups:
+                pattern_groups[base] = []
+            pattern_groups[base].append(f)
+        else:
+            still_ungrouped.append(f)
+
+    # Add pattern groups (only if more than 1 file - indicates a set)
+    for base, file_list in pattern_groups.items():
+        if len(file_list) > 1:
+            # Calculate total duration
+            total_dur = 0
+            for f in file_list:
+                meta = read_audio_metadata_deep(str(f))
+                if meta and meta.get('duration'):
+                    total_dur += meta['duration']
+
+            groups.append({
+                'files': file_list,
+                'group_type': 'pattern',
+                'detected_info': {
+                    'title': base.replace('_', ' ').replace('-', ' ').title() if base else None,
+                    'author': None,
+                    'duration_hours': round(total_dur / 3600, 1) if total_dur else None
+                }
+            })
+        else:
+            still_ungrouped.extend(file_list)
+
+    ungrouped = still_ungrouped
+
+    # === PHASE 3: Group numbered sequences ===
+    # Files like 01.mp3, 02.mp3, 03.mp3 that share same characteristics
+    numbered_files = []
+    truly_ungrouped = []
+
+    for f in ungrouped:
+        fname = f.stem
+        # Check if filename is just a number or very short
+        if re.match(r'^\d{1,3}$', fname) or len(fname) <= 3:
+            numbered_files.append(f)
+        else:
+            truly_ungrouped.append(f)
+
+    if numbered_files:
+        # Sort by name to keep sequence
+        numbered_files.sort(key=lambda x: x.stem)
+        total_dur = sum(
+            (read_audio_metadata_deep(str(f)) or {}).get('duration', 0)
+            for f in numbered_files
+        )
+        groups.append({
+            'files': numbered_files,
+            'group_type': 'sequence',
+            'detected_info': {
+                'title': None,  # Unknown - needs identification
+                'author': None,
+                'duration_hours': round(total_dur / 3600, 1) if total_dur else None,
+                'needs_identification': True
+            }
+        })
+
+    # === PHASE 4: Individual files that couldn't be grouped ===
+    for f in truly_ungrouped:
+        meta = read_audio_metadata_deep(str(f))
+        groups.append({
+            'files': [f],
+            'group_type': 'single',
+            'detected_info': {
+                'title': meta.get('title') or f.stem if meta else f.stem,
+                'author': meta.get('artist') if meta else None,
+                'duration_hours': round(meta['duration'] / 3600, 1) if meta and meta.get('duration') else None
+            }
+        })
+
+    return groups
+
+
+def search_bookdb_api(title):
+    """
+    Search the BookBucket API for a book (public endpoint, no auth needed).
+    Uses Qdrant vector search - fast even with 50M books.
+    Returns dict with author, title, series if found.
+    Filters garbage matches using title similarity.
+    """
+    # Clean the search title (remove "audiobook", file extensions, etc.)
+    search_title = clean_search_title(title)
+    if not search_title or len(search_title) < 3:
+        return None
+
+    # Skip unsearchable queries (chapter1, track05, etc.)
+    if is_unsearchable_query(search_title):
+        logger.debug(f"BookDB API: Skipping unsearchable query '{search_title}'")
+        return None
+
+    try:
+        response = requests.get(
+            f"{BOOKDB_API_URL}/search",
+            params={"q": search_title, "limit": 5},
+            timeout=10
+        )
+
+        if response.status_code == 200:
+            results = response.json()
+
+            # Find best book match (prefer books over series)
+            for item in results:
+                if item.get('type') == 'book' and item.get('author_name'):
+                    suggested_title = item.get('name', '')
+
+                    # Filter garbage matches - reject low similarity
+                    if is_garbage_match(search_title, suggested_title):
+                        logger.debug(f"BookDB API: Rejected garbage match '{search_title}' -> '{suggested_title}'")
+                        continue
+
+                    author = item.get('author_name', '')
+                    # Fix author format (some have "Last, First")
+                    if ',' in author and author.count(',') == 1:
+                        parts = author.split(',')
+                        author = f"{parts[1].strip()} {parts[0].strip()}"
+
+                    return {
+                        'title': suggested_title,
+                        'author': author,
+                        'series': item.get('series_name'),
+                        'year': item.get('year_published'),
+                        'source': 'bookdb_api'
+                    }
+
+            # Fallback to series if no book match
+            for item in results:
+                if item.get('type') == 'series' and item.get('author_name'):
+                    suggested_title = item.get('name', '')
+
+                    # Filter garbage matches
+                    if is_garbage_match(search_title, suggested_title):
+                        continue
+
+                    author = item.get('author_name', '')
+                    if ',' in author and author.count(',') == 1:
+                        parts = author.split(',')
+                        author = f"{parts[1].strip()} {parts[0].strip()}"
+
+                    return {
+                        'title': suggested_title,
+                        'author': author,
+                        'series': item.get('name'),
+                        'source': 'bookdb_api'
+                    }
+
+    except Exception as e:
+        logger.debug(f"BookDB API search error: {e}")
+
+    return None
+
+
+def search_book_searxng(query, duration_hours=None):
+    """
+    Search for a book using SearXNG.
+    Optionally filter by expected audiobook length.
+    """
+    try:
+        # Add audiobook context to query
+        search_query = f"{query} audiobook"
+        if duration_hours and duration_hours > 1:
+            search_query += f" {int(duration_hours)} hours"
+
+        # Use local SearXNG instance
+        response = requests.get(
+            "http://localhost:8888/search",
+            params={
+                'q': search_query,
+                'format': 'json',
+                'categories': 'general'
+            },
+            timeout=10
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            results = data.get('results', [])[:5]
+
+            # Extract book info from results
+            books = []
+            for r in results:
+                title = r.get('title', '')
+                content = r.get('content', '')
+
+                # Look for author patterns
+                author_match = re.search(r'by\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', title + ' ' + content)
+
+                books.append({
+                    'title': title,
+                    'snippet': content[:200],
+                    'url': r.get('url'),
+                    'author': author_match.group(1) if author_match else None
+                })
+
+            return books
+    except Exception as e:
+        logger.debug(f"SearXNG search failed: {e}")
+
+    return []
+
+
+def identify_book_with_ai(file_group, config):
+    """
+    Use AI to identify a book from file information.
+    Sends filenames, duration, and any metadata to AI for identification.
+    """
+    if not config:
+        return None
+
+    files = file_group.get('files', [])
+    info = file_group.get('detected_info', {})
+
+    # Build context for AI
+    filenames = [Path(f).name if isinstance(f, str) else f.name for f in files[:20]]
+
+    prompt = f"""Identify this audiobook from the following information:
+
+Files ({len(files)} total): {', '.join(filenames[:10])}{'...' if len(filenames) > 10 else ''}
+Total duration: {info.get('duration_hours', 'unknown')} hours
+Detected album tag: {info.get('title', 'none')}
+Detected artist tag: {info.get('author', 'none')}
+
+Based on this information, identify the audiobook. Return JSON:
+{{"author": "Author Name", "title": "Book Title", "series": "Series Name or null", "confidence": "high/medium/low"}}
+
+If you cannot identify it with reasonable confidence, return:
+{{"author": null, "title": null, "confidence": "none", "reason": "why"}}"""
+
+    try:
+        # Use existing AI call function
+        gemini_key = None
+        secrets = load_secrets()
+        if secrets:
+            gemini_key = secrets.get('gemini_api_key')
+
+        if gemini_key:
+            response = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{config.get('gemini_model', 'gemini-2.0-flash')}:generateContent",
+                headers={'Content-Type': 'application/json'},
+                params={'key': gemini_key},
+                json={'contents': [{'parts': [{'text': prompt}]}]},
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                text = data.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+
+                # Parse JSON from response
+                json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
+                if json_match:
+                    return json.loads(json_match.group())
+    except Exception as e:
+        logger.debug(f"AI identification failed: {e}")
+
+    return None
+
+
+def transcribe_audio_clip(file_path, duration_seconds=30):
+    """
+    Transcribe a short clip from an audio file for identification.
+    Uses Whisper API or local Whisper if available.
+
+    Returns: transcribed text or None
+    """
+    try:
+        # Try using OpenAI Whisper API first (if we have a key)
+        secrets = load_secrets()
+        openai_key = secrets.get('openai_api_key') if secrets else None
+
+        if openai_key:
+            # Use OpenAI Whisper API
+            import subprocess
+            import tempfile
+
+            # Extract a clip using ffmpeg
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
+                tmp_path = tmp.name
+
+            # Extract 30 seconds starting at 60 seconds in (skip intro)
+            subprocess.run([
+                'ffmpeg', '-y', '-i', str(file_path),
+                '-ss', '60', '-t', str(duration_seconds),
+                '-acodec', 'libmp3lame', '-ar', '16000',
+                tmp_path
+            ], capture_output=True, timeout=30)
+
+            # Send to Whisper API
+            with open(tmp_path, 'rb') as audio_file:
+                response = requests.post(
+                    'https://api.openai.com/v1/audio/transcriptions',
+                    headers={'Authorization': f'Bearer {openai_key}'},
+                    files={'file': audio_file},
+                    data={'model': 'whisper-1'},
+                    timeout=60
+                )
+
+            os.unlink(tmp_path)
+
+            if response.status_code == 200:
+                return response.json().get('text')
+
+    except Exception as e:
+        logger.debug(f"Audio transcription failed: {e}")
+
+    return None
+
+
+def search_by_transcription(transcription, config):
+    """
+    Search for a book using transcribed audio text.
+    Searches our BookDB and uses AI to match.
+    """
+    if not transcription or len(transcription) < 50:
+        return None
+
+    # Take a meaningful chunk
+    chunk = transcription[:500]
+
+    # Search SearXNG for the quote
+    try:
+        response = requests.get(
+            "http://localhost:8888/search",
+            params={
+                'q': f'"{chunk[:100]}" audiobook',
+                'format': 'json'
+            },
+            timeout=10
+        )
+
+        if response.status_code == 200:
+            results = response.json().get('results', [])
+            if results:
+                # Use AI to analyze results
+                return identify_from_search_results(results, chunk, config)
+    except Exception as e:
+        logger.debug(f"Transcription search failed: {e}")
+
+    return None
+
+
+def identify_from_search_results(results, context, config):
+    """Use AI to identify book from search results and context."""
+    if not config:
+        return None
+
+    secrets = load_secrets()
+    gemini_key = secrets.get('gemini_api_key') if secrets else None
+
+    if not gemini_key:
+        return None
+
+    results_text = "\n".join([
+        f"- {r.get('title', 'No title')}: {r.get('content', '')[:100]}"
+        for r in results[:5]
+    ])
+
+    prompt = f"""Based on this transcribed audio excerpt and search results, identify the audiobook:
+
+Transcribed text: "{context[:300]}"
+
+Search results:
+{results_text}
+
+Return JSON: {{"author": "Name", "title": "Title", "confidence": "high/medium/low"}}
+If unsure, return {{"confidence": "none"}}"""
+
+    try:
+        response = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{config.get('gemini_model', 'gemini-2.0-flash')}:generateContent",
+            headers={'Content-Type': 'application/json'},
+            params={'key': gemini_key},
+            json={'contents': [{'parts': [{'text': prompt}]}]},
+            timeout=30
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            text = data.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+            json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
+    except Exception as e:
+        logger.debug(f"AI identification from results failed: {e}")
+
+    return None
+
+
+def handle_chaos_library(lib_path, config=None):
+    """
+    Handle a completely chaotic library - files dumped directly in root with no structure.
+
+    Process:
+    1. Find all loose audio files
+    2. Group related files (by metadata, patterns, etc.)
+    3. Identify each group using multiple methods
+    4. Create proper Author/Title structure
+
+    Returns: list of results with actions taken
+    """
+    lib_root = Path(lib_path)
+    results = []
+
+    # Find all loose audio files in root
+    loose_files = [
+        f for f in lib_root.iterdir()
+        if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS
+    ]
+
+    if not loose_files:
+        return [{'status': 'ok', 'message': 'No loose files found in library root'}]
+
+    logger.info(f"CHAOS HANDLER: Found {len(loose_files)} loose files in library root")
+
+    # Group the files
+    groups = group_loose_files(loose_files)
+    logger.info(f"CHAOS HANDLER: Grouped into {len(groups)} potential books")
+
+    # Initialize progress tracker with queue of items
+    queue_items = [g.get('detected_info', {}).get('title', f'Group {i+1}') for i, g in enumerate(groups)]
+    search_progress.start('chaos_scan', len(groups), queue_items)
+
+    for i, group in enumerate(groups):
+        files = group['files']
+        info = group['detected_info']
+        group_type = group['group_type']
+
+        logger.info(f"CHAOS HANDLER: Processing group {i+1}/{len(groups)} ({len(files)} files, type={group_type})")
+
+        result = {
+            'files': [str(f) for f in files],
+            'file_count': len(files),
+            'group_type': group_type,
+            'detected_info': info
+        }
+
+        author = info.get('author')
+        title = info.get('title')
+        confidence = 'high' if group_type == 'metadata' else 'low'
+
+        # === IDENTIFICATION PIPELINE ===
+
+        # Level 1: Already have metadata
+        if author and title and group_type == 'metadata':
+            result['identification'] = 'metadata'
+            result['author'] = author
+            result['title'] = title
+            result['confidence'] = 'high'
+
+        # Level 2: Search by detected title/filename
+        elif title:
+            # Try BookBucket API first (50M books, public endpoint, fast)
+            api_result = search_bookdb_api(title)
+            if api_result and api_result.get('author'):
+                author = api_result.get('author')
+                title = api_result.get('title') or title
+                confidence = 'high'
+                result['identification'] = 'bookdb_api'
+                if api_result.get('series'):
+                    result['series'] = api_result.get('series')
+
+            # Fall back to AI if API didn't find it
+            if not author:
+                ai_result = identify_book_with_ai(group, config)
+                if ai_result and ai_result.get('author'):
+                    author = ai_result.get('author')
+                    title = ai_result.get('title') or title
+                    confidence = ai_result.get('confidence', 'medium')
+                    result['identification'] = 'ai'
+                    if ai_result.get('series'):
+                        result['series'] = ai_result.get('series')
+
+            result['author'] = author or 'Unknown Author'
+            result['title'] = title
+            result['confidence'] = confidence
+
+        # Level 3: Numbered/unknown files - need transcription
+        elif info.get('needs_identification') and len(files) > 0:
+            logger.info(f"CHAOS HANDLER: Attempting audio transcription for unknown group")
+
+            # Try transcription on first file
+            transcription = transcribe_audio_clip(str(files[0]))
+            if transcription:
+                trans_result = search_by_transcription(transcription, config)
+                if trans_result and trans_result.get('confidence') != 'none':
+                    author = trans_result.get('author')
+                    title = trans_result.get('title')
+                    confidence = trans_result.get('confidence', 'low')
+                    result['identification'] = 'transcription'
+                    result['transcription_sample'] = transcription[:200]
+
+            result['author'] = author or 'Unknown Author'
+            result['title'] = title or f"Unknown Book ({len(files)} files, {info.get('duration_hours', '?')}h)"
+            result['confidence'] = confidence
+
+        else:
+            result['author'] = 'Unknown Author'
+            result['title'] = title or f"Unknown ({len(files)} files)"
+            result['confidence'] = 'none'
+            result['identification'] = 'failed'
+
+        # Update progress
+        item_name = result.get('title') or f'Group {i+1}'
+        search_progress.update(item_name, result)
+
+        results.append(result)
+
+    # Mark progress complete
+    search_progress.finish()
+
+    return results
 
 
 def is_disc_chapter_folder(name):
@@ -3551,6 +4307,121 @@ def api_scan():
     config = load_config()
     scanned, queued = scan_library(config)
     return jsonify({'success': True, 'scanned': scanned, 'queued': queued})
+
+@app.route('/api/chaos_scan', methods=['POST'])
+def api_chaos_scan():
+    """
+    Handle chaotic libraries with loose files dumped in root.
+    Analyzes, groups, and identifies loose audio files.
+    """
+    config = load_config()
+    library_paths = config.get('library_paths', [])
+
+    if not library_paths:
+        return jsonify({'success': False, 'error': 'No library paths configured'}), 400
+
+    all_results = []
+    for lib_path in library_paths:
+        if os.path.exists(lib_path):
+            results = handle_chaos_library(lib_path, config)
+            all_results.extend(results)
+
+    # Summarize
+    identified = sum(1 for r in all_results if r.get('confidence') in ['high', 'medium'])
+    needs_review = sum(1 for r in all_results if r.get('confidence') == 'low')
+    failed = sum(1 for r in all_results if r.get('confidence') == 'none' or r.get('identification') == 'failed')
+
+    return jsonify({
+        'success': True,
+        'groups': all_results,
+        'summary': {
+            'total_groups': len(all_results),
+            'identified': identified,
+            'needs_review': needs_review,
+            'failed': failed
+        }
+    })
+
+@app.route('/api/search_progress', methods=['GET'])
+def api_search_progress():
+    """
+    Get current progress of ongoing search/scan operations.
+    Returns queue position, percent complete, and current item being processed.
+    """
+    state = search_progress.get_state()
+    return jsonify({
+        'success': True,
+        'active': state['active'],
+        'operation': state['operation'],
+        'percent': state['percent'],
+        'processed': state['processed'],
+        'total': state['total'],
+        'current_item': state['current_item'],
+        'queue_position': state['queue_position'],
+        'queue': state['queue'][:10]  # Show next 10 in queue
+    })
+
+@app.route('/api/chaos_apply', methods=['POST'])
+def api_chaos_apply():
+    """
+    Apply chaos handler results - create folders and move files.
+    Expects JSON with groups to apply.
+    """
+    import shutil
+
+    data = request.get_json()
+    if not data or 'groups' not in data:
+        return jsonify({'success': False, 'error': 'No groups provided'}), 400
+
+    config = load_config()
+    library_paths = config.get('library_paths', [])
+    if not library_paths:
+        return jsonify({'success': False, 'error': 'No library paths configured'}), 400
+
+    lib_root = Path(library_paths[0])
+    applied = 0
+    errors = []
+
+    for group in data['groups']:
+        author = group.get('author', 'Unknown Author')
+        title = group.get('title')
+        files = group.get('files', [])
+
+        if not title or not files:
+            continue
+
+        # Sanitize path components
+        safe_author = sanitize_path_component(author) or 'Unknown Author'
+        safe_title = sanitize_path_component(title)
+        if not safe_title:
+            errors.append(f"Invalid title: {title}")
+            continue
+
+        # Create target folder
+        target_folder = lib_root / safe_author / safe_title
+
+        try:
+            target_folder.mkdir(parents=True, exist_ok=True)
+
+            # Move files
+            for file_path in files:
+                src = Path(file_path)
+                if src.exists() and src.is_file():
+                    dst = target_folder / src.name
+                    shutil.move(str(src), str(dst))
+                    logger.info(f"CHAOS: Moved {src.name} -> {target_folder}")
+
+            applied += 1
+
+        except Exception as e:
+            errors.append(f"Error with {title}: {str(e)}")
+            logger.error(f"CHAOS APPLY ERROR: {e}")
+
+    return jsonify({
+        'success': True,
+        'applied': applied,
+        'errors': errors
+    })
 
 @app.route('/api/deep_rescan', methods=['POST'])
 def api_deep_rescan():

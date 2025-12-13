@@ -1,0 +1,42 @@
+# Ubuntu test system that simulates a fresh user environment
+# Used to verify Library Manager Docker deployment works correctly
+
+FROM ubuntu:22.04
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install Docker (simulates what a user would have)
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    gnupg \
+    lsb-release \
+    wget \
+    jq \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a test user (simulates non-root user)
+RUN useradd -m -s /bin/bash testuser && usermod -aG docker testuser
+
+# Create audiobook test directory structure
+RUN mkdir -p /home/testuser/audiobooks \
+    && mkdir -p /home/testuser/library-manager-data
+
+# Copy test files
+COPY test-audiobooks/ /home/testuser/audiobooks/
+COPY docker-compose.test.yml /home/testuser/docker-compose.yml
+COPY run-tests.sh /home/testuser/run-tests.sh
+
+RUN chown -R testuser:testuser /home/testuser && chmod +x /home/testuser/run-tests.sh
+
+USER testuser
+WORKDIR /home/testuser
+
+CMD ["/bin/bash"]

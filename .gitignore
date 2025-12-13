@@ -54,3 +54,4 @@ static/reddit-replies.html
 # Test environment - 2GB test library (keep scripts, ignore data)
 test-env/test-audiobooks/
 test-env/fresh-deploy/
+test-env/chaos-test-library/

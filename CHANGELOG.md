@@ -2,6 +2,45 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.18] - 2025-12-13
+
+### Added
+- **Search progress tracking** - Monitor queue position and completion status
+  - New `/api/search_progress` endpoint shows queue position, percent complete
+  - Thread-safe progress tracker for chaos handler operations
+  - Users can see their search position when API is busy
+
+### Improved
+- **BookDB API integration** - Now primary identification method for chaos handler
+  - Uses public `/search` endpoint (50M books, no auth needed)
+  - Faster than AI and no rate limits
+  - AI now fallback only when BookDB doesn't find a match
+- **Garbage match filtering** - Better rejection of wrong matches
+  - Added `is_unsearchable_query()` filter for non-book filenames (chapter1, track05, disc2)
+  - BookDB API now uses `clean_search_title()` and similarity checking
+  - Prevents "chapter1.mp3" matching random books
+
+### Fixed
+- **Title cleaning** - "The Martian audiobook.m4b" now cleaned to "The Martian" before search
+
+---
+
+## [0.9.0-beta.17] - 2025-12-13
+
+### Added
+- **Chaos Handler** - Handle completely unorganized libraries with loose files
+  - Intelligent file grouping by: ID3 metadata → filename patterns → numbered sequences
+  - Multi-level identification: metadata → SearXNG search → Gemini AI → audio transcription
+  - New `/api/chaos_scan` endpoint to analyze and identify loose files
+  - New `/api/chaos_apply` endpoint to create folders and move files
+  - Test suite: `test-env/generate-chaos-library.py`
+
+### Fixed
+- **Missing `load_secrets()` function** - AI identification in chaos handler now works
+- **ID3v2 tag reading** - Fixed MP3 tag extraction using raw ID3 names (TALB, TPE1, TIT2)
+
+---
+
 ## [0.9.0-beta.16] - 2025-12-13
 
 ### Added
