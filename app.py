@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.19"
+APP_VERSION = "0.9.0-beta.20"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -36,6 +36,7 @@ import re
 from pathlib import Path
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
+from audio_tagging import embed_tags_for_path, build_metadata_for_embedding
 
 
 # ============== SEARCH QUEUE / PROGRESS TRACKING ==============
@@ -390,7 +391,11 @@ DEFAULT_CONFIG = {
     "ebook_library_mode": "merge",  # "merge" = same folder as audiobooks, "separate" = own library
     "update_channel": "beta",  # "stable", "beta", or "nightly"
     "naming_format": "author/title",  # "author/title", "author - title", "custom"
-    "custom_naming_template": "{author}/{title}"  # Custom template with {author}, {title}, {series}, etc.
+    "custom_naming_template": "{author}/{title}",  # Custom template with {author}, {title}, {series}, etc.
+    # Metadata embedding settings
+    "metadata_embedding_enabled": False,  # Embed tags into audio files when fixes are applied
+    "metadata_embedding_overwrite_managed": True,  # Overwrite managed fields (title/author/series/etc)
+    "metadata_embedding_backup_sidecar": True  # Create .library-manager.tags.json backup before modifying
 }
 
 DEFAULT_SECRETS = {
@@ -471,6 +476,23 @@ def init_db():
         c.execute('ALTER TABLE history ADD COLUMN error_message TEXT')
     except:
         pass
+
+    # Add metadata columns for embedding (migration)
+    metadata_columns = [
+        'new_narrator TEXT',
+        'new_series TEXT',
+        'new_series_num TEXT',
+        'new_year TEXT',
+        'new_edition TEXT',
+        'new_variant TEXT',
+        'embed_status TEXT',
+        'embed_error TEXT'
+    ]
+    for col_def in metadata_columns:
+        try:
+            c.execute(f'ALTER TABLE history ADD COLUMN {col_def}')
+        except:
+            pass  # Column already exists
 
     # Stats table - daily stats
     c.execute('''CREATE TABLE IF NOT EXISTS stats (
@@ -3807,11 +3829,14 @@ def process_queue(config, limit=None):
                         # AI is uncertain - block the change
                         logger.warning(f"BLOCKED (uncertain): {row['current_author']} -> {new_author}")
                         # Record as pending_fix for manual review
-                        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message)
-                                     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?)''',
+                        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                          new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?, ?)''',
                                  (row['book_id'], row['current_author'], row['current_title'],
                                   new_author, new_title, str(old_path), str(new_path),
-                                  f"Uncertain: {verification.get('reasoning', 'needs review')}"))
+                                  f"Uncertain: {verification.get('reasoning', 'needs review')}",
+                                  new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                  str(new_year) if new_year else None, new_edition, new_variant))
                         c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', row['book_id']))
                         c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                         processed += 1
@@ -3888,10 +3913,13 @@ def process_queue(config, limit=None):
                             else:
                                 # Couldn't resolve - mark as conflict
                                 logger.warning(f"CONFLICT: {new_path} exists - no unique distinguisher found")
-                                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message)
-                                             VALUES (?, ?, ?, ?, ?, ?, ?, 'error', 'Destination exists - could not resolve version conflict')''',
+                                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                  new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                             VALUES (?, ?, ?, ?, ?, ?, ?, 'error', 'Destination exists - could not resolve version conflict', ?, ?, ?, ?, ?, ?)''',
                                          (row['book_id'], row['current_author'], row['current_title'],
-                                          new_author, new_title, str(old_path), str(new_path)))
+                                          new_author, new_title, str(old_path), str(new_path),
+                                          new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                          str(new_year) if new_year else None, new_edition, new_variant))
                                 c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
                                          ('conflict', 'Destination folder exists - multiple versions detected', row['book_id']))
                                 c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
@@ -3928,10 +3956,14 @@ def process_queue(config, limit=None):
                     c.execute("DELETE FROM history WHERE book_id = ? AND status = 'pending_fix'", (row['book_id'],))
 
                     # Record in history
-                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'fixed')''',
+                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
+                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'fixed', ?, ?, ?, ?, ?, ?)''',
                              (row['book_id'], row['current_author'], row['current_title'],
-                              new_author, new_title, str(old_path), str(new_path)))
+                              new_author, new_title, str(old_path), str(new_path),
+                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                              str(new_year) if new_year else None, new_edition, new_variant))
+                    history_id = c.lastrowid  # Capture the newly inserted history record ID
 
                     # Update book record - handle case where another book already has this path
                     try:
@@ -3944,6 +3976,42 @@ def process_queue(config, limit=None):
                         c.execute('DELETE FROM books WHERE id = ?', (row['book_id'],))
 
                     fixed += 1
+
+                    # Embed metadata tags if enabled
+                    if config.get('metadata_embedding_enabled', False):
+                        try:
+                            embed_metadata = build_metadata_for_embedding(
+                                author=new_author,
+                                title=new_title,
+                                series=new_series,
+                                series_num=str(new_series_num) if new_series_num else None,
+                                narrator=new_narrator,
+                                year=str(new_year) if new_year else None,
+                                edition=new_edition,
+                                variant=new_variant
+                            )
+                            embed_result = embed_tags_for_path(
+                                new_path,
+                                embed_metadata,
+                                create_backup=config.get('metadata_embedding_backup_sidecar', True),
+                                overwrite=config.get('metadata_embedding_overwrite_managed', True)
+                            )
+                            if embed_result['success']:
+                                embed_status = 'ok'
+                                embed_error = None
+                                logger.info(f"Embedded tags in {embed_result['files_processed']} files at {new_path}")
+                            else:
+                                embed_status = 'error'
+                                embed_error = embed_result.get('error') or '; '.join(embed_result.get('errors', []))[:500]
+                                logger.warning(f"Tag embedding failed for {new_path}: {embed_error}")
+                            # Update history with embed status using the captured history ID
+                            c.execute('UPDATE history SET embed_status = ?, embed_error = ? WHERE id = ?',
+                                     (embed_status, embed_error, history_id))
+                        except Exception as embed_e:
+                            logger.error(f"Tag embedding exception for {new_path}: {embed_e}")
+                            c.execute('UPDATE history SET embed_status = ?, embed_error = ? WHERE id = ?',
+                                     ('error', str(embed_e)[:500], history_id))
+
                 except Exception as e:
                     error_msg = str(e)
                     logger.error(f"Error fixing {row['path']}: {error_msg}")
@@ -3952,10 +4020,13 @@ def process_queue(config, limit=None):
             else:
                 # Drastic change or auto_fix disabled - record as pending for manual review
                 logger.info(f"PENDING APPROVAL: {row['current_author']} -> {new_author} (drastic={drastic_change})")
-                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
+                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
+                                                  new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?)''',
                          (row['book_id'], row['current_author'], row['current_title'],
-                          new_author, new_title, str(old_path), str(new_path)))
+                          new_author, new_title, str(old_path), str(new_path),
+                          new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                          str(new_year) if new_year else None, new_edition, new_variant))
                 c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', row['book_id']))
                 fixed += 1
         else:
@@ -4099,6 +4170,43 @@ def apply_fix(history_id):
 
         # Update history status
         c.execute('UPDATE history SET status = ? WHERE id = ?', ('fixed', history_id))
+
+        # Embed metadata tags if enabled
+        embed_status = None
+        embed_error = None
+        if config.get('metadata_embedding_enabled', False):
+            try:
+                embed_metadata = build_metadata_for_embedding(
+                    author=fix['new_author'],
+                    title=fix['new_title'],
+                    series=fix['new_series'] if fix['new_series'] else None,
+                    series_num=fix['new_series_num'] if fix['new_series_num'] else None,
+                    narrator=fix['new_narrator'] if fix['new_narrator'] else None,
+                    year=fix['new_year'] if fix['new_year'] else None,
+                    edition=fix['new_edition'] if fix['new_edition'] else None,
+                    variant=fix['new_variant'] if fix['new_variant'] else None
+                )
+                embed_result = embed_tags_for_path(
+                    new_path,
+                    embed_metadata,
+                    create_backup=config.get('metadata_embedding_backup_sidecar', True),
+                    overwrite=config.get('metadata_embedding_overwrite_managed', True)
+                )
+                if embed_result['success']:
+                    embed_status = 'ok'
+                    logger.info(f"Embedded tags in {embed_result['files_processed']} files at {new_path}")
+                else:
+                    embed_status = 'error'
+                    embed_error = embed_result.get('error') or '; '.join(embed_result.get('errors', []))[:500]
+                    logger.warning(f"Tag embedding failed for {new_path}: {embed_error}")
+            except Exception as embed_e:
+                embed_status = 'error'
+                embed_error = str(embed_e)[:500]
+                logger.error(f"Tag embedding exception for {new_path}: {embed_e}")
+
+            # Update history with embed status
+            c.execute('UPDATE history SET embed_status = ?, embed_error = ? WHERE id = ?',
+                     (embed_status, embed_error, history_id))
 
         conn.commit()
         conn.close()
@@ -4395,6 +4503,9 @@ def settings_page():
         config['series_grouping'] = 'series_grouping' in request.form
         config['ebook_management'] = 'ebook_management' in request.form
         config['ebook_library_mode'] = request.form.get('ebook_library_mode', 'merge')
+        config['metadata_embedding_enabled'] = 'metadata_embedding_enabled' in request.form
+        config['metadata_embedding_overwrite_managed'] = 'metadata_embedding_overwrite_managed' in request.form
+        config['metadata_embedding_backup_sidecar'] = 'metadata_embedding_backup_sidecar' in request.form
         config['google_books_api_key'] = request.form.get('google_books_api_key', '').strip() or None
         config['update_channel'] = request.form.get('update_channel', 'stable')
         config['naming_format'] = request.form.get('naming_format', 'author/title')

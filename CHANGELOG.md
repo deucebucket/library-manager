@@ -2,6 +2,26 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.20] - 2025-12-14
+
+### Added
+- **Metadata Embedding (Beta)** - Write verified metadata directly into audio file tags
+  - New "Metadata Embedding" toggle in Settings > Behavior
+  - Supported formats: MP3 (ID3v2), M4B/M4A/AAC (MP4 atoms), FLAC/Ogg/Opus (Vorbis comments), WMA (ASF)
+  - Tags written: title, album (book title), artist/albumartist (author), year
+  - Custom tags: SERIES, SERIESNUMBER, NARRATOR, EDITION, VARIANT
+  - Optional sidecar backup: `.library-manager.tags.json` stores original tags before modification
+  - Runs automatically when fixes are applied (auto-fix or manual Apply Fix)
+  - New `audio_tagging.py` module with format-specific tagging functions
+  - Test suite: `test-env/test-audio-tagging.py`
+
+### Changed
+- **History table expanded** - Now stores series/narrator/year/edition/variant metadata
+  - Enables metadata embedding when applying pending fixes
+  - Tracks embedding status (ok/error) and error messages
+
+---
+
 ## [0.9.0-beta.19] - 2025-12-13
 
 ### Added
