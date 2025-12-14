@@ -2,6 +2,18 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.26] - 2025-12-13
+
+### Added
+- **Path Diagnostic Tool** - Debug Docker volume mount issues
+  - New "Test Paths" button in Settings shows what container can actually see
+  - Checks if paths exist, are readable, and lists contents
+  - Provides specific advice for fixing Docker volume mounts
+  - Shows available mount points if configured path doesn't exist
+  - Helps users like Dennis diagnose "can't see my files" issues
+
+---
+
 ## [0.9.0-beta.25] - 2025-12-13
 
 ### Fixed

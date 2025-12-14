@@ -65,8 +65,15 @@
                         <div class="card-body">
                             <div class="mb-3">
                                 <label class="form-label">Library Paths <small class="text-muted">(one per line)</small></label>
-                                <textarea class="form-control bg-dark text-light" name="library_paths" rows="2"
+                                <textarea class="form-control bg-dark text-light" name="library_paths" id="library_paths" rows="2"
                                           placeholder="/mnt/audiobooks">{{ config.library_paths | join('\n') }}</textarea>
+                                <div class="mt-2">
+                                    <button type="button" class="btn btn-sm btn-outline-info" onclick="testLibraryPaths()">
+                                        <i class="bi bi-folder-check"></i> Test Paths
+                                    </button>
+                                    <small class="text-muted ms-2">Check if paths are accessible (helps debug Docker mount issues)</small>
+                                </div>
+                                <div id="path-test-results" class="mt-2" style="display: none;"></div>
                             </div>
                             <div class="mb-2">
                                 <label class="form-label">Folder Naming Format</label>
@@ -747,5 +754,65 @@ function restoreBackup() {
 
 // Load backup info when Advanced tab is shown
 document.querySelector('[data-bs-target="#tab-advanced"]').addEventListener('shown.bs.tab', loadBackupInfo);
+
+// Test library paths - helps debug Docker mount issues
+function testLibraryPaths() {
+    const textarea = document.getElementById('library_paths');
+    const paths = textarea.value.split('\n').map(p => p.trim()).filter(p => p);
+    const resultsDiv = document.getElementById('path-test-results');
+
+    if (paths.length === 0) {
+        resultsDiv.innerHTML = '<div class="alert alert-warning py-2">No paths to test. Enter at least one path above.</div>';
+        resultsDiv.style.display = 'block';
+        return;
+    }
+
+    resultsDiv.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split"></i> Testing paths...</div>';
+    resultsDiv.style.display = 'block';
+
+    let html = '';
+    let completed = 0;
+
+    paths.forEach(path => {
+        fetch('/api/check_path', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({path: path})
+        })
+        .then(r => r.json())
+        .then(data => {
+            completed++;
+
+            if (data.success) {
+                html += `<div class="alert alert-success py-2 mb-2">
+                    <i class="bi bi-check-circle"></i> <strong>${escapeHtml(path)}</strong> - OK
+                    <br><small>${data.total_entries || 0} items found</small>
+                    ${data.contents && data.contents.length > 0 ?
+                        `<br><small class="text-muted">First items: ${data.contents.slice(0,5).map(c => c.name).join(', ')}${data.total_entries > 5 ? '...' : ''}</small>` : ''}
+                </div>`;
+            } else {
+                html += `<div class="alert alert-danger py-2 mb-2">
+                    <i class="bi bi-x-circle"></i> <strong>${escapeHtml(path)}</strong> - NOT ACCESSIBLE
+                    <br><small>${escapeHtml(data.error || 'Unknown error')}</small>
+                    ${data.suggestion ? `<br><pre class="mt-2 p-2 bg-dark text-light small" style="white-space: pre-wrap;">${escapeHtml(data.suggestion)}</pre>` : ''}
+                    ${data.available_mounts ? `<br><small class="text-info">Try one of these instead: ${data.available_mounts.join(', ')}</small>` : ''}
+                </div>`;
+            }
+
+            if (completed === paths.length) {
+                resultsDiv.innerHTML = html;
+            }
+        })
+        .catch(e => {
+            completed++;
+            html += `<div class="alert alert-danger py-2 mb-2">
+                <i class="bi bi-x-circle"></i> <strong>${escapeHtml(path)}</strong> - Error: ${e}
+            </div>`;
+            if (completed === paths.length) {
+                resultsDiv.innerHTML = html;
+            }
+        });
+    });
+}
 </script>
 {% endblock %}

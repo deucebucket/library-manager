@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.25"
+APP_VERSION = "0.9.0-beta.26"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -4690,6 +4690,95 @@ def settings_page():
 
     config = load_config()
     return render_template('settings.html', config=config, version=APP_VERSION)
+
+
+# ============== PATH DIAGNOSTIC ==============
+
+@app.route('/api/check_path', methods=['POST'])
+def api_check_path():
+    """
+    Diagnostic endpoint to help users debug Docker volume mount issues.
+    Shows what the container can actually see at a given path.
+    """
+    data = request.get_json() or {}
+    path = data.get('path', '').strip()
+
+    if not path:
+        return jsonify({'success': False, 'error': 'No path provided'})
+
+    result = {
+        'path': path,
+        'exists': os.path.exists(path),
+        'is_directory': False,
+        'is_file': False,
+        'readable': False,
+        'contents': [],
+        'error': None,
+        'suggestion': None
+    }
+
+    if not result['exists']:
+        # Path doesn't exist - likely a Docker mount issue
+        result['error'] = f"Path does not exist: {path}"
+        result['suggestion'] = (
+            "This path is not visible to the container. "
+            "In Docker, you must mount host paths in your docker-compose.yml:\n\n"
+            f"volumes:\n  - /your/host/path:{path}\n\n"
+            "Then use the CONTAINER path (right side) in Settings, not the host path."
+        )
+
+        # Check if common mount points exist
+        common_mounts = ['/audiobooks', '/data', '/media', '/books', '/library']
+        existing_mounts = [m for m in common_mounts if os.path.exists(m)]
+        if existing_mounts:
+            result['available_mounts'] = existing_mounts
+            result['suggestion'] += f"\n\nAvailable mount points: {', '.join(existing_mounts)}"
+
+        return jsonify(result)
+
+    result['is_directory'] = os.path.isdir(path)
+    result['is_file'] = os.path.isfile(path)
+    result['readable'] = os.access(path, os.R_OK)
+
+    if not result['readable']:
+        result['error'] = f"Path exists but is not readable (permission denied)"
+        result['suggestion'] = "Check file permissions. The container user may not have access."
+        return jsonify(result)
+
+    if result['is_directory']:
+        try:
+            entries = sorted(os.listdir(path))[:50]  # Limit to first 50 entries
+            result['contents'] = []
+            result['total_entries'] = len(os.listdir(path))
+
+            for entry in entries:
+                entry_path = os.path.join(path, entry)
+                entry_info = {
+                    'name': entry,
+                    'is_dir': os.path.isdir(entry_path),
+                    'is_file': os.path.isfile(entry_path)
+                }
+                if entry_info['is_file']:
+                    try:
+                        entry_info['size'] = os.path.getsize(entry_path)
+                    except:
+                        entry_info['size'] = 0
+                result['contents'].append(entry_info)
+
+            if result['total_entries'] == 0:
+                result['suggestion'] = "Directory exists but is empty. Are your audiobooks in a subdirectory?"
+            else:
+                result['success'] = True
+
+        except Exception as e:
+            result['error'] = f"Could not list directory: {e}"
+    elif result['is_file']:
+        result['error'] = "This is a file, not a directory. Library paths should be directories."
+        result['suggestion'] = "Use the parent directory instead."
+
+    result['success'] = result.get('success', result['exists'] and result['readable'] and result['is_directory'])
+    return jsonify(result)
+
 
 # ============== API ENDPOINTS ==============
 
