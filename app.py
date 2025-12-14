@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.22"
+APP_VERSION = "0.9.0-beta.23"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -2239,11 +2239,21 @@ def search_bookdb_api(title):
         return None
 
     try:
-        response = requests.get(
-            f"{BOOKDB_API_URL}/search",
-            params={"q": search_title, "limit": 5},
-            timeout=10
-        )
+        # Use longer timeout for cold start (embedding model can take 45-60s to load)
+        # Retry once on timeout
+        for attempt in range(2):
+            try:
+                response = requests.get(
+                    f"{BOOKDB_API_URL}/search",
+                    params={"q": search_title, "limit": 5},
+                    timeout=60 if attempt == 0 else 30
+                )
+                break
+            except requests.exceptions.Timeout:
+                if attempt == 0:
+                    logger.debug(f"BookDB API timeout on first attempt, retrying...")
+                    continue
+                raise
 
         if response.status_code == 200:
             results = response.json()
@@ -6453,10 +6463,11 @@ def api_search_bookdb():
         else:
             endpoint = f"{BOOKDB_API_URL}/search/{search_type}"
 
-        resp = requests.get(endpoint, params=params, timeout=10)
+        # Longer timeout for cold start (embedding model can take 45-60s to load)
+        resp = requests.get(endpoint, params=params, timeout=60)
 
         if resp.status_code != 200:
-            return jsonify({'error': f'BookBucket API error: {resp.status_code}', 'results': []})
+            return jsonify({'error': f'BookDB API error: {resp.status_code}', 'results': []})
 
         results = resp.json()
         return jsonify({'results': results, 'count': len(results)})

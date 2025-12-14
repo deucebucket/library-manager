@@ -2,6 +2,16 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.23] - 2025-12-13
+
+### Fixed
+- **BookDB timeout handling** - Fixed cold start timeouts for external users
+  - Increased search timeout from 10s to 60s (embedding model takes 45-60s to load)
+  - Added retry logic for timeout failures
+  - Server-side: Added warmup cron to keep model loaded (every 5 min)
+
+---
+
 ## [0.9.0-beta.22] - 2025-12-13
 
 ### Added
