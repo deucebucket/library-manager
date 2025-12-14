@@ -203,7 +203,8 @@ function triggerScan() {
         .then(data => {
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-search"></i> Scan Library';
-            alert(`Scan complete! Found ${data.scanned} new books, ${data.queued} added to queue.`);
+            const alreadyCorrect = data.checked - data.queued;
+            alert(`Scan complete!\n\nChecked: ${data.checked} books\nAlready correct: ${alreadyCorrect}\nNeed fixing: ${data.queued}`);
             location.reload();
         })
         .catch(e => {

@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.27"
+APP_VERSION = "0.9.0-beta.28"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -3449,8 +3449,9 @@ def deep_scan_library(config):
     conn = get_db()
     c = conn.cursor()
 
-    scanned = 0
-    queued = 0
+    checked = 0  # Total book folders examined
+    scanned = 0  # New books added to tracking
+    queued = 0   # Books added to fix queue
     issues_found = {}  # path -> list of issues
 
     # Track files for duplicate detection
@@ -3677,6 +3678,9 @@ def deep_scan_library(config):
                         conn.commit()
                         continue
 
+                # This is a valid book folder - count it
+                checked += 1
+
                 # Analyze title
                 title_issues = analyze_title(title, author)
                 cleaned_title, clean_issues = clean_title(title)
@@ -3802,11 +3806,12 @@ def deep_scan_library(config):
     conn.close()
 
     logger.info(f"=== DEEP SCAN COMPLETE ===")
-    logger.info(f"Scanned: {scanned} new books")
-    logger.info(f"Queued: {queued} books with issues")
-    logger.info(f"Total issues found: {len(issues_found)} locations")
+    logger.info(f"Checked: {checked} book folders")
+    logger.info(f"Scanned: {scanned} new books added to tracking")
+    logger.info(f"Queued: {queued} books need fixing")
+    logger.info(f"Already correct: {checked - queued} books")
 
-    return scanned, queued
+    return checked, scanned, queued
 
 
 def scan_library(config):
@@ -4789,8 +4794,13 @@ def api_check_path():
 def api_scan():
     """Trigger a library scan."""
     config = load_config()
-    scanned, queued = scan_library(config)
-    return jsonify({'success': True, 'scanned': scanned, 'queued': queued})
+    checked, scanned, queued = scan_library(config)
+    return jsonify({
+        'success': True,
+        'checked': checked,      # Total book folders examined
+        'scanned': scanned,      # New books added to tracking
+        'queued': queued         # Books needing fixes
+    })
 
 @app.route('/api/chaos_scan', methods=['POST'])
 def api_chaos_scan():
@@ -6731,7 +6741,8 @@ def api_series_detail(series_id):
 def api_manual_match():
     """
     Save a manual match for a book in the queue.
-    Accepts custom author/title OR a selected BookBucket result.
+    Accepts custom author/title OR a selected BookDB result.
+    Updates the queue item to go to Pending for review.
     """
     data = request.get_json() or {}
     queue_id = data.get('queue_id')
@@ -6740,82 +6751,67 @@ def api_manual_match():
     new_author = data.get('author', '').strip()
     new_title = data.get('title', '').strip()
 
-    # Or BookBucket selection
+    # Or BookDB selection
     bookdb_result = data.get('bookdb_result')  # Full result object from search
 
     if not queue_id:
         return jsonify({'success': False, 'error': 'queue_id required'})
 
-    conn = get_local_db()
+    conn = get_db()  # Use main database, not local
     c = conn.cursor()
 
-    # Get the queue item
-    c.execute('SELECT * FROM processing_queue WHERE id = ?', (queue_id,))
+    # Get the queue item with book info
+    c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
+                        b.path, b.current_author, b.current_title
+                 FROM queue q
+                 JOIN books b ON q.book_id = b.id
+                 WHERE q.id = ?''', (queue_id,))
     item = c.fetchone()
     if not item:
         conn.close()
         return jsonify({'success': False, 'error': 'Queue item not found'})
 
     item = dict(item)
-    old_path = item['folder_path']
+    book_id = item['book_id']
+    old_path = item['path']
     old_author = item['current_author']
     old_title = item['current_title']
 
-    # Determine new values
+    # Determine new values from BookDB result if provided
+    new_series = None
+    new_series_num = None
     if bookdb_result:
         new_author = bookdb_result.get('author_name') or new_author
         new_title = bookdb_result.get('name') or bookdb_result.get('title') or new_title
-        # Include series info if available
-        series_name = bookdb_result.get('series_name')
-        series_pos = bookdb_result.get('series_position')
-        if series_name and series_pos:
-            new_title = f"{new_title} ({series_name} #{int(series_pos) if series_pos == int(series_pos) else series_pos})"
+        new_series = bookdb_result.get('series_name')
+        new_series_num = bookdb_result.get('series_position')
 
     if not new_author or not new_title:
         conn.close()
         return jsonify({'success': False, 'error': 'Author and title required'})
 
-    # Build new path
-    config = load_config()
-    library_paths = config.get('library_paths', [])
+    # Update the book record with new metadata
+    c.execute('''UPDATE books SET
+                 suggested_author = ?,
+                 suggested_title = ?,
+                 suggested_series = ?,
+                 suggested_series_num = ?,
+                 status = 'pending_fix'
+                 WHERE id = ?''',
+              (new_author, new_title, new_series, new_series_num, book_id))
 
-    # Find which library this book is in
-    library_root = None
-    for lib_path in library_paths:
-        if old_path.startswith(lib_path):
-            library_root = lib_path
-            break
-
-    if not library_root:
-        conn.close()
-        return jsonify({'success': False, 'error': 'Could not determine library root'})
-
-    # New path: Library/Author/Title
-    new_path = os.path.join(library_root, new_author, new_title)
-
-    # Check if it would overwrite something
-    if os.path.exists(new_path) and new_path != old_path:
-        conn.close()
-        return jsonify({'success': False, 'error': f'Path already exists: {new_path}'})
-
-    # Record as pending fix (don't rename immediately - user can review)
-    c.execute('''
-        INSERT INTO fix_history (folder_path, old_path, new_path, old_author, new_author,
-                                old_title, new_title, status, source, fixed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'manual', datetime('now'))
-    ''', (old_path, old_path, new_path, old_author, new_author, old_title, new_title))
-
-    # Remove from queue
-    c.execute('DELETE FROM processing_queue WHERE id = ?', (queue_id,))
+    # Update queue reason to indicate manual match
+    c.execute('''UPDATE queue SET reason = ? WHERE id = ?''',
+              (f'manual_match: {new_author} / {new_title}', queue_id))
 
     conn.commit()
     conn.close()
 
     return jsonify({
         'success': True,
-        'message': f'Saved pending fix: {old_author}/{old_title} → {new_author}/{new_title}',
-        'old_path': old_path,
-        'new_path': new_path
+        'message': f'Saved: {old_author}/{old_title} → {new_author}/{new_title}',
+        'new_author': new_author,
+        'new_title': new_title
     })
 
 

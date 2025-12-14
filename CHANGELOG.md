@@ -2,6 +2,24 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.28] - 2025-12-14
+
+### Fixed
+- **Issue #18: Manual match JSON error** - Fixed "unexpected character" crash on save
+  - Root cause: `/api/manual_match` called non-existent `get_local_db()` function
+  - Also queried wrong table (`processing_queue` instead of `queue`)
+  - Rewrote endpoint to use correct database and table structure
+  - Manual book matching now works properly
+
+### Improved
+- **Scan feedback** - Users now see what was actually scanned
+  - Before: "Found 0 new books, 0 added to queue" (confusing)
+  - After: "Checked: 2 books, Already correct: 2, Need fixing: 0" (clear)
+  - Helps users like Dennis understand the scan DID work on their library
+  - Logs now show full scan stats: checked, tracked, queued
+
+---
+
 ## [0.9.0-beta.27] - 2025-12-13
 
 ### Fixed
