@@ -1,6 +1,27 @@
 # Contributing to Library Manager
 
-Thanks for your interest in contributing! Here's how to get started.
+Thanks for your interest in contributing! We're building this together.
+
+## Looking for Something to Work On?
+
+Check our [open PRs](https://github.com/deucebucket/library-manager/pulls) - these have design docs ready for implementation:
+
+| PR | Feature | What's Needed |
+|----|---------|---------------|
+| [#24](https://github.com/deucebucket/library-manager/pull/24) | Language Preference | Python implementation, UI settings |
+| [#25](https://github.com/deucebucket/library-manager/pull/25) | Ollama Support | AI provider integration |
+
+To help with an existing feature:
+```bash
+git checkout feature/language-preference  # or feature/ollama-support
+# Read the design doc in docs/FEATURE-*.md
+# Implement and push to your fork
+# Open PR against the feature branch
+```
+
+---
+
+## Starting Fresh? Here's how to get started.
 
 ## Branch Strategy
 
