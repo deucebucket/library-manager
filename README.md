@@ -6,7 +6,7 @@
 
 [![Version](https://img.shields.io/badge/version-0.9.0--beta.34-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
-[![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
 *Automatically fix messy audiobook folders using real book databases + AI intelligence*
 
@@ -277,4 +277,9 @@ Pull requests welcome! Ideas:
 
 ## License
 
-MIT License
+AGPL-3.0 License - See [LICENSE](LICENSE) for details.
+
+**What this means:**
+- Free to use, modify, and distribute
+- If you modify and run this as a service, you must release your source code
+- Commercial use requires either open-sourcing your changes OR obtaining a commercial license

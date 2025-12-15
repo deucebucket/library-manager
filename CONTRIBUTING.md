@@ -133,3 +133,14 @@ This isn't about distrust - it's about protecting users' libraries. Open source 
 ## Questions?
 
 Open an issue or start a discussion on GitHub.
+
+---
+
+## License
+
+By contributing, you agree that your contributions will be licensed under the **AGPL-3.0 License**.
+
+This means:
+- Your contributions remain open source forever
+- Anyone using/modifying the code must also open source their changes
+- Commercial entities wanting to keep modifications private can contact us for commercial licensing
