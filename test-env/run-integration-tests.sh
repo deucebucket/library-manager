@@ -83,9 +83,20 @@ EOF
     log_info "Waiting for container to start..."
     sleep 5
 
-    # Wait for scan to complete
+    # Wait for API to be ready
     for i in {1..30}; do
         if curl -s "http://localhost:$TEST_PORT/api/stats" | grep -q '"total_books"'; then
+            break
+        fi
+        sleep 1
+    done
+
+    # Wait for scan to actually complete (queue should have items)
+    log_info "Waiting for scan to complete..."
+    for i in {1..60}; do
+        queue_count=$(curl -s "http://localhost:$TEST_PORT/api/queue" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['count'])" 2>/dev/null || echo "0")
+        if [[ "$queue_count" -gt 3 ]]; then
+            log_info "Scan populated queue with $queue_count items"
             break
         fi
         sleep 1
@@ -147,7 +158,9 @@ test_scan_detected_issues() {
     response=$(curl -s "http://localhost:$TEST_PORT/api/queue")
 
     # Check for reversed structure detection (Metro 2033)
-    if echo "$response" | grep -q "Metro 2033"; then
+    # Reversed structures are tracked in books table with status 'structure_reversed', not in queue
+    logs=$(podman logs "$CONTAINER_NAME" 2>&1)
+    if echo "$logs" | grep -q "Detected reversed structure.*Metro 2033"; then
         log_pass "Detected reversed structure (Metro 2033)"
     else
         log_fail "Did not detect reversed structure"
