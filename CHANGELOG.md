@@ -4,10 +4,19 @@ All notable changes to Library Manager will be documented in this file.
 
 ## [0.9.0-beta.31] - 2025-12-15
 
+### Added
+- **Tag restoration on undo** - Undo now restores original audio file tags
+  - Reads original tags from `.library-manager.tags.json` sidecar backup
+  - Writes original tags back to audio files before moving
+  - Deletes sidecar backup after successful restoration
+  - Supports all tagged formats: MP3, M4B/M4A, FLAC, Ogg/Opus, WMA
+  - New `restore_tags_from_sidecar()` function in `audio_tagging.py`
+
 ### Fixed
 - **Undo for single file moves** - Fixed undo creating folder instead of restoring file
   - History now stores the actual file path for single-file moves
   - Undo correctly extracts and restores just the file, not the containing folder
+  - Cleans up empty parent folders after file undo
 
 - **Database connection leak** - Fixed connection leak in `/api/manual_match` error handler
   - Exception handler now properly closes database connection

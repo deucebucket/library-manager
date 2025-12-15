@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.31"
+APP_VERSION = "0.9.0-beta.30"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -5436,8 +5436,9 @@ def api_undo_all_drastic():
 
 @app.route('/api/undo/<int:history_id>', methods=['POST'])
 def api_undo(history_id):
-    """Undo a fix - rename folder back to original name."""
+    """Undo a fix - rename folder back to original name and restore original tags."""
     import shutil
+    from audio_tagging import restore_tags_from_sidecar
 
     conn = get_db()
     c = conn.cursor()
@@ -5470,13 +5471,49 @@ def api_undo(history_id):
         }), 409
 
     try:
+        new_path_obj = Path(new_path)
+        
+        # Determine folder for sidecar (if new_path is a file, parent has sidecar)
+        if new_path_obj.is_file():
+            sidecar_folder = new_path_obj.parent
+        else:
+            sidecar_folder = new_path_obj
+
+        # Restore original tags from sidecar backup before moving
+        tags_restored = False
+        tags_message = ""
+        try:
+            restore_result = restore_tags_from_sidecar(
+                sidecar_folder,
+                delete_sidecar_on_success=True  # Clean up sidecar after successful restore
+            )
+            if restore_result['files_restored'] > 0:
+                tags_restored = True
+                tags_message = f" Tags restored for {restore_result['files_restored']} file(s)."
+                logger.info(f"Undo: Restored tags for {restore_result['files_restored']} files")
+            elif restore_result.get('error'):
+                tags_message = f" (Tag restore note: {restore_result['error']})"
+        except Exception as tag_err:
+            logger.warning(f"Could not restore tags during undo: {tag_err}")
+            tags_message = " (Tags could not be restored)"
+
         # Rename back to original
         shutil.move(new_path, old_path)
         logger.info(f"Undo: Renamed '{new_path}' back to '{old_path}'")
 
+        # Clean up empty parent folder if we moved a file
+        if new_path_obj.is_file():
+            try:
+                parent = new_path_obj.parent
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
+                    logger.info(f"Undo: Removed empty folder {parent}")
+            except OSError:
+                pass
+
         # Update history record
-        c.execute('''UPDATE history SET status = 'undone', error_message = 'Manually undone by user'
-                     WHERE id = ?''', (history_id,))
+        c.execute('''UPDATE history SET status = 'undone', error_message = ?
+                     WHERE id = ?''', (f'Manually undone by user{tags_message}', history_id))
 
         # Update book record back to original - use 'protected' status so deep rescan won't re-queue
         c.execute('''UPDATE books SET
@@ -5489,7 +5526,8 @@ def api_undo(history_id):
 
         return jsonify({
             'success': True,
-            'message': f"Undone! Renamed back to: {record['old_author']} / {record['old_title']}"
+            'message': f"Undone! Renamed back to: {record['old_author']} / {record['old_title']}{tags_message}",
+            'tags_restored': tags_restored
         })
 
     except Exception as e:

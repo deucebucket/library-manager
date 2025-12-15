@@ -452,6 +452,298 @@ def build_metadata_for_embedding(
     return metadata
 
 
+def restore_tags_mp3(file_path: Path, tags_snapshot: Dict[str, Any]) -> bool:
+    """Restore MP3 tags from a snapshot."""
+    try:
+        from mutagen.mp3 import MP3
+        from mutagen.id3 import ID3, TIT2, TALB, TPE1, TPE2, TDRC, TXXX
+
+        audio = MP3(str(file_path))
+        if audio.tags is None:
+            audio.add_tags()
+
+        tags = audio.tags
+        snapshot_tags = tags_snapshot.get('tags', {})
+
+        # Clear managed tags first, then restore from snapshot
+        managed_frames = ['TIT2', 'TALB', 'TPE1', 'TPE2', 'TDRC']
+        custom_descs = ['SERIES', 'SERIESNUMBER', 'NARRATOR', 'EDITION', 'VARIANT']
+
+        # Remove our managed tags
+        for frame_id in managed_frames:
+            if frame_id in tags:
+                del tags[frame_id]
+        for desc in custom_descs:
+            txxx_key = f'TXXX:{desc}'
+            if txxx_key in tags:
+                del tags[txxx_key]
+
+        # Restore from snapshot
+        for key, value in snapshot_tags.items():
+            if key in managed_frames:
+                # Standard frame
+                text_list = value if isinstance(value, list) else [value]
+                if key == 'TIT2':
+                    tags[key] = TIT2(encoding=3, text=text_list)
+                elif key == 'TALB':
+                    tags[key] = TALB(encoding=3, text=text_list)
+                elif key == 'TPE1':
+                    tags[key] = TPE1(encoding=3, text=text_list)
+                elif key == 'TPE2':
+                    tags[key] = TPE2(encoding=3, text=text_list)
+                elif key == 'TDRC':
+                    tags[key] = TDRC(encoding=3, text=text_list)
+            elif key.startswith('TXXX:'):
+                # User-defined text frame
+                desc = key.split(':', 1)[1] if ':' in key else key
+                text_list = value if isinstance(value, list) else [value]
+                tags[key] = TXXX(encoding=3, desc=desc, text=text_list)
+
+        audio.save()
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to restore MP3 tags in {file_path}: {e}")
+        return False
+
+
+def restore_tags_mp4(file_path: Path, tags_snapshot: Dict[str, Any]) -> bool:
+    """Restore MP4/M4B tags from a snapshot."""
+    try:
+        from mutagen.mp4 import MP4
+
+        audio = MP4(str(file_path))
+        if audio.tags is None:
+            audio.add_tags()
+
+        tags = audio.tags
+        snapshot_tags = tags_snapshot.get('tags', {})
+
+        # Standard and custom tag keys we manage
+        managed_keys = ['\xa9nam', '\xa9alb', '\xa9ART', 'aART', '\xa9day']
+        custom_keys = [f'----:com.apple.iTunes:{name}' for name in 
+                       ['SERIES', 'SERIESNUMBER', 'NARRATOR', 'EDITION', 'VARIANT']]
+
+        # Remove our managed tags
+        for key in managed_keys + custom_keys:
+            if key in tags:
+                del tags[key]
+
+        # Restore from snapshot
+        for key, value in snapshot_tags.items():
+            if key in managed_keys:
+                tags[key] = value if isinstance(value, list) else [value]
+            elif key.startswith('----:'):
+                # Freeform tags need bytes
+                if isinstance(value, list):
+                    tags[key] = [v.encode('utf-8') if isinstance(v, str) else v for v in value]
+                else:
+                    tags[key] = [value.encode('utf-8') if isinstance(value, str) else value]
+
+        audio.save()
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to restore MP4 tags in {file_path}: {e}")
+        return False
+
+
+def restore_tags_vorbis(file_path: Path, tags_snapshot: Dict[str, Any]) -> bool:
+    """Restore Vorbis comment tags from a snapshot."""
+    try:
+        from mutagen import File
+
+        audio = File(str(file_path))
+        if audio is None:
+            return False
+
+        if audio.tags is None:
+            if hasattr(audio, 'add_tags'):
+                audio.add_tags()
+            else:
+                return False
+
+        tags = audio.tags
+        snapshot_tags = tags_snapshot.get('tags', {})
+
+        # Keys we manage
+        managed_keys = ['TITLE', 'ALBUM', 'ARTIST', 'ALBUMARTIST', 'DATE',
+                        'SERIES', 'SERIESNUMBER', 'NARRATOR', 'EDITION', 'VARIANT']
+
+        # Remove our managed tags (case-insensitive check)
+        keys_to_remove = []
+        for key in tags.keys():
+            if key.upper() in managed_keys:
+                keys_to_remove.append(key)
+        for key in keys_to_remove:
+            del tags[key]
+
+        # Restore from snapshot
+        for key, value in snapshot_tags.items():
+            if key.upper() in managed_keys:
+                tags[key] = value if isinstance(value, list) else [value]
+
+        audio.save()
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to restore Vorbis tags in {file_path}: {e}")
+        return False
+
+
+def restore_tags_asf(file_path: Path, tags_snapshot: Dict[str, Any]) -> bool:
+    """Restore WMA/ASF tags from a snapshot."""
+    try:
+        from mutagen.asf import ASF
+
+        audio = ASF(str(file_path))
+        if audio.tags is None:
+            audio.add_tags()
+
+        tags = audio.tags
+        snapshot_tags = tags_snapshot.get('tags', {})
+
+        # Keys we manage
+        managed_keys = ['Title', 'WM/AlbumTitle', 'Author', 'WM/AlbumArtist', 'WM/Year',
+                        'WM/Series', 'WM/SeriesNumber', 'WM/Narrator', 'WM/Edition', 'WM/Variant']
+
+        # Remove our managed tags
+        for key in managed_keys:
+            if key in tags:
+                del tags[key]
+
+        # Restore from snapshot
+        for key, value in snapshot_tags.items():
+            if key in managed_keys:
+                tags[key] = [value] if not isinstance(value, list) else value
+
+        audio.save()
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to restore ASF tags in {file_path}: {e}")
+        return False
+
+
+def restore_tags(file_path: Path, tags_snapshot: Dict[str, Any]) -> bool:
+    """
+    Restore tags to an audio file from a snapshot.
+    Dispatches to format-specific handler based on file extension.
+    """
+    file_path = Path(file_path)
+    ext = file_path.suffix.lower()
+
+    if ext == '.mp3':
+        return restore_tags_mp3(file_path, tags_snapshot)
+    elif ext in ('.m4b', '.m4a', '.aac'):
+        return restore_tags_mp4(file_path, tags_snapshot)
+    elif ext in ('.flac', '.ogg', '.opus'):
+        return restore_tags_vorbis(file_path, tags_snapshot)
+    elif ext == '.wma':
+        return restore_tags_asf(file_path, tags_snapshot)
+    else:
+        logger.debug(f"Unsupported format for tag restoration: {ext}")
+        return False
+
+
+def restore_tags_from_sidecar(
+    target_path: Path,
+    delete_sidecar_on_success: bool = False
+) -> Dict[str, Any]:
+    """
+    Restore original tags to audio files from sidecar backup.
+    
+    Args:
+        target_path: File or folder path containing audio files
+        delete_sidecar_on_success: If True, delete the sidecar after successful restore
+    
+    Returns:
+        Dict with 'success': bool, 'files_restored': int, 'files_failed': int,
+        'sidecar_deleted': bool, 'error': str (if any)
+    """
+    target = Path(target_path)
+    result = {
+        'success': False,
+        'files_restored': 0,
+        'files_failed': 0,
+        'files_skipped': 0,
+        'sidecar_deleted': False,
+        'errors': []
+    }
+
+    try:
+        # Determine where sidecar should be
+        if target.is_file():
+            sidecar_folder = target.parent
+            audio_files = [target] if target.suffix.lower() in TAGGABLE_EXTENSIONS else []
+        else:
+            sidecar_folder = target
+            audio_files = collect_audio_files(target)
+
+        sidecar_path = sidecar_folder / SIDECAR_FILENAME
+
+        # Check if sidecar exists
+        if not sidecar_path.exists():
+            result['error'] = f"No sidecar backup found at {sidecar_path}"
+            logger.debug(result['error'])
+            # Not a failure - just nothing to restore
+            result['success'] = True
+            return result
+
+        # Load sidecar data
+        try:
+            with open(sidecar_path, 'r', encoding='utf-8') as f:
+                sidecar_data = json.load(f)
+        except Exception as e:
+            result['error'] = f"Failed to read sidecar backup: {e}"
+            return result
+
+        files_data = sidecar_data.get('files', {})
+        if not files_data:
+            result['error'] = "Sidecar backup contains no file data"
+            result['success'] = True  # Empty but valid
+            return result
+
+        # Restore tags for each audio file
+        for audio_file in audio_files:
+            filename = audio_file.name
+            
+            if filename not in files_data:
+                result['files_skipped'] += 1
+                logger.debug(f"No backup data for {filename}, skipping")
+                continue
+
+            tags_snapshot = files_data[filename]
+            
+            try:
+                if restore_tags(audio_file, tags_snapshot):
+                    result['files_restored'] += 1
+                    logger.info(f"Restored tags for {filename}")
+                else:
+                    result['files_failed'] += 1
+                    result['errors'].append(f"Failed to restore: {filename}")
+            except Exception as e:
+                result['files_failed'] += 1
+                result['errors'].append(f"{filename}: {str(e)}")
+
+        # Delete sidecar if requested and restoration was successful
+        if delete_sidecar_on_success and result['files_failed'] == 0 and result['files_restored'] > 0:
+            try:
+                sidecar_path.unlink()
+                result['sidecar_deleted'] = True
+                logger.info(f"Deleted sidecar backup: {sidecar_path}")
+            except Exception as e:
+                result['errors'].append(f"Could not delete sidecar: {e}")
+
+        result['success'] = result['files_failed'] == 0
+
+    except Exception as e:
+        result['error'] = str(e)
+        logger.error(f"Error restoring tags from sidecar at {target_path}: {e}")
+
+    return result
+
+
 def embed_tags_for_path(
     target_path: Path,
     metadata: Dict[str, Any],
