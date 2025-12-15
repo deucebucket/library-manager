@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.23-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.29-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 
@@ -260,7 +260,7 @@ python app.py  # Runs on http://localhost:5757
 Pull requests welcome! Ideas:
 - [ ] Ollama/local LLM support
 - [ ] Cover art fetching
-- [ ] Metadata embedding
+- [x] Metadata embedding (added in v0.9.0-beta.20)
 - [ ] Movie/music library support
 
 ---

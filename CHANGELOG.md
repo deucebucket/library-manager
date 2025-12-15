@@ -2,6 +2,64 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.31] - 2025-12-15
+
+### Added
+- **Tag restoration on undo** - Undo now restores original audio file tags
+  - Reads original tags from `.library-manager.tags.json` sidecar backup
+  - Writes original tags back to audio files before moving
+  - Deletes sidecar backup after successful restoration
+  - Supports all tagged formats: MP3, M4B/M4A, FLAC, Ogg/Opus, WMA
+  - New `restore_tags_from_sidecar()` function in `audio_tagging.py`
+
+### Fixed
+- **Undo for single file moves** - Fixed undo creating folder instead of restoring file
+  - History now stores the actual file path for single-file moves
+  - Undo correctly extracts and restores just the file, not the containing folder
+  - Cleans up empty parent folders after file undo
+
+- **Database connection leak** - Fixed connection leak in `/api/manual_match` error handler
+  - Exception handler now properly closes database connection
+  - Prevents "database is locked" errors under repeated failures
+
+---
+
+## [0.9.0-beta.30] - 2025-12-15
+
+### Fixed
+- **Manual match save error** - Fixed JSON parsing error when saving manual book matches
+  - Root cause: `/api/manual_match` tried to update non-existent columns (`suggested_author`, etc.)
+  - Rewrote to properly create pending fixes in the history table (matching the rest of the codebase)
+  - Manual "Save as Pending Fix" now works correctly
+
+- **Single file moves losing extension** - Fixed audiobook files being saved without extension
+  - When applying fixes to single M4B files, the file was being renamed to the folder name
+  - Now properly creates folder structure and moves file inside with original filename
+  - Example: `Book.m4b` → `Author/Title/Book.m4b` (preserves extension)
+  - Metadata embedding now finds files correctly (was showing "0 files")
+
+---
+
+## [0.9.0-beta.29] - 2025-12-15
+
+### Added
+- **Metadata Embedding (Beta)** - Write verified metadata directly into audio file tags
+  - New "Metadata Embedding" toggle in Settings > Behavior
+  - Supported formats: MP3 (ID3v2), M4B/M4A/AAC (MP4 atoms), FLAC/Ogg/Opus (Vorbis comments), WMA (ASF)
+  - Tags written: title, album (book title), artist/albumartist (author), year
+  - Custom tags: SERIES, SERIESNUMBER, NARRATOR, EDITION, VARIANT
+  - Optional sidecar backup: `.library-manager.tags.json` stores original tags before modification
+  - Runs automatically when fixes are applied (auto-fix or manual Apply Fix)
+  - New `audio_tagging.py` module with format-specific tagging functions
+  - Test suite: `test-env/test-audio-tagging.py`
+
+### Changed
+- **History table expanded** - Now stores series/narrator/year/edition/variant metadata
+  - Enables metadata embedding when applying pending fixes
+  - Tracks embedding status (ok/error) and error messages
+
+---
+
 ## [0.9.0-beta.28] - 2025-12-14
 
 ### Fixed

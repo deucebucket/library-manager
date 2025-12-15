@@ -252,6 +252,37 @@
                                     <br><small class="text-muted">Use Gemini to analyze audiobook intros for author/title (requires Gemini API key)</small>
                                 </label>
                             </div>
+                            <hr class="my-2">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="metadata_embedding_enabled" id="metadata_embedding_enabled"
+                                       {% if config.metadata_embedding_enabled %}checked{% endif %} onchange="toggleEmbeddingOptions()">
+                                <label class="form-check-label" for="metadata_embedding_enabled">
+                                    <strong>Metadata Embedding</strong>
+                                    <span class="badge bg-info">BETA</span>
+                                    <br><small class="text-muted">Write metadata tags into audio files when fixes are applied</small>
+                                </label>
+                            </div>
+                            <div id="embedding-options" class="ms-4 mb-2" style="display: {% if config.metadata_embedding_enabled %}block{% else %}none{% endif %};">
+                                <div class="form-check form-switch mb-2">
+                                    <input class="form-check-input" type="checkbox" name="metadata_embedding_overwrite_managed" id="metadata_embedding_overwrite_managed"
+                                           {% if config.metadata_embedding_overwrite_managed %}checked{% endif %}>
+                                    <label class="form-check-label small" for="metadata_embedding_overwrite_managed">
+                                        Overwrite existing tags (title/author/series/narrator/year)
+                                    </label>
+                                </div>
+                                <div class="form-check form-switch mb-2">
+                                    <input class="form-check-input" type="checkbox" name="metadata_embedding_backup_sidecar" id="metadata_embedding_backup_sidecar"
+                                           {% if config.metadata_embedding_backup_sidecar %}checked{% endif %}>
+                                    <label class="form-check-label small" for="metadata_embedding_backup_sidecar">
+                                        Create backup before modifying tags
+                                        <br><small class="text-muted">Saves original tags to <code>.library-manager.tags.json</code></small>
+                                    </label>
+                                </div>
+                                <small class="text-muted">
+                                    <i class="bi bi-info-circle"></i>
+                                    Supports MP3, M4B/M4A, FLAC, Ogg/Opus, and WMA formats.
+                                </small>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -544,6 +575,11 @@ function toggleProviderFields() {
 function toggleEbookOptions() {
     const enabled = document.getElementById('ebook_management').checked;
     document.getElementById('ebook-options').style.display = enabled ? 'block' : 'none';
+}
+
+function toggleEmbeddingOptions() {
+    const enabled = document.getElementById('metadata_embedding_enabled').checked;
+    document.getElementById('embedding-options').style.display = enabled ? 'block' : 'none';
 }
 
 document.addEventListener('DOMContentLoaded', function() {

@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.28"
+APP_VERSION = "0.9.0-beta.30"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -36,6 +36,7 @@ import re
 from pathlib import Path
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
+from audio_tagging import embed_tags_for_path, build_metadata_for_embedding
 
 
 # ============== SEARCH QUEUE / PROGRESS TRACKING ==============
@@ -391,7 +392,11 @@ DEFAULT_CONFIG = {
     "audio_analysis": False,  # Enable Gemini audio analysis for verification (Beta)
     "update_channel": "beta",  # "stable", "beta", or "nightly"
     "naming_format": "author/title",  # "author/title", "author - title", "custom"
-    "custom_naming_template": "{author}/{title}"  # Custom template with {author}, {title}, {series}, etc.
+    "custom_naming_template": "{author}/{title}",  # Custom template with {author}, {title}, {series}, etc.
+    # Metadata embedding settings
+    "metadata_embedding_enabled": False,  # Embed tags into audio files when fixes are applied
+    "metadata_embedding_overwrite_managed": True,  # Overwrite managed fields (title/author/series/etc)
+    "metadata_embedding_backup_sidecar": True  # Create .library-manager.tags.json backup before modifying
 }
 
 DEFAULT_SECRETS = {
@@ -472,6 +477,23 @@ def init_db():
         c.execute('ALTER TABLE history ADD COLUMN error_message TEXT')
     except:
         pass
+
+    # Add metadata columns for embedding (migration)
+    metadata_columns = [
+        'new_narrator TEXT',
+        'new_series TEXT',
+        'new_series_num TEXT',
+        'new_year TEXT',
+        'new_edition TEXT',
+        'new_variant TEXT',
+        'embed_status TEXT',
+        'embed_error TEXT'
+    ]
+    for col_def in metadata_columns:
+        try:
+            c.execute(f'ALTER TABLE history ADD COLUMN {col_def}')
+        except:
+            pass  # Column already exists
 
     # Stats table - daily stats
     c.execute('''CREATE TABLE IF NOT EXISTS stats (
@@ -4090,11 +4112,14 @@ def process_queue(config, limit=None):
                         # AI is uncertain - block the change
                         logger.warning(f"BLOCKED (uncertain): {row['current_author']} -> {new_author}")
                         # Record as pending_fix for manual review
-                        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message)
-                                     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?)''',
+                        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                          new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?, ?)''',
                                  (row['book_id'], row['current_author'], row['current_title'],
                                   new_author, new_title, str(old_path), str(new_path),
-                                  f"Uncertain: {verification.get('reasoning', 'needs review')}"))
+                                  f"Uncertain: {verification.get('reasoning', 'needs review')}",
+                                  new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                  str(new_year) if new_year else None, new_edition, new_variant))
                         c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', row['book_id']))
                         c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                         processed += 1
@@ -4171,10 +4196,13 @@ def process_queue(config, limit=None):
                             else:
                                 # Couldn't resolve - mark as conflict
                                 logger.warning(f"CONFLICT: {new_path} exists - no unique distinguisher found")
-                                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message)
-                                             VALUES (?, ?, ?, ?, ?, ?, ?, 'error', 'Destination exists - could not resolve version conflict')''',
+                                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                  new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                             VALUES (?, ?, ?, ?, ?, ?, ?, 'error', 'Destination exists - could not resolve version conflict', ?, ?, ?, ?, ?, ?)''',
                                          (row['book_id'], row['current_author'], row['current_title'],
-                                          new_author, new_title, str(old_path), str(new_path)))
+                                          new_author, new_title, str(old_path), str(new_path),
+                                          new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                          str(new_year) if new_year else None, new_edition, new_variant))
                                 c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
                                          ('conflict', 'Destination folder exists - multiple versions detected', row['book_id']))
                                 c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
@@ -4211,10 +4239,14 @@ def process_queue(config, limit=None):
                     c.execute("DELETE FROM history WHERE book_id = ? AND status = 'pending_fix'", (row['book_id'],))
 
                     # Record in history
-                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'fixed')''',
+                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
+                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'fixed', ?, ?, ?, ?, ?, ?)''',
                              (row['book_id'], row['current_author'], row['current_title'],
-                              new_author, new_title, str(old_path), str(new_path)))
+                              new_author, new_title, str(old_path), str(new_path),
+                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                              str(new_year) if new_year else None, new_edition, new_variant))
+                    history_id = c.lastrowid  # Capture the newly inserted history record ID
 
                     # Update book record - handle case where another book already has this path
                     try:
@@ -4227,6 +4259,42 @@ def process_queue(config, limit=None):
                         c.execute('DELETE FROM books WHERE id = ?', (row['book_id'],))
 
                     fixed += 1
+
+                    # Embed metadata tags if enabled
+                    if config.get('metadata_embedding_enabled', False):
+                        try:
+                            embed_metadata = build_metadata_for_embedding(
+                                author=new_author,
+                                title=new_title,
+                                series=new_series,
+                                series_num=str(new_series_num) if new_series_num else None,
+                                narrator=new_narrator,
+                                year=str(new_year) if new_year else None,
+                                edition=new_edition,
+                                variant=new_variant
+                            )
+                            embed_result = embed_tags_for_path(
+                                new_path,
+                                embed_metadata,
+                                create_backup=config.get('metadata_embedding_backup_sidecar', True),
+                                overwrite=config.get('metadata_embedding_overwrite_managed', True)
+                            )
+                            if embed_result['success']:
+                                embed_status = 'ok'
+                                embed_error = None
+                                logger.info(f"Embedded tags in {embed_result['files_processed']} files at {new_path}")
+                            else:
+                                embed_status = 'error'
+                                embed_error = embed_result.get('error') or '; '.join(embed_result.get('errors', []))[:500]
+                                logger.warning(f"Tag embedding failed for {new_path}: {embed_error}")
+                            # Update history with embed status using the captured history ID
+                            c.execute('UPDATE history SET embed_status = ?, embed_error = ? WHERE id = ?',
+                                     (embed_status, embed_error, history_id))
+                        except Exception as embed_e:
+                            logger.error(f"Tag embedding exception for {new_path}: {embed_e}")
+                            c.execute('UPDATE history SET embed_status = ?, embed_error = ? WHERE id = ?',
+                                     ('error', str(embed_e)[:500], history_id))
+
                 except Exception as e:
                     error_msg = str(e)
                     logger.error(f"Error fixing {row['path']}: {error_msg}")
@@ -4235,10 +4303,13 @@ def process_queue(config, limit=None):
             else:
                 # Drastic change or auto_fix disabled - record as pending for manual review
                 logger.info(f"PENDING APPROVAL: {row['current_author']} -> {new_author} (drastic={drastic_change})")
-                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
+                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
+                                                  new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?)''',
                          (row['book_id'], row['current_author'], row['current_title'],
-                          new_author, new_title, str(old_path), str(new_path)))
+                          new_author, new_title, str(old_path), str(new_path),
+                          new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                          str(new_year) if new_year else None, new_edition, new_variant))
                 c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', row['book_id']))
                 fixed += 1
         else:
@@ -4335,34 +4406,50 @@ def apply_fix(history_id):
     try:
         import shutil
 
-        # Check if we're moving a file (ebook/loose file) vs a folder
+        # Check if we're moving a file (ebook/loose file/single m4b) vs a folder
         is_file_move = old_path.is_file()
 
-        if new_path.exists():
-            if is_file_move:
-                # Moving a file to existing location - destination file already exists
-                error_msg = f"Destination file already exists: {new_path.name}"
+        # If moving a single file, ensure new_path includes the filename with extension
+        # (build_new_path returns a folder path, but for single files we need to include the filename)
+        if is_file_move:
+            # Check if new_path looks like a folder (no extension or doesn't match audio extension)
+            audio_extensions = {'.m4b', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.wma', '.aac'}
+            if new_path.suffix.lower() not in audio_extensions:
+                # new_path is a folder, we need to create folder and put file inside
+                file_dest = new_path / old_path.name
+                logger.info(f"Single file move: {old_path.name} -> {file_dest}")
+            else:
+                file_dest = new_path
+
+            if file_dest.exists():
+                error_msg = f"Destination file already exists: {file_dest.name}"
+                c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
+                         ('error', error_msg, history_id))
+                conn.commit()
+                conn.close()
+                return False, error_msg
+
+            # Create destination folder and move file
+            file_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(old_path), str(file_dest))
+            # Update new_path to the folder for embedding later
+            new_path = file_dest.parent
+        elif new_path.exists():
+            # Moving a folder - check if destination has files
+            existing_files = list(new_path.iterdir())
+            if existing_files:
+                # DON'T MERGE - this is likely a different narrator version
+                error_msg = "Destination folder already exists with files - possible different narrator version"
                 c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
                          ('error', error_msg, history_id))
                 conn.commit()
                 conn.close()
                 return False, error_msg
             else:
-                # Moving a folder - check if destination has files
-                existing_files = list(new_path.iterdir())
-                if existing_files:
-                    # DON'T MERGE - this is likely a different narrator version
-                    error_msg = "Destination folder already exists with files - possible different narrator version"
-                    c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
-                             ('error', error_msg, history_id))
-                    conn.commit()
-                    conn.close()
-                    return False, error_msg
-                else:
-                    # Destination is empty folder - safe to use it
-                    shutil.move(str(old_path), str(new_path.parent / (new_path.name + "_temp")))
-                    new_path.rmdir()
-                    (new_path.parent / (new_path.name + "_temp")).rename(new_path)
+                # Destination is empty folder - safe to use it
+                shutil.move(str(old_path), str(new_path.parent / (new_path.name + "_temp")))
+                new_path.rmdir()
+                (new_path.parent / (new_path.name + "_temp")).rename(new_path)
         else:
             # Destination doesn't exist - create parent folders and move
             new_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4382,6 +4469,43 @@ def apply_fix(history_id):
 
         # Update history status
         c.execute('UPDATE history SET status = ? WHERE id = ?', ('fixed', history_id))
+
+        # Embed metadata tags if enabled
+        embed_status = None
+        embed_error = None
+        if config.get('metadata_embedding_enabled', False):
+            try:
+                embed_metadata = build_metadata_for_embedding(
+                    author=fix['new_author'],
+                    title=fix['new_title'],
+                    series=fix['new_series'] if fix['new_series'] else None,
+                    series_num=fix['new_series_num'] if fix['new_series_num'] else None,
+                    narrator=fix['new_narrator'] if fix['new_narrator'] else None,
+                    year=fix['new_year'] if fix['new_year'] else None,
+                    edition=fix['new_edition'] if fix['new_edition'] else None,
+                    variant=fix['new_variant'] if fix['new_variant'] else None
+                )
+                embed_result = embed_tags_for_path(
+                    new_path,
+                    embed_metadata,
+                    create_backup=config.get('metadata_embedding_backup_sidecar', True),
+                    overwrite=config.get('metadata_embedding_overwrite_managed', True)
+                )
+                if embed_result['success']:
+                    embed_status = 'ok'
+                    logger.info(f"Embedded tags in {embed_result['files_processed']} files at {new_path}")
+                else:
+                    embed_status = 'error'
+                    embed_error = embed_result.get('error') or '; '.join(embed_result.get('errors', []))[:500]
+                    logger.warning(f"Tag embedding failed for {new_path}: {embed_error}")
+            except Exception as embed_e:
+                embed_status = 'error'
+                embed_error = str(embed_e)[:500]
+                logger.error(f"Tag embedding exception for {new_path}: {embed_e}")
+
+            # Update history with embed status
+            c.execute('UPDATE history SET embed_status = ?, embed_error = ? WHERE id = ?',
+                     (embed_status, embed_error, history_id))
 
         conn.commit()
         conn.close()
@@ -4679,6 +4803,9 @@ def settings_page():
         config['ebook_management'] = 'ebook_management' in request.form
         config['ebook_library_mode'] = request.form.get('ebook_library_mode', 'merge')
         config['audio_analysis'] = 'audio_analysis' in request.form
+        config['metadata_embedding_enabled'] = 'metadata_embedding_enabled' in request.form
+        config['metadata_embedding_overwrite_managed'] = 'metadata_embedding_overwrite_managed' in request.form
+        config['metadata_embedding_backup_sidecar'] = 'metadata_embedding_backup_sidecar' in request.form
         config['google_books_api_key'] = request.form.get('google_books_api_key', '').strip() or None
         config['update_channel'] = request.form.get('update_channel', 'stable')
         config['naming_format'] = request.form.get('naming_format', 'author/title')
@@ -5309,8 +5436,9 @@ def api_undo_all_drastic():
 
 @app.route('/api/undo/<int:history_id>', methods=['POST'])
 def api_undo(history_id):
-    """Undo a fix - rename folder back to original name."""
+    """Undo a fix - rename folder back to original name and restore original tags."""
     import shutil
+    from audio_tagging import restore_tags_from_sidecar
 
     conn = get_db()
     c = conn.cursor()
@@ -5343,13 +5471,49 @@ def api_undo(history_id):
         }), 409
 
     try:
+        new_path_obj = Path(new_path)
+        
+        # Determine folder for sidecar (if new_path is a file, parent has sidecar)
+        if new_path_obj.is_file():
+            sidecar_folder = new_path_obj.parent
+        else:
+            sidecar_folder = new_path_obj
+
+        # Restore original tags from sidecar backup before moving
+        tags_restored = False
+        tags_message = ""
+        try:
+            restore_result = restore_tags_from_sidecar(
+                sidecar_folder,
+                delete_sidecar_on_success=True  # Clean up sidecar after successful restore
+            )
+            if restore_result['files_restored'] > 0:
+                tags_restored = True
+                tags_message = f" Tags restored for {restore_result['files_restored']} file(s)."
+                logger.info(f"Undo: Restored tags for {restore_result['files_restored']} files")
+            elif restore_result.get('error'):
+                tags_message = f" (Tag restore note: {restore_result['error']})"
+        except Exception as tag_err:
+            logger.warning(f"Could not restore tags during undo: {tag_err}")
+            tags_message = " (Tags could not be restored)"
+
         # Rename back to original
         shutil.move(new_path, old_path)
         logger.info(f"Undo: Renamed '{new_path}' back to '{old_path}'")
 
+        # Clean up empty parent folder if we moved a file
+        if new_path_obj.is_file():
+            try:
+                parent = new_path_obj.parent
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
+                    logger.info(f"Undo: Removed empty folder {parent}")
+            except OSError:
+                pass
+
         # Update history record
-        c.execute('''UPDATE history SET status = 'undone', error_message = 'Manually undone by user'
-                     WHERE id = ?''', (history_id,))
+        c.execute('''UPDATE history SET status = 'undone', error_message = ?
+                     WHERE id = ?''', (f'Manually undone by user{tags_message}', history_id))
 
         # Update book record back to original - use 'protected' status so deep rescan won't re-queue
         c.execute('''UPDATE books SET
@@ -5362,7 +5526,8 @@ def api_undo(history_id):
 
         return jsonify({
             'success': True,
-            'message': f"Undone! Renamed back to: {record['old_author']} / {record['old_title']}"
+            'message': f"Undone! Renamed back to: {record['old_author']} / {record['old_title']}{tags_message}",
+            'tags_restored': tags_restored
         })
 
     except Exception as e:
@@ -6742,77 +6907,111 @@ def api_manual_match():
     """
     Save a manual match for a book in the queue.
     Accepts custom author/title OR a selected BookDB result.
-    Updates the queue item to go to Pending for review.
+    Creates a pending_fix entry in history for review.
     """
-    data = request.get_json() or {}
-    queue_id = data.get('queue_id')
+    try:
+        data = request.get_json() or {}
+        queue_id = data.get('queue_id')
 
-    # Manual entry fields
-    new_author = data.get('author', '').strip()
-    new_title = data.get('title', '').strip()
+        # Manual entry fields
+        new_author = data.get('author', '').strip()
+        new_title = data.get('title', '').strip()
 
-    # Or BookDB selection
-    bookdb_result = data.get('bookdb_result')  # Full result object from search
+        # Or BookDB selection
+        bookdb_result = data.get('bookdb_result')  # Full result object from search
 
-    if not queue_id:
-        return jsonify({'success': False, 'error': 'queue_id required'})
+        if not queue_id:
+            return jsonify({'success': False, 'error': 'queue_id required'})
 
-    conn = get_db()  # Use main database, not local
-    c = conn.cursor()
+        conn = get_db()
+        c = conn.cursor()
 
-    # Get the queue item with book info
-    c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
-                        b.path, b.current_author, b.current_title
-                 FROM queue q
-                 JOIN books b ON q.book_id = b.id
-                 WHERE q.id = ?''', (queue_id,))
-    item = c.fetchone()
-    if not item:
+        # Get the queue item with book info
+        c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
+                            b.path, b.current_author, b.current_title
+                     FROM queue q
+                     JOIN books b ON q.book_id = b.id
+                     WHERE q.id = ?''', (queue_id,))
+        item = c.fetchone()
+        if not item:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Queue item not found'})
+
+        book_id = item['book_id']
+        old_path = item['path']
+        old_author = item['current_author']
+        old_title = item['current_title']
+
+        # Determine new values from BookDB result if provided
+        new_series = None
+        new_series_num = None
+        new_narrator = None
+        new_year = None
+        if bookdb_result:
+            new_author = bookdb_result.get('author_name') or new_author
+            new_title = bookdb_result.get('name') or bookdb_result.get('title') or new_title
+            new_series = bookdb_result.get('series_name')
+            new_series_num = bookdb_result.get('series_position')
+            new_year = bookdb_result.get('year_published')
+
+        if not new_author or not new_title:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Author and title required'})
+
+        # Find which library this book belongs to
+        config = load_config()
+        lib_path = None
+        for lp in config.get('library_paths', []):
+            lp_path = Path(lp)
+            try:
+                Path(old_path).relative_to(lp_path)
+                lib_path = lp_path
+                break
+            except ValueError:
+                continue
+
+        if lib_path is None:
+            lib_path = Path(old_path).parent.parent
+
+        # Build the new path
+        new_path = build_new_path(lib_path, new_author, new_title,
+                                  series=new_series, series_num=new_series_num,
+                                  narrator=new_narrator, year=new_year, config=config)
+
+        if new_path is None:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Could not build valid path for this metadata'})
+
+        # Delete any existing pending entries for this book
+        c.execute("DELETE FROM history WHERE book_id = ? AND status = 'pending_fix'", (book_id,))
+
+        # Insert as pending fix in history (like process_queue does)
+        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
+                                          new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?)''',
+                 (book_id, old_author, old_title,
+                  new_author, new_title, old_path, str(new_path),
+                  new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                  str(new_year) if new_year else None, None, None))
+
+        # Update book status
+        c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', book_id))
+
+        # Remove from queue
+        c.execute('DELETE FROM queue WHERE id = ?', (queue_id,))
+
+        conn.commit()
         conn.close()
-        return jsonify({'success': False, 'error': 'Queue item not found'})
 
-    item = dict(item)
-    book_id = item['book_id']
-    old_path = item['path']
-    old_author = item['current_author']
-    old_title = item['current_title']
-
-    # Determine new values from BookDB result if provided
-    new_series = None
-    new_series_num = None
-    if bookdb_result:
-        new_author = bookdb_result.get('author_name') or new_author
-        new_title = bookdb_result.get('name') or bookdb_result.get('title') or new_title
-        new_series = bookdb_result.get('series_name')
-        new_series_num = bookdb_result.get('series_position')
-
-    if not new_author or not new_title:
-        conn.close()
-        return jsonify({'success': False, 'error': 'Author and title required'})
-
-    # Update the book record with new metadata
-    c.execute('''UPDATE books SET
-                 suggested_author = ?,
-                 suggested_title = ?,
-                 suggested_series = ?,
-                 suggested_series_num = ?,
-                 status = 'pending_fix'
-                 WHERE id = ?''',
-              (new_author, new_title, new_series, new_series_num, book_id))
-
-    # Update queue reason to indicate manual match
-    c.execute('''UPDATE queue SET reason = ? WHERE id = ?''',
-              (f'manual_match: {new_author} / {new_title}', queue_id))
-
-    conn.commit()
-    conn.close()
-
-    return jsonify({
-        'success': True,
-        'message': f'Saved: {old_author}/{old_title} → {new_author}/{new_title}',
-        'new_author': new_author,
-        'new_title': new_title
-    })
+        return jsonify({
+            'success': True,
+            'message': f'Saved: {old_author}/{old_title} → {new_author}/{new_title}',
+            'new_author': new_author,
+            'new_title': new_title
+        })
+    except Exception as e:
+        logger.error(f"Error in manual_match: {e}")
+        return jsonify({'success': False, 'error': str(e)})
 
 
 # ============== BACKUP & RESTORE ==============
