@@ -2,8 +2,9 @@
 # Library Manager Integration Test Suite
 # Tests Docker deployment and core functionality
 #
-# Usage: ./run-integration-tests.sh [--rebuild]
+# Usage: ./run-integration-tests.sh [--rebuild] [--local]
 #   --rebuild: Regenerate test library before testing
+#   --local:   Build from local source instead of pulling ghcr.io image
 
 # Don't exit on error - we want to run all tests
 # set -e
@@ -44,9 +45,16 @@ setup() {
     podman stop "$CONTAINER_NAME" 2>/dev/null || true
     podman rm "$CONTAINER_NAME" 2>/dev/null || true
 
-    # Pull latest image
-    log_info "Pulling latest image from ghcr.io..."
-    podman pull ghcr.io/deucebucket/library-manager:latest
+    # Build from local source or pull image
+    if [[ "$1" == "--local" ]] || [[ "$2" == "--local" ]]; then
+        log_info "Building from local source..."
+        podman build -t library-manager:local-test "$TEST_DIR/.." >/dev/null 2>&1
+        IMAGE="library-manager:local-test"
+    else
+        log_info "Pulling latest image from ghcr.io..."
+        podman pull ghcr.io/deucebucket/library-manager:latest
+        IMAGE="ghcr.io/deucebucket/library-manager:latest"
+    fi
 
     # Create config with library path
     cat > "$TEST_DIR/fresh-deploy/data/config.json" << 'EOF'
@@ -61,12 +69,15 @@ setup() {
 EOF
 
     # Start container
-    log_info "Starting Library Manager container..."
+    # Use slirp4netns networking (default) - container cannot access host localhost
+    # This simulates a real user environment without access to local BookDB
+    log_info "Starting Library Manager container (isolated network)..."
     podman run -d --name "$CONTAINER_NAME" \
         -p "$TEST_PORT:5757" \
         -v "$TEST_DIR/test-audiobooks:/audiobooks:rw" \
         -v "$TEST_DIR/fresh-deploy/data:/data" \
-        ghcr.io/deucebucket/library-manager:latest
+        --add-host=localhost:127.0.0.1 \
+        "$IMAGE"
 
     # Wait for startup
     log_info "Waiting for container to start..."
