@@ -119,6 +119,39 @@ def should_preserve_title(original_title, suggested_title, config):
     return False
 ```
 
+### AI-Assisted Translation
+
+Leverage AI's multilingual capabilities for title translation:
+
+```python
+def get_localized_metadata(book_info, target_language):
+    """Ask AI to translate/localize metadata to user's preferred language."""
+
+    prompt = f"""Given this book metadata:
+    Title: {book_info['title']}
+    Author: {book_info['author']}
+    Series: {book_info.get('series', 'N/A')}
+
+    Please provide the {target_language} version of this book's title.
+    If this is a translated work, use the official {target_language} published title.
+    If no official translation exists, keep the original title.
+
+    Return JSON: {{"localized_title": "...", "is_translation": true/false}}
+    """
+
+    return call_ai_provider(prompt)
+```
+
+**Use cases:**
+- User wants German library → AI returns "Der Herr der Ringe" instead of "Lord of the Rings"
+- Mixed results from providers → AI normalizes to preferred language
+- Fallback when provider doesn't support language filtering
+
+**Provider language support:**
+- Gemini: Excellent multilingual (100+ languages)
+- GPT-4/OpenRouter: Strong multilingual support
+- Ollama (local): Depends on model, Llama 3 has decent multilingual
+
 ### Audio Language Detection
 
 Extend existing audio analysis feature:
@@ -167,3 +200,7 @@ Use cases:
 - Audio detection uses existing Gemini integration (no new dependencies)
 - Language codes follow ISO 639-1 standard
 - Default behavior unchanged for existing users (`en`, preserve=true)
+- **AI Translation Strategy**: All AI providers (Gemini, OpenRouter, Ollama) support multilingual prompts
+  - Add language instruction to existing prompts: "Respond in {language}"
+  - Titles returned should match user's preferred language when official translations exist
+  - AI handles translation automatically - no external translation API needed
