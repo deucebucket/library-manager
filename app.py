@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.30"
+APP_VERSION = "0.9.0-beta.32"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -6729,6 +6729,7 @@ def api_abs_remove_exclude():
 def api_search_bookdb():
     """Search BookBucket for books/series to manually match.
     Uses the public /search endpoint - no API key required.
+    Falls back to Google Books if BookDB is unavailable or returns no results.
     """
     query = request.args.get('q', '').strip()
     search_type = request.args.get('type', 'all')  # 'books', 'series', or 'all'
@@ -6738,6 +6739,10 @@ def api_search_bookdb():
     if not query or len(query) < 2:
         return jsonify({'error': 'Query must be at least 2 characters', 'results': []})
 
+    bookdb_error = None
+    results = []
+
+    # Try BookDB first
     try:
         params = {'q': query, 'limit': limit}
         if author:
@@ -6752,17 +6757,95 @@ def api_search_bookdb():
         # Longer timeout for cold start (embedding model can take 45-60s to load)
         resp = requests.get(endpoint, params=params, timeout=60)
 
-        if resp.status_code != 200:
-            return jsonify({'error': f'BookDB API error: {resp.status_code}', 'results': []})
-
-        results = resp.json()
-        return jsonify({'results': results, 'count': len(results)})
+        if resp.status_code == 200:
+            results = resp.json()
+            if results:
+                return jsonify({'results': results, 'count': len(results), 'source': 'bookdb'})
+            # No results from BookDB - will try fallback
+            bookdb_error = 'No results found in BookDB'
+        else:
+            bookdb_error = f'BookDB API error: {resp.status_code}'
 
     except requests.exceptions.ConnectionError:
-        return jsonify({'error': 'BookBucket API not available. The metadata database may be temporarily down for maintenance.', 'results': []})
+        bookdb_error = 'BookDB temporarily unavailable'
+    except requests.exceptions.Timeout:
+        bookdb_error = 'BookDB timeout'
     except Exception as e:
         logger.error(f"BookBucket search error: {e}")
-        return jsonify({'error': str(e), 'results': []})
+        bookdb_error = str(e)
+
+    # Fallback to Google Books
+    try:
+        logger.info(f"Manual match fallback to Google Books for '{query}' (BookDB: {bookdb_error})")
+        config = load_config()
+        google_key = config.get('google_books_api_key')
+
+        import urllib.parse
+        search_query = query
+        if author:
+            search_query += f" inauthor:{author}"
+
+        url = f"https://www.googleapis.com/books/v1/volumes?q={urllib.parse.quote(search_query)}&maxResults={limit}"
+        if google_key:
+            url += f"&key={google_key}"
+
+        resp = requests.get(url, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            items = data.get('items', [])
+
+            google_results = []
+            for item in items:
+                vol = item.get('volumeInfo', {})
+                authors = vol.get('authors', [])
+                if not vol.get('title') or not authors:
+                    continue
+
+                # Extract series info from subtitle
+                series_name = None
+                series_num = None
+                subtitle = vol.get('subtitle', '')
+                if subtitle:
+                    match = re.search(r'^A\s+(.+?)\s+Novel$', subtitle, re.IGNORECASE)
+                    if match:
+                        series_name = match.group(1)
+                    match = re.search(r'Book\s+(\d+)\s+of\s+(.+)', subtitle, re.IGNORECASE)
+                    if match:
+                        series_num = int(match.group(1))
+                        series_name = match.group(2)
+                    match = re.search(r'(.+?)\s+(?:Book|#)\s*(\d+)', subtitle, re.IGNORECASE)
+                    if match:
+                        series_name = match.group(1)
+                        series_num = int(match.group(2))
+
+                google_results.append({
+                    'type': 'book',
+                    'name': vol.get('title', ''),
+                    'title': vol.get('title', ''),
+                    'author_name': authors[0] if authors else '',
+                    'year_published': vol.get('publishedDate', '')[:4] if vol.get('publishedDate') else None,
+                    'series_name': series_name,
+                    'series_position': series_num,
+                    'description': vol.get('description', '')[:500] if vol.get('description') else None,
+                    'source': 'googlebooks'
+                })
+
+            if google_results:
+                return jsonify({
+                    'results': google_results,
+                    'count': len(google_results),
+                    'source': 'googlebooks',
+                    'fallback_reason': bookdb_error
+                })
+
+    except Exception as e:
+        logger.error(f"Google Books fallback error: {e}")
+
+    # Both failed
+    return jsonify({
+        'error': f'{bookdb_error}. Google Books fallback also failed.',
+        'results': []
+    })
 
 
 @app.route('/api/bookdb_stats')

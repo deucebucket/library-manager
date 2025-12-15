@@ -2,6 +2,17 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.32] - 2025-12-15
+
+### Fixed
+- **Issue #21: Manual match fallback search** - Added Google Books fallback when BookDB is unavailable
+  - Manual match search now tries BookDB first, falls back to Google Books on failure
+  - Works when BookDB is down for maintenance, times out, or returns no results
+  - Google Books results include series extraction from subtitles
+  - Response includes `source` field ('bookdb' or 'googlebooks') and `fallback_reason` when applicable
+
+---
+
 ## [0.9.0-beta.31] - 2025-12-15
 
 ### Added
