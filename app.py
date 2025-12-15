@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.33"
+APP_VERSION = "0.9.0-beta.34"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -403,6 +403,32 @@ DEFAULT_SECRETS = {
     "openrouter_api_key": "",
     "gemini_api_key": ""
 }
+
+
+def migrate_legacy_config():
+    """Migrate config files from old location (BASE_DIR/app/) to DATA_DIR.
+
+    Issue #23: In beta.23 we fixed config paths to use DATA_DIR instead of BASE_DIR,
+    but didn't migrate existing configs. Users updating from older versions would
+    lose their config because the app looked in the new location.
+    """
+    if DATA_DIR == BASE_DIR:
+        return  # Not running with separate data dir, nothing to migrate
+
+    import shutil
+    migrate_files = ['config.json', 'secrets.json', 'library.db', 'user_groups.json']
+
+    for filename in migrate_files:
+        old_path = BASE_DIR / filename
+        new_path = DATA_DIR / filename
+
+        # Only migrate if file exists in old location and NOT in new location
+        if old_path.exists() and not new_path.exists():
+            try:
+                shutil.copy2(old_path, new_path)
+                logger.info(f"Migrated {filename} from {old_path} to {new_path}")
+            except Exception as e:
+                logger.warning(f"Failed to migrate {filename}: {e}")
 
 
 def init_config():
@@ -7230,6 +7256,7 @@ def api_backup_info():
 # ============== MAIN ==============
 
 if __name__ == '__main__':
+    migrate_legacy_config()  # Migrate from old location if needed (Issue #23)
     init_config()  # Create config files if they don't exist
     init_db()
     start_worker()

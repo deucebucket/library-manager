@@ -2,6 +2,17 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.34] - 2025-12-15
+
+### Fixed
+- **Issue #23: Config vanishing on updates** - Added migration for legacy config locations
+  - Users updating from versions before beta.23 had config stored in `/app/` (non-persistent)
+  - The app now checks for config files in the old location on startup
+  - Automatically migrates `config.json`, `secrets.json`, `library.db`, and `user_groups.json` to `/data/`
+  - Prevents config loss when updating Docker containers
+
+---
+
 ## [0.9.0-beta.33] - 2025-12-15
 
 ### Fixed
