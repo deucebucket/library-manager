@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.32"
+APP_VERSION = "0.9.0-beta.33"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -797,8 +797,9 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
         path_str = re.sub(r'\[\s*\]', '', path_str)  # Empty []
         path_str = re.sub(r'\{\s*\}', '', path_str)  # Empty {} (literal, not tags)
         path_str = re.sub(r'\s+-\s+(?=-|/|$)', '', path_str)  # Dangling " - " before separator
-        path_str = re.sub(r'/-\s+', '/', path_str)  # Leading "- " after slash (Issue #16)
+        path_str = re.sub(r'/\s*-\s+', '/', path_str)  # Leading "- " or " - " after slash (Issue #16, #22)
         path_str = re.sub(r'^-\s+', '', path_str)  # Leading "- " at start
+        path_str = re.sub(r'^\s*-\s+', '', path_str)  # Leading " - " at start (with space)
         path_str = re.sub(r'\s+-$', '', path_str)  # Trailing " -" at end
         path_str = re.sub(r'/+', '/', path_str)  # Multiple slashes
         path_str = re.sub(r'\s{2,}', ' ', path_str)  # Multiple spaces

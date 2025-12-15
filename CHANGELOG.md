@@ -2,6 +2,15 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.33] - 2025-12-15
+
+### Fixed
+- **Issue #22: Empty series hyphen regression** - Fixed leading hyphen appearing when series is empty
+  - Custom templates with `{series_num} - {title}` now properly clean up to just `{title}` when series_num is empty
+  - Improved regex to handle both `/- ` and `/ - ` patterns after path separator
+
+---
+
 ## [0.9.0-beta.32] - 2025-12-15
 
 ### Fixed
