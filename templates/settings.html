@@ -357,6 +357,9 @@
                                     <option value="openrouter" {% if config.ai_provider == 'openrouter' %}selected{% endif %}>
                                         OpenRouter (Free models available)
                                     </option>
+                                    <option value="ollama" {% if config.ai_provider == 'ollama' %}selected{% endif %}>
+                                        Ollama (Self-hosted - No API costs)
+                                    </option>
                                 </select>
                             </div>
 
@@ -402,6 +405,47 @@
                                             Llama 3.3 70B (Free)
                                         </option>
                                     </select>
+                                </div>
+                            </div>
+
+                            <!-- Ollama Settings -->
+                            <div id="ollama-settings" style="display: none;">
+                                <div class="mb-3">
+                                    <label class="form-label">Ollama Server URL</label>
+                                    <input type="text" class="form-control bg-dark text-light" name="ollama_url" id="ollama_url"
+                                           value="{{ config.ollama_url or 'http://localhost:11434' }}" placeholder="http://localhost:11434">
+                                    <small class="text-muted">Default: http://localhost:11434 (local) or your server's IP</small>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Model</label>
+                                    <div class="input-group">
+                                        <select class="form-select bg-dark text-light" name="ollama_model" id="ollama_model">
+                                            {% if config.ollama_model %}
+                                            <option value="{{ config.ollama_model }}" selected>{{ config.ollama_model }}</option>
+                                            {% else %}
+                                            <option value="llama3.2:3b" selected>llama3.2:3b (default)</option>
+                                            {% endif %}
+                                        </select>
+                                        <button type="button" class="btn btn-outline-secondary" onclick="refreshOllamaModels()" title="Refresh model list">
+                                            <i class="bi bi-arrow-clockwise"></i>
+                                        </button>
+                                    </div>
+                                    <small class="text-muted">Click refresh to load available models from your Ollama server</small>
+                                </div>
+                                <div class="mb-0">
+                                    <button type="button" class="btn btn-sm btn-outline-info" onclick="testOllamaConnection()">
+                                        <i class="bi bi-plug"></i> Test Connection
+                                    </button>
+                                    <span id="ollama-status" class="ms-2"></span>
+                                </div>
+                                <div class="alert alert-secondary small mt-3 mb-0">
+                                    <i class="bi bi-info-circle"></i> <strong>Recommended models:</strong>
+                                    <ul class="mb-0 mt-1">
+                                        <li><code>llama3.2:3b</code> - Fast, good for 8GB+ VRAM</li>
+                                        <li><code>llama3.2:1b</code> - Faster, works on 4GB+ VRAM</li>
+                                        <li><code>mistral:7b</code> - More capable, needs 8GB+ VRAM</li>
+                                        <li><code>phi3:mini</code> - Microsoft's small model</li>
+                                    </ul>
                                 </div>
                             </div>
                         </div>
@@ -568,8 +612,103 @@
 <script>
 function toggleProviderFields() {
     const provider = document.getElementById('ai_provider').value;
-    document.getElementById('openrouter-settings').style.display = provider === 'openrouter' ? 'block' : 'none';
     document.getElementById('gemini-settings').style.display = provider === 'gemini' ? 'block' : 'none';
+    document.getElementById('openrouter-settings').style.display = provider === 'openrouter' ? 'block' : 'none';
+    document.getElementById('ollama-settings').style.display = provider === 'ollama' ? 'block' : 'none';
+
+    // Auto-refresh Ollama models when switching to Ollama
+    if (provider === 'ollama') {
+        refreshOllamaModels();
+    }
+}
+
+function testOllamaConnection() {
+    const statusEl = document.getElementById('ollama-status');
+    const url = document.getElementById('ollama_url').value;
+
+    statusEl.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split"></i> Testing...</span>';
+
+    fetch('/api/test_ollama', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ollama_url: url})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            statusEl.innerHTML = '<span class="text-success"><i class="bi bi-check-circle"></i> Connected! ' +
+                (data.model_count ? data.model_count + ' models available' : '') + '</span>';
+        } else {
+            statusEl.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle"></i> ' + (data.error || 'Connection failed') + '</span>';
+        }
+    })
+    .catch(e => {
+        statusEl.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle"></i> Error: ' + e + '</span>';
+    });
+}
+
+function refreshOllamaModels() {
+    const url = document.getElementById('ollama_url').value;
+    const select = document.getElementById('ollama_model');
+    const currentValue = select.value;
+
+    // Show loading state
+    select.innerHTML = '<option value="">Loading models...</option>';
+    select.disabled = true;
+
+    fetch('/api/ollama_models', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ollama_url: url})
+    })
+    .then(r => r.json())
+    .then(data => {
+        select.disabled = false;
+
+        if (data.success && data.models && data.models.length > 0) {
+            select.innerHTML = '';
+            data.models.forEach(model => {
+                const opt = document.createElement('option');
+                opt.value = model.name;
+                opt.textContent = model.name + (model.size ? ' (' + model.size + ')' : '');
+                if (model.name === currentValue) opt.selected = true;
+                select.appendChild(opt);
+            });
+            // If current value wasn't found, select first
+            if (!select.value && data.models.length > 0) {
+                select.value = data.models[0].name;
+            }
+        } else {
+            // No models found or error - show defaults
+            select.innerHTML = `
+                <option value="llama3.2:3b">llama3.2:3b (default)</option>
+                <option value="llama3.2:1b">llama3.2:1b</option>
+                <option value="mistral:7b">mistral:7b</option>
+                <option value="phi3:mini">phi3:mini</option>
+            `;
+            if (currentValue) {
+                // Try to keep the current value
+                const exists = Array.from(select.options).some(o => o.value === currentValue);
+                if (!exists) {
+                    const opt = document.createElement('option');
+                    opt.value = currentValue;
+                    opt.textContent = currentValue;
+                    opt.selected = true;
+                    select.insertBefore(opt, select.firstChild);
+                } else {
+                    select.value = currentValue;
+                }
+            }
+        }
+    })
+    .catch(e => {
+        select.disabled = false;
+        select.innerHTML = `
+            <option value="llama3.2:3b" selected>llama3.2:3b (default)</option>
+            <option value="llama3.2:1b">llama3.2:1b</option>
+            <option value="mistral:7b">mistral:7b</option>
+        `;
+    });
 }
 
 function toggleEbookOptions() {
