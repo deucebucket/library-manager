@@ -2,6 +2,67 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.37] - 2025-12-16
+
+### Added
+- **"Trust the Process" Mode** - Fully automatic verification chain (EXPERIMENTAL)
+  - New toggle in Settings > General > Behavior
+  - When enabled: drastic author changes verified via AI + audio snippets
+  - If AI is uncertain, uses Gemini audio analysis as tie-breaker
+  - Only truly unidentifiable items flagged as "Needs Attention" (no pending queue)
+  - Verified drastic changes are auto-applied (everything logged in history for undo)
+  - Requires: Gemini API key for audio analysis
+
+- **"Needs Attention" Status** - New category for unidentifiable books
+  - Items that couldn't be verified by any method appear in History with red "Needs Attention" badge
+  - Filter history by `/history?status=attention`
+  - Includes detailed error message explaining why verification failed
+  - These items are NOT moved - just flagged for manual review
+
+### Changed
+- Auto-fix now allows verified drastic changes in Trust the Process mode
+- History page shows "Needs Attention" count and filter button
+
+---
+
+## [0.9.0-beta.36] - 2025-12-16
+
+### Added
+- **Preferred Metadata Language** (Issue #17) - Localized metadata support for non-English libraries
+  - New "Preferred Metadata Language" dropdown in Settings > General > Language
+  - Supports 28 languages: German, French, Spanish, Italian, Portuguese, Dutch, Swedish, Norwegian, Danish, Finnish, Polish, Russian, Japanese, Chinese, Korean, Arabic, Hebrew, Hindi, Turkish, Czech, Hungarian, Greek, Thai, Vietnamese, Ukrainian, Romanian, Indonesian
+  - Google Books API now uses `langRestrict` parameter to filter results by language
+  - OpenLibrary search now includes `language` parameter
+  - Audnexus/Audible searches use regional endpoints (audible.de, audible.fr, etc.)
+
+- **Preserve Original Titles** - Prevents translating foreign titles to English
+  - New toggle in Settings > General > Language (enabled by default)
+  - Detects title language using `langdetect` library
+  - Example: German "Der Bücherdrache" stays German instead of becoming "The Book Dragon"
+  - Useful for users with localized libraries who want to keep original language titles
+
+- **AI-Assisted Localization** - Get official translated titles via AI
+  - New `get_localized_title_via_ai()` function asks AI for official translated book titles
+  - Works with all AI providers (Gemini, OpenRouter, Ollama)
+  - Only returns real published translations, not machine translations
+
+- **Audio Language Detection** - Detect spoken language from audiobook samples
+  - New "Detect Language from Audio" toggle in Settings (requires Gemini API key)
+  - Uses Gemini audio analysis to identify narrator's spoken language
+  - Returns ISO 639-1 code with confidence level
+  - Extended existing audio analysis to also return language field
+
+### Changed
+- `search_google_books()` now accepts optional `lang` parameter
+- `search_audnexus()` now accepts optional `region` parameter for regional Audible stores
+- `search_openlibrary()` now accepts optional `lang` parameter
+- `gather_all_api_candidates()` now uses language preferences for all API calls
+
+### Dependencies
+- Added `langdetect>=1.0.9` for title language detection
+
+---
+
 ## [0.9.0-beta.35] - 2025-12-15
 
 ### Added

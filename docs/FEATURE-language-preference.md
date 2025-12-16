@@ -1,7 +1,7 @@
 # Feature: Preferred Metadata Language
 
 **Issue:** #17
-**Status:** Planned
+**Status:** Implemented (beta.36)
 **Requested by:** grapefruit89
 
 ## Problem

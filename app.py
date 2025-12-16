@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.35"
+APP_VERSION = "0.9.0-beta.37"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -398,7 +398,13 @@ DEFAULT_CONFIG = {
     # Metadata embedding settings
     "metadata_embedding_enabled": False,  # Embed tags into audio files when fixes are applied
     "metadata_embedding_overwrite_managed": True,  # Overwrite managed fields (title/author/series/etc)
-    "metadata_embedding_backup_sidecar": True  # Create .library-manager.tags.json backup before modifying
+    "metadata_embedding_backup_sidecar": True,  # Create .library-manager.tags.json backup before modifying
+    # Language preference settings (Issue #17)
+    "preferred_language": "en",  # ISO 639-1 code for metadata lookups
+    "preserve_original_titles": True,  # Don't replace foreign language titles with English translations
+    "detect_language_from_audio": False,  # Use Gemini audio analysis to detect spoken language
+    # Trust the Process mode - fully automatic verification chain
+    "trust_the_process": False  # Auto-verify drastic changes, use audio analysis as tie-breaker, only flag truly unidentifiable
 }
 
 DEFAULT_SECRETS = {
@@ -668,6 +674,244 @@ def is_placeholder_author(name):
                            'author', 'authors', 'narrator', 'untitled', 'no author',
                            'metadata', 'tmp', 'temp', 'streams', 'cache', 'data', 'log', 'logs'}
     return name_lower in placeholder_authors
+
+# ============== LANGUAGE DETECTION ==============
+
+def detect_title_language(text):
+    """
+    Detect the language of a title/text using langdetect.
+    Returns ISO 639-1 language code or 'en' as fallback.
+    """
+    if not text or len(text.strip()) < 3:
+        return 'en'  # Too short to detect
+
+    try:
+        from langdetect import detect, DetectorFactory
+        # Make detection deterministic
+        DetectorFactory.seed = 0
+        detected = detect(text)
+        logger.debug(f"Detected language '{detected}' for text: {text}")
+        return detected
+    except Exception as e:
+        logger.debug(f"Language detection failed for '{text}': {e}")
+        return 'en'  # Default to English on failure
+
+
+def should_preserve_original_title(original_title, suggested_title, config):
+    """
+    Check if we should keep the original title instead of replacing it.
+
+    This prevents replacing foreign language titles with English translations,
+    e.g., "Der Bücherdrache" should NOT become "The Book Dragon" for German users.
+
+    Returns True if original title should be preserved.
+    """
+    if not config.get('preserve_original_titles', True):
+        return False
+
+    if not original_title or not suggested_title:
+        return False
+
+    # If titles are the same, no preservation needed
+    if original_title.strip().lower() == suggested_title.strip().lower():
+        return False
+
+    # Detect language of original title
+    original_lang = detect_title_language(original_title)
+    suggested_lang = detect_title_language(suggested_title)
+
+    # Get user's preferred language
+    preferred_lang = config.get('preferred_language', 'en')
+
+    # If original is in user's preferred language but suggestion is in English,
+    # preserve the original (user wants German, original is German, don't replace with English)
+    if original_lang == preferred_lang and suggested_lang == 'en' and preferred_lang != 'en':
+        logger.info(f"Preserving original title '{original_title}' ({original_lang}) - user prefers {preferred_lang}")
+        return True
+
+    # If original is in a non-English language and suggestion is English,
+    # preserve original if "preserve_original_titles" is enabled
+    if original_lang != 'en' and suggested_lang == 'en':
+        logger.info(f"Preserving foreign title '{original_title}' ({original_lang}) instead of English '{suggested_title}'")
+        return True
+
+    return False
+
+
+# Audible marketplace mappings for language preference
+AUDIBLE_LANGUAGE_ENDPOINTS = {
+    'en': 'audible.com',      # US/English
+    'de': 'audible.de',       # German
+    'fr': 'audible.fr',       # French
+    'it': 'audible.it',       # Italian
+    'es': 'audible.es',       # Spanish
+    'jp': 'audible.co.jp',    # Japanese (ISO code is 'ja' but Audible uses 'jp')
+    'ja': 'audible.co.jp',    # Japanese
+    'au': 'audible.com.au',   # Australia (English)
+    'uk': 'audible.co.uk',    # UK (English)
+    'in': 'audible.in',       # India (English)
+    'ca': 'audible.ca',       # Canada (English/French)
+}
+
+
+def get_audible_region_for_language(lang_code):
+    """
+    Get the appropriate Audible region code for a language.
+    Audnexus uses these region codes in its API.
+    """
+    # Map language codes to Audnexus region codes
+    region_map = {
+        'en': 'us',   # Default English to US
+        'de': 'de',   # German
+        'fr': 'fr',   # French
+        'it': 'it',   # Italian
+        'es': 'es',   # Spanish
+        'ja': 'jp',   # Japanese
+        'pt': 'us',   # Portuguese -> US (no dedicated Audible)
+        'nl': 'de',   # Dutch -> Germany (no dedicated Audible)
+    }
+    return region_map.get(lang_code, 'us')
+
+
+# ISO 639-1 language code to full name mapping
+LANGUAGE_NAMES = {
+    'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish',
+    'it': 'Italian', 'pt': 'Portuguese', 'nl': 'Dutch', 'sv': 'Swedish',
+    'no': 'Norwegian', 'da': 'Danish', 'fi': 'Finnish', 'pl': 'Polish',
+    'ru': 'Russian', 'ja': 'Japanese', 'zh': 'Chinese', 'ko': 'Korean',
+    'ar': 'Arabic', 'he': 'Hebrew', 'hi': 'Hindi', 'tr': 'Turkish',
+    'cs': 'Czech', 'hu': 'Hungarian', 'el': 'Greek', 'th': 'Thai',
+    'vi': 'Vietnamese', 'uk': 'Ukrainian', 'ro': 'Romanian', 'id': 'Indonesian'
+}
+
+
+def get_localized_title_via_ai(title, author, target_language, config):
+    """
+    Ask AI to find the official localized title of a book.
+    This helps when APIs don't have results in the user's preferred language.
+
+    Args:
+        title: The book title (usually in English)
+        author: The author name
+        target_language: ISO 639-1 code (e.g., 'de' for German)
+        config: App config with AI credentials
+
+    Returns:
+        dict with localized_title and is_translation, or None on failure
+    """
+    if not target_language or target_language == 'en':
+        return None  # No translation needed
+
+    lang_name = LANGUAGE_NAMES.get(target_language, target_language)
+
+    prompt = f"""You are a book metadata expert with knowledge of international book translations.
+
+Given this book:
+- Title: {title}
+- Author: {author}
+
+What is the official {lang_name} ({target_language}) published title of this book?
+
+RULES:
+1. If this book has an official {lang_name} translation, return that title
+2. If the book was originally written in {lang_name}, return the original title
+3. If no official translation exists, return the original title
+4. DO NOT invent translations - only use real published titles
+
+Return JSON only:
+{{"localized_title": "the {lang_name} title", "is_translation": true/false, "notes": "brief explanation"}}
+
+If you're not certain, return: {{"localized_title": "{title}", "is_translation": false, "notes": "no official translation found"}}"""
+
+    provider = config.get('ai_provider', 'openrouter')
+
+    try:
+        if provider == 'ollama':
+            result = _call_ollama_simple(prompt, config)
+        elif provider == 'gemini' and config.get('gemini_api_key'):
+            result = _call_gemini_simple(prompt, config)
+        elif config.get('openrouter_api_key'):
+            result = _call_openrouter_simple(prompt, config)
+        else:
+            return None
+
+        if result and result.get('localized_title'):
+            logger.info(f"AI localization: '{title}' -> '{result['localized_title']}' ({lang_name})")
+            return result
+    except Exception as e:
+        logger.debug(f"AI localization failed: {e}")
+
+    return None
+
+
+def _call_openrouter_simple(prompt, config):
+    """Simple OpenRouter call for localization queries."""
+    try:
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {config['openrouter_api_key']}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": config.get('openrouter_model', 'google/gemma-3n-e4b-it:free'),
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1
+            },
+            timeout=30
+        )
+        if resp.status_code == 200:
+            text = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            return parse_json_response(text) if text else None
+    except Exception as e:
+        logger.debug(f"OpenRouter localization error: {e}")
+    return None
+
+
+def _call_gemini_simple(prompt, config):
+    """Simple Gemini call for localization queries."""
+    try:
+        api_key = config.get('gemini_api_key')
+        model = config.get('gemini_model', 'gemini-2.0-flash')
+        resp = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
+            headers={"Content-Type": "application/json"},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.1}
+            },
+            timeout=30
+        )
+        if resp.status_code == 200:
+            text = resp.json().get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+            return parse_json_response(text) if text else None
+    except Exception as e:
+        logger.debug(f"Gemini localization error: {e}")
+    return None
+
+
+def _call_ollama_simple(prompt, config):
+    """Simple Ollama call for localization queries."""
+    try:
+        ollama_url = config.get('ollama_url', 'http://localhost:11434')
+        model = config.get('ollama_model', 'llama3.2:3b')
+        resp = requests.post(
+            f"{ollama_url}/api/generate",
+            json={
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"temperature": 0.1}
+            },
+            timeout=60
+        )
+        if resp.status_code == 200:
+            text = resp.json().get("response", "")
+            return parse_json_response(text) if text else None
+    except Exception as e:
+        logger.debug(f"Ollama localization error: {e}")
+    return None
+
 
 # ============== BOOK METADATA APIs ==============
 
@@ -980,8 +1224,14 @@ def search_bookdb(title, author=None, api_key=None):
         return None
 
 
-def search_openlibrary(title, author=None):
-    """Search OpenLibrary for book metadata. Free, no API key needed."""
+def search_openlibrary(title, author=None, lang=None):
+    """Search OpenLibrary for book metadata. Free, no API key needed.
+
+    Args:
+        title: Book title to search for
+        author: Optional author name
+        lang: Optional ISO 639-1 language code to filter results
+    """
     rate_limit_wait('openlibrary')
     try:
         import urllib.parse
@@ -989,6 +1239,9 @@ def search_openlibrary(title, author=None):
         url = f"https://openlibrary.org/search.json?title={query}&limit=5"
         if author:
             url += f"&author={urllib.parse.quote(author)}"
+        if lang and lang != 'en':
+            # OpenLibrary supports language filtering
+            url += f"&language={lang}"
 
         resp = requests.get(url, timeout=10)
         if resp.status_code != 200:
@@ -1018,8 +1271,15 @@ def search_openlibrary(title, author=None):
         logger.debug(f"OpenLibrary search failed: {e}")
         return None
 
-def search_google_books(title, author=None, api_key=None):
-    """Search Google Books for book metadata."""
+def search_google_books(title, author=None, api_key=None, lang=None):
+    """Search Google Books for book metadata.
+
+    Args:
+        title: Book title to search for
+        author: Optional author name
+        api_key: Optional Google API key for higher rate limits
+        lang: Optional ISO 639-1 language code to restrict results (e.g., 'de' for German)
+    """
     rate_limit_wait('googlebooks')
     try:
         import urllib.parse
@@ -1030,6 +1290,9 @@ def search_google_books(title, author=None, api_key=None):
         url = f"https://www.googleapis.com/books/v1/volumes?q={urllib.parse.quote(query)}&maxResults=5"
         if api_key:
             url += f"&key={api_key}"
+        if lang and lang != 'en':
+            # langRestrict filters results to books in this language
+            url += f"&langRestrict={lang}"
 
         resp = requests.get(url, timeout=10)
         if resp.status_code != 200:
@@ -1083,8 +1346,14 @@ def search_google_books(title, author=None, api_key=None):
         logger.debug(f"Google Books search failed: {e}")
         return None
 
-def search_audnexus(title, author=None):
-    """Search Audnexus API for audiobook metadata. Pulls from Audible."""
+def search_audnexus(title, author=None, region=None):
+    """Search Audnexus API for audiobook metadata. Pulls from Audible.
+
+    Args:
+        title: Book title to search for
+        author: Optional author name
+        region: Optional Audible region code (us, de, fr, it, es, jp, etc.)
+    """
     rate_limit_wait('audnexus')
     try:
         import urllib.parse
@@ -1094,6 +1363,9 @@ def search_audnexus(title, author=None):
             query = f"{title} {author}"
 
         url = f"https://api.audnex.us/books?title={urllib.parse.quote(query)}"
+        # Add region parameter for localized results
+        if region and region != 'us':
+            url += f"&region={region}"
 
         resp = requests.get(url, timeout=10, headers={'Accept': 'application/json'})
         if resp.status_code != 200:
@@ -1241,6 +1513,10 @@ def lookup_book_metadata(messy_name, config, folder_path=None):
             return None
         return result
 
+    # Get language preference settings
+    preferred_lang = config.get('preferred_language', 'en')
+    audible_region = get_audible_region_for_language(preferred_lang)
+
     # 0. Try BookDB first (our private metadata service with fuzzy matching)
     bookdb_key = config.get('bookdb_api_key')
     if bookdb_key:
@@ -1249,18 +1525,18 @@ def lookup_book_metadata(messy_name, config, folder_path=None):
             return result
 
     # 1. Try Audnexus (best for audiobooks, pulls from Audible)
-    result = validate_result(search_audnexus(clean_title, author=author_hint), clean_title)
+    result = validate_result(search_audnexus(clean_title, author=author_hint, region=audible_region), clean_title)
     if result:
         return result
 
     # 2. Try OpenLibrary (free, huge database)
-    result = validate_result(search_openlibrary(clean_title, author=author_hint), clean_title)
+    result = validate_result(search_openlibrary(clean_title, author=author_hint, lang=preferred_lang), clean_title)
     if result:
         return result
 
     # 3. Try Google Books
     google_key = config.get('google_books_api_key')
-    result = validate_result(search_google_books(clean_title, author=author_hint, api_key=google_key), clean_title)
+    result = validate_result(search_google_books(clean_title, author=author_hint, api_key=google_key, lang=preferred_lang), clean_title)
     if result:
         return result
 
@@ -1277,7 +1553,7 @@ def gather_all_api_candidates(title, author=None, config=None):
     """
     Search ALL APIs and return ALL results (not just the first match).
     This is used for verification when we need multiple perspectives.
-    Now with garbage match filtering.
+    Now with garbage match filtering and language preference support.
     """
     candidates = []
     clean_title = clean_search_title(title)
@@ -1285,12 +1561,16 @@ def gather_all_api_candidates(title, author=None, config=None):
     if not clean_title or len(clean_title) < 3:
         return candidates
 
+    # Get language preference settings
+    preferred_lang = config.get('preferred_language', 'en') if config else 'en'
+    audible_region = get_audible_region_for_language(preferred_lang)
+
     # Search each API and collect all results
     apis = [
         ('BookDB', lambda t, a: search_bookdb(t, a, config.get('bookdb_api_key') if config else None)),
-        ('Audnexus', search_audnexus),
-        ('OpenLibrary', search_openlibrary),
-        ('GoogleBooks', lambda t, a: search_google_books(t, a, config.get('google_books_api_key') if config else None)),
+        ('Audnexus', lambda t, a: search_audnexus(t, a, region=audible_region)),
+        ('OpenLibrary', lambda t, a: search_openlibrary(t, a, lang=preferred_lang)),
+        ('GoogleBooks', lambda t, a: search_google_books(t, a, config.get('google_books_api_key') if config else None, lang=preferred_lang)),
         ('Hardcover', search_hardcover),
     ]
 
@@ -1887,8 +2167,14 @@ Extract and return in JSON format:
     "author": "author name if mentioned",
     "narrator": "narrator name if mentioned",
     "series": "series name if mentioned",
+    "language": "ISO 639-1 code of the spoken language (e.g., en, de, fr, es)",
     "confidence": "high/medium/low based on how clearly the info was stated"
 }
+
+For the language field:
+- Listen to what language the narrator is speaking
+- Use the ISO 639-1 two-letter code (en=English, de=German, fr=French, es=Spanish, etc.)
+- This should reflect the SPOKEN language, not the original book language
 
 If information is not clearly stated in the audio, use null for that field.
 Only include information you actually heard - do not guess."""
@@ -1927,6 +2213,84 @@ Only include information you actually heard - do not guess."""
     except Exception as e:
         logger.debug(f"Audio analysis error: {e}")
         # Clean up temp file if it exists
+        if sample_path and os.path.exists(sample_path):
+            os.unlink(sample_path)
+
+    return None
+
+
+def detect_audio_language(audio_file, config):
+    """
+    Detect the spoken language from an audio file using Gemini.
+    This is a lightweight version of analyze_audio_with_gemini focused only on language.
+
+    Args:
+        audio_file: Path to audio file
+        config: App config with Gemini API key
+
+    Returns:
+        dict with 'language' (ISO 639-1 code), 'language_name', and 'confidence', or None
+    """
+    import base64
+
+    api_key = config.get('gemini_api_key')
+    if not api_key:
+        logger.debug("No Gemini API key for audio language detection")
+        return None
+
+    # Extract shorter audio sample (30 seconds is enough for language detection)
+    sample_path = extract_audio_sample(audio_file, duration_seconds=30)
+    if not sample_path:
+        logger.debug(f"Could not extract audio sample from {audio_file}")
+        return None
+
+    try:
+        with open(sample_path, 'rb') as f:
+            audio_data = base64.b64encode(f.read()).decode('utf-8')
+
+        os.unlink(sample_path)
+
+        model = 'gemini-2.5-flash'
+
+        prompt = """Listen to this audiobook sample and identify the spoken language.
+
+Return JSON only:
+{
+    "language": "ISO 639-1 two-letter code (en, de, fr, es, it, pt, nl, sv, no, da, fi, pl, ru, ja, zh, ko, etc.)",
+    "language_name": "Full language name (English, German, French, etc.)",
+    "confidence": "high/medium/low"
+}
+
+Focus on the SPOKEN language you hear in the narration, not any background music or sound effects."""
+
+        resp = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
+            headers={"Content-Type": "application/json"},
+            json={
+                "contents": [{
+                    "parts": [
+                        {"text": prompt},
+                        {"inline_data": {"mime_type": "audio/mp3", "data": audio_data}}
+                    ]
+                }],
+                "generationConfig": {"temperature": 0.1}
+            },
+            timeout=60
+        )
+
+        if resp.status_code == 200:
+            result = resp.json()
+            text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+            if text:
+                parsed = parse_json_response(text)
+                if parsed and parsed.get('language'):
+                    logger.info(f"Audio language detected: {parsed.get('language_name', parsed['language'])} ({parsed.get('confidence', 'unknown')} confidence)")
+                    return parsed
+        else:
+            logger.debug(f"Gemini audio language API error {resp.status_code}")
+
+    except Exception as e:
+        logger.debug(f"Audio language detection error: {e}")
         if sample_path and os.path.exists(sample_path):
             os.unlink(sample_path)
 
@@ -4569,28 +4933,131 @@ def process_queue(config, limit=None):
                         drastic_change = is_drastic_author_change(row['current_author'], new_author)
                         logger.info(f"CORRECTED: {row['current_author']} -> {new_author} (was wrong: {verification['reasoning'][:50]}...)")
                     else:
-                        # AI is uncertain - block the change
-                        logger.warning(f"BLOCKED (uncertain): {row['current_author']} -> {new_author}")
-                        # Record as pending_fix for manual review
-                        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                          new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?, ?)''',
-                                 (row['book_id'], row['current_author'], row['current_title'],
-                                  new_author, new_title, str(old_path), str(new_path),
-                                  f"Uncertain: {verification.get('reasoning', 'needs review')}",
-                                  new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                  str(new_year) if new_year else None, new_edition, new_variant))
+                        # AI is uncertain - check if Trust the Process mode enabled
+                        trust_mode = config.get('trust_the_process', False)
+                        if trust_mode and config.get('gemini_api_key'):
+                            # Try audio analysis as tie-breaker
+                            logger.info(f"TRUST THE PROCESS: Uncertain verification, trying audio tie-breaker...")
+                            audio_result = None
+                            audio_files = find_audio_files(str(old_path))
+                            if audio_files:
+                                audio_result = analyze_audio_with_gemini(audio_files[0], config)
+
+                            if audio_result and audio_result.get('author'):
+                                audio_author = audio_result.get('author', '')
+                                audio_title = audio_result.get('title', '')
+                                # Check if audio confirms new author OR original author
+                                new_match = audio_author.lower() in new_author.lower() or new_author.lower() in audio_author.lower()
+                                old_match = audio_author.lower() in row['current_author'].lower() or row['current_author'].lower() in audio_author.lower()
+
+                                if new_match and not old_match:
+                                    # Audio confirms new author - proceed with change
+                                    logger.info(f"TRUST THE PROCESS: Audio confirms change to '{new_author}'")
+                                    if audio_title:
+                                        new_title = audio_title
+                                    drastic_change = False  # Allow auto-fix
+                                elif old_match and not new_match:
+                                    # Audio says keep original - don't change
+                                    logger.info(f"TRUST THE PROCESS: Audio says keep '{row['current_author']}'")
+                                    new_author = row['current_author']
+                                    drastic_change = False
+                                else:
+                                    # Audio is ambiguous - add to needs_attention list
+                                    logger.warning(f"TRUST THE PROCESS: Audio ambiguous, flagging for attention")
+                                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?, ?, ?, ?, ?, ?)''',
+                                             (row['book_id'], row['current_author'], row['current_title'],
+                                              new_author, new_title, str(old_path), str(new_path),
+                                              f"Unidentifiable: AI uncertain, audio ambiguous. Audio heard: {audio_author}",
+                                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                              str(new_year) if new_year else None, new_edition, new_variant))
+                                    c.execute('UPDATE books SET status = ? WHERE id = ?', ('needs_attention', row['book_id']))
+                                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                    processed += 1
+                                    continue
+                            else:
+                                # No audio analysis possible - flag for attention
+                                logger.warning(f"TRUST THE PROCESS: No audio available, flagging for attention")
+                                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                  new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                             VALUES (?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?, ?, ?, ?, ?, ?)''',
+                                         (row['book_id'], row['current_author'], row['current_title'],
+                                          new_author, new_title, str(old_path), str(new_path),
+                                          f"Unidentifiable: AI uncertain, no audio analysis available",
+                                          new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                          str(new_year) if new_year else None, new_edition, new_variant))
+                                c.execute('UPDATE books SET status = ? WHERE id = ?', ('needs_attention', row['book_id']))
+                                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                processed += 1
+                                continue
+                        else:
+                            # Standard mode - block the change
+                            logger.warning(f"BLOCKED (uncertain): {row['current_author']} -> {new_author}")
+                            # Record as pending_fix for manual review
+                            c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                              new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?, ?)''',
+                                     (row['book_id'], row['current_author'], row['current_title'],
+                                      new_author, new_title, str(old_path), str(new_path),
+                                      f"Uncertain: {verification.get('reasoning', 'needs review')}",
+                                      new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                      str(new_year) if new_year else None, new_edition, new_variant))
+                            c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', row['book_id']))
+                            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                            processed += 1
+                            continue
+                else:
+                    # Verification failed completely - check Trust the Process mode
+                    trust_mode = config.get('trust_the_process', False)
+                    if trust_mode and config.get('gemini_api_key'):
+                        # Try audio analysis as last resort
+                        logger.info(f"TRUST THE PROCESS: Verification failed, trying audio as last resort...")
+                        audio_files = find_audio_files(str(old_path))
+                        if audio_files:
+                            audio_result = analyze_audio_with_gemini(audio_files[0], config)
+                            if audio_result and audio_result.get('author'):
+                                # Use audio result directly
+                                new_author = audio_result.get('author', new_author)
+                                new_title = audio_result.get('title', new_title)
+                                new_narrator = audio_result.get('narrator', new_narrator)
+                                drastic_change = is_drastic_author_change(row['current_author'], new_author)
+                                logger.info(f"TRUST THE PROCESS: Using audio metadata: {new_author} - {new_title}")
+                            else:
+                                # Audio failed too - flag for attention
+                                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                  new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                             VALUES (?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?, ?, ?, ?, ?, ?)''',
+                                         (row['book_id'], row['current_author'], row['current_title'],
+                                          new_author, new_title, str(old_path), str(new_path),
+                                          f"Unidentifiable: All verification methods failed",
+                                          new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                          str(new_year) if new_year else None, new_edition, new_variant))
+                                c.execute('UPDATE books SET status = ? WHERE id = ?', ('needs_attention', row['book_id']))
+                                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                processed += 1
+                                continue
+                        else:
+                            # No audio files - flag for attention
+                            c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                              new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                         VALUES (?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?, ?, ?, ?, ?, ?)''',
+                                     (row['book_id'], row['current_author'], row['current_title'],
+                                      new_author, new_title, str(old_path), str(new_path),
+                                      f"Unidentifiable: No verification data, no audio files",
+                                      new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                      str(new_year) if new_year else None, new_edition, new_variant))
+                            c.execute('UPDATE books SET status = ? WHERE id = ?', ('needs_attention', row['book_id']))
+                            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                            processed += 1
+                            continue
+                    else:
+                        # Standard mode - block the change
+                        logger.warning(f"BLOCKED (verification failed): {row['current_author']} -> {new_author}")
                         c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', row['book_id']))
                         c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                         processed += 1
                         continue
-                else:
-                    # Verification failed - block the change
-                    logger.warning(f"BLOCKED (verification failed): {row['current_author']} -> {new_author}")
-                    c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', row['book_id']))
-                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                    processed += 1
-                    continue
 
                 # Recalculate new_path with potentially updated author/title/narrator
                 new_path = build_new_path(lib_path, new_author, new_title,
@@ -4608,9 +5075,11 @@ def process_queue(config, limit=None):
                     processed += 1
                     continue
 
-            # Only auto-fix if enabled AND NOT a drastic change
-            # Drastic changes ALWAYS require manual approval to prevent data loss
-            if config.get('auto_fix', False) and not drastic_change:
+            # Only auto-fix if enabled AND NOT a drastic change (unless Trust the Process mode)
+            # In Trust the Process mode, verified drastic changes can be auto-fixed
+            trust_mode = config.get('trust_the_process', False)
+            can_auto_fix = config.get('auto_fix', False) and (not drastic_change or trust_mode)
+            if can_auto_fix:
                 # Actually rename the folder
                 try:
                     import shutil
@@ -5283,6 +5752,10 @@ def history_page():
     c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'duplicate'")
     duplicate_count = c.fetchone()['count']
 
+    # Get needs_attention count for the UI
+    c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'needs_attention'")
+    needs_attention_count = c.fetchone()['count']
+
     # Build query based on status filter
     if status_filter == 'pending':
         c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'pending_fix'")
@@ -5296,6 +5769,13 @@ def history_page():
         total = c.fetchone()['count']
         c.execute('''SELECT * FROM history
                      WHERE status = 'duplicate'
+                     ORDER BY fixed_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+    elif status_filter == 'attention':
+        c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'needs_attention'")
+        total = c.fetchone()['count']
+        c.execute('''SELECT * FROM history
+                     WHERE status = 'needs_attention'
                      ORDER BY fixed_at DESC
                      LIMIT ? OFFSET ?''', (per_page, offset))
     else:
@@ -5322,7 +5802,8 @@ def history_page():
                           total_pages=total_pages,
                           total=total,
                           status_filter=status_filter,
-                          duplicate_count=duplicate_count)
+                          duplicate_count=duplicate_count,
+                          needs_attention_count=needs_attention_count)
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings_page():
@@ -5342,6 +5823,7 @@ def settings_page():
         config['batch_size'] = int(request.form.get('batch_size', 3))
         config['max_requests_per_hour'] = int(request.form.get('max_requests_per_hour', 30))
         config['auto_fix'] = 'auto_fix' in request.form
+        config['trust_the_process'] = 'trust_the_process' in request.form
         config['protect_author_changes'] = 'protect_author_changes' in request.form
         config['enabled'] = 'enabled' in request.form
         config['series_grouping'] = 'series_grouping' in request.form
@@ -5351,6 +5833,10 @@ def settings_page():
         config['metadata_embedding_enabled'] = 'metadata_embedding_enabled' in request.form
         config['metadata_embedding_overwrite_managed'] = 'metadata_embedding_overwrite_managed' in request.form
         config['metadata_embedding_backup_sidecar'] = 'metadata_embedding_backup_sidecar' in request.form
+        # Language settings
+        config['preferred_language'] = request.form.get('preferred_language', 'en')
+        config['preserve_original_titles'] = 'preserve_original_titles' in request.form
+        config['detect_language_from_audio'] = 'detect_language_from_audio' in request.form
         config['google_books_api_key'] = request.form.get('google_books_api_key', '').strip() or None
         config['update_channel'] = request.form.get('update_channel', 'stable')
         config['naming_format'] = request.form.get('naming_format', 'author/title')

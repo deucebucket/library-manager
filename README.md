@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.35-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.37-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,16 +16,19 @@
 
 ## Recent Changes (develop)
 
-> **beta.35** - Ollama Self-Hosted AI Support
-> - **Ollama Integration** - Run AI completely locally with no API costs
-> - Select from llama3.2, mistral, phi3, or any model on your Ollama server
-> - Test Connection button and auto-fetch available models
-> - Your spicy books stay private!
+> **beta.37** - "Trust the Process" Mode (EXPERIMENTAL)
+> - **Full Auto Verification** - Drastic changes verified via AI + audio snippets
+> - **"Needs Attention" List** - Only truly unidentifiable items flagged for review
+> - Everything else is auto-fixed (with full undo capability)
 
-> **beta.35** - Audio Fingerprinting
+> **beta.36** - Preferred Metadata Language (Issue #17)
+> - **Language Settings** - Configure your library's preferred language (28 languages)
+> - **Preserve Original Titles** - Keep foreign titles instead of translating to English
+
+> **beta.35** - Ollama Self-Hosted AI Support + Audio Fingerprinting
+> - **Ollama Integration** - Run AI completely locally with no API costs
 > - **Smart Duplicate Detection** - Uses Chromaprint to detect identical recordings
 > - **Corrupt File Detection** - Identifies broken audio files
-> - **Replace/Remove buttons** - Easy cleanup of duplicates and corrupt files
 
 > **beta.34** - Config migration fix, **beta.33** - Empty series hyphen fix, **beta.32** - Manual match fallback
 
@@ -104,6 +107,12 @@ Build your own folder structure:
 {author}/{series}/{series_num} - {title}  → Brandon Sanderson/Mistborn/1 - The Final Empire/
 {author} - {title} ({narrator})           → Brandon Sanderson - The Final Empire (Kramer)/
 ```
+
+### Language Support
+- **28 languages** - German, French, Spanish, Italian, Portuguese, Dutch, Swedish, Norwegian, Danish, Finnish, Polish, Russian, Japanese, Chinese, Korean, Arabic, Hebrew, Hindi, Turkish, Czech, Hungarian, Greek, Thai, Vietnamese, Ukrainian, Romanian, Indonesian
+- **Preserve original titles** - keeps "Der Bücherdrache" instead of translating to English
+- **Regional Audible search** - queries audible.de, audible.fr, etc. for localized results
+- **Audio language detection** - use Gemini to detect spoken language in audiobooks
 
 ### Additional Features
 - **Web dashboard** with dark theme

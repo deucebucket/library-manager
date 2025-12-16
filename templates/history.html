@@ -29,7 +29,12 @@
         </button>
         {% endif %}
         {% endif %}
-        <span class="text-muted">{{ total }} {% if status_filter == 'pending' %}pending{% elif status_filter == 'duplicate' %}duplicates{% else %}total{% endif %}</span>
+        {% if needs_attention_count is defined and needs_attention_count > 0 %}
+        <a href="/history?status=attention" class="btn btn-sm btn-danger {% if status_filter == 'attention' %}active{% endif %}">
+            <i class="bi bi-exclamation-triangle-fill"></i> {{ needs_attention_count }} Needs Attention
+        </a>
+        {% endif %}
+        <span class="text-muted">{{ total }} {% if status_filter == 'pending' %}pending{% elif status_filter == 'duplicate' %}duplicates{% elif status_filter == 'attention' %}unidentifiable{% else %}total{% endif %}</span>
     </div>
 </div>
 
