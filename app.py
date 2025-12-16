@@ -378,9 +378,11 @@ SECRETS_PATH = DATA_DIR / 'secrets.json'
 
 DEFAULT_CONFIG = {
     "library_paths": [],  # Empty by default - user configures via Settings
-    "ai_provider": "openrouter",  # "openrouter" or "gemini"
+    "ai_provider": "openrouter",  # "openrouter", "gemini", or "ollama"
     "openrouter_model": "google/gemma-3n-e4b-it:free",
     "gemini_model": "gemini-2.0-flash",
+    "ollama_url": "http://localhost:11434",  # Ollama server URL
+    "ollama_model": "llama3.2:3b",  # Default model - good for 8-12GB VRAM
     "scan_interval_hours": 6,
     "batch_size": 3,
     "max_requests_per_hour": 30,
@@ -1591,7 +1593,10 @@ def call_ai(messy_names, config):
     provider = config.get('ai_provider', 'openrouter')
 
     # Use selected provider
-    if provider == 'gemini' and config.get('gemini_api_key'):
+    if provider == 'ollama':
+        # Ollama doesn't need an API key - it's local
+        return call_ollama(prompt, config)
+    elif provider == 'gemini' and config.get('gemini_api_key'):
         return call_gemini(prompt, config)
     elif config.get('openrouter_api_key'):
         return call_openrouter(prompt, config)
@@ -1718,6 +1723,85 @@ def call_gemini(prompt, config, retry_count=0):
     except Exception as e:
         logger.error(f"Gemini: {e}")
     return None
+
+
+def call_ollama(prompt, config):
+    """Call local Ollama API for fully self-hosted AI."""
+    try:
+        ollama_url = config.get('ollama_url', 'http://localhost:11434')
+        model = config.get('ollama_model', 'llama3.2:3b')
+
+        # Ollama's generate endpoint
+        resp = requests.post(
+            f"{ollama_url}/api/generate",
+            json={
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.1
+                }
+            },
+            timeout=120  # Local models can be slower, especially on first load
+        )
+
+        if resp.status_code == 200:
+            result = resp.json()
+            text = result.get('response', '')
+            if text:
+                return parse_json_response(text)
+        elif resp.status_code == 404:
+            logger.error(f"Ollama: Model '{model}' not found. Run: ollama pull {model}")
+        else:
+            error_msg = explain_http_error(resp.status_code, "Ollama")
+            logger.warning(f"Ollama: {error_msg}")
+            try:
+                detail = resp.json().get('error', '')
+                if detail:
+                    logger.warning(f"Ollama detail: {detail}")
+            except:
+                pass
+    except requests.exceptions.Timeout:
+        logger.error("Ollama: Request timed out after 120 seconds - model may still be loading")
+    except requests.exceptions.ConnectionError:
+        logger.error(f"Ollama: Connection failed - is Ollama running at {config.get('ollama_url', 'http://localhost:11434')}?")
+    except Exception as e:
+        logger.error(f"Ollama: {e}")
+    return None
+
+
+def get_ollama_models(config):
+    """Fetch list of available models from Ollama server."""
+    try:
+        ollama_url = config.get('ollama_url', 'http://localhost:11434')
+        resp = requests.get(f"{ollama_url}/api/tags", timeout=10)
+        if resp.status_code == 200:
+            models = resp.json().get('models', [])
+            return [m.get('name', '') for m in models if m.get('name')]
+        return []
+    except:
+        return []
+
+
+def test_ollama_connection(config):
+    """Test connection to Ollama server."""
+    try:
+        ollama_url = config.get('ollama_url', 'http://localhost:11434')
+        resp = requests.get(f"{ollama_url}/api/tags", timeout=10)
+        if resp.status_code == 200:
+            models = resp.json().get('models', [])
+            return {
+                'success': True,
+                'models': [m.get('name', '') for m in models],
+                'model_count': len(models)
+            }
+        return {'success': False, 'error': f'HTTP {resp.status_code}'}
+    except requests.exceptions.ConnectionError:
+        return {'success': False, 'error': f'Cannot connect to {ollama_url}'}
+    except requests.exceptions.Timeout:
+        return {'success': False, 'error': 'Connection timed out'}
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
 
 
 def extract_audio_sample(audio_file, duration_seconds=90, output_format='mp3'):
@@ -5252,6 +5336,8 @@ def settings_page():
         config['ai_provider'] = request.form.get('ai_provider', 'openrouter')
         config['openrouter_model'] = request.form.get('openrouter_model', 'google/gemma-3n-e4b-it:free')
         config['gemini_model'] = request.form.get('gemini_model', 'gemini-1.5-flash')
+        config['ollama_url'] = request.form.get('ollama_url', 'http://localhost:11434').strip()
+        config['ollama_model'] = request.form.get('ollama_model', 'llama3.2:3b').strip()
         config['scan_interval_hours'] = int(request.form.get('scan_interval_hours', 6))
         config['batch_size'] = int(request.form.get('batch_size', 3))
         config['max_requests_per_hour'] = int(request.form.get('max_requests_per_hour', 30))
@@ -6915,6 +7001,38 @@ def api_bug_report():
 """
 
     return jsonify({'report': report})
+
+
+# ============== OLLAMA INTEGRATION ==============
+
+@app.route('/api/test_ollama', methods=['POST'])
+def api_test_ollama():
+    """Test connection to Ollama server."""
+    data = request.get_json() or {}
+    ollama_url = data.get('ollama_url', 'http://localhost:11434').strip().rstrip('/')
+
+    result = test_ollama_connection({'ollama_url': ollama_url})
+    return jsonify(result)
+
+
+@app.route('/api/ollama_models', methods=['POST'])
+def api_ollama_models():
+    """Get list of available models from Ollama server."""
+    data = request.get_json() or {}
+    ollama_url = data.get('ollama_url', 'http://localhost:11434').strip().rstrip('/')
+
+    models = get_ollama_models({'ollama_url': ollama_url})
+    if models:
+        return jsonify({
+            'success': True,
+            'models': models
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'models': [],
+            'error': 'Could not fetch models from Ollama server'
+        })
 
 
 # ============== AUDIOBOOKSHELF INTEGRATION ==============
