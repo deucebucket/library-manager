@@ -4,13 +4,32 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.23-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.27-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 
 *Automatically fix messy audiobook folders using real book databases + AI intelligence*
 
 </div>
+
+---
+
+## Recent Changes (stable)
+
+> **beta.27** - Custom template cleanup fix (Issue #16)
+> - Fixed "dangling dash" in naming templates when series is empty
+
+> **beta.26** - Path Diagnostic Tool
+> - **Test Paths button** - Debug Docker volume mount issues
+> - Shows what container can see, suggests fixes for mount problems
+
+> **beta.25** - Critical fixes
+> - **Issue #15** - Search results display fixed
+> - **Config persistence** - `user_groups.json` now properly stored in `/data/`
+
+> **beta.24** - Trust existing authors, don't blindly accept API suggestions
+
+[Full Changelog](CHANGELOG.md) | [Development branch](https://github.com/deucebucket/library-manager/tree/develop) has newer features
 
 ---
 
