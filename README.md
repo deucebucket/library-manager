@@ -14,6 +14,25 @@
 
 ---
 
+## Recent Changes (develop)
+
+> **beta.35** - Ollama Self-Hosted AI Support
+> - **Ollama Integration** - Run AI completely locally with no API costs
+> - Select from llama3.2, mistral, phi3, or any model on your Ollama server
+> - Test Connection button and auto-fetch available models
+> - Your spicy books stay private!
+
+> **beta.35** - Audio Fingerprinting
+> - **Smart Duplicate Detection** - Uses Chromaprint to detect identical recordings
+> - **Corrupt File Detection** - Identifies broken audio files
+> - **Replace/Remove buttons** - Easy cleanup of duplicates and corrupt files
+
+> **beta.34** - Config migration fix, **beta.33** - Empty series hyphen fix, **beta.32** - Manual match fallback
+
+[Full Changelog](CHANGELOG.md)
+
+---
+
 ## The Problem
 
 Audiobook libraries get messy. Downloads leave you with:
