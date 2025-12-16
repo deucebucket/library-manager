@@ -6,8 +6,8 @@ LABEL description="Smart Audiobook Library Organizer with Multi-Source Metadata 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies (curl for healthcheck, ffmpeg for audio processing)
-RUN apt-get update && apt-get install -y --no-install-recommends curl ffmpeg && \
+# Install system dependencies (curl for healthcheck, ffmpeg for audio processing, chromaprint for audio fingerprinting)
+RUN apt-get update && apt-get install -y --no-install-recommends curl ffmpeg libchromaprint-tools && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies

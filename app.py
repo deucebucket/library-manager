@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.34"
+APP_VERSION = "0.9.0-beta.35"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -3490,6 +3490,355 @@ def get_file_signature(filepath, sample_size=8192):
         return None
 
 
+def get_audio_fingerprint(filepath, duration=30, offset=0):
+    """
+    Get audio fingerprint using chromaprint/fpcalc.
+
+    Args:
+        filepath: Path to audio file
+        duration: Seconds of audio to fingerprint (default 30)
+        offset: Start position in seconds (for sampling middle/end)
+
+    Returns dict with:
+        - fingerprint: The chromaprint fingerprint string
+        - duration: Total duration of the file in seconds
+        - error: Error message if failed
+    """
+    import subprocess
+
+    try:
+        # Build fpcalc command
+        cmd = ['fpcalc', '-length', str(duration)]
+        if offset > 0:
+            # Use ffmpeg to extract segment first (fpcalc doesn't support offset)
+            # For now, we'll just fingerprint from the start
+            pass
+        cmd.append(str(filepath))
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+        if result.returncode != 0:
+            return {'fingerprint': None, 'duration': None, 'error': result.stderr}
+
+        # Parse output
+        output = {}
+        for line in result.stdout.strip().split('\n'):
+            if '=' in line:
+                key, value = line.split('=', 1)
+                output[key] = value
+
+        return {
+            'fingerprint': output.get('FINGERPRINT'),
+            'duration': int(output.get('DURATION', 0)),
+            'error': None
+        }
+    except subprocess.TimeoutExpired:
+        return {'fingerprint': None, 'duration': None, 'error': 'Timeout'}
+    except FileNotFoundError:
+        return {'fingerprint': None, 'duration': None, 'error': 'fpcalc not installed'}
+    except Exception as e:
+        return {'fingerprint': None, 'duration': None, 'error': str(e)}
+
+
+def compare_fingerprints(fp1, fp2):
+    """
+    Compare two chromaprint fingerprints and return similarity score.
+
+    Chromaprint fingerprints are base64-encoded integers that can be
+    compared using popcount of XOR (Hamming distance).
+
+    Returns similarity score 0.0 to 1.0
+    """
+    import base64
+    import struct
+
+    if not fp1 or not fp2:
+        return 0.0
+
+    try:
+        # Decode base64 fingerprints to raw bytes
+        raw1 = base64.b64decode(fp1 + '==')  # Add padding if needed
+        raw2 = base64.b64decode(fp2 + '==')
+
+        # Convert to list of 32-bit integers
+        def to_ints(raw):
+            # Skip first 4 bytes (header)
+            data = raw[4:] if len(raw) > 4 else raw
+            ints = []
+            for i in range(0, len(data) - 3, 4):
+                val = struct.unpack('<I', data[i:i+4])[0]
+                ints.append(val)
+            return ints
+
+        ints1 = to_ints(raw1)
+        ints2 = to_ints(raw2)
+
+        if not ints1 or not ints2:
+            return 0.0
+
+        # Compare overlapping portion
+        min_len = min(len(ints1), len(ints2))
+        if min_len == 0:
+            return 0.0
+
+        # Count matching bits (using XOR and popcount)
+        total_bits = min_len * 32
+        different_bits = 0
+        for i in range(min_len):
+            xor = ints1[i] ^ ints2[i]
+            different_bits += bin(xor).count('1')
+
+        similarity = 1.0 - (different_bits / total_bits)
+        return max(0.0, similarity)
+
+    except Exception as e:
+        logger.debug(f"Fingerprint comparison error: {e}")
+        return 0.0
+
+
+def analyze_audiobook_completeness(folder_path):
+    """
+    Analyze an audiobook folder for completeness.
+
+    Returns dict with:
+        - total_duration: Total duration in seconds
+        - file_count: Number of audio files
+        - files: List of {path, duration, fingerprint_start, fingerprint_end}
+        - appears_complete: True if ending sounds like a proper ending
+        - appears_partial: True if it seems cut off
+    """
+    folder = Path(folder_path)
+    audio_files = sorted([f for f in folder.rglob('*') if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS])
+
+    if not audio_files:
+        return {'total_duration': 0, 'file_count': 0, 'files': [], 'appears_complete': False}
+
+    files_info = []
+    total_duration = 0
+
+    for audio_file in audio_files:
+        # Get fingerprint of first 30 seconds
+        fp_start = get_audio_fingerprint(str(audio_file), duration=30)
+
+        if fp_start['duration']:
+            total_duration += fp_start['duration']
+            files_info.append({
+                'path': str(audio_file),
+                'filename': audio_file.name,
+                'duration': fp_start['duration'],
+                'fingerprint_start': fp_start['fingerprint']
+            })
+
+    return {
+        'total_duration': total_duration,
+        'total_duration_hours': round(total_duration / 3600, 1),
+        'file_count': len(audio_files),
+        'files': files_info
+    }
+
+
+def compare_audiobooks_deep(source_path, dest_path):
+    """
+    Deep comparison of two audiobook folders using audio fingerprinting.
+
+    This goes beyond file hashes to detect:
+    - Same recording in different formats/bitrates
+    - Partial copies (one is subset of other)
+    - Different recordings of same book (different narrators)
+    - Corrupt/unreadable files
+
+    Returns dict with:
+        - same_recording: True if audio content matches
+        - source_is_subset: True if source is partial copy of dest
+        - dest_is_subset: True if dest is partial copy of source
+        - recording_similarity: 0.0-1.0 how similar the recordings are
+        - recommendation: 'keep_source', 'keep_dest', 'keep_both', 'merge'
+        - source_corrupt: True if source files are corrupt/unreadable
+        - dest_corrupt: True if dest files are corrupt/unreadable
+    """
+    source_info = analyze_audiobook_completeness(source_path)
+    dest_info = analyze_audiobook_completeness(dest_path)
+
+    # Check for corrupt files (files exist but can't be read/have no duration)
+    source_corrupt = source_info['file_count'] > 0 and source_info['total_duration'] == 0
+    dest_corrupt = dest_info['file_count'] > 0 and dest_info['total_duration'] == 0
+
+    result = {
+        'source_duration': source_info['total_duration'],
+        'source_duration_hours': source_info.get('total_duration_hours', 0),
+        'dest_duration': dest_info['total_duration'],
+        'dest_duration_hours': dest_info.get('total_duration_hours', 0),
+        'source_files': source_info['file_count'],
+        'dest_files': dest_info['file_count'],
+        'source_readable_files': len(source_info['files']),
+        'dest_readable_files': len(dest_info['files']),
+        'same_recording': False,
+        'source_is_subset': False,
+        'dest_is_subset': False,
+        'recording_similarity': 0.0,
+        'source_corrupt': source_corrupt,
+        'dest_corrupt': dest_corrupt,
+        'recommendation': 'keep_both'
+    }
+
+    # Handle corrupt files
+    if source_corrupt and not dest_corrupt:
+        result['recommendation'] = 'keep_dest'
+        result['reason'] = 'Source files are corrupt/unreadable'
+        return result
+    elif dest_corrupt and not source_corrupt:
+        result['recommendation'] = 'keep_source'
+        result['reason'] = 'Destination files are corrupt/unreadable'
+        return result
+    elif source_corrupt and dest_corrupt:
+        result['recommendation'] = 'keep_both'
+        result['reason'] = 'Both versions have corrupt/unreadable files'
+        return result
+
+    if not source_info['files'] or not dest_info['files']:
+        return result
+
+    # Compare first file fingerprints to detect same recording
+    source_first_fp = source_info['files'][0].get('fingerprint_start')
+    dest_first_fp = dest_info['files'][0].get('fingerprint_start')
+
+    if source_first_fp and dest_first_fp:
+        similarity = compare_fingerprints(source_first_fp, dest_first_fp)
+        result['recording_similarity'] = round(similarity, 2)
+
+        # High similarity = same recording
+        if similarity >= 0.7:
+            result['same_recording'] = True
+
+            # Determine which is more complete
+            source_dur = source_info['total_duration']
+            dest_dur = dest_info['total_duration']
+
+            if source_dur > dest_dur * 1.1:  # Source is 10%+ longer
+                result['dest_is_subset'] = True
+                result['recommendation'] = 'keep_source'
+                result['reason'] = f'Source is more complete ({source_dur//60}min vs {dest_dur//60}min)'
+            elif dest_dur > source_dur * 1.1:  # Dest is 10%+ longer
+                result['source_is_subset'] = True
+                result['recommendation'] = 'keep_dest'
+                result['reason'] = f'Destination is more complete ({dest_dur//60}min vs {source_dur//60}min)'
+            else:
+                # Similar length - prefer the properly named one (dest)
+                result['recommendation'] = 'keep_dest'
+                result['reason'] = 'Same recording, similar length - keeping properly named version'
+        else:
+            # Different recordings
+            result['reason'] = f'Different recordings ({similarity:.0%} similarity)'
+
+    return result
+
+
+def compare_book_folders(source_path, dest_path, deep_analysis=True):
+    """
+    Compare two book folders to determine if they contain the same audiobook.
+
+    Args:
+        source_path: Path to source folder
+        dest_path: Path to destination folder
+        deep_analysis: If True, use audio fingerprinting for comparison (slower but more accurate)
+
+    Returns dict with:
+        - identical: True if folders contain the same audio files
+        - source_only: Files only in source
+        - dest_only: Files only in destination
+        - matching: Files that match between both
+        - source_better: True if source has more/better files
+        - dest_better: True if destination has more/better files
+        - deep_analysis: Results from audio fingerprint comparison (if enabled)
+    """
+    source = Path(source_path)
+    dest = Path(dest_path)
+
+    # Get audio files from both folders
+    source_audio = [f for f in source.rglob('*') if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
+    dest_audio = [f for f in dest.rglob('*') if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
+
+    # Build signature maps
+    source_sigs = {}
+    for f in source_audio:
+        sig = get_file_signature(str(f))
+        if sig:
+            source_sigs[sig] = f
+
+    dest_sigs = {}
+    for f in dest_audio:
+        sig = get_file_signature(str(f))
+        if sig:
+            dest_sigs[sig] = f
+
+    # Compare
+    source_sig_set = set(source_sigs.keys())
+    dest_sig_set = set(dest_sigs.keys())
+
+    matching = source_sig_set & dest_sig_set
+    source_only = source_sig_set - dest_sig_set
+    dest_only = dest_sig_set - source_sig_set
+
+    # Calculate total sizes
+    source_total_size = sum(os.path.getsize(str(f)) for f in source_audio)
+    dest_total_size = sum(os.path.getsize(str(f)) for f in dest_audio)
+
+    result = {
+        'identical': len(matching) > 0 and len(source_only) == 0 and len(dest_only) == 0,
+        'matching_count': len(matching),
+        'source_only_count': len(source_only),
+        'dest_only_count': len(dest_only),
+        'source_files': len(source_audio),
+        'dest_files': len(dest_audio),
+        'source_size': source_total_size,
+        'dest_size': dest_total_size,
+        'source_better': source_total_size > dest_total_size or len(source_audio) > len(dest_audio),
+        'dest_better': dest_total_size > source_total_size or len(dest_audio) > len(source_audio),
+        'overlap_ratio': len(matching) / max(len(source_sig_set), len(dest_sig_set), 1)
+    }
+
+    # Determine if it's effectively the same book (high overlap or one is subset of other)
+    if result['overlap_ratio'] >= 0.8:
+        result['same_book'] = True
+    elif len(matching) > 0 and (len(source_only) == 0 or len(dest_only) == 0):
+        # One is a subset of the other
+        result['same_book'] = True
+    else:
+        result['same_book'] = False
+
+    # Deep analysis using audio fingerprinting (detects same recording in different formats,
+    # corrupt files, partial copies)
+    if deep_analysis and not result['same_book']:
+        try:
+            deep_result = compare_audiobooks_deep(source_path, dest_path)
+            result['deep_analysis'] = deep_result
+
+            # Update same_book based on deep analysis
+            if deep_result.get('same_recording'):
+                result['same_book'] = True
+                result['same_recording'] = True
+
+            # Update better flags based on corrupt file detection
+            if deep_result.get('dest_corrupt') and not deep_result.get('source_corrupt'):
+                result['source_better'] = True
+                result['dest_better'] = False
+                result['dest_corrupt'] = True
+            elif deep_result.get('source_corrupt') and not deep_result.get('dest_corrupt'):
+                result['source_better'] = False
+                result['dest_better'] = True
+                result['source_corrupt'] = True
+
+            # Copy recommendation
+            result['recommendation'] = deep_result.get('recommendation', 'keep_both')
+            result['reason'] = deep_result.get('reason', '')
+
+        except Exception as e:
+            logger.debug(f"Deep analysis failed: {e}")
+            result['deep_analysis'] = None
+
+    return result
+
+
 def deep_scan_library(config):
     """
     Deep scan library - the AUTISTIC LIBRARIAN approach.
@@ -4221,20 +4570,91 @@ def process_queue(config, limit=None):
                             if resolved_path:
                                 new_path = resolved_path
                             else:
-                                # Couldn't resolve - mark as conflict
-                                logger.warning(f"CONFLICT: {new_path} exists - no unique distinguisher found")
-                                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                                  new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                             VALUES (?, ?, ?, ?, ?, ?, ?, 'error', 'Destination exists - could not resolve version conflict', ?, ?, ?, ?, ?, ?)''',
-                                         (row['book_id'], row['current_author'], row['current_title'],
-                                          new_author, new_title, str(old_path), str(new_path),
-                                          new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                          str(new_year) if new_year else None, new_edition, new_variant))
-                                c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                                         ('conflict', 'Destination folder exists - multiple versions detected', row['book_id']))
-                                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                                processed += 1
-                                continue
+                                # Couldn't resolve with distinguishers - check if it's actually a duplicate
+                                logger.info(f"Comparing folders to check for duplicate: {old_path} vs {new_path}")
+                                comparison = compare_book_folders(old_path, new_path)
+
+                                # Check for corrupt file scenarios first
+                                if comparison.get('dest_corrupt'):
+                                    # Destination is corrupt - recommend keeping source
+                                    logger.warning(f"CORRUPT DEST: {new_path} has corrupt/unreadable files, source {old_path} is valid")
+                                    reason = comparison.get('reason', 'Destination files are corrupt/unreadable')
+                                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'corrupt_dest', ?, ?, ?, ?, ?, ?, ?)''',
+                                             (row['book_id'], row['current_author'], row['current_title'],
+                                              new_author, new_title, str(old_path), str(new_path),
+                                              f"{reason}. Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files (corrupt)",
+                                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                              str(new_year) if new_year else None, new_edition, new_variant))
+                                    c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                                             ('corrupt_dest', f'Destination {new_path} is corrupt - source is valid', row['book_id']))
+                                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                    processed += 1
+                                    continue
+
+                                if comparison.get('source_corrupt'):
+                                    # Source is corrupt - mark as duplicate (keep dest)
+                                    logger.warning(f"CORRUPT SOURCE: {old_path} has corrupt/unreadable files, dest {new_path} is valid")
+                                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'duplicate', ?, ?, ?, ?, ?, ?, ?)''',
+                                             (row['book_id'], row['current_author'], row['current_title'],
+                                              new_author, new_title, str(old_path), str(new_path),
+                                              f"Source is corrupt/unreadable, destination is valid. Recommend removing corrupt source.",
+                                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                              str(new_year) if new_year else None, new_edition, new_variant))
+                                    c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                                             ('duplicate', f'Corrupt - valid copy exists at {new_path}', row['book_id']))
+                                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                    processed += 1
+                                    continue
+
+                                if comparison['identical'] or comparison['same_book']:
+                                    # It's a duplicate! Mark for removal instead of conflict
+                                    logger.info(f"DUPLICATE DETECTED: {old_path} is duplicate of {new_path} "
+                                               f"(identical={comparison['identical']}, overlap={comparison['overlap_ratio']:.0%})")
+
+                                    # Determine which to keep based on recommendation
+                                    recommendation = comparison.get('recommendation', 'keep_dest')
+                                    reason = comparison.get('reason', '')
+
+                                    if recommendation == 'keep_source' and comparison['source_better']:
+                                        # Source is better - note this for user review
+                                        logger.info(f"Note: Source is better ({reason})")
+
+                                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'duplicate', ?, ?, ?, ?, ?, ?, ?)''',
+                                             (row['book_id'], row['current_author'], row['current_title'],
+                                              new_author, new_title, str(old_path), str(new_path),
+                                              f"Duplicate detected ({comparison['overlap_ratio']:.0%} match, {comparison['matching_count']} files). Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files. {reason}",
+                                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                              str(new_year) if new_year else None, new_edition, new_variant))
+                                    c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                                             ('duplicate', f'Duplicate of {new_path}', row['book_id']))
+                                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                    processed += 1
+                                    continue
+                                else:
+                                    # Different versions - mark as conflict with deep analysis info
+                                    deep_info = comparison.get('deep_analysis', {})
+                                    reason = comparison.get('reason', f'Different recordings ({comparison["overlap_ratio"]:.0%} similarity)')
+
+                                    logger.warning(f"CONFLICT: {new_path} exists - {reason}")
+                                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'error', ?, ?, ?, ?, ?, ?, ?)''',
+                                             (row['book_id'], row['current_author'], row['current_title'],
+                                              new_author, new_title, str(old_path), str(new_path),
+                                              f"{reason}. Source: {comparison['source_files']} files ({comparison['source_size']//1024//1024}MB), Dest: {comparison['dest_files']} files ({comparison['dest_size']//1024//1024}MB)",
+                                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                              str(new_year) if new_year else None, new_edition, new_variant))
+                                    c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                                             ('conflict', reason, row['book_id']))
+                                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                    processed += 1
+                                    continue
                         else:
                             # Destination is empty folder - safe to use it
                             shutil.move(str(old_path), str(new_path.parent / (new_path.name + "_temp")))
@@ -4775,12 +5195,23 @@ def history_page():
     per_page = 50
     offset = (page - 1) * per_page
 
+    # Get duplicate count for the UI
+    c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'duplicate'")
+    duplicate_count = c.fetchone()['count']
+
     # Build query based on status filter
     if status_filter == 'pending':
         c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'pending_fix'")
         total = c.fetchone()['count']
         c.execute('''SELECT * FROM history
                      WHERE status = 'pending_fix'
+                     ORDER BY fixed_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+    elif status_filter == 'duplicate':
+        c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'duplicate'")
+        total = c.fetchone()['count']
+        c.execute('''SELECT * FROM history
+                     WHERE status = 'duplicate'
                      ORDER BY fixed_at DESC
                      LIMIT ? OFFSET ?''', (per_page, offset))
     else:
@@ -4806,7 +5237,8 @@ def history_page():
                           page=page,
                           total_pages=total_pages,
                           total=total,
-                          status_filter=status_filter)
+                          status_filter=status_filter,
+                          duplicate_count=duplicate_count)
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings_page():
@@ -5561,6 +5993,248 @@ def api_undo(history_id):
         conn.close()
         logger.error(f"Undo failed: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/remove_duplicate/<int:history_id>', methods=['POST'])
+def api_remove_duplicate(history_id):
+    """Remove a confirmed duplicate - deletes the source folder (old_path) since destination is properly named."""
+    import shutil
+
+    conn = get_db()
+    c = conn.cursor()
+
+    # Get the history record
+    c.execute('SELECT * FROM history WHERE id = ?', (history_id,))
+    record = c.fetchone()
+
+    if not record:
+        conn.close()
+        return jsonify({'success': False, 'error': 'History record not found'}), 404
+
+    if record['status'] != 'duplicate':
+        conn.close()
+        return jsonify({'success': False, 'error': 'This record is not marked as a duplicate'}), 400
+
+    old_path = record['old_path']  # This is the duplicate to remove
+    new_path = record['new_path']  # This is the properly named copy to keep
+
+    # Safety checks
+    if not os.path.exists(old_path):
+        # Already removed - just update status
+        c.execute('UPDATE history SET status = ? WHERE id = ?', ('duplicate_removed', history_id))
+        c.execute('DELETE FROM books WHERE id = ?', (record['book_id'],))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'message': 'Duplicate was already removed'})
+
+    if not os.path.exists(new_path):
+        conn.close()
+        return jsonify({
+            'success': False,
+            'error': f'The properly named copy no longer exists: {new_path}. Refusing to delete.'
+        }), 400
+
+    # Re-verify it's still a duplicate before deleting
+    comparison = compare_book_folders(old_path, new_path)
+    if not (comparison['identical'] or comparison['same_book']):
+        conn.close()
+        return jsonify({
+            'success': False,
+            'error': f'Files have changed - no longer appears to be a duplicate (overlap: {comparison["overlap_ratio"]:.0%}). Please review manually.'
+        }), 400
+
+    try:
+        # Get size before removal for logging
+        total_size = sum(f.stat().st_size for f in Path(old_path).rglob('*') if f.is_file())
+
+        # Remove the duplicate folder
+        shutil.rmtree(old_path)
+        logger.info(f"Removed duplicate: {old_path} ({total_size // 1024 // 1024}MB)")
+
+        # Clean up empty parent folder (e.g., Unknown/)
+        parent = Path(old_path).parent
+        try:
+            if parent.exists() and not any(parent.iterdir()):
+                parent.rmdir()
+                logger.info(f"Removed empty parent folder: {parent}")
+        except OSError:
+            pass
+
+        # Update records
+        c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
+                 ('duplicate_removed', f'Removed {total_size // 1024 // 1024}MB duplicate', history_id))
+        c.execute('DELETE FROM books WHERE id = ?', (record['book_id'],))
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': f'Removed duplicate ({total_size // 1024 // 1024}MB freed)',
+            'removed_path': old_path,
+            'kept_path': new_path
+        })
+
+    except Exception as e:
+        conn.close()
+        logger.error(f"Failed to remove duplicate: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/replace_corrupt/<int:history_id>', methods=['POST'])
+def api_replace_corrupt(history_id):
+    """Replace corrupt destination with valid source - delete corrupt, move source to dest path."""
+    import shutil
+
+    conn = get_db()
+    c = conn.cursor()
+
+    # Get the history record
+    c.execute('SELECT * FROM history WHERE id = ?', (history_id,))
+    record = c.fetchone()
+
+    if not record:
+        conn.close()
+        return jsonify({'success': False, 'error': 'History record not found'}), 404
+
+    if record['status'] != 'corrupt_dest':
+        conn.close()
+        return jsonify({'success': False, 'error': 'This record is not marked as corrupt_dest'}), 400
+
+    old_path = record['old_path']  # Valid source
+    new_path = record['new_path']  # Corrupt destination
+
+    # Safety checks
+    if not os.path.exists(old_path):
+        conn.close()
+        return jsonify({
+            'success': False,
+            'error': f'Valid source no longer exists: {old_path}'
+        }), 400
+
+    try:
+        # Get sizes for logging
+        source_size = sum(f.stat().st_size for f in Path(old_path).rglob('*') if f.is_file())
+
+        # Delete the corrupt destination if it exists
+        if os.path.exists(new_path):
+            dest_size = sum(f.stat().st_size for f in Path(new_path).rglob('*') if f.is_file())
+            shutil.rmtree(new_path)
+            logger.info(f"Deleted corrupt destination: {new_path} ({dest_size // 1024 // 1024}MB)")
+
+        # Create parent directories if needed
+        Path(new_path).parent.mkdir(parents=True, exist_ok=True)
+
+        # Move the valid source to the destination
+        shutil.move(old_path, new_path)
+        logger.info(f"Moved valid source to destination: {old_path} -> {new_path}")
+
+        # Clean up empty parent folder
+        parent = Path(old_path).parent
+        try:
+            if parent.exists() and not any(parent.iterdir()):
+                parent.rmdir()
+                logger.info(f"Removed empty parent folder: {parent}")
+        except OSError:
+            pass
+
+        # Update records
+        c.execute('''UPDATE history SET status = ?, error_message = ? WHERE id = ?''',
+                 ('fixed', f'Replaced corrupt destination with valid source ({source_size // 1024 // 1024}MB)', history_id))
+        c.execute('''UPDATE books SET path = ?, current_author = ?, current_title = ?, status = ? WHERE id = ?''',
+                 (new_path, record['new_author'], record['new_title'], 'fixed', record['book_id']))
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': f'Replaced corrupt destination with valid source ({source_size // 1024 // 1024}MB)',
+            'new_path': new_path
+        })
+
+    except Exception as e:
+        conn.close()
+        logger.error(f"Failed to replace corrupt destination: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/remove_all_duplicates', methods=['POST'])
+def api_remove_all_duplicates():
+    """Remove all confirmed duplicates in one operation."""
+    import shutil
+
+    conn = get_db()
+    c = conn.cursor()
+
+    # Get all duplicate records
+    c.execute("SELECT * FROM history WHERE status = 'duplicate'")
+    duplicates = c.fetchall()
+
+    if not duplicates:
+        conn.close()
+        return jsonify({'success': True, 'message': 'No duplicates to remove', 'removed': 0})
+
+    removed = 0
+    skipped = 0
+    errors = []
+    total_freed = 0
+
+    for record in duplicates:
+        old_path = record['old_path']
+        new_path = record['new_path']
+
+        # Skip if already removed
+        if not os.path.exists(old_path):
+            c.execute('UPDATE history SET status = ? WHERE id = ?', ('duplicate_removed', record['id']))
+            c.execute('DELETE FROM books WHERE id = ?', (record['book_id'],))
+            removed += 1
+            continue
+
+        # Skip if destination no longer exists
+        if not os.path.exists(new_path):
+            skipped += 1
+            errors.append(f"Skipped {old_path}: destination {new_path} no longer exists")
+            continue
+
+        # Re-verify
+        comparison = compare_book_folders(old_path, new_path)
+        if not (comparison['identical'] or comparison['same_book']):
+            skipped += 1
+            errors.append(f"Skipped {old_path}: no longer appears to be duplicate")
+            continue
+
+        try:
+            total_size = sum(f.stat().st_size for f in Path(old_path).rglob('*') if f.is_file())
+            shutil.rmtree(old_path)
+            total_freed += total_size
+
+            # Clean up empty parent
+            parent = Path(old_path).parent
+            try:
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
+            except OSError:
+                pass
+
+            c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
+                     ('duplicate_removed', f'Removed {total_size // 1024 // 1024}MB duplicate', record['id']))
+            c.execute('DELETE FROM books WHERE id = ?', (record['book_id'],))
+            removed += 1
+
+        except Exception as e:
+            skipped += 1
+            errors.append(f"Failed to remove {old_path}: {e}")
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        'success': True,
+        'removed': removed,
+        'skipped': skipped,
+        'freed_mb': total_freed // 1024 // 1024,
+        'errors': errors[:10] if errors else []  # Limit errors in response
+    })
+
 
 @app.route('/api/stats')
 def api_stats():

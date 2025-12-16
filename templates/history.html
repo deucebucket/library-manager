@@ -7,17 +7,29 @@
         <i class="bi bi-clock-history"></i>
         {% if status_filter == 'pending' %}
         Pending Fixes
+        {% elif status_filter == 'duplicate' %}
+        Duplicates
         {% else %}
         Fix History
         {% endif %}
     </h2>
-    <div>
+    <div class="d-flex align-items-center gap-2">
         {% if status_filter %}
-        <a href="/history" class="btn btn-sm btn-outline-secondary me-2">
+        <a href="/history" class="btn btn-sm btn-outline-secondary">
             <i class="bi bi-x"></i> Clear Filter
         </a>
         {% endif %}
-        <span class="text-muted">{{ total }} {% if status_filter == 'pending' %}pending{% else %}total{% endif %}</span>
+        {% if duplicate_count > 0 %}
+        <a href="/history?status=duplicate" class="btn btn-sm btn-warning {% if status_filter == 'duplicate' %}active{% endif %}">
+            <i class="bi bi-files"></i> {{ duplicate_count }} Duplicate{{ 's' if duplicate_count != 1 else '' }}
+        </a>
+        {% if status_filter == 'duplicate' %}
+        <button class="btn btn-sm btn-danger" onclick="removeAllDuplicates()">
+            <i class="bi bi-trash-fill"></i> Remove All
+        </button>
+        {% endif %}
+        {% endif %}
+        <span class="text-muted">{{ total }} {% if status_filter == 'pending' %}pending{% elif status_filter == 'duplicate' %}duplicates{% else %}total{% endif %}</span>
     </div>
 </div>
 
@@ -65,6 +77,24 @@
                         <span class="badge bg-warning text-dark">Pending</span>
                         {% elif h.status == 'undone' %}
                         <span class="badge bg-info">Undone</span>
+                        {% elif h.status == 'duplicate' %}
+                        <span class="badge bg-warning text-dark" title="{{ h.error_message or 'Duplicate detected' }}" style="cursor: help;">
+                            <i class="bi bi-files"></i> Duplicate
+                        </span>
+                        {% if h.error_message %}
+                        <br><small class="text-warning">{{ h.error_message[:60] }}{% if h.error_message|length > 60 %}...{% endif %}</small>
+                        {% endif %}
+                        {% elif h.status == 'corrupt_dest' %}
+                        <span class="badge bg-danger" title="{{ h.error_message or 'Destination is corrupt' }}" style="cursor: help;">
+                            <i class="bi bi-exclamation-octagon"></i> Corrupt Dest
+                        </span>
+                        {% if h.error_message %}
+                        <br><small class="text-danger">{{ h.error_message[:60] }}{% if h.error_message|length > 60 %}...{% endif %}</small>
+                        {% endif %}
+                        {% elif h.status == 'duplicate_removed' %}
+                        <span class="badge bg-success" title="Duplicate removed">
+                            <i class="bi bi-trash-fill"></i> Removed
+                        </span>
                         {% elif h.status == 'error' %}
                         <span class="badge bg-danger" title="{{ h.error_message or 'Unknown error' }}" style="cursor: help;">
                             Error <i class="bi bi-info-circle"></i>
@@ -82,6 +112,20 @@
                             <i class="bi bi-check"></i>
                         </button>
                         <button class="btn btn-sm btn-danger" onclick="rejectFix({{ h.id }})" title="Reject - wrong fix">
+                            <i class="bi bi-x"></i>
+                        </button>
+                        {% elif h.status == 'duplicate' %}
+                        <button class="btn btn-sm btn-danger" onclick="removeDuplicate({{ h.id }})" title="Remove duplicate - delete the misnamed copy">
+                            <i class="bi bi-trash-fill"></i> Remove
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="dismissError({{ h.id }})" title="Dismiss - keep both copies">
+                            <i class="bi bi-x"></i>
+                        </button>
+                        {% elif h.status == 'corrupt_dest' %}
+                        <button class="btn btn-sm btn-success" onclick="replaceCorrupt({{ h.id }})" title="Replace corrupt destination with valid source">
+                            <i class="bi bi-arrow-repeat"></i> Replace
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="dismissError({{ h.id }})" title="Dismiss - keep both">
                             <i class="bi bi-x"></i>
                         </button>
                         {% elif h.status == 'error' %}
@@ -201,6 +245,61 @@ function dismissError(historyId) {
         .then(r => r.json())
         .then(data => {
             if (data.success) {
+                location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
+
+function removeDuplicate(historyId) {
+    if (!confirm('Remove this duplicate?\n\nThis will DELETE the misnamed copy and keep the properly-named version.\n\nThis cannot be undone!')) return;
+
+    fetch(`/api/remove_duplicate/${historyId}`, {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(data.message);
+                location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
+
+function removeAllDuplicates() {
+    if (!confirm('Remove ALL confirmed duplicates?\n\nThis will DELETE all misnamed copies and keep the properly-named versions.\n\nThis cannot be undone!')) return;
+
+    fetch('/api/remove_all_duplicates', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                let msg = `Removed ${data.removed} duplicate(s), freed ${data.freed_mb}MB`;
+                if (data.skipped > 0) {
+                    msg += `\n\nSkipped ${data.skipped} (see errors)`;
+                }
+                if (data.errors && data.errors.length > 0) {
+                    msg += '\n\nErrors:\n' + data.errors.join('\n');
+                }
+                alert(msg);
+                location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
+
+function replaceCorrupt(historyId) {
+    if (!confirm('Replace corrupt destination with valid source?\n\nThis will:\n1. Delete the corrupt destination folder\n2. Move the valid source to the correct location\n\nThis cannot be undone!')) return;
+
+    fetch(`/api/replace_corrupt/${historyId}`, {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(data.message);
                 location.reload();
             } else {
                 alert('Error: ' + (data.error || 'Unknown error'));

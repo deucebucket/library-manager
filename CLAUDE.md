@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file is guidance for AI assistants (Claude Code, Cursor agents, etc.) contributing to **Library Manager**.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project overview
 
@@ -10,13 +10,15 @@ This file is guidance for AI assistants (Claude Code, Cursor agents, etc.) contr
 
 ## Repository layout (high-signal)
 
-- `app.py`: main Flask app, worker thread, scanning/AI logic, API routes.
-- `abs_client.py`: Audiobookshelf API client.
-- `templates/`: server-rendered UI.
+- `app.py`: main Flask app (~290KB monolith), worker thread, scanning/AI logic, API routes.
+- `abs_client.py`: Audiobookshelf API client (typed dataclasses for library sync).
+- `audio_tagging.py`: metadata embedding into audio files (mutagen-based, supports MP3/M4B/FLAC/Ogg).
+- `templates/`: server-rendered Jinja2 UI.
 - `static/`: UI assets.
 - `docs/`: user-facing documentation.
 - `test-env/`: integration tests (container-based) + test library generators.
 - `Dockerfile`, `docker-compose.yml`: container setup.
+- `metadata_scraper/`: **separate git repo** - BookDB backend (not part of this project's codebase).
 
 ## Using Context7 for up-to-date library docs (MCP)
 
@@ -111,7 +113,7 @@ Notes:
 When you change Python code, at least ensure it still parses:
 
 ```bash
-python -m py_compile app.py abs_client.py
+python -m py_compile app.py abs_client.py audio_tagging.py
 ```
 
 ## Coding conventions (match existing patterns)

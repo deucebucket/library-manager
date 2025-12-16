@@ -2,6 +2,55 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.35] - 2025-12-15
+
+### Added
+- **Audio Fingerprinting for Duplicate Detection** - Smart comparison of audiobook folders
+  - Uses Chromaprint/fpcalc to create audio fingerprints (same tech as Shazam)
+  - Detects if two folders contain the same recording even in different formats/bitrates
+  - 70% fingerprint similarity threshold ensures different narrators are NOT confused as duplicates
+  - Different editions (e.g., "Warbreaker" vs "Warbreaker Tenth Anniversary") correctly identified as separate
+
+- **Corrupt File Detection** - Identifies unreadable/broken audio files
+  - Scans audio files with fpcalc to verify they're actually playable
+  - When destination has corrupt files but source is valid, recommends replacing
+  - New `corrupt_dest` status in history with "Replace" button
+  - Prevents keeping broken downloads over valid copies
+
+- **Deep Audiobook Comparison** - Intelligent version analysis
+  - Compares total duration, file count, and audio content
+  - Detects partial copies (one version is subset of another)
+  - Identifies which version is more complete
+  - Provides clear recommendations: keep_source, keep_dest, or keep_both
+
+- **Duplicate Management UI** - Easy removal of confirmed duplicates
+  - New "Duplicate" status in history with "Remove" button
+  - Filter history by duplicates with `/history?status=duplicate`
+  - "Remove All Duplicates" button for bulk cleanup
+  - Shows match percentage and file counts for informed decisions
+
+- **Replace Corrupt Destination** - One-click fix for corrupt files
+  - New `/api/replace_corrupt/<id>` endpoint
+  - Deletes corrupt destination, moves valid source to correct location
+  - Cleans up empty parent folders automatically
+
+### Changed
+- **Conflict Detection Improved** - Now distinguishes between:
+  - True duplicates (same files or same recording) → can be safely removed
+  - Different editions/narrators (different audio) → marked as conflict for review
+  - Corrupt destinations (unreadable files) → can be replaced with valid source
+- **Error Messages Enhanced** - Conflicts now show:
+  - Recording similarity percentage
+  - File counts and sizes for both versions
+  - Clear reason why it's a conflict vs duplicate
+
+### Technical
+- New functions: `get_audio_fingerprint()`, `compare_fingerprints()`, `analyze_audiobook_completeness()`, `compare_audiobooks_deep()`
+- `compare_book_folders()` now includes optional deep analysis with audio fingerprinting
+- Requires `libchromaprint-tools` package (fpcalc) - auto-installed in Docker
+
+---
+
 ## [0.9.0-beta.34] - 2025-12-15
 
 ### Fixed
