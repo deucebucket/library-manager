@@ -2,6 +2,25 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.38] - 2025-12-17
+
+### Fixed
+- **ABS Connection Lost on Restart** (Issue #27) - Audiobookshelf API token not persisting
+  - Root cause: Token was filtered from config.json (for security) but never saved to secrets.json
+  - ABS connection now survives container restarts and settings page saves
+  - Token properly stored in secrets.json alongside other API keys
+
+- **Settings Page Wiping ABS Token** - Saving settings no longer overwrites ABS connection
+  - Settings page now preserves existing secrets when saving
+  - Previously, saving any setting would wipe the ABS token
+
+### Improved
+- **Bug Report Security** - Additional API keys now redacted in bug reports
+  - `abs_api_token`, `bookdb_api_key`, and `google_books_api_key` now redacted
+  - Prevents accidental exposure when sharing bug reports
+
+---
+
 ## [0.9.0-beta.37] - 2025-12-16
 
 ### Added
