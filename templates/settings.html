@@ -205,6 +205,15 @@
                                 </label>
                             </div>
                             <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="trust_the_process" id="trust_the_process"
+                                       {% if config.trust_the_process %}checked{% endif %} onchange="warnTrustTheProcess(this)">
+                                <label class="form-check-label" for="trust_the_process">
+                                    <strong>Trust the Process</strong>
+                                    <span class="badge bg-danger">EXPERIMENTAL</span>
+                                    <br><small class="text-muted">Full auto: verify drastic changes via AI + audio, only flag truly unidentifiable</small>
+                                </label>
+                            </div>
+                            <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" name="protect_author_changes" id="protect_author_changes"
                                        {% if config.protect_author_changes %}checked{% endif %}>
                                 <label class="form-check-label" for="protect_author_changes">
@@ -282,6 +291,67 @@
                                     <i class="bi bi-info-circle"></i>
                                     Supports MP3, M4B/M4A, FLAC, Ogg/Opus, and WMA formats.
                                 </small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Language Settings -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-translate"></i> Language
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label class="form-label">Preferred Metadata Language</label>
+                                <select class="form-select bg-dark text-light" name="preferred_language" id="preferred_language">
+                                    <option value="en" {% if config.preferred_language == 'en' or not config.preferred_language %}selected{% endif %}>English (en)</option>
+                                    <option value="de" {% if config.preferred_language == 'de' %}selected{% endif %}>German / Deutsch (de)</option>
+                                    <option value="fr" {% if config.preferred_language == 'fr' %}selected{% endif %}>French / Français (fr)</option>
+                                    <option value="es" {% if config.preferred_language == 'es' %}selected{% endif %}>Spanish / Español (es)</option>
+                                    <option value="it" {% if config.preferred_language == 'it' %}selected{% endif %}>Italian / Italiano (it)</option>
+                                    <option value="pt" {% if config.preferred_language == 'pt' %}selected{% endif %}>Portuguese / Português (pt)</option>
+                                    <option value="nl" {% if config.preferred_language == 'nl' %}selected{% endif %}>Dutch / Nederlands (nl)</option>
+                                    <option value="sv" {% if config.preferred_language == 'sv' %}selected{% endif %}>Swedish / Svenska (sv)</option>
+                                    <option value="no" {% if config.preferred_language == 'no' %}selected{% endif %}>Norwegian / Norsk (no)</option>
+                                    <option value="da" {% if config.preferred_language == 'da' %}selected{% endif %}>Danish / Dansk (da)</option>
+                                    <option value="fi" {% if config.preferred_language == 'fi' %}selected{% endif %}>Finnish / Suomi (fi)</option>
+                                    <option value="pl" {% if config.preferred_language == 'pl' %}selected{% endif %}>Polish / Polski (pl)</option>
+                                    <option value="ru" {% if config.preferred_language == 'ru' %}selected{% endif %}>Russian / Русский (ru)</option>
+                                    <option value="ja" {% if config.preferred_language == 'ja' %}selected{% endif %}>Japanese / 日本語 (ja)</option>
+                                    <option value="zh" {% if config.preferred_language == 'zh' %}selected{% endif %}>Chinese / 中文 (zh)</option>
+                                    <option value="ko" {% if config.preferred_language == 'ko' %}selected{% endif %}>Korean / 한국어 (ko)</option>
+                                    <option value="ar" {% if config.preferred_language == 'ar' %}selected{% endif %}>Arabic / العربية (ar)</option>
+                                    <option value="he" {% if config.preferred_language == 'he' %}selected{% endif %}>Hebrew / עברית (he)</option>
+                                    <option value="hi" {% if config.preferred_language == 'hi' %}selected{% endif %}>Hindi / हिन्दी (hi)</option>
+                                    <option value="tr" {% if config.preferred_language == 'tr' %}selected{% endif %}>Turkish / Türkçe (tr)</option>
+                                    <option value="cs" {% if config.preferred_language == 'cs' %}selected{% endif %}>Czech / Čeština (cs)</option>
+                                    <option value="hu" {% if config.preferred_language == 'hu' %}selected{% endif %}>Hungarian / Magyar (hu)</option>
+                                    <option value="el" {% if config.preferred_language == 'el' %}selected{% endif %}>Greek / Ελληνικά (el)</option>
+                                    <option value="th" {% if config.preferred_language == 'th' %}selected{% endif %}>Thai / ไทย (th)</option>
+                                    <option value="vi" {% if config.preferred_language == 'vi' %}selected{% endif %}>Vietnamese / Tiếng Việt (vi)</option>
+                                    <option value="uk" {% if config.preferred_language == 'uk' %}selected{% endif %}>Ukrainian / Українська (uk)</option>
+                                    <option value="ro" {% if config.preferred_language == 'ro' %}selected{% endif %}>Romanian / Română (ro)</option>
+                                    <option value="id" {% if config.preferred_language == 'id' %}selected{% endif %}>Indonesian / Bahasa Indonesia (id)</option>
+                                </select>
+                                <small class="text-muted">Metadata providers will prefer results in this language</small>
+                            </div>
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="preserve_original_titles" id="preserve_original_titles"
+                                       {% if config.preserve_original_titles is not defined or config.preserve_original_titles %}checked{% endif %}>
+                                <label class="form-check-label" for="preserve_original_titles">
+                                    <strong>Preserve Original Titles</strong>
+                                    <span class="badge bg-success">Recommended</span>
+                                    <br><small class="text-muted">Keep foreign language titles (e.g., "Der Bücherdrache") instead of translating to English</small>
+                                </label>
+                            </div>
+                            <div class="form-check form-switch mb-0">
+                                <input class="form-check-input" type="checkbox" name="detect_language_from_audio" id="detect_language_from_audio"
+                                       {% if config.detect_language_from_audio %}checked{% endif %}>
+                                <label class="form-check-label" for="detect_language_from_audio">
+                                    <strong>Detect Language from Audio</strong>
+                                    <span class="badge bg-info">BETA</span>
+                                    <br><small class="text-muted">Use Gemini to detect spoken language (requires Gemini API key)</small>
+                                </label>
                             </div>
                         </div>
                     </div>
@@ -820,6 +890,27 @@ function escapeHtml(text) {
 function warnAutoFix(checkbox) {
     if (checkbox.checked && !confirm('Auto-Fix will rename folders automatically. Make sure you have backups!\n\nEnable?')) {
         checkbox.checked = false;
+    }
+}
+
+function warnTrustTheProcess(checkbox) {
+    if (checkbox.checked) {
+        const msg = 'TRUST THE PROCESS MODE\n\n' +
+            'This enables FULLY AUTOMATIC verification:\n' +
+            '• Drastic author changes verified via AI + audio snippets\n' +
+            '• Language detection from audio samples\n' +
+            '• Only truly unidentifiable items need manual review\n\n' +
+            'Requires: Gemini API key (for audio analysis)\n\n' +
+            'Make sure you have BACKUPS before enabling!\n\n' +
+            'Enable Trust the Process?';
+        if (!confirm(msg)) {
+            checkbox.checked = false;
+            return;
+        }
+        // Auto-enable related features
+        document.getElementById('auto_fix').checked = true;
+        document.getElementById('audio_analysis').checked = true;
+        document.getElementById('detect_language_from_audio').checked = true;
     }
 }
 
