@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.38"
+APP_VERSION = "0.9.0-beta.39"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -7308,6 +7308,15 @@ def api_perform_update():
     # Get the app directory (where this script is located)
     app_dir = os.path.dirname(os.path.abspath(__file__))
 
+    # Determine target branch based on update channel
+    config = load_config()
+    channel = config.get('update_channel', 'stable')
+    target_branch = {
+        'stable': 'main',
+        'beta': 'develop',
+        'nightly': 'develop'  # nightly also uses develop for now
+    }.get(channel, 'main')
+
     try:
         # First check if we're in a git repo
         result = subprocess.run(
@@ -7331,7 +7340,7 @@ def api_perform_update():
             cwd=app_dir, capture_output=True, text=True, timeout=10
         ).stdout.strip()
 
-        # Perform git fetch + pull
+        # Fetch all branches
         fetch_result = subprocess.run(
             ['git', 'fetch', '--all'],
             cwd=app_dir,
@@ -7340,8 +7349,26 @@ def api_perform_update():
             timeout=60
         )
 
+        # Checkout the target branch based on update channel
+        checkout_result = subprocess.run(
+            ['git', 'checkout', target_branch],
+            cwd=app_dir,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if checkout_result.returncode != 0:
+            return jsonify({
+                'success': False,
+                'error': f'Failed to switch to {target_branch} branch',
+                'details': checkout_result.stderr or checkout_result.stdout,
+                'instructions': f'You may have local changes. Try: git stash && git checkout {target_branch}'
+            })
+
+        # Pull latest from target branch
         pull_result = subprocess.run(
-            ['git', 'pull', '--ff-only'],
+            ['git', 'pull', 'origin', target_branch, '--ff-only'],
             cwd=app_dir,
             capture_output=True,
             text=True,
@@ -7369,8 +7396,10 @@ def api_perform_update():
             'updated': updated,
             'before': before,
             'after': after,
+            'branch': target_branch,
+            'channel': channel,
             'output': pull_result.stdout,
-            'message': 'Update complete! Restart the app to apply changes.' if updated else 'Already up to date.',
+            'message': f'Updated to {channel} ({target_branch})! Restart the app to apply changes.' if updated else f'Already up to date on {channel} ({target_branch}).',
             'restart_required': updated
         })
 

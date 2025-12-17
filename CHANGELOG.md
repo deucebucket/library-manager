@@ -2,6 +2,16 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.39] - 2025-12-17
+
+### Fixed
+- **Update Channel Now Works** - Beta/Stable selection in Settings actually switches branches
+  - Selecting "Beta" now pulls from `develop` branch
+  - Selecting "Stable" now pulls from `main` branch
+  - Previously, update always pulled from current branch regardless of setting
+
+---
+
 ## [0.9.0-beta.38] - 2025-12-17
 
 ### Fixed
