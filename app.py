@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.37"
+APP_VERSION = "0.9.0-beta.38"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -409,7 +409,8 @@ DEFAULT_CONFIG = {
 
 DEFAULT_SECRETS = {
     "openrouter_api_key": "",
-    "gemini_api_key": ""
+    "gemini_api_key": "",
+    "abs_api_token": ""
 }
 
 
@@ -5845,11 +5846,10 @@ def settings_page():
         # Save config (without secrets)
         save_config(config)
 
-        # Save secrets separately
-        secrets = {
-            'openrouter_api_key': request.form.get('openrouter_api_key', ''),
-            'gemini_api_key': request.form.get('gemini_api_key', '')
-        }
+        # Save secrets separately (preserving existing secrets like abs_api_token)
+        secrets = load_secrets()
+        secrets['openrouter_api_key'] = request.form.get('openrouter_api_key', '')
+        secrets['gemini_api_key'] = request.form.get('gemini_api_key', '')
         save_secrets(secrets)
 
         return redirect(url_for('settings_page'))
@@ -7424,13 +7424,14 @@ def api_bug_report():
     import platform
     import sys
 
-    # Get config (sanitize API keys)
+    # Get config (sanitize API keys and tokens)
     config = load_config()
     safe_config = {k: v for k, v in config.items()}
-    if safe_config.get('openrouter_api_key'):
-        safe_config['openrouter_api_key'] = '***REDACTED***'
-    if safe_config.get('gemini_api_key'):
-        safe_config['gemini_api_key'] = '***REDACTED***'
+    # Redact all sensitive keys
+    sensitive_keys = ['openrouter_api_key', 'gemini_api_key', 'abs_api_token', 'bookdb_api_key', 'google_books_api_key']
+    for key in sensitive_keys:
+        if safe_config.get(key):
+            safe_config[key] = '***REDACTED***'
 
     # Get database stats
     conn = get_db()
@@ -7577,11 +7578,16 @@ def api_abs_connect():
     result = client.test_connection()
 
     if result.get('success'):
-        # Save to config
+        # Save URL to config
         config = load_config()
         config['abs_url'] = abs_url
-        config['abs_api_token'] = abs_token
         save_config(config)
+
+        # Save token to secrets (preserving existing secrets)
+        secrets = load_secrets()
+        secrets['abs_api_token'] = abs_token
+        save_secrets(secrets)
+
         return jsonify({'success': True, 'message': f"Connected as {result.get('username')}"})
     else:
         return jsonify({'success': False, 'error': result.get('error', 'Connection failed')})
