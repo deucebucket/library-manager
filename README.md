@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.37-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.39-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,21 +16,21 @@
 
 ## Recent Changes (develop)
 
+> **beta.39** - Update Channel Fix
+> - **Beta/Stable Now Works** - Selecting "Beta" in Settings actually pulls from develop branch
+
+> **beta.38** - ABS Connection Fix (Issue #27)
+> - **ABS Token Persists** - Audiobookshelf connection survives restarts and settings saves
+
 > **beta.37** - "Trust the Process" Mode (EXPERIMENTAL)
 > - **Full Auto Verification** - Drastic changes verified via AI + audio snippets
 > - **"Needs Attention" List** - Only truly unidentifiable items flagged for review
-> - Everything else is auto-fixed (with full undo capability)
 
 > **beta.36** - Preferred Metadata Language (Issue #17)
 > - **Language Settings** - Configure your library's preferred language (28 languages)
 > - **Preserve Original Titles** - Keep foreign titles instead of translating to English
 
-> **beta.35** - Ollama Self-Hosted AI Support + Audio Fingerprinting
-> - **Ollama Integration** - Run AI completely locally with no API costs
-> - **Smart Duplicate Detection** - Uses Chromaprint to detect identical recordings
-> - **Corrupt File Detection** - Identifies broken audio files
-
-> **beta.34** - Config migration fix, **beta.33** - Empty series hyphen fix, **beta.32** - Manual match fallback
+> **beta.35** - Ollama Self-Hosted AI + Audio Fingerprinting, **beta.34** - Config migration fix
 
 [Full Changelog](CHANGELOG.md)
 
