@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.39"
+APP_VERSION = "0.9.0-beta.42"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -344,6 +344,92 @@ def extract_folder_metadata(folder_path):
             pass
 
     return hints
+
+
+def extract_narrator_from_folder(folder_path):
+    """
+    Try to extract narrator information from audio files in a folder.
+    Checks multiple sources: ID3 tags, NFO files, metadata files.
+    Returns narrator name string or None if not found.
+    """
+    folder = Path(folder_path)
+    if not folder.exists():
+        return None
+
+    # First, try audio file tags
+    audio_extensions = ['.m4b', '.mp3', '.m4a', '.flac', '.ogg', '.opus']
+    audio_files = []
+    for ext in audio_extensions:
+        audio_files.extend(folder.glob(f'*{ext}'))
+        audio_files.extend(folder.glob(f'*{ext.upper()}'))
+
+    if audio_files:
+        try:
+            from mutagen import File
+            from mutagen.mp3 import MP3
+            from mutagen.mp4 import MP4
+
+            audio = File(audio_files[0])
+            if audio:
+                # MP4/M4B - check for narrator in various fields
+                if hasattr(audio, 'tags') and audio.tags:
+                    # M4B/M4A often have narrator in '----:com.apple.iTunes:NARRATOR' or similar
+                    for key in audio.tags.keys():
+                        key_lower = str(key).lower()
+                        if 'narrator' in key_lower or 'read by' in key_lower:
+                            val = audio.tags[key]
+                            if hasattr(val, 'text'):
+                                return str(val.text[0]) if val.text else None
+                            elif isinstance(val, list) and val:
+                                return str(val[0])
+                            else:
+                                return str(val)
+
+                # Check 'composer' field - sometimes used for narrator
+                if 'composer' in audio:
+                    return audio['composer'][0]
+                if '\xa9wrt' in audio:  # MP4 composer
+                    return audio['\xa9wrt'][0]
+
+        except Exception as e:
+            logging.debug(f"Could not extract narrator from audio: {e}")
+
+    # Try NFO files - often have narrator info
+    nfo_files = list(folder.glob('*.nfo')) + list(folder.glob('*.NFO'))
+    for nfo in nfo_files:
+        try:
+            content = nfo.read_text(errors='ignore')
+            # Look for narrator patterns
+            narrator_match = re.search(
+                r'(?:narrator|narrated by|read by|performed by|reader)[:\s]+([^\n\r]+)',
+                content, re.IGNORECASE
+            )
+            if narrator_match:
+                narrator = narrator_match.group(1).strip()
+                # Clean up common suffixes
+                narrator = re.sub(r'\s*\(.*\)$', '', narrator)
+                if narrator and len(narrator) > 2:
+                    return narrator
+        except Exception:
+            pass
+
+    # Try metadata files
+    for meta_file in ['metadata.json', 'info.json', 'audiobook.json', 'book.json']:
+        meta_path = folder / meta_file
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text())
+                for key in ['narrator', 'narrators', 'read_by', 'reader', 'performed_by']:
+                    if key in meta:
+                        val = meta[key]
+                        if isinstance(val, list):
+                            return val[0] if val else None
+                        return val
+            except Exception:
+                pass
+
+    return None
+
 
 # Configure logging - use script directory for log file
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -5130,22 +5216,38 @@ def process_queue(config, limit=None):
 
                                 # Check for corrupt file scenarios first
                                 if comparison.get('dest_corrupt'):
-                                    # Destination is corrupt - recommend keeping source
-                                    logger.warning(f"CORRUPT DEST: {new_path} has corrupt/unreadable files, source {old_path} is valid")
-                                    reason = comparison.get('reason', 'Destination files are corrupt/unreadable')
-                                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'corrupt_dest', ?, ?, ?, ?, ?, ?, ?)''',
-                                             (row['book_id'], row['current_author'], row['current_title'],
-                                              new_author, new_title, str(old_path), str(new_path),
-                                              f"{reason}. Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files (corrupt)",
-                                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                              str(new_year) if new_year else None, new_edition, new_variant))
-                                    c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                                             ('corrupt_dest', f'Destination {new_path} is corrupt - source is valid', row['book_id']))
-                                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                                    processed += 1
-                                    continue
+                                    # Destination is corrupt - source is valid, move source to version path
+                                    # Don't replace corrupt dest - let user deal with that
+                                    logger.warning(f"CORRUPT DEST: {new_path} has corrupt/unreadable files, source {old_path} is valid - moving source to version path")
+
+                                    # Create version path for the valid source
+                                    version_path = build_new_path(
+                                        lib_path, new_author, new_title,
+                                        series=new_series, series_num=new_series_num,
+                                        narrator=new_narrator,
+                                        variant="Valid Copy" if not new_variant else f"{new_variant}, Valid Copy",
+                                        config=config
+                                    )
+                                    if version_path and not version_path.exists():
+                                        new_path = version_path
+                                        logger.info(f"Moving valid source to: {new_path}")
+                                        # Fall through to the move code below
+                                    else:
+                                        # Can't create version path - just record the issue
+                                        reason = comparison.get('reason', 'Destination files are corrupt/unreadable')
+                                        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                          new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                                     VALUES (?, ?, ?, ?, ?, ?, ?, 'corrupt_dest', ?, ?, ?, ?, ?, ?, ?)''',
+                                                 (row['book_id'], row['current_author'], row['current_title'],
+                                                  new_author, new_title, str(old_path), str(new_path),
+                                                  f"{reason}. Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files (corrupt)",
+                                                  new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                                  str(new_year) if new_year else None, new_edition, new_variant))
+                                        c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                                                 ('corrupt_dest', f'Destination {new_path} is corrupt - source is valid', row['book_id']))
+                                        c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                        processed += 1
+                                        continue
 
                                 if comparison.get('source_corrupt'):
                                     # Source is corrupt - mark as duplicate (keep dest)
@@ -5191,24 +5293,105 @@ def process_queue(config, limit=None):
                                     processed += 1
                                     continue
                                 else:
-                                    # Different versions - mark as conflict with deep analysis info
+                                    # Different versions - these are BOTH valid, create unique path for source
+                                    # Don't error out - find a way to distinguish them and move!
                                     deep_info = comparison.get('deep_analysis', {})
-                                    reason = comparison.get('reason', f'Different recordings ({comparison["overlap_ratio"]:.0%} similarity)')
+                                    logger.info(f"DIFFERENT VERSIONS: {old_path.name} vs existing {new_path.name} - creating unique path")
 
-                                    logger.warning(f"CONFLICT: {new_path} exists - {reason}")
-                                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'error', ?, ?, ?, ?, ?, ?, ?)''',
-                                             (row['book_id'], row['current_author'], row['current_title'],
-                                              new_author, new_title, str(old_path), str(new_path),
-                                              f"{reason}. Source: {comparison['source_files']} files ({comparison['source_size']//1024//1024}MB), Dest: {comparison['dest_files']} files ({comparison['dest_size']//1024//1024}MB)",
-                                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                              str(new_year) if new_year else None, new_edition, new_variant))
-                                    c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                                             ('conflict', reason, row['book_id']))
-                                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                                    processed += 1
-                                    continue
+                                    # Generate a distinguisher based on what we know about the source
+                                    # Priority: narrator > file count > folder name hint
+                                    version_distinguisher = None
+
+                                    # Try to get narrator from source audio files
+                                    if not new_narrator:
+                                        try:
+                                            source_narrator = extract_narrator_from_folder(old_path)
+                                            if source_narrator:
+                                                version_distinguisher = source_narrator
+                                                logger.info(f"Using narrator from source: {source_narrator}")
+                                        except Exception as e:
+                                            logger.debug(f"Could not extract narrator: {e}")
+                                    else:
+                                        version_distinguisher = new_narrator
+
+                                    # Fallback: use file characteristics
+                                    if not version_distinguisher:
+                                        src_files = comparison.get('source_files', 0)
+                                        src_size_mb = comparison.get('source_size', 0) // 1024 // 1024
+                                        # Create a distinguisher like "Version B" or use file count
+                                        # Check what versions already exist
+                                        existing_versions = []
+                                        for sibling in new_path.parent.iterdir():
+                                            if sibling.is_dir() and sibling.name.startswith(new_path.name):
+                                                existing_versions.append(sibling.name)
+
+                                        # Generate next version letter
+                                        if not existing_versions:
+                                            # Existing one is "A", new one is "B"
+                                            version_distinguisher = "Version B"
+                                        else:
+                                            # Find next available letter
+                                            used_letters = set()
+                                            for v in existing_versions:
+                                                if 'Version ' in v:
+                                                    try:
+                                                        letter = v.split('Version ')[1][0]
+                                                        used_letters.add(letter)
+                                                    except:
+                                                        pass
+                                            for letter in 'BCDEFGHIJKLMNOPQRSTUVWXYZ':
+                                                if letter not in used_letters:
+                                                    version_distinguisher = f"Version {letter}"
+                                                    break
+
+                                        logger.info(f"Using fallback distinguisher: {version_distinguisher}")
+
+                                    # Build new path with distinguisher
+                                    if version_distinguisher:
+                                        # Add as variant (in brackets)
+                                        unique_path = build_new_path(
+                                            lib_path, new_author, new_title,
+                                            series=new_series, series_num=new_series_num,
+                                            narrator=new_narrator,
+                                            variant=version_distinguisher if not new_variant else f"{new_variant}, {version_distinguisher}",
+                                            config=config
+                                        )
+                                        if unique_path and not unique_path.exists():
+                                            new_path = unique_path
+                                            logger.info(f"Resolved to unique path: {new_path}")
+                                            # Don't continue - fall through to the move code below
+                                        else:
+                                            # Still can't find unique path - now error
+                                            logger.warning(f"CONFLICT: Could not create unique path for different version")
+                                            c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                              new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                                         VALUES (?, ?, ?, ?, ?, ?, ?, 'error', ?, ?, ?, ?, ?, ?, ?)''',
+                                                     (row['book_id'], row['current_author'], row['current_title'],
+                                                      new_author, new_title, str(old_path), str(new_path),
+                                                      f"Different version exists, could not generate unique path. Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files",
+                                                      new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                                      str(new_year) if new_year else None, new_edition, new_variant))
+                                            c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                                                     ('conflict', 'Different version exists, unique path generation failed', row['book_id']))
+                                            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                            processed += 1
+                                            continue
+                                    else:
+                                        # No distinguisher at all - error
+                                        logger.warning(f"CONFLICT: No distinguisher available for different version")
+                                        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                          new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                                     VALUES (?, ?, ?, ?, ?, ?, ?, 'error', ?, ?, ?, ?, ?, ?, ?)''',
+                                                 (row['book_id'], row['current_author'], row['current_title'],
+                                                  new_author, new_title, str(old_path), str(new_path),
+                                                  f"Different version exists, no distinguisher available. Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files",
+                                                  new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                                  str(new_year) if new_year else None, new_edition, new_variant))
+                                        c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                                                 ('conflict', 'Different version exists', row['book_id']))
+                                        c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                        processed += 1
+                                        continue
                         else:
                             # Destination is empty folder - safe to use it
                             shutil.move(str(old_path), str(new_path.parent / (new_path.name + "_temp")))

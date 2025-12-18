@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository layout (high-signal)
 
-- `app.py`: main Flask app (~290KB monolith), worker thread, scanning/AI logic, API routes.
+- `app.py`: main Flask app (~350KB monolith), worker thread, scanning/AI logic, API routes.
 - `abs_client.py`: Audiobookshelf API client (typed dataclasses for library sync).
 - `audio_tagging.py`: metadata embedding into audio files (mutagen-based, supports MP3/M4B/FLAC/Ogg).
 - `templates/`: server-rendered Jinja2 UI.
@@ -20,24 +20,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `Dockerfile`, `docker-compose.yml`: container setup.
 - `metadata_scraper/`: **separate git repo** - BookDB backend (not part of this project's codebase).
 
-## Using Context7 for up-to-date library docs (MCP)
+## Core architecture: identification pipeline
 
-When you’re touching code that depends on an external library/API (Python packages, vendor APIs, SDKs), **do not rely on memory** if version-specific behavior matters. Use the Context7 MCP server to pull current docs/snippets.
+The app identifies books through a multi-stage pipeline (defined in `app.py`):
 
-Workflow:
+1. **Path analysis** - Works backwards from audio file to library root, extracting author/title/series from folder names
+2. **Database lookup** - Queries BookDB (50M+ books via `/search` endpoint) for author/title verification
+3. **Multi-source API fallback** - Audnexus, OpenLibrary, Google Books, Hardcover
+4. **AI verification** - Gemini, OpenRouter, or Ollama for ambiguous cases or when APIs fail
+5. **Audio analysis** (optional) - Gemini analyzes audio snippets to extract metadata from narrator intros
+
+Key functions: `analyze_path()`, `gather_all_api_candidates()`, `identify_book_with_ai()`, `analyze_audio_sample()`
+
+## Using Context7 for up-to-date library docs (MCP) [optional]
+
+If you have the Context7 MCP server configured, use it when touching external library/API code where version-specific behavior matters:
 
 - **Resolve the library ID**: use Context7 `resolve-library-id` for the package/framework name.
 - **Fetch docs**: use Context7 `get-library-docs` with the resolved ID.
-  - Use `mode='code'` for API references/examples.
-  - Use `mode='info'` for conceptual/architecture pages.
 
-Typical times to use this:
-
-- Updating/adding integration with a third-party API or SDK
-- Fixing subtle behavior differences across versions
-- Writing new code that uses unfamiliar library APIs
-  
-If the change is fully internal (pure refactor, local logic), skip Context7.
+Skip for fully internal changes (pure refactor, local logic).
 
 ## How to run
 

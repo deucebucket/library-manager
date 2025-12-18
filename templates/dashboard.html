@@ -123,10 +123,22 @@
                             <td>
                                 {% if h.status == 'undone' %}
                                 <span class="badge bg-info">Undone</span>
-                                {% elif h.old_path != h.new_path %}
-                                <span class="badge bg-danger">Fixed</span>
+                                {% elif h.status == 'fixed' %}
+                                <span class="badge bg-success">Fixed</span>
+                                {% elif h.status == 'error' %}
+                                <span class="badge bg-danger" title="{{ h.error_message or 'Error' }}">Error</span>
+                                {% elif h.status == 'duplicate' %}
+                                <span class="badge bg-warning text-dark">Duplicate</span>
+                                {% elif h.status == 'conflict' %}
+                                <span class="badge bg-warning text-dark">Conflict</span>
+                                {% elif h.status == 'corrupt_dest' %}
+                                <span class="badge bg-danger">Corrupt</span>
+                                {% elif h.status == 'pending_fix' %}
+                                <span class="badge bg-secondary">Pending</span>
+                                {% elif h.status == 'attention' %}
+                                <span class="badge bg-danger">Needs Attention</span>
                                 {% else %}
-                                <span class="badge bg-warning text-dark">OK</span>
+                                <span class="badge bg-secondary">{{ h.status }}</span>
                                 {% endif %}
                             </td>
                             <td>
@@ -337,11 +349,15 @@ function refreshDashboard() {
                             <span class="text-info">${escapeHtml(h.new_title)}</span>
                         </td>
                         <td>
-                            ${h.status === 'undone' ?
-                                '<span class="badge bg-info">Undone</span>' :
-                                h.old_path !== h.new_path ?
-                                    '<span class="badge bg-danger">Fixed</span>' :
-                                    '<span class="badge bg-warning text-dark">OK</span>'}
+                            ${h.status === 'undone' ? '<span class="badge bg-info">Undone</span>' :
+                              h.status === 'fixed' ? '<span class="badge bg-success">Fixed</span>' :
+                              h.status === 'error' ? '<span class="badge bg-danger" title="' + escapeHtml(h.error_message || 'Error') + '">Error</span>' :
+                              h.status === 'duplicate' ? '<span class="badge bg-warning text-dark">Duplicate</span>' :
+                              h.status === 'conflict' ? '<span class="badge bg-warning text-dark">Conflict</span>' :
+                              h.status === 'corrupt_dest' ? '<span class="badge bg-danger">Corrupt</span>' :
+                              h.status === 'pending_fix' ? '<span class="badge bg-secondary">Pending</span>' :
+                              h.status === 'attention' ? '<span class="badge bg-danger">Needs Attention</span>' :
+                              '<span class="badge bg-secondary">' + escapeHtml(h.status) + '</span>'}
                         </td>
                         <td>
                             ${h.status === 'fixed' && h.old_path !== h.new_path ?

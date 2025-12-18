@@ -2,6 +2,52 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.42] - 2025-12-18
+
+### Fixed
+- **Corrupt Dest Now Moves Valid Source** - When destination has corrupt files, source still gets moved
+  - Previously: If existing copy was corrupt, valid source just sat there with "corrupt_dest" status
+  - Now: Valid source moves to `Author/Title [Valid Copy]/` path
+  - User still needs to manually remove the corrupt copy
+
+---
+
+## [0.9.0-beta.41] - 2025-12-18
+
+### Fixed
+- **Different Versions No Longer Error** - Multiple versions of same book now get unique paths
+  - Previously: If `Bernard Cornwell/Excalibur/` existed and another copy tried to move there, it errored
+  - Now: System creates unique paths like `Bernard Cornwell/Excalibur {Version B}/` automatically
+  - Tries to extract narrator from audio files first for better naming
+  - Falls back to "Version B", "Version C" etc. when no metadata available
+  - Different narrators/recordings are NOT duplicates - they're valid variants
+
+### Added
+- **Narrator Extraction** - New `extract_narrator_from_folder()` function
+  - Checks audio file ID3/MP4 tags for narrator metadata
+  - Parses NFO files for "Narrated by" / "Read by" patterns
+  - Checks metadata.json for narrator fields
+  - Used to distinguish between different recordings of same book
+
+---
+
+## [0.9.0-beta.40] - 2025-12-18
+
+### Fixed
+- **Dashboard Showing "Fixed" for Errors** - Critical bug where dashboard displayed all entries as "Fixed"
+  - Root cause: UI showed "Fixed" badge based on path change, not actual status
+  - Entries with status "error", "duplicate", "conflict", "corrupt_dest" were all displayed as "Fixed"
+  - Users couldn't tell if renames actually succeeded or failed
+  - Dashboard now shows actual status: Fixed (green), Error (red), Duplicate, Conflict, Corrupt, Pending, etc.
+  - Hover over Error badge to see the error message
+
+### Improved
+- **Status Badges** - More informative status display on dashboard
+  - Fixed: green, Error: red with tooltip, Duplicate/Conflict: yellow, Pending: gray
+  - Helps identify books that need manual attention vs successful renames
+
+---
+
 ## [0.9.0-beta.39] - 2025-12-17
 
 ### Fixed
