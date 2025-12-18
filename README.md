@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.39-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.42-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,6 +16,14 @@
 
 ## Recent Changes (develop)
 
+> **beta.42** - Version Conflict Handling
+> - **Different Versions Get Unique Paths** - Multiple recordings of same book now work (e.g., `[Version B]`)
+> - **Corrupt Dest Handling** - Valid source moves to `[Valid Copy]` when existing copy is corrupt
+
+> **beta.40-41** - Dashboard & Conflict Fixes
+> - **Dashboard Shows Real Status** - Fixed bug where errors showed as "Fixed"
+> - **Narrator Extraction** - Pulls narrator from audio tags to distinguish versions
+
 > **beta.39** - Update Channel Fix
 > - **Beta/Stable Now Works** - Selecting "Beta" in Settings actually pulls from develop branch
 
@@ -24,13 +32,6 @@
 
 > **beta.37** - "Trust the Process" Mode (EXPERIMENTAL)
 > - **Full Auto Verification** - Drastic changes verified via AI + audio snippets
-> - **"Needs Attention" List** - Only truly unidentifiable items flagged for review
-
-> **beta.36** - Preferred Metadata Language (Issue #17)
-> - **Language Settings** - Configure your library's preferred language (28 languages)
-> - **Preserve Original Titles** - Keep foreign titles instead of translating to English
-
-> **beta.35** - Ollama Self-Hosted AI + Audio Fingerprinting, **beta.34** - Config migration fix
 
 [Full Changelog](CHANGELOG.md)
 
