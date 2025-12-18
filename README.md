@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.42-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.43-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,11 @@
 ---
 
 ## Recent Changes (develop)
+
+> **beta.43** - Book Profile System & Multibook Fix (Issue #29)
+> - **Smart Multibook Detection** - Fixed false positives where chapter files (e.g., `00 - Prologue.mp3`) were flagged as multibook
+> - **Confidence Scoring** - Books now track confidence % per field with source attribution
+> - **Verification Layer Settings** - Toggle API lookups, AI verification, and audio analysis independently
 
 > **beta.42** - Version Conflict Handling
 > - **Different Versions Get Unique Paths** - Multiple recordings of same book now work (e.g., `[Version B]`)
@@ -29,9 +34,6 @@
 
 > **beta.38** - ABS Connection Fix (Issue #27)
 > - **ABS Token Persists** - Audiobookshelf connection survives restarts and settings saves
-
-> **beta.37** - "Trust the Process" Mode (EXPERIMENTAL)
-> - **Full Auto Verification** - Drastic changes verified via AI + audio snippets
 
 [Full Changelog](CHANGELOG.md)
 

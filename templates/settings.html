@@ -295,6 +295,77 @@
                         </div>
                     </div>
 
+                    <!-- Verification Settings -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-shield-check"></i> Verification Layers
+                            <span class="badge bg-success">New</span>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-3">
+                                Control which sources are used to identify books. Layers only run if confidence is below threshold (or Deep Mode is on).
+                            </p>
+
+                            <div class="mb-3">
+                                <label class="form-label">Confidence Threshold</label>
+                                <input type="range" class="form-range" name="profile_confidence_threshold"
+                                       id="profile_confidence_threshold" min="50" max="100" step="5"
+                                       value="{{ config.profile_confidence_threshold or 85 }}"
+                                       oninput="document.getElementById('threshold-display').textContent = this.value + '%'">
+                                <small class="text-muted">
+                                    Skip expensive layers when confidence reaches:
+                                    <strong id="threshold-display">{{ config.profile_confidence_threshold or 85 }}%</strong>
+                                </small>
+                            </div>
+
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="enable_api_lookups"
+                                       id="enable_api_lookups" {% if config.enable_api_lookups != false %}checked{% endif %}>
+                                <label class="form-check-label" for="enable_api_lookups">
+                                    <i class="bi bi-cloud"></i> <strong>API Lookups</strong>
+                                    <span class="badge bg-success">Free</span>
+                                </label>
+                                <br><small class="text-muted">BookDB, Audnexus, OpenLibrary, Google Books, Hardcover</small>
+                            </div>
+
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="enable_ai_verification"
+                                       id="enable_ai_verification" {% if config.enable_ai_verification != false %}checked{% endif %}>
+                                <label class="form-check-label" for="enable_ai_verification">
+                                    <i class="bi bi-robot"></i> <strong>AI Verification</strong>
+                                    <span class="badge bg-warning text-dark">Your Tokens</span>
+                                </label>
+                                <br><small class="text-muted">Uses {{ config.ai_provider or 'openrouter' }} for verification</small>
+                            </div>
+
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="enable_audio_analysis"
+                                       id="enable_audio_analysis" {% if config.enable_audio_analysis %}checked{% endif %}
+                                       {% if not config.gemini_api_key %}disabled title="Requires Gemini API key"{% endif %}>
+                                <label class="form-check-label" for="enable_audio_analysis">
+                                    <i class="bi bi-soundwave"></i> <strong>Audio Analysis</strong>
+                                    <span class="badge bg-warning text-dark">Your Tokens</span>
+                                    {% if not config.gemini_api_key %}
+                                    <span class="badge bg-secondary">Requires Gemini</span>
+                                    {% endif %}
+                                </label>
+                                <br><small class="text-muted">Analyze audiobook intro for narrator/title (Gemini 2.5 Flash)</small>
+                            </div>
+
+                            <hr class="my-2">
+
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" name="deep_scan_mode"
+                                       id="deep_scan_mode" {% if config.deep_scan_mode %}checked{% endif %}>
+                                <label class="form-check-label" for="deep_scan_mode">
+                                    <i class="bi bi-zoom-in"></i> <strong>Deep Scan Mode</strong>
+                                    <span class="badge bg-info">Thorough</span>
+                                </label>
+                                <br><small class="text-muted">Always use all enabled layers regardless of confidence</small>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Language Settings -->
                     <div class="card mb-3">
                         <div class="card-header py-2">

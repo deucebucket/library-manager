@@ -2,6 +2,34 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.43] - 2025-12-18
+
+### Fixed
+- **Issue #29: Multibook False Positive** - Chapter files no longer flagged as multi-book collections
+  - Files named `00 - Chapter.mp3`, `01 - Prologue.mp3`, `02 - Part Two.mp3` were incorrectly skipped
+  - Root cause: Regex pattern `^(\d+)\s*[-–—:.]` matched leading numbers as "book numbers"
+  - Now uses smart detection: chapter indicators (prologue, epilogue, chapter, disc, track) = NOT multibook
+  - Sequential numbering from 0/1 = chapters, not books
+  - Only explicit patterns like `Book 1`, `Volume 2` trigger multibook detection
+
+### Added
+- **Book Profile System (Foundation)** - Infrastructure for confidence-scored metadata
+  - New `BookProfile` and `FieldValue` dataclasses for per-field confidence tracking
+  - Source weights: audio (85), id3 (80), json (75), nfo (70), bookdb (65), ai (60), path (40)
+  - Field weights: author/title (30% each), narrator (15%), series (10%), etc.
+  - Consensus-based confidence calculation with agreement bonuses and conflict penalties
+  - Database columns added: `books.profile` (JSON), `books.confidence` (integer)
+
+- **New Settings for Verification Control**
+  - `enable_api_lookups`: Toggle API database lookups (default: on)
+  - `enable_ai_verification`: Toggle AI verification (default: on)
+  - `enable_audio_analysis`: Toggle Gemini audio analysis (default: off)
+  - `deep_scan_mode`: Always use all enabled layers regardless of confidence
+  - `profile_confidence_threshold`: Skip expensive layers when confidence is high enough (default: 85%)
+  - `multibook_ai_fallback`: Use AI for ambiguous chapter/multibook cases (default: on)
+
+---
+
 ## [0.9.0-beta.42] - 2025-12-18
 
 ### Fixed
