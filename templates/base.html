@@ -282,23 +282,13 @@
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link {% if request.path == '/library' %}active{% endif %}" href="/library">
+                        <a class="nav-link {% if request.path == '/library' or request.path == '/queue' or request.path == '/orphans' %}active{% endif %}" href="/library">
                             <i class="bi bi-collection"></i> Library
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link {% if request.path == '/queue' %}active{% endif %}" href="/queue">
-                            <i class="bi bi-list-task"></i> Queue
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link {% if request.path == '/history' and not request.args.get('status') %}active{% endif %}" href="/history">
+                        <a class="nav-link {% if request.path == '/history' %}active{% endif %}" href="/history">
                             <i class="bi bi-clock-history"></i> History
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link {% if request.path == '/orphans' %}active{% endif %}" href="/orphans">
-                            <i class="bi bi-file-earmark-music"></i> Orphans
                         </a>
                     </li>
                     <li class="nav-item">

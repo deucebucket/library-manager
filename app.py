@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.46"
+APP_VERSION = "0.9.0-beta.47"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -980,11 +980,11 @@ DEFAULT_CONFIG = {
     "batch_size": 3,
     "max_requests_per_hour": 30,
     "auto_fix": False,
-    "protect_author_changes": True,  # Require approval if author changes completely
+    "protect_author_changes": True,  # Require manual approval when author changes completely
     "enabled": True,
+    "series_grouping": False,  # Group series: Author/Series/1 - Title (Audiobookshelf compatible)
     "ebook_management": False,  # Enable ebook organization (Beta)
     "ebook_library_mode": "merge",  # "merge" = same folder as audiobooks, "separate" = own library
-    "audio_analysis": False,  # Enable Gemini audio analysis for verification (Beta)
     "update_channel": "beta",  # "stable", "beta", or "nightly"
     "naming_format": "author/title",  # "author/title", "author - title", "custom"
     "custom_naming_template": "{author}/{title}",  # Custom template with {author}, {title}, {series}, etc.
@@ -1780,6 +1780,11 @@ def clean_search_title(messy_name):
     # Books like "11/22/63" by Stephen King have dates AS titles
     # The layered verification system (API + AI + Audio) will determine the real title
     # This function just cleans obvious junk for searching - title verification is separate
+
+    # Strip leading track/chapter numbers like "06 - Title", "01. Title", "Track 05 - Title"
+    # These are common in audiobook folders but mess up search
+    clean = re.sub(r'^(?:track\s*)?\d+\s*[-–—:.]\s*', '', clean, flags=re.IGNORECASE)
+
     # Remove extra whitespace
     clean = re.sub(r'\s+', ' ', clean)
     # Remove leading/trailing junk
@@ -2975,7 +2980,7 @@ def get_audio_metadata_hints(book_path, config=None):
         logger.debug(f"ID3 extraction failed: {e}")
 
     # Audio analysis with Gemini (if enabled and configured)
-    if config and config.get('audio_analysis', False) and config.get('gemini_api_key'):
+    if config and config.get('enable_audio_analysis', False) and config.get('gemini_api_key'):
         audio_info = analyze_audio_with_gemini(first_file, config)
         if audio_info:
             if audio_info.get('title'):
@@ -3128,7 +3133,7 @@ def find_orphan_audio_files(lib_path):
 
 
 def organize_orphan_files(author_path, book_title, files, config=None):
-    """Create a book folder and move orphan files into it."""
+    """Create a book folder and move orphan files into it, including companion files."""
     import shutil
 
     author_dir = Path(author_path)
@@ -3156,10 +3161,32 @@ def organize_orphan_files(author_path, book_title, files, config=None):
     else:
         book_dir.mkdir(parents=True)
 
+    # Companion file extensions to also move (covers, metadata, etc.)
+    COMPANION_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp',  # covers
+                           '.nfo', '.txt', '.json', '.xml', '.cue',   # metadata
+                           '.pdf', '.epub', '.mobi',                   # companion ebooks
+                           '.srt', '.vtt', '.lrc'}                     # subtitles/lyrics
+
+    # Find companion files in the same directory as the audio files
+    companion_files = set()
+    source_dirs = set()
+    for file_path in files:
+        src = Path(file_path)
+        if src.exists():
+            source_dirs.add(src.parent)
+
+    for source_dir in source_dirs:
+        for f in source_dir.iterdir():
+            if f.is_file() and f.suffix.lower() in COMPANION_EXTENSIONS:
+                companion_files.add(str(f))
+
+    # Combine audio files and companion files
+    all_files = list(files) + list(companion_files)
+
     # Move files
     moved = 0
     errors = []
-    for file_path in files:
+    for file_path in all_files:
         try:
             src = Path(file_path)
             if src.exists():
@@ -3169,10 +3196,21 @@ def organize_orphan_files(author_path, book_title, files, config=None):
         except Exception as e:
             errors.append(f"{file_path}: {e}")
 
+    # Clean up empty source directories
+    for source_dir in source_dirs:
+        try:
+            if source_dir.exists() and source_dir != author_dir:
+                remaining = list(source_dir.iterdir())
+                if not remaining:
+                    source_dir.rmdir()
+                    logger.info(f"Cleaned up empty folder: {source_dir}")
+        except OSError:
+            pass
+
     if errors:
         return False, f"Moved {moved} files, {len(errors)} errors: {errors[0]}"
 
-    logger.info(f"Organized {moved} orphan files into: {book_dir}")
+    logger.info(f"Organized {moved} files (audio + companions) into: {book_dir}")
     return True, f"Created {book_dir.name} with {moved} files"
 
 
@@ -6698,25 +6736,13 @@ def dashboard():
 
 @app.route('/orphans')
 def orphans_page():
-    """Orphan files management page."""
-    return render_template('orphans.html')
+    """Redirect to unified Library view with orphan filter."""
+    return redirect('/library?filter=orphan')
 
 @app.route('/queue')
 def queue_page():
-    """Queue management page."""
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute('''SELECT q.id, q.reason, q.added_at,
-                        b.id as book_id, b.path, b.current_author, b.current_title
-                 FROM queue q
-                 JOIN books b ON q.book_id = b.id
-                 ORDER BY q.priority, q.added_at''')
-    queue_items = c.fetchall()
-
-    conn.close()
-
-    return render_template('queue.html', queue_items=queue_items)
+    """Redirect to unified Library view with queue filter."""
+    return redirect('/library?filter=queue')
 
 @app.route('/history')
 def history_page():
@@ -6810,7 +6836,13 @@ def settings_page():
         config['series_grouping'] = 'series_grouping' in request.form
         config['ebook_management'] = 'ebook_management' in request.form
         config['ebook_library_mode'] = request.form.get('ebook_library_mode', 'merge')
-        config['audio_analysis'] = 'audio_analysis' in request.form
+        # Verification layer settings (added beta.43)
+        config['enable_api_lookups'] = 'enable_api_lookups' in request.form
+        config['enable_ai_verification'] = 'enable_ai_verification' in request.form
+        config['enable_audio_analysis'] = 'enable_audio_analysis' in request.form
+        config['deep_scan_mode'] = 'deep_scan_mode' in request.form
+        config['profile_confidence_threshold'] = int(request.form.get('profile_confidence_threshold', 85))
+        config['skip_confirmations'] = 'skip_confirmations' in request.form
         config['metadata_embedding_enabled'] = 'metadata_embedding_enabled' in request.form
         config['metadata_embedding_overwrite_managed'] = 'metadata_embedding_overwrite_managed' in request.form
         config['metadata_embedding_backup_sidecar'] = 'metadata_embedding_backup_sidecar' in request.form

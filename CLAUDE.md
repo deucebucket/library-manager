@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **What this is**: A single-process web app that scans audiobook/ebook libraries, proposes safe renames, and tracks history.
 - **Tech**: Python + Flask (Jinja templates in `templates/`, static assets in `static/`), SQLite for persistence.
-- **Main entrypoint**: `app.py` (monolithic by design; avoid “framework-izing” unless explicitly asked).
+- **Main entrypoint**: `app.py` (monolithic by design; avoid "framework-izing" unless explicitly asked).
 
 ## Repository layout (high-signal)
 
@@ -16,19 +16,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `templates/`: server-rendered Jinja2 UI.
 - `static/`: UI assets.
 - `docs/`: user-facing documentation.
-- `test-env/`: integration tests (container-based) + test library generators.
 - `Dockerfile`, `docker-compose.yml`: container setup.
 - `metadata_scraper/`: **separate git repo** - BookDB backend (not part of this project's codebase).
 
-## Core architecture: identification pipeline
+## Core architecture: layered processing pipeline
 
-The app identifies books through a multi-stage pipeline (defined in `app.py`):
+The app identifies books through a **layered verification pipeline** (defined in `app.py`):
 
-1. **Path analysis** - Works backwards from audio file to library root, extracting author/title/series from folder names
-2. **Database lookup** - Queries BookDB (50M+ books via `/search` endpoint) for author/title verification
-3. **Multi-source API fallback** - Audnexus, OpenLibrary, Google Books, Hardcover
-4. **AI verification** - Gemini, OpenRouter, or Ollama for ambiguous cases or when APIs fail
-5. **Audio analysis** (optional) - Gemini analyzes audio snippets to extract metadata from narrator intros
+### Layer 1: API Lookups (fast, free)
+- `process_layer_1_api()` - BookDB (50M+ books), Audnexus, OpenLibrary, Google Books, Hardcover
+- Items that get high-confidence matches are done; failures advance to Layer 2
+
+### Layer 2: AI Verification (slower, has rate limits)
+- `process_queue()` / `identify_book_with_ai()` - Gemini, OpenRouter, or Ollama
+- Used for ambiguous cases, conflicting metadata, or when APIs return nothing
+
+### Layer 3: Audio Analysis (expensive, optional)
+- `process_layer_3_audio()` / `analyze_audio_sample()` - Gemini analyzes 90-second audio snippets
+- Extracts metadata directly from narrator intros as final fallback
+
+### Book Profile System
+Each book gets a `BookProfile` with per-field confidence scoring:
+- Sources are weighted: `audio (85) > id3 (80) > json (75) > bookdb (65) > ai (60) > path (40)`
+- Multiple agreeing sources boost confidence; conflicts reduce it
+- `profile_confidence_threshold` (default 85%) determines when to skip expensive layers
 
 Key functions: `analyze_path()`, `gather_all_api_candidates()`, `identify_book_with_ai()`, `analyze_audio_sample()`
 
@@ -95,20 +106,27 @@ On startup (`__main__`):
 
 ## Testing
 
-There’s no unit test framework wired in; the project relies on an **integration test harness**.
+There's no unit test framework wired in; the project relies on an **integration test harness**.
 
 ### Integration tests (container-based)
 
 ```bash
+# Full integration test suite (pulls from ghcr.io)
 ./test-env/run-integration-tests.sh
-# or rebuild the ~2GB test library
+
+# Build from local source instead of pulling image
+./test-env/run-integration-tests.sh --local
+
+# Rebuild ~2GB test library first
 ./test-env/run-integration-tests.sh --rebuild
 ```
 
 Notes:
 
-- The harness uses **`podman`** by default. If you don’t have podman, adapt locally to docker (don’t commit that change unless requested).
+- The harness uses **`podman`** by default. If you don't have podman, adapt locally to docker (don't commit that change unless requested).
 - Tests validate the container can boot, UI returns 200, and core API endpoints respond.
+- Test library generators: `test-env/generate-test-library.sh`, `test-env/generate-chaos-library.py`
+- Naming issue tests: `test-env/test-naming-issues.py` (39 tests covering GitHub issues)
 
 ### Minimal local sanity checks
 
@@ -259,7 +277,13 @@ If you’re running it locally:
 
 - GitHub Actions builds and publishes a multi-arch image to GHCR (see `.github/workflows/docker-publish.yml`).
 
+## Key database tables (in `library.db`)
+
+- **`books`**: All discovered books with current status, profile JSON, confidence scores
+- **`queue`**: Items awaiting processing (tracks `verification_layer`: 0=not processed, 1=API, 2=AI, 3=Audio, 4=complete)
+- **`history`**: All applied/pending fixes with original/new paths, status, metadata
+
 ## When in doubt
 
 - Prefer aligning with existing user docs in `docs/` and the behavior implied by `README.md`.
-- If you can’t prove a change is safe, make it opt-in or require manual approval.
+- If you can't prove a change is safe, make it opt-in or require manual approval.

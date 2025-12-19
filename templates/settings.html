@@ -192,16 +192,26 @@
                                 <input class="form-check-input" type="checkbox" name="enabled" id="enabled"
                                        {% if config.enabled %}checked{% endif %}>
                                 <label class="form-check-label" for="enabled">
-                                    <strong>Enable Background Processing</strong>
+                                    <strong>Background Processing</strong>
+                                    <br><small class="text-muted">Process queue items automatically in the background</small>
                                 </label>
                             </div>
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" name="auto_fix" id="auto_fix"
                                        {% if config.auto_fix %}checked{% endif %} onchange="warnAutoFix(this)">
                                 <label class="form-check-label" for="auto_fix">
-                                    <strong>Auto-Fix Mode</strong>
+                                    <strong>Auto-Apply Fixes</strong>
                                     <span class="badge bg-warning text-dark">Caution</span>
-                                    <br><small class="text-muted">Rename folders automatically without approval</small>
+                                    <br><small class="text-muted">Apply safe fixes automatically (non-drastic changes only)</small>
+                                </label>
+                            </div>
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="protect_author_changes" id="protect_author_changes"
+                                       {% if config.protect_author_changes %}checked{% endif %}>
+                                <label class="form-check-label" for="protect_author_changes">
+                                    <strong>Require Approval for Author Changes</strong>
+                                    <span class="badge bg-success">Recommended</span>
+                                    <br><small class="text-muted">When author changes completely (e.g. "Unknown" → "Stephen King"), send to Pending instead of auto-applying</small>
                                 </label>
                             </div>
                             <div class="form-check form-switch mb-2">
@@ -210,25 +220,25 @@
                                 <label class="form-check-label" for="trust_the_process">
                                     <strong>Trust the Process</strong>
                                     <span class="badge bg-danger">EXPERIMENTAL</span>
-                                    <br><small class="text-muted">Full auto: verify drastic changes via AI + audio, only flag truly unidentifiable</small>
+                                    <br><small class="text-muted">Auto-apply drastic changes if AI + audio analysis agree. Only truly unidentifiable items go to Pending.</small>
                                 </label>
                             </div>
+                            <hr class="my-2">
                             <div class="form-check form-switch mb-2">
-                                <input class="form-check-input" type="checkbox" name="protect_author_changes" id="protect_author_changes"
-                                       {% if config.protect_author_changes %}checked{% endif %}>
-                                <label class="form-check-label" for="protect_author_changes">
-                                    <strong>Smart Verification</strong>
-                                    <span class="badge bg-success">Recommended</span>
-                                    <br><small class="text-muted">Extra verification when author changes completely</small>
+                                <input class="form-check-input" type="checkbox" name="skip_confirmations" id="skip_confirmations"
+                                       {% if config.skip_confirmations %}checked{% endif %}>
+                                <label class="form-check-label" for="skip_confirmations">
+                                    <strong>Skip Confirmation Dialogs</strong>
+                                    <br><small class="text-muted">No "Are you sure?" popups when clicking Apply, Reject, or Undo</small>
                                 </label>
                             </div>
+                            <hr class="my-2">
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" name="series_grouping" id="series_grouping"
                                        {% if config.series_grouping %}checked{% endif %}>
                                 <label class="form-check-label" for="series_grouping">
                                     <strong>Series Grouping</strong>
-                                    <span class="badge bg-info">BETA</span>
-                                    <br><small class="text-muted">Group series books: <code>Author/Series/1 - Title</code></small>
+                                    <br><small class="text-muted">Audiobookshelf format: <code>Author/Series/1 - Title/</code> instead of <code>Author/Title/</code></small>
                                 </label>
                             </div>
                             <div class="form-check form-switch mb-2">
@@ -237,7 +247,7 @@
                                 <label class="form-check-label" for="ebook_management">
                                     <strong>Ebook Management</strong>
                                     <span class="badge bg-info">BETA</span>
-                                    <br><small class="text-muted">Organize ebooks (.epub, .mobi, .azw3, .pdf)</small>
+                                    <br><small class="text-muted">Also organize .epub, .mobi, .azw3, .pdf files</small>
                                 </label>
                             </div>
                             <div id="ebook-options" class="ms-4 mb-2" style="display: none;">
@@ -251,15 +261,6 @@
                                     </option>
                                 </select>
                                 <small class="text-muted d-block mt-1">Merge: puts ebook in same Author/Title/ folder as audiobook</small>
-                            </div>
-                            <div class="form-check form-switch mb-2 mt-3">
-                                <input class="form-check-input" type="checkbox" name="audio_analysis" id="audio_analysis"
-                                       {% if config.audio_analysis %}checked{% endif %}>
-                                <label class="form-check-label" for="audio_analysis">
-                                    <strong>Audio Analysis</strong>
-                                    <span class="badge bg-info">BETA</span>
-                                    <br><small class="text-muted">Use Gemini to analyze audiobook intros for author/title (requires Gemini API key)</small>
-                                </label>
                             </div>
                             <hr class="my-2">
                             <div class="form-check form-switch mb-2">
@@ -298,44 +299,31 @@
                     <!-- Verification Settings -->
                     <div class="card mb-3">
                         <div class="card-header py-2">
-                            <i class="bi bi-shield-check"></i> Verification Layers
-                            <span class="badge bg-success">New</span>
+                            <i class="bi bi-shield-check"></i> Identification Sources
                         </div>
                         <div class="card-body">
                             <p class="text-muted small mb-3">
-                                Control which sources are used to identify books. Layers only run if confidence is below threshold (or Deep Mode is on).
+                                Books are identified in order: API → AI → Audio. Each layer only runs if needed.
                             </p>
-
-                            <div class="mb-3">
-                                <label class="form-label">Confidence Threshold</label>
-                                <input type="range" class="form-range" name="profile_confidence_threshold"
-                                       id="profile_confidence_threshold" min="50" max="100" step="5"
-                                       value="{{ config.profile_confidence_threshold or 85 }}"
-                                       oninput="document.getElementById('threshold-display').textContent = this.value + '%'">
-                                <small class="text-muted">
-                                    Skip expensive layers when confidence reaches:
-                                    <strong id="threshold-display">{{ config.profile_confidence_threshold or 85 }}%</strong>
-                                </small>
-                            </div>
 
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" name="enable_api_lookups"
                                        id="enable_api_lookups" {% if config.enable_api_lookups != false %}checked{% endif %}>
                                 <label class="form-check-label" for="enable_api_lookups">
-                                    <i class="bi bi-cloud"></i> <strong>API Lookups</strong>
+                                    <i class="bi bi-cloud"></i> <strong>Layer 1: Database Lookups</strong>
                                     <span class="badge bg-success">Free</span>
                                 </label>
-                                <br><small class="text-muted">BookDB, Audnexus, OpenLibrary, Google Books, Hardcover</small>
+                                <br><small class="text-muted">Search BookDB (50M books), Audnexus, OpenLibrary, Google Books. Fast and free.</small>
                             </div>
 
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" name="enable_ai_verification"
                                        id="enable_ai_verification" {% if config.enable_ai_verification != false %}checked{% endif %}>
                                 <label class="form-check-label" for="enable_ai_verification">
-                                    <i class="bi bi-robot"></i> <strong>AI Verification</strong>
-                                    <span class="badge bg-warning text-dark">Your Tokens</span>
+                                    <i class="bi bi-robot"></i> <strong>Layer 2: AI Verification</strong>
+                                    <span class="badge bg-warning text-dark">Uses Tokens</span>
                                 </label>
-                                <br><small class="text-muted">Uses {{ config.ai_provider or 'openrouter' }} for verification</small>
+                                <br><small class="text-muted">Ask AI ({{ config.ai_provider or 'openrouter' }}) when databases don't have a confident match.</small>
                             </div>
 
                             <div class="form-check form-switch mb-2">
@@ -343,25 +331,35 @@
                                        id="enable_audio_analysis" {% if config.enable_audio_analysis %}checked{% endif %}
                                        {% if not config.gemini_api_key %}disabled title="Requires Gemini API key"{% endif %}>
                                 <label class="form-check-label" for="enable_audio_analysis">
-                                    <i class="bi bi-soundwave"></i> <strong>Audio Analysis</strong>
-                                    <span class="badge bg-warning text-dark">Your Tokens</span>
+                                    <i class="bi bi-soundwave"></i> <strong>Layer 3: Audio Analysis</strong>
+                                    <span class="badge bg-warning text-dark">Uses Tokens</span>
                                     {% if not config.gemini_api_key %}
-                                    <span class="badge bg-secondary">Requires Gemini</span>
+                                    <span class="badge bg-secondary">Needs Gemini Key</span>
                                     {% endif %}
                                 </label>
-                                <br><small class="text-muted">Analyze audiobook intro for narrator/title (Gemini 2.5 Flash)</small>
+                                <br><small class="text-muted">Listen to first 90 seconds for narrator intro. Last resort when AI fails.</small>
                             </div>
 
                             <hr class="my-2">
 
-                            <div class="form-check form-switch">
+                            <div class="form-check form-switch mb-3">
                                 <input class="form-check-input" type="checkbox" name="deep_scan_mode"
                                        id="deep_scan_mode" {% if config.deep_scan_mode %}checked{% endif %}>
                                 <label class="form-check-label" for="deep_scan_mode">
                                     <i class="bi bi-zoom-in"></i> <strong>Deep Scan Mode</strong>
-                                    <span class="badge bg-info">Thorough</span>
                                 </label>
-                                <br><small class="text-muted">Always use all enabled layers regardless of confidence</small>
+                                <br><small class="text-muted">Run ALL enabled layers for every book (slower, more thorough, uses more tokens)</small>
+                            </div>
+
+                            <div class="mb-0">
+                                <label class="form-label small">Confidence Threshold: <strong id="threshold-display">{{ config.profile_confidence_threshold or 85 }}%</strong></label>
+                                <input type="range" class="form-range" name="profile_confidence_threshold"
+                                       id="profile_confidence_threshold" min="50" max="100" step="5"
+                                       value="{{ config.profile_confidence_threshold or 85 }}"
+                                       oninput="document.getElementById('threshold-display').textContent = this.value + '%'">
+                                <small class="text-muted">
+                                    Stop at this confidence level. Higher = more certain before stopping, lower = faster but less accurate.
+                                </small>
                             </div>
                         </div>
                     </div>

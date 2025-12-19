@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.46-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.47-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,9 +16,15 @@
 
 ## Recent Changes (develop)
 
+> **beta.47** - Settings Overhaul, UI Cleanup & Bug Fixes
+> - **Settings Actually Save** - All verification layer toggles and confidence threshold now persist
+> - **Unified Navigation** - Removed Queue/Orphans from navbar (use Library filters instead)
+> - **Search Fix** - Leading track numbers stripped (`06 - Dragon Teeth` → `Dragon Teeth`)
+> - **Companion Files** - Orphan organize now moves covers, NFO, metadata with audio files
+> - **Clearer Descriptions** - All settings now have plain-language explanations
+
 > **beta.46** - UnRaid Config Fix
 > - **Auto-Detect `/config`** - Now works with UnRaid's default mount point (was only checking `/data`)
-> - **Migration Improved** - Checks both `/config` and `/data` for existing config files
 
 > **beta.45** - Layered Processing Architecture
 > - **Independent Verification Layers** - Queue processing now uses Layer 1 (API), Layer 2 (AI), Layer 3 (Audio)

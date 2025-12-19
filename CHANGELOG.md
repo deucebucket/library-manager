@@ -2,6 +2,50 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.47] - 2025-12-19
+
+### Fixed
+- **Verification Layer Settings Not Saving** - `enable_audio_analysis`, `deep_scan_mode`, `enable_api_lookups`, `enable_ai_verification`, and `profile_confidence_threshold` now persist
+  - Form field names were mismatched between template and save handler
+  - All toggles and the confidence slider now properly save and load
+
+- **Search Strips Leading Track Numbers** (Issue #33) - Manual match search now strips leading numbers
+  - `06 - Dragon Teeth` → searches for `Dragon Teeth`
+  - `01. The Martian` → searches for `The Martian`
+  - `Track 05 - Something` → searches for `Something`
+  - Safe patterns preserved: `1984`, `11/22/63` stay unchanged
+
+- **Orphan Organize Moves Companion Files** (Issue #31) - Covers, NFO, and metadata files now move with audio
+  - Covers: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`
+  - Metadata: `.nfo`, `.txt`, `.json`, `.xml`, `.cue`
+  - Companion ebooks: `.pdf`, `.epub`, `.mobi`
+  - Empty source folders cleaned up automatically
+
+- **Missing Default Config** - `series_grouping` was used but missing from DEFAULT_CONFIG
+
+- **Duplicate Setting Removed** - Removed `audio_analysis` toggle from Behavior section (was duplicate of `enable_audio_analysis` in Identification Sources)
+
+### Changed
+- **Unified Navigation** - Removed separate Queue and Orphans pages from navbar
+  - Both now redirect to Library page with appropriate filter pre-selected
+  - `/queue` → `/library?filter=queue`
+  - `/orphans` → `/library?filter=orphan`
+  - Cleaner navigation: Dashboard → Library → History → ABS → Settings
+
+- **Settings Descriptions Improved** - All settings now have clear, plain-language descriptions
+  - "Smart Verification" renamed to "Require Approval for Author Changes"
+  - "Enable Background Processing" now explains what it does
+  - "Verification Layers" section renamed to "Identification Sources" with Layer 1/2/3 labels
+  - Confidence threshold slider explanation improved
+
+### Added
+- **Skip Confirmations in Settings** - New toggle in Settings > Behavior
+  - Previously only available in Library view quick action bar
+  - Now accessible from main Settings page
+  - Disables "Are you sure?" popups for apply/reject/undo actions
+
+---
+
 ## [0.9.0-beta.46] - 2025-12-19
 
 ### Fixed

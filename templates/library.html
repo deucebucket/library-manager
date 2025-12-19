@@ -739,7 +739,15 @@ setInterval(() => {
     }
 }, 10000);
 
-// Initial load
-loadLibrary();
+// Initial load - check for URL filter parameter
+(function() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const filterParam = urlParams.get('filter');
+    if (filterParam && ['all', 'pending', 'orphan', 'queue', 'fixed', 'verified', 'error', 'attention'].includes(filterParam)) {
+        setFilter(filterParam);
+    } else {
+        loadLibrary();
+    }
+})();
 </script>
 {% endblock %}
