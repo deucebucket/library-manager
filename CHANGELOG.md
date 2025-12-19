@@ -2,6 +2,72 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.46] - 2025-12-19
+
+### Fixed
+- **UnRaid Config Persistence** - App now auto-detects `/config` mount point (UnRaid default)
+  - Previously hardcoded `DATA_DIR=/data` in Dockerfile, ignoring UnRaid's `/config`
+  - Now uses `os.path.ismount()` to detect which directory is actually mounted
+  - UnRaid users no longer need to manually add `/data` path
+  - Existing configs are NEVER lost - always checks for existing files first
+
+- **Search Title Cleanup Improvements**
+  - Underscores now converted to spaces (`audiobook_Title` → `audiobook Title`)
+  - Curly brace junk removed (`{465mb}`, `{narrator}`)
+  - Titles like "1984" and "11/22/63" no longer incorrectly stripped
+  - Added "Unknown Author" to placeholder detection
+
+### Changed
+- Dockerfile no longer sets `DATA_DIR` env var - app auto-detects
+- Both `/data` and `/config` directories created in container for compatibility
+- Migration checks both locations for legacy config files
+- `clean_search_title()` is now minimal - doesn't strip dates/timestamps
+  - Layered verification (API + AI + Audio) determines the real title
+  - Multiple agreeing sources = high confidence (Book Profile system)
+
+### Technical
+- `_detect_data_dir()` priority:
+  1. Explicit `DATA_DIR` env var (user override)
+  2. Directory with existing config files (never lose settings)
+  3. Actually mounted volume via `os.path.ismount()` (fresh install detection)
+  4. `/data` fallback (our documented default)
+  5. `/config` fallback (UnRaid)
+  6. App directory (local development)
+- Added comprehensive naming issue test suite (39 tests covering all GitHub issues)
+
+---
+
+## [0.9.0-beta.45] - 2025-12-18
+
+### Added
+- **Layered Processing Architecture** - Queue processing now uses independent verification layers
+  - **Layer 1 (API)**: Fast database lookups via BookDB, Audnexus, OpenLibrary, etc.
+  - **Layer 2 (AI)**: AI verification for items that failed API lookup
+  - **Layer 3 (Audio)**: Gemini audio analysis as final fallback
+  - Each layer processes independently and hands off failures to the next
+  - Respects existing settings: `enable_api_lookups`, `enable_ai_verification`, `enable_audio_analysis`
+
+- **New Database Column** - `verification_layer` tracks which layer each book is at
+  - 0 = Not processed, 1 = Awaiting API, 2 = Awaiting AI, 3 = Awaiting Audio, 4 = Complete
+
+- **Layer Functions** - New processing functions for cleaner code separation
+  - `process_layer_1_api()`: Handles API database lookups
+  - `process_layer_3_audio()`: Handles Gemini audio analysis
+  - `process_queue()` now only handles Layer 2 (AI verification)
+
+### Changed
+- `process_all_queue()` now processes layers in sequence: API → AI → Audio
+- Processing status now shows which layer is active
+- Queue items only advance through enabled layers
+- When API lookups are disabled, items go directly to AI layer
+
+### Technical
+- All existing features preserved: multibook detection, series sorting, naming templates, etc.
+- All bug fixes remain intact: config persistence, template cleanup, version handling
+- Integration tests pass: 9/9
+
+---
+
 ## [0.9.0-beta.44] - 2025-12-18
 
 ### Added

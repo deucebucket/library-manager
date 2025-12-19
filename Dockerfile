@@ -17,13 +17,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application
 COPY . .
 
-# Create data directory for persistence
-RUN mkdir -p /data
+# Create common persistent storage directories
+# /data = our default, /config = UnRaid default
+# App auto-detects which one is mounted/has config
+RUN mkdir -p /data /config
 
 # Environment variables
+# NOTE: DATA_DIR intentionally NOT set - app auto-detects /config or /data
 ENV PYTHONUNBUFFERED=1
 ENV FLASK_ENV=production
-ENV DATA_DIR=/data
 
 # Expose port
 EXPOSE 5757

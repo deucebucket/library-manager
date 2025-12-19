@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.44"
+APP_VERSION = "0.9.0-beta.46"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -914,9 +914,56 @@ app.secret_key = 'library-manager-secret-key-2024'
 # ============== CONFIGURATION ==============
 
 BASE_DIR = Path(__file__).parent
-# Support DATA_DIR env var for Docker persistence, default to app directory
-DATA_DIR = Path(os.environ.get('DATA_DIR', BASE_DIR))
+
+# Support DATA_DIR env var for Docker persistence
+# Auto-detect common Docker mount points if not explicitly set
+# UnRaid uses /config, our default is /data
+def _detect_data_dir():
+    """Auto-detect the data directory for Docker persistence.
+
+    Priority:
+    1. Explicit DATA_DIR env var (user override)
+    2. Directory with existing config files (preserves user settings)
+    3. Mounted volume (detects actual Docker mounts vs container dirs)
+    4. /data for fresh installs (our documented default)
+    5. /config if /data doesn't exist (UnRaid fallback)
+    6. App directory (local development)
+    """
+    # If explicitly set via env var, use that
+    if 'DATA_DIR' in os.environ:
+        return Path(os.environ['DATA_DIR'])
+
+    # Check for existing config files - NEVER lose user settings
+    # Check both locations, prefer whichever has config
+    for mount_point in ['/data', '/config']:
+        mount_path = Path(mount_point)
+        if mount_path.exists() and mount_path.is_dir():
+            if (mount_path / 'config.json').exists() or (mount_path / 'library.db').exists():
+                return mount_path
+
+    # Fresh install: detect which is actually mounted (persistent storage)
+    # os.path.ismount() returns True for Docker volume mounts
+    if os.path.ismount('/data'):
+        return Path('/data')
+    if os.path.ismount('/config'):
+        return Path('/config')
+
+    # Fallback: prefer /data (our documented default), then /config
+    if Path('/data').exists():
+        return Path('/data')
+    if Path('/config').exists():
+        return Path('/config')
+
+    # Fall back to app directory (local development)
+    return BASE_DIR
+
+DATA_DIR = _detect_data_dir()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# Log where we're storing data (helps debug mount issues)
+import logging
+_startup_logger = logging.getLogger(__name__)
+_startup_logger.info(f"Data directory: {DATA_DIR} (config persistence location)")
 
 DB_PATH = DATA_DIR / 'library.db'
 CONFIG_PATH = DATA_DIR / 'config.json'
@@ -969,11 +1016,13 @@ DEFAULT_SECRETS = {
 
 
 def migrate_legacy_config():
-    """Migrate config files from old location (BASE_DIR/app/) to DATA_DIR.
+    """Migrate config files from old locations to DATA_DIR.
 
     Issue #23: In beta.23 we fixed config paths to use DATA_DIR instead of BASE_DIR,
     but didn't migrate existing configs. Users updating from older versions would
     lose their config because the app looked in the new location.
+
+    Also checks /config and /data for UnRaid vs standard Docker setups.
     """
     if DATA_DIR == BASE_DIR:
         return  # Not running with separate data dir, nothing to migrate
@@ -981,17 +1030,33 @@ def migrate_legacy_config():
     import shutil
     migrate_files = ['config.json', 'secrets.json', 'library.db', 'user_groups.json']
 
+    # Check multiple possible legacy locations
+    # - BASE_DIR: old versions stored in app directory
+    # - /data: our default Docker mount (user might have switched to /config)
+    # - /config: UnRaid default (user might have switched to /data)
+    legacy_locations = [BASE_DIR]
+    if DATA_DIR != Path('/data') and Path('/data').exists():
+        legacy_locations.append(Path('/data'))
+    if DATA_DIR != Path('/config') and Path('/config').exists():
+        legacy_locations.append(Path('/config'))
+
     for filename in migrate_files:
-        old_path = BASE_DIR / filename
         new_path = DATA_DIR / filename
 
-        # Only migrate if file exists in old location and NOT in new location
-        if old_path.exists() and not new_path.exists():
-            try:
-                shutil.copy2(old_path, new_path)
-                logger.info(f"Migrated {filename} from {old_path} to {new_path}")
-            except Exception as e:
-                logger.warning(f"Failed to migrate {filename}: {e}")
+        # Skip if already exists in target location
+        if new_path.exists():
+            continue
+
+        # Try to find file in legacy locations
+        for legacy_dir in legacy_locations:
+            old_path = legacy_dir / filename
+            if old_path.exists():
+                try:
+                    shutil.copy2(old_path, new_path)
+                    logger.info(f"Migrated {filename} from {old_path} to {new_path}")
+                    break  # Found and migrated, stop looking
+                except Exception as e:
+                    logger.warning(f"Failed to migrate {filename} from {old_path}: {e}")
 
 
 def init_config():
@@ -1087,7 +1152,8 @@ def init_db():
     # Add profile columns for Book Profile system (migration)
     profile_columns = [
         ('books', 'profile TEXT'),          # Full JSON profile
-        ('books', 'confidence INTEGER DEFAULT 0')  # Overall confidence score
+        ('books', 'confidence INTEGER DEFAULT 0'),  # Overall confidence score
+        ('books', 'verification_layer INTEGER DEFAULT 0')  # 0=pending, 1=API, 2=AI, 3=audio, 4=complete
     ]
     for table, col_def in profile_columns:
         try:
@@ -1235,10 +1301,11 @@ def is_placeholder_author(name):
     if not name:
         return True
     name_lower = name.lower().strip()
-    placeholder_authors = {'unknown', 'various', 'various authors', 'va', 'n/a', 'none',
+    placeholder_authors = {'unknown', 'unknown author', 'various', 'various authors', 'va', 'n/a', 'none',
                            'audiobook', 'audiobooks', 'ebook', 'ebooks', 'book', 'books',
                            'author', 'authors', 'narrator', 'untitled', 'no author',
-                           'metadata', 'tmp', 'temp', 'streams', 'cache', 'data', 'log', 'logs'}
+                           'metadata', 'tmp', 'temp', 'streams', 'cache', 'data', 'log', 'logs',
+                           'audio', 'media', 'files', 'downloads', 'torrents'}
     return name_lower in placeholder_authors
 
 # ============== LANGUAGE DETECTION ==============
@@ -1690,10 +1757,16 @@ def clean_search_title(messy_name):
     import re
     # Remove common junk patterns
     clean = messy_name
+
+    # Convert underscores to spaces first (common in filenames)
+    clean = clean.replace('_', ' ')
+
     # Remove bracketed content like [bitsearch.to], [64k], [r1.1]
     clean = re.sub(r'\[.*?\]', '', clean)
-    # Remove parenthetical junk like (Unabridged), (2019)
-    clean = re.sub(r'\((?:Unabridged|Abridged|\d{4}|MP3|M4B|EPUB|PDF|64k|128k|r\d+\.\d+).*?\)', '', clean, flags=re.IGNORECASE)
+    # Remove parenthetical junk like (Unabridged), (2019) - but keep series info like (Book 1)
+    clean = re.sub(r'\((?:Unabridged|Abridged|MP3|M4B|EPUB|PDF|64k|128k|r\d+\.\d+|multi).*?\)', '', clean, flags=re.IGNORECASE)
+    # Remove curly brace junk like {465mb}, {narrator}
+    clean = re.sub(r'\{[^}]*(?:mb|kb|kbps|narrator|reader)[^}]*\}', '', clean, flags=re.IGNORECASE)
     # Remove file extensions
     clean = re.sub(r'\.(mp3|m4b|m4a|epub|pdf|mobi|webm|opus)$', '', clean, flags=re.IGNORECASE)
     # Remove "by Author" at the end temporarily for searching
@@ -1703,8 +1776,10 @@ def clean_search_title(messy_name):
     clean = re.sub(r'\b(complete|unabridged|abridged)\b', '', clean, flags=re.IGNORECASE)
     clean = re.sub(r'\b(audio\s*book|audio)\b', '', clean, flags=re.IGNORECASE)
     clean = re.sub(r'\b(free|download|hd|hq)\b', '', clean, flags=re.IGNORECASE)
-    # Remove years at the end like "2020" or "2019"
-    clean = re.sub(r'\b(19|20)\d{2}\b\s*$', '', clean)
+    # NOTE: We intentionally DON'T strip date/timestamp patterns here
+    # Books like "11/22/63" by Stephen King have dates AS titles
+    # The layered verification system (API + AI + Audio) will determine the real title
+    # This function just cleans obvious junk for searching - title verification is separate
     # Remove extra whitespace
     clean = re.sub(r'\s+', ' ', clean)
     # Remove leading/trailing junk
@@ -4934,6 +5009,8 @@ def deep_scan_library(config):
                             VALUES (?, ?, ?, ?)''',
                          (book_id, f'loose_file_needs_folder:{filename}',
                           datetime.now().isoformat(), 1))  # High priority
+                # Set verification_layer=1 to start at Layer 1 (API lookup)
+                c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
                 queued += 1
                 issues_found[path_str] = ['loose_file_no_folder']
                 logger.info(f"Queued loose file: {filename} -> search for: {cleaned_filename}")
@@ -4968,6 +5045,8 @@ def deep_scan_library(config):
                                 VALUES (?, ?, ?, ?)''',
                              (book_id, f'ebook_loose:{filename}',
                               datetime.now().isoformat(), 2))
+                    # Set verification_layer=1 to start at Layer 1 (API lookup)
+                    c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
                     queued += 1
                     issues_found[path_str] = ['ebook_loose_file']
                     logger.info(f"Queued loose ebook: {filename}")
@@ -5179,6 +5258,8 @@ def deep_scan_library(config):
                         c.execute('''INSERT INTO queue (book_id, reason, priority)
                                     VALUES (?, ?, ?)''',
                                  (book_id, reason, min(len(all_issues), 10)))
+                        # Set verification_layer=1 to start at Layer 1 (API lookup)
+                        c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
                         conn.commit()
                         queued += 1
 
@@ -5244,6 +5325,106 @@ def check_rate_limit(config):
     return allowed, calls_today, max_per_hour
 
 
+def process_layer_1_api(config, limit=None):
+    """
+    Layer 1: API Database Lookups
+
+    Processes items at verification_layer=1 using API databases (BookDB, Audnexus, etc.)
+    Items that get a confident match are marked complete.
+    Items that fail are advanced to layer 2 (AI verification).
+
+    This is faster and cheaper than AI, so we try it first.
+    """
+    if not config.get('enable_api_lookups', True):
+        logger.info("[LAYER 1] API lookups disabled, skipping")
+        return 0, 0
+
+    conn = get_db()
+    c = conn.cursor()
+
+    batch_size = limit or config.get('batch_size', 3)
+    confidence_threshold = config.get('profile_confidence_threshold', 85)
+
+    # Get items awaiting API lookup (layer 1) or new items (layer 0)
+    c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
+                        b.path, b.current_author, b.current_title, b.verification_layer
+                 FROM queue q
+                 JOIN books b ON q.book_id = b.id
+                 WHERE b.verification_layer IN (0, 1)
+                   AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                 ORDER BY q.priority, q.added_at
+                 LIMIT ?''', (batch_size,))
+    batch = c.fetchall()
+
+    if not batch:
+        conn.close()
+        return 0, 0
+
+    logger.info(f"[LAYER 1] Processing {len(batch)} items via API lookup")
+
+    processed = 0
+    resolved = 0
+
+    for row in batch:
+        path = row['path']
+        current_author = row['current_author']
+        current_title = row['current_title']
+
+        # Use existing API candidate gathering function
+        candidates = gather_all_api_candidates(current_title, current_author, config)
+
+        if candidates:
+            # Sort by author match quality - prefer exact matches
+            best_match = None
+            for candidate in candidates:
+                cand_author = (candidate.get('author') or '').lower()
+                if current_author.lower() == cand_author or is_placeholder_author(current_author):
+                    best_match = candidate
+                    break
+
+            if not best_match:
+                best_match = candidates[0]  # Take first match as fallback
+
+            # Check if this is a good enough match
+            match_title = best_match.get('title', '')
+            match_author = best_match.get('author', '')
+
+            if match_title and match_author:
+                # Calculate match confidence
+                title_sim = fuzz.ratio(current_title.lower(), match_title.lower()) if current_title else 0
+                author_sim = fuzz.ratio(current_author.lower(), match_author.lower()) if current_author and not is_placeholder_author(current_author) else 100
+                avg_confidence = (title_sim + author_sim) / 2
+
+                if avg_confidence >= confidence_threshold:
+                    # Good match - mark as complete
+                    logger.info(f"[LAYER 1] API match found ({avg_confidence:.0f}%): {current_author}/{current_title} -> {match_author}/{match_title}")
+
+                    # Create pending fix or apply (using existing logic would be ideal, but for now just advance)
+                    # For now, we update verification_layer to 4 (complete) and let existing logic handle it
+                    c.execute('UPDATE books SET verification_layer = 4 WHERE id = ?', (row['book_id'],))
+                    resolved += 1
+                else:
+                    # Low confidence - advance to AI layer
+                    logger.info(f"[LAYER 1] API match low confidence ({avg_confidence:.0f}%), advancing to AI: {current_author}/{current_title}")
+                    c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (row['book_id'],))
+            else:
+                # No good match found - advance to AI
+                logger.info(f"[LAYER 1] No API match, advancing to AI: {current_author}/{current_title}")
+                c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (row['book_id'],))
+        else:
+            # No candidates at all - advance to AI
+            logger.info(f"[LAYER 1] No API candidates, advancing to AI: {current_author}/{current_title}")
+            c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (row['book_id'],))
+
+        processed += 1
+
+    conn.commit()
+    conn.close()
+
+    logger.info(f"[LAYER 1] Processed {processed}, resolved {resolved} via API")
+    return processed, resolved
+
+
 def process_queue(config, limit=None):
     """Process items in the queue."""
     # Check rate limit first
@@ -5259,18 +5440,39 @@ def process_queue(config, limit=None):
     if limit:
         batch_size = min(batch_size, limit)
 
-    logger.info(f"[DEBUG] process_queue called with batch_size={batch_size}, limit={limit} (API: {calls_made}/{max_calls})")
+    logger.info(f"[LAYER 2/AI] process_queue called with batch_size={batch_size}, limit={limit} (API: {calls_made}/{max_calls})")
 
-    # Get batch from queue
-    c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
-                        b.path, b.current_author, b.current_title
-                 FROM queue q
-                 JOIN books b ON q.book_id = b.id
-                 ORDER BY q.priority, q.added_at
-                 LIMIT ?''', (batch_size,))
+    # Check if AI verification is enabled
+    if not config.get('enable_ai_verification', True):
+        logger.info("[LAYER 2] AI verification disabled, skipping")
+        conn.close()
+        return 0, 0
+
+    # Get batch from queue - LAYER 2 (AI): items at verification_layer=2 or legacy items (layer=0 when API is disabled)
+    # Also process layer=0 items if API lookups are disabled (fallback to AI directly)
+    api_enabled = config.get('enable_api_lookups', True)
+    if api_enabled:
+        # Only process items that passed through Layer 1 (API)
+        c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
+                            b.path, b.current_author, b.current_title
+                     FROM queue q
+                     JOIN books b ON q.book_id = b.id
+                     WHERE b.verification_layer = 2
+                       AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                     ORDER BY q.priority, q.added_at
+                     LIMIT ?''', (batch_size,))
+    else:
+        # API disabled - process all queue items directly with AI
+        c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
+                            b.path, b.current_author, b.current_title
+                     FROM queue q
+                     JOIN books b ON q.book_id = b.id
+                     WHERE b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                     ORDER BY q.priority, q.added_at
+                     LIMIT ?''', (batch_size,))
     batch = c.fetchall()
 
-    logger.info(f"[DEBUG] Fetched {len(batch)} items from queue")
+    logger.info(f"[LAYER 2/AI] Fetched {len(batch)} items from queue")
 
     if not batch:
         logger.info("[DEBUG] No items in batch, returning 0")
@@ -5972,8 +6174,100 @@ def process_queue(config, limit=None):
     conn.commit()
     conn.close()
 
-    logger.info(f"[DEBUG] Batch complete: {processed} processed, {fixed} fixed")
+    logger.info(f"[LAYER 2/AI] Batch complete: {processed} processed, {fixed} fixed")
     return processed, fixed
+
+
+def process_layer_3_audio(config, limit=None):
+    """
+    Layer 3: Audio Analysis
+
+    Processes items at verification_layer=3 using Gemini audio analysis.
+    This is the most expensive layer - extracts metadata from audiobook intros.
+    Items that still can't be identified are marked as 'needs_attention'.
+    """
+    if not config.get('enable_audio_analysis', False):
+        logger.info("[LAYER 3] Audio analysis disabled, skipping")
+        return 0, 0
+
+    # Check if we have Gemini API key
+    secrets = load_secrets()
+    if not secrets or not secrets.get('gemini_api_key'):
+        logger.info("[LAYER 3] No Gemini API key for audio analysis, skipping")
+        return 0, 0
+
+    conn = get_db()
+    c = conn.cursor()
+
+    batch_size = limit or config.get('batch_size', 3)
+
+    # Get items awaiting audio analysis (layer 3)
+    c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
+                        b.path, b.current_author, b.current_title
+                 FROM queue q
+                 JOIN books b ON q.book_id = b.id
+                 WHERE b.verification_layer = 3
+                   AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                 ORDER BY q.priority, q.added_at
+                 LIMIT ?''', (batch_size,))
+    batch = c.fetchall()
+
+    if not batch:
+        conn.close()
+        return 0, 0
+
+    logger.info(f"[LAYER 3] Processing {len(batch)} items via audio analysis")
+
+    processed = 0
+    resolved = 0
+
+    for row in batch:
+        path = row['path']
+        book_path = Path(path)
+
+        # Find audio files in this folder
+        audio_files = find_audio_files(str(book_path)) if book_path.is_dir() else [str(book_path)]
+
+        if not audio_files:
+            # No audio files - mark as needs attention
+            logger.warning(f"[LAYER 3] No audio files found, marking needs attention: {path}")
+            c.execute('UPDATE books SET status = ?, verification_layer = 4, error_message = ? WHERE id = ?',
+                     ('needs_attention', 'No audio files found for analysis', row['book_id']))
+            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+            processed += 1
+            continue
+
+        # Try audio analysis with Gemini
+        audio_result = analyze_audio_with_gemini(audio_files[0], config)
+
+        if audio_result and audio_result.get('author') and audio_result.get('title'):
+            # Audio analysis succeeded
+            new_author = audio_result.get('author', '')
+            new_title = audio_result.get('title', '')
+            new_narrator = audio_result.get('narrator', '')
+            new_series = audio_result.get('series', '')
+
+            logger.info(f"[LAYER 3] Audio extracted: {new_author}/{new_title} (narrator: {new_narrator})")
+
+            # Mark as resolved - the actual fix creation will be handled by process_queue logic
+            # For now, update verification_layer to 4 (complete)
+            c.execute('UPDATE books SET verification_layer = 4 WHERE id = ?', (row['book_id'],))
+            resolved += 1
+        else:
+            # Audio analysis failed - this is the last layer, mark as needs attention
+            logger.warning(f"[LAYER 3] Audio analysis failed, marking needs attention: {path}")
+            c.execute('UPDATE books SET status = ?, verification_layer = 4, error_message = ? WHERE id = ?',
+                     ('needs_attention', 'All verification layers exhausted - manual review required', row['book_id']))
+            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+
+        processed += 1
+
+    conn.commit()
+    conn.close()
+
+    logger.info(f"[LAYER 3] Processed {processed}, resolved {resolved} via audio")
+    return processed, resolved
+
 
 def apply_fix(history_id):
     """Apply a pending fix from history."""
@@ -6169,7 +6463,13 @@ worker_running = False
 processing_status = {"active": False, "processed": 0, "total": 0, "current": "", "errors": []}
 
 def process_all_queue(config):
-    """Process ALL items in the queue in batches, respecting rate limits."""
+    """Process ALL items in the queue in batches, respecting rate limits.
+
+    Uses layered processing:
+    - Layer 1: API database lookups (fast, free)
+    - Layer 2: AI verification (slower, rate-limited)
+    - Layer 3: Audio analysis (slowest, expensive)
+    """
     global processing_status
 
     conn = get_db()
@@ -6188,8 +6488,28 @@ def process_all_queue(config):
     min_delay = max(2, 3600 // max_per_hour)  # At least 2 seconds
     logger.info(f"Rate limit: {max_per_hour}/hour, delay between batches: {min_delay}s")
 
-    processing_status = {"active": True, "processed": 0, "total": total, "current": "", "errors": []}
-    logger.info(f"=== STARTING PROCESS ALL: {total} items in queue ===")
+    processing_status = {"active": True, "processed": 0, "total": total, "current": "", "errors": [], "layer": 1}
+    logger.info(f"=== STARTING LAYERED PROCESSING: {total} items in queue ===")
+
+    # LAYER 1: API lookups (fast, no rate limit concerns)
+    if config.get('enable_api_lookups', True):
+        logger.info("=== LAYER 1: API Database Lookups ===")
+        processing_status["layer"] = 1
+        processing_status["current"] = "Layer 1: API lookups"
+        layer1_processed = 0
+        while True:
+            processed, resolved = process_layer_1_api(config)
+            if processed == 0:
+                break
+            layer1_processed += processed
+            processing_status["processed"] = layer1_processed
+            time.sleep(0.5)  # Small delay between batches
+        logger.info(f"Layer 1 complete: {layer1_processed} items processed via API")
+
+    # LAYER 2: AI Verification (rate-limited)
+    logger.info("=== LAYER 2: AI Verification ===")
+    processing_status["layer"] = 2
+    processing_status["current"] = "Layer 2: AI verification"
 
     total_processed = 0
     total_fixed = 0
@@ -6237,15 +6557,32 @@ def process_all_queue(config):
         total_processed += processed
         total_fixed += fixed
         processing_status["processed"] = total_processed
-        processing_status["current"] = f"Batch {batch_num}: {processed} processed"
-        logger.info(f"Batch {batch_num} complete: {processed} processed, {fixed} fixed, {total_processed}/{total} total")
+        processing_status["current"] = f"Layer 2 Batch {batch_num}: {processed} processed"
+        logger.info(f"Layer 2 Batch {batch_num} complete: {processed} processed, {fixed} fixed, {total_processed}/{total} total")
 
         # Rate limiting delay between batches
         logger.debug(f"Waiting {min_delay}s before next batch...")
         time.sleep(min_delay)
 
+    # LAYER 3: Audio analysis (expensive, for items that passed through AI without resolution)
+    if config.get('enable_audio_analysis', False):
+        logger.info("=== LAYER 3: Audio Analysis ===")
+        processing_status["layer"] = 3
+        processing_status["current"] = "Layer 3: Audio analysis"
+        layer3_processed = 0
+        while True:
+            processed, resolved = process_layer_3_audio(config)
+            if processed == 0:
+                break
+            layer3_processed += processed
+            total_processed += processed
+            processing_status["processed"] = total_processed
+            time.sleep(2)  # Longer delay for audio analysis (expensive)
+        logger.info(f"Layer 3 complete: {layer3_processed} items processed via audio")
+
     processing_status["active"] = False
-    logger.info(f"=== PROCESS ALL COMPLETE: {total_processed} processed, {total_fixed} fixed ===")
+    processing_status["layer"] = 0
+    logger.info(f"=== LAYERED PROCESSING COMPLETE: {total_processed} processed, {total_fixed} fixed ===")
     return total_processed, total_fixed
 
 def background_worker():

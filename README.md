@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.43-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.46-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,14 @@
 ---
 
 ## Recent Changes (develop)
+
+> **beta.46** - UnRaid Config Fix
+> - **Auto-Detect `/config`** - Now works with UnRaid's default mount point (was only checking `/data`)
+> - **Migration Improved** - Checks both `/config` and `/data` for existing config files
+
+> **beta.45** - Layered Processing Architecture
+> - **Independent Verification Layers** - Queue processing now uses Layer 1 (API), Layer 2 (AI), Layer 3 (Audio)
+> - **Faster Processing** - API lookups happen first (fast/free), only failures go to AI
 
 > **beta.44** - Unified Library View (Issue #31 feedback)
 > - **New `/library` Page** - All views consolidated: filter chips for Pending, Orphans, Queue, Fixed, Errors, etc.
