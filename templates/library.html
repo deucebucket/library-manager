@@ -1,0 +1,745 @@
+{% extends "base.html" %}
+{% block title %}Library - Library Manager{% endblock %}
+
+{% block content %}
+<style>
+    .filter-chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 8px 16px;
+        margin: 4px;
+        border-radius: 20px;
+        background: rgba(15, 52, 96, 0.5);
+        border: 1px solid rgba(0, 217, 255, 0.2);
+        color: #eee;
+        cursor: pointer;
+        transition: all 0.2s;
+        text-decoration: none;
+    }
+    .filter-chip:hover {
+        background: rgba(0, 217, 255, 0.2);
+        border-color: rgba(0, 217, 255, 0.5);
+        color: #fff;
+    }
+    .filter-chip.active {
+        background: rgba(0, 217, 255, 0.3);
+        border-color: #00d9ff;
+        color: #00d9ff;
+    }
+    .filter-chip .count {
+        background: rgba(0, 0, 0, 0.3);
+        padding: 2px 8px;
+        border-radius: 10px;
+        margin-left: 8px;
+        font-size: 0.85rem;
+    }
+    .filter-chip.active .count {
+        background: rgba(0, 217, 255, 0.3);
+    }
+    .filter-chip.has-items .count {
+        background: rgba(233, 69, 96, 0.5);
+    }
+    .activity-stream {
+        max-height: 150px;
+        overflow-y: auto;
+        background: rgba(0, 0, 0, 0.2);
+        border-radius: 8px;
+        padding: 10px;
+        font-family: monospace;
+        font-size: 0.85rem;
+        display: none;
+    }
+    .activity-stream.active {
+        display: block;
+    }
+    .activity-stream .entry {
+        padding: 2px 0;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .activity-stream .entry.success { color: #00d9ff; }
+    .activity-stream .entry.error { color: #e94560; }
+    .activity-stream .entry.info { color: #ffc107; }
+    .item-row {
+        transition: background 0.2s;
+    }
+    .item-row:hover {
+        background: rgba(0, 217, 255, 0.05);
+    }
+    .status-badge {
+        font-size: 0.75rem;
+        padding: 3px 8px;
+    }
+    .action-btn {
+        padding: 2px 8px;
+        font-size: 0.8rem;
+    }
+</style>
+
+<!-- Filter Chips -->
+<div class="mb-4">
+    <div class="d-flex flex-wrap align-items-center">
+        <a href="#" class="filter-chip active" data-filter="all" onclick="setFilter('all'); return false;">
+            <i class="bi bi-grid-3x3-gap"></i>
+            <span class="ms-2">All</span>
+            <span class="count" id="count-all">0</span>
+        </a>
+        <a href="#" class="filter-chip" data-filter="pending" onclick="setFilter('pending'); return false;">
+            <i class="bi bi-hourglass-split text-warning"></i>
+            <span class="ms-2">Pending</span>
+            <span class="count" id="count-pending">0</span>
+        </a>
+        <a href="#" class="filter-chip" data-filter="orphan" onclick="setFilter('orphan'); return false;">
+            <i class="bi bi-file-earmark-music text-info"></i>
+            <span class="ms-2">Orphans</span>
+            <span class="count" id="count-orphan">0</span>
+        </a>
+        <a href="#" class="filter-chip" data-filter="queue" onclick="setFilter('queue'); return false;">
+            <i class="bi bi-list-task text-primary"></i>
+            <span class="ms-2">Queue</span>
+            <span class="count" id="count-queue">0</span>
+        </a>
+        <a href="#" class="filter-chip" data-filter="fixed" onclick="setFilter('fixed'); return false;">
+            <i class="bi bi-check-circle text-success"></i>
+            <span class="ms-2">Fixed</span>
+            <span class="count" id="count-fixed">0</span>
+        </a>
+        <a href="#" class="filter-chip" data-filter="verified" onclick="setFilter('verified'); return false;">
+            <i class="bi bi-patch-check text-success"></i>
+            <span class="ms-2">Verified</span>
+            <span class="count" id="count-verified">0</span>
+        </a>
+        <a href="#" class="filter-chip" data-filter="error" onclick="setFilter('error'); return false;">
+            <i class="bi bi-exclamation-triangle text-danger"></i>
+            <span class="ms-2">Errors</span>
+            <span class="count" id="count-error">0</span>
+        </a>
+        <a href="#" class="filter-chip" data-filter="attention" onclick="setFilter('attention'); return false;">
+            <i class="bi bi-eye text-warning"></i>
+            <span class="ms-2">Attention</span>
+            <span class="count" id="count-attention">0</span>
+        </a>
+    </div>
+</div>
+
+<!-- Quick Actions Bar -->
+<div class="card mb-4">
+    <div class="card-body py-2">
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <button class="btn btn-primary btn-sm" onclick="scanLibrary()" id="btn-scan">
+                <i class="bi bi-search"></i> Scan Library
+            </button>
+            <button class="btn btn-success btn-sm" onclick="processQueue()" id="btn-process">
+                <i class="bi bi-play-fill"></i> Process Queue
+            </button>
+            <button class="btn btn-warning btn-sm" onclick="applyAllPending()" id="btn-apply-all" style="display: none;">
+                <i class="bi bi-check-all"></i> Apply All Pending (<span id="pending-count-btn">0</span>)
+            </button>
+            <button class="btn btn-info btn-sm" onclick="organizeAllOrphans()" id="btn-organize-orphans" style="display: none;">
+                <i class="bi bi-folder-plus"></i> Organize Orphans (<span id="orphan-count-btn">0</span>)
+            </button>
+            <div class="ms-auto d-flex align-items-center gap-2">
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="skip-confirm-toggle" {{ 'checked' if config.get('skip_confirmations') else '' }}>
+                    <label class="form-check-label small text-muted" for="skip-confirm-toggle">Skip confirmations</label>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Activity Stream (shown during operations) -->
+<div class="activity-stream mb-3" id="activity-stream">
+    <div id="activity-entries"></div>
+</div>
+
+<!-- Main Table -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center py-2">
+        <span><i class="bi bi-collection"></i> <span id="showing-label">Library Items</span></span>
+        <small class="text-muted"><span id="item-count">0</span> items</small>
+    </div>
+    <div class="card-body p-0" style="max-height: 600px; overflow-y: auto;">
+        <table class="table table-sm mb-0">
+            <thead style="position: sticky; top: 0; background: rgba(22, 33, 62, 0.98); z-index: 10;">
+                <tr>
+                    <th style="width: 25%;">Author</th>
+                    <th style="width: 30%;">Title</th>
+                    <th style="width: 15%;">Status</th>
+                    <th style="width: 20%;">Details</th>
+                    <th style="width: 10%;">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="items-table">
+                <tr>
+                    <td colspan="5" class="text-center py-4">
+                        <div class="spinner-border text-primary" role="status"></div>
+                        <p class="mt-2 mb-0 text-muted">Loading library...</p>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Pagination -->
+<nav class="mt-3" id="pagination-nav" style="display: none;">
+    <ul class="pagination justify-content-center" id="pagination"></ul>
+</nav>
+
+<!-- Orphan Edit Modal -->
+<div class="modal fade" id="orphanModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content" style="background: #16213e; color: #eee;">
+            <div class="modal-header" style="border-color: #0f3460;">
+                <h5 class="modal-title"><i class="bi bi-folder-plus"></i> Organize Orphan Files</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Author</label>
+                    <input type="text" class="form-control bg-dark text-light" id="orphan-author" readonly>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Book Title (folder name)</label>
+                    <input type="text" class="form-control bg-dark text-light" id="orphan-title">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Files</label>
+                    <div id="orphan-files" class="small text-muted" style="max-height: 150px; overflow-y: auto;"></div>
+                </div>
+                <input type="hidden" id="orphan-author-path">
+                <input type="hidden" id="orphan-files-json">
+            </div>
+            <div class="modal-footer" style="border-color: #0f3460;">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-success" onclick="saveOrphan()">
+                    <i class="bi bi-folder-plus"></i> Create & Move
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentFilter = 'all';
+let currentPage = 1;
+let libraryData = null;
+let skipConfirmations = {{ 'true' if config.get('skip_confirmations') else 'false' }};
+
+// Toggle skip confirmations
+document.getElementById('skip-confirm-toggle').addEventListener('change', function() {
+    skipConfirmations = this.checked;
+    // Save to server
+    fetch('/api/settings/skip_confirmations', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({value: this.checked})
+    });
+});
+
+function setFilter(filter) {
+    currentFilter = filter;
+    currentPage = 1;
+
+    // Update chip styling
+    document.querySelectorAll('.filter-chip').forEach(chip => {
+        chip.classList.remove('active');
+        if (chip.dataset.filter === filter) {
+            chip.classList.add('active');
+        }
+    });
+
+    loadLibrary();
+}
+
+function loadLibrary() {
+    const tbody = document.getElementById('items-table');
+    tbody.innerHTML = `
+        <tr>
+            <td colspan="5" class="text-center py-4">
+                <div class="spinner-border spinner-border-sm text-primary"></div>
+                <span class="ms-2">Loading...</span>
+            </td>
+        </tr>
+    `;
+
+    fetch(`/api/library?filter=${currentFilter}&page=${currentPage}`)
+        .then(r => r.json())
+        .then(data => {
+            libraryData = data;
+            updateCounts(data.counts);
+            renderItems(data.items);
+            renderPagination(data.page, data.total_pages);
+
+            // Show/hide contextual buttons
+            document.getElementById('btn-apply-all').style.display = data.counts.pending > 0 ? 'inline-block' : 'none';
+            document.getElementById('pending-count-btn').textContent = data.counts.pending;
+            document.getElementById('btn-organize-orphans').style.display = data.counts.orphan > 0 ? 'inline-block' : 'none';
+            document.getElementById('orphan-count-btn').textContent = data.counts.orphan;
+
+            // Update label
+            const labels = {
+                'all': 'All Items',
+                'pending': 'Pending Fixes',
+                'orphan': 'Orphan Files',
+                'queue': 'Processing Queue',
+                'fixed': 'Fixed Items',
+                'verified': 'Verified Books',
+                'error': 'Errors',
+                'attention': 'Needs Attention'
+            };
+            document.getElementById('showing-label').textContent = labels[currentFilter] || 'Library Items';
+            document.getElementById('item-count').textContent = data.total;
+        })
+        .catch(e => {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="5" class="text-center py-4 text-danger">
+                        <i class="bi bi-exclamation-triangle"></i> Error loading library: ${e}
+                    </td>
+                </tr>
+            `;
+        });
+}
+
+function updateCounts(counts) {
+    for (const [key, value] of Object.entries(counts)) {
+        const el = document.getElementById(`count-${key}`);
+        if (el) {
+            el.textContent = value;
+            const chip = el.closest('.filter-chip');
+            if (chip) {
+                chip.classList.toggle('has-items', value > 0 && key !== 'all' && key !== 'fixed' && key !== 'verified');
+            }
+        }
+    }
+}
+
+function renderItems(items) {
+    const tbody = document.getElementById('items-table');
+
+    if (!items || items.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="5" class="text-center py-4 text-muted">
+                    <i class="bi bi-inbox fs-1"></i>
+                    <p class="mt-2 mb-0">No items found</p>
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    let html = '';
+    items.forEach(item => {
+        const statusBadge = getStatusBadge(item);
+        const actions = getActions(item);
+        const details = getDetails(item);
+
+        html += `
+            <tr class="item-row" data-id="${item.id}" data-type="${item.type}">
+                <td>
+                    <i class="bi bi-person text-muted"></i>
+                    <span class="${item.type === 'pending_fix' ? 'text-danger' : ''}">${escapeHtml(item.author || 'Unknown')}</span>
+                    ${item.new_author ? `<br><small class="text-success"><i class="bi bi-arrow-right"></i> ${escapeHtml(item.new_author)}</small>` : ''}
+                </td>
+                <td>
+                    <span class="${item.type === 'pending_fix' ? 'text-warning' : ''}">${escapeHtml(item.title || 'Unknown')}</span>
+                    ${item.new_title ? `<br><small class="text-info"><i class="bi bi-arrow-right"></i> ${escapeHtml(item.new_title)}</small>` : ''}
+                </td>
+                <td>${statusBadge}</td>
+                <td><small class="text-muted">${details}</small></td>
+                <td>${actions}</td>
+            </tr>
+        `;
+    });
+
+    tbody.innerHTML = html;
+}
+
+function getStatusBadge(item) {
+    const badges = {
+        'pending_fix': '<span class="badge bg-warning text-dark status-badge"><i class="bi bi-hourglass"></i> Pending</span>',
+        'orphan': '<span class="badge bg-info status-badge"><i class="bi bi-file-music"></i> Orphan</span>',
+        'in_queue': '<span class="badge bg-primary status-badge"><i class="bi bi-list-task"></i> Queued</span>',
+        'fixed': '<span class="badge bg-success status-badge"><i class="bi bi-check"></i> Fixed</span>',
+        'verified': '<span class="badge bg-success status-badge"><i class="bi bi-patch-check"></i> OK</span>',
+        'error': '<span class="badge bg-danger status-badge"><i class="bi bi-x"></i> Error</span>',
+        'duplicate': '<span class="badge bg-warning text-dark status-badge"><i class="bi bi-files"></i> Duplicate</span>',
+        'corrupt_dest': '<span class="badge bg-danger status-badge"><i class="bi bi-exclamation"></i> Corrupt</span>',
+        'needs_attention': '<span class="badge bg-warning text-dark status-badge"><i class="bi bi-eye"></i> Attention</span>',
+        'structure_reversed': '<span class="badge bg-info status-badge"><i class="bi bi-arrow-left-right"></i> Reversed</span>'
+    };
+    return badges[item.status] || badges[item.type] || `<span class="badge bg-secondary status-badge">${item.status || item.type}</span>`;
+}
+
+function getDetails(item) {
+    if (item.type === 'orphan') {
+        return `${item.file_count} files`;
+    }
+    if (item.error_message) {
+        return escapeHtml(item.error_message.substring(0, 50)) + (item.error_message.length > 50 ? '...' : '');
+    }
+    if (item.fixed_at) {
+        return item.fixed_at.substring(5, 16);
+    }
+    if (item.reason) {
+        return escapeHtml(item.reason.substring(0, 30));
+    }
+    return '';
+}
+
+function getActions(item) {
+    let html = '';
+
+    if (item.type === 'pending_fix') {
+        html = `
+            <button class="btn btn-success btn-sm action-btn" onclick="applyFix(${item.id})" title="Apply">
+                <i class="bi bi-check"></i>
+            </button>
+            <button class="btn btn-danger btn-sm action-btn" onclick="rejectFix(${item.id})" title="Reject">
+                <i class="bi bi-x"></i>
+            </button>
+        `;
+    } else if (item.type === 'orphan') {
+        html = `
+            <button class="btn btn-primary btn-sm action-btn" onclick="editOrphan('${escapeHtml(item.author)}', '${escapeHtml(item.title)}', '${escapeHtml(item.author_path)}', ${JSON.stringify(item.files).replace(/"/g, '&quot;')})" title="Edit">
+                <i class="bi bi-pencil"></i>
+            </button>
+            ${item.title !== 'Unknown Album' ? `
+            <button class="btn btn-success btn-sm action-btn" onclick="quickOrganize('${escapeHtml(item.author_path)}', '${escapeHtml(item.title)}', ${JSON.stringify(item.files).replace(/"/g, '&quot;')})" title="Organize">
+                <i class="bi bi-folder-plus"></i>
+            </button>
+            ` : ''}
+        `;
+    } else if (item.type === 'fixed' && item.old_path !== item.new_path) {
+        html = `
+            <button class="btn btn-outline-warning btn-sm action-btn" onclick="undoFix(${item.id})" title="Undo">
+                <i class="bi bi-arrow-counterclockwise"></i>
+            </button>
+        `;
+    } else if (item.type === 'error' || item.status === 'duplicate') {
+        html = `
+            <button class="btn btn-outline-danger btn-sm action-btn" onclick="dismissError(${item.id})" title="Dismiss">
+                <i class="bi bi-trash"></i>
+            </button>
+        `;
+        if (item.status === 'duplicate') {
+            html = `
+                <button class="btn btn-danger btn-sm action-btn" onclick="removeDuplicate(${item.id})" title="Remove Duplicate">
+                    <i class="bi bi-trash-fill"></i>
+                </button>
+            ` + html;
+        }
+    } else if (item.type === 'queue') {
+        html = `
+            <button class="btn btn-outline-danger btn-sm action-btn" onclick="removeFromQueue(${item.id})" title="Remove">
+                <i class="bi bi-x"></i>
+            </button>
+        `;
+    }
+
+    return html || '<span class="text-muted">-</span>';
+}
+
+function renderPagination(page, totalPages) {
+    const nav = document.getElementById('pagination-nav');
+    const pagination = document.getElementById('pagination');
+
+    if (totalPages <= 1) {
+        nav.style.display = 'none';
+        return;
+    }
+
+    nav.style.display = 'block';
+    let html = '';
+
+    if (page > 1) {
+        html += `<li class="page-item"><a class="page-link" href="#" onclick="goToPage(${page - 1}); return false;">&laquo;</a></li>`;
+    }
+
+    for (let p = 1; p <= totalPages; p++) {
+        if (p === page) {
+            html += `<li class="page-item active"><span class="page-link">${p}</span></li>`;
+        } else if (p <= 3 || p >= totalPages - 2 || (p >= page - 2 && p <= page + 2)) {
+            html += `<li class="page-item"><a class="page-link" href="#" onclick="goToPage(${p}); return false;">${p}</a></li>`;
+        } else if (p === 4 || p === totalPages - 3) {
+            html += `<li class="page-item disabled"><span class="page-link">...</span></li>`;
+        }
+    }
+
+    if (page < totalPages) {
+        html += `<li class="page-item"><a class="page-link" href="#" onclick="goToPage(${page + 1}); return false;">&raquo;</a></li>`;
+    }
+
+    pagination.innerHTML = html;
+}
+
+function goToPage(page) {
+    currentPage = page;
+    loadLibrary();
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Activity stream
+function addActivity(message, type = 'info') {
+    const stream = document.getElementById('activity-stream');
+    const entries = document.getElementById('activity-entries');
+    stream.classList.add('active');
+
+    const entry = document.createElement('div');
+    entry.className = `entry ${type}`;
+    entry.innerHTML = `<small class="text-muted">${new Date().toLocaleTimeString()}</small> ${message}`;
+    entries.appendChild(entry);
+    stream.scrollTop = stream.scrollHeight;
+}
+
+function clearActivity() {
+    document.getElementById('activity-entries').innerHTML = '';
+    document.getElementById('activity-stream').classList.remove('active');
+}
+
+// Actions
+function scanLibrary() {
+    const btn = document.getElementById('btn-scan');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
+    clearActivity();
+    addActivity('Starting library scan...', 'info');
+
+    fetch('/api/scan', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-search"></i> Scan Library';
+            addActivity(`Scan complete: ${data.checked} checked, ${data.queued} queued`, 'success');
+            loadLibrary();
+        })
+        .catch(e => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-search"></i> Scan Library';
+            addActivity(`Error: ${e}`, 'error');
+        });
+}
+
+function processQueue() {
+    const btn = document.getElementById('btn-process');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Processing...';
+    addActivity('Processing queue...', 'info');
+
+    fetch('/api/process', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({limit: 5})})
+        .then(r => r.json())
+        .then(data => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue';
+            addActivity(`Processed ${data.fixed} items`, 'success');
+            loadLibrary();
+        })
+        .catch(e => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue';
+            addActivity(`Error: ${e}`, 'error');
+        });
+}
+
+function applyAllPending() {
+    if (!skipConfirmations && !confirm('Apply all pending fixes?')) return;
+
+    const btn = document.getElementById('btn-apply-all');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Applying...';
+    addActivity('Applying all pending fixes...', 'info');
+
+    fetch('/api/apply_all_pending', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-check-all"></i> Apply All Pending';
+            addActivity(data.message, data.success ? 'success' : 'error');
+            loadLibrary();
+        })
+        .catch(e => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-check-all"></i> Apply All Pending';
+            addActivity(`Error: ${e}`, 'error');
+        });
+}
+
+function organizeAllOrphans() {
+    if (!skipConfirmations && !confirm('Organize all orphan files?')) return;
+
+    const btn = document.getElementById('btn-organize-orphans');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Organizing...';
+    addActivity('Organizing orphan files...', 'info');
+
+    fetch('/api/orphans/organize_all', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-folder-plus"></i> Organize Orphans';
+            addActivity(`Organized ${data.organized}, errors: ${data.errors}`, data.errors > 0 ? 'error' : 'success');
+            loadLibrary();
+        })
+        .catch(e => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-folder-plus"></i> Organize Orphans';
+            addActivity(`Error: ${e}`, 'error');
+        });
+}
+
+function applyFix(id) {
+    if (!skipConfirmations && !confirm('Apply this fix?')) return;
+
+    fetch(`/api/apply_fix/${id}`, {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                addActivity('Fix applied', 'success');
+                loadLibrary();
+            } else {
+                addActivity(`Error: ${data.message}`, 'error');
+            }
+        });
+}
+
+function rejectFix(id) {
+    if (!skipConfirmations && !confirm('Reject this fix?')) return;
+
+    fetch(`/api/reject_fix/${id}`, {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                addActivity('Fix rejected', 'info');
+                loadLibrary();
+            } else {
+                addActivity(`Error: ${data.error}`, 'error');
+            }
+        });
+}
+
+function undoFix(id) {
+    if (!skipConfirmations && !confirm('Undo this fix?')) return;
+
+    fetch(`/api/undo/${id}`, {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                addActivity('Fix undone', 'info');
+                loadLibrary();
+            } else {
+                addActivity(`Error: ${data.error}`, 'error');
+            }
+        });
+}
+
+function dismissError(id) {
+    fetch(`/api/dismiss_error/${id}`, {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) loadLibrary();
+        });
+}
+
+function removeDuplicate(id) {
+    if (!skipConfirmations && !confirm('Remove duplicate? This will DELETE files!')) return;
+
+    fetch(`/api/remove_duplicate/${id}`, {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                addActivity(data.message, 'success');
+                loadLibrary();
+            } else {
+                addActivity(`Error: ${data.error}`, 'error');
+            }
+        });
+}
+
+function removeFromQueue(id) {
+    fetch(`/api/remove_from_queue/${id}`, {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) loadLibrary();
+        });
+}
+
+// Orphan handling
+function editOrphan(author, title, authorPath, files) {
+    document.getElementById('orphan-author').value = author;
+    document.getElementById('orphan-title').value = title === 'Unknown Album' ? '' : title;
+    document.getElementById('orphan-author-path').value = authorPath;
+    document.getElementById('orphan-files-json').value = JSON.stringify(files);
+
+    const filesHtml = files.map(f => `<div><i class="bi bi-file-music"></i> ${f.split('/').pop()}</div>`).join('');
+    document.getElementById('orphan-files').innerHTML = filesHtml;
+
+    new bootstrap.Modal(document.getElementById('orphanModal')).show();
+}
+
+function saveOrphan() {
+    const authorPath = document.getElementById('orphan-author-path').value;
+    const title = document.getElementById('orphan-title').value.trim();
+    const files = JSON.parse(document.getElementById('orphan-files-json').value);
+
+    if (!title) {
+        alert('Please enter a book title');
+        return;
+    }
+
+    fetch('/api/orphans/organize', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({author_path: authorPath, book_title: title, files: files})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            bootstrap.Modal.getInstance(document.getElementById('orphanModal')).hide();
+            addActivity(`Organized: ${title}`, 'success');
+            loadLibrary();
+        } else {
+            alert('Error: ' + (data.message || data.error));
+        }
+    });
+}
+
+function quickOrganize(authorPath, title, files) {
+    if (!skipConfirmations && !confirm(`Organize files into: ${title}?`)) return;
+
+    fetch('/api/orphans/organize', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({author_path: authorPath, book_title: title, files: files})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            addActivity(`Organized: ${title}`, 'success');
+            loadLibrary();
+        } else {
+            addActivity(`Error: ${data.message || data.error}`, 'error');
+        }
+    });
+}
+
+// Auto-refresh every 10 seconds
+setInterval(() => {
+    if (!document.hidden) {
+        loadLibrary();
+    }
+}, 10000);
+
+// Initial load
+loadLibrary();
+</script>
+{% endblock %}

@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.43"
+APP_VERSION = "0.9.0-beta.44"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -957,7 +957,8 @@ DEFAULT_CONFIG = {
     "enable_audio_analysis": False,       # Layer 4: Audio analysis (requires Gemini API key)
     "deep_scan_mode": False,              # Always use all enabled layers regardless of confidence
     "profile_confidence_threshold": 85,   # Minimum confidence to skip remaining layers (0-100)
-    "multibook_ai_fallback": True         # Use AI for ambiguous chapter/multibook detection
+    "multibook_ai_fallback": True,         # Use AI for ambiguous chapter/multibook detection
+    "skip_confirmations": False            # Skip confirmation dialogs in Library view for faster workflow
 }
 
 DEFAULT_SECRETS = {
@@ -7776,6 +7777,334 @@ def api_organize_all_orphans():
         'errors': results['errors'],
         'details': results['details'][:20]  # Limit details
     })
+
+
+@app.route('/api/library')
+def api_library():
+    """
+    Unified library view - returns ALL items (books, orphans, pending fixes, queue)
+    with filter counts. This powers the unified Library page.
+    """
+    config = load_config()
+    conn = get_db()
+    c = conn.cursor()
+
+    # Get filter and pagination params
+    status_filter = request.args.get('filter', 'all')
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 50, type=int)
+    offset = (page - 1) * per_page
+
+    items = []
+
+    # === COUNTS for filter chips ===
+    counts = {
+        'all': 0,
+        'pending': 0,
+        'orphan': 0,
+        'queue': 0,
+        'fixed': 0,
+        'verified': 0,
+        'error': 0,
+        'attention': 0
+    }
+
+    # Count books by status
+    c.execute("SELECT COUNT(*) FROM books")
+    counts['all'] = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM history WHERE status = 'pending_fix'")
+    counts['pending'] = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM queue")
+    counts['queue'] = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM history WHERE status = 'fixed'")
+    counts['fixed'] = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM books WHERE status = 'verified'")
+    counts['verified'] = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM history WHERE status IN ('error', 'duplicate', 'corrupt_dest')")
+    counts['error'] = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM books WHERE status IN ('needs_attention', 'structure_reversed')")
+    c.execute("SELECT COUNT(*) FROM history WHERE status = 'needs_attention'")
+    attention_history = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM books WHERE status IN ('needs_attention', 'structure_reversed')")
+    attention_books = c.fetchone()[0]
+    counts['attention'] = attention_history + attention_books
+
+    # Count orphans (detected on-the-fly)
+    orphan_list = []
+    for lib_path in config.get('library_paths', []):
+        orphan_list.extend(find_orphan_audio_files(lib_path))
+    counts['orphan'] = len(orphan_list)
+
+    # Update 'all' count to include orphans
+    counts['all'] += counts['orphan']
+
+    # === FETCH ITEMS based on filter ===
+    if status_filter == 'orphan':
+        # Return orphans as items
+        for idx, orphan in enumerate(orphan_list[offset:offset + per_page]):
+            items.append({
+                'id': f'orphan_{idx}',
+                'type': 'orphan',
+                'author': orphan['author'],
+                'title': orphan['detected_title'],
+                'path': orphan['author_path'],
+                'status': 'orphan',
+                'file_count': orphan['file_count'],
+                'files': orphan['files'],
+                'author_path': orphan['author_path']
+            })
+
+    elif status_filter == 'pending':
+        # Items with pending fixes
+        c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
+                            h.old_path, h.new_path, h.status, h.fixed_at, h.error_message,
+                            b.path, b.current_author, b.current_title
+                     FROM history h
+                     JOIN books b ON h.book_id = b.id
+                     WHERE h.status = 'pending_fix'
+                     ORDER BY h.fixed_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'pending_fix',
+                'book_id': row['book_id'],
+                'author': row['old_author'],
+                'title': row['old_title'],
+                'new_author': row['new_author'],
+                'new_title': row['new_title'],
+                'old_path': row['old_path'],
+                'new_path': row['new_path'],
+                'path': row['path'],
+                'status': 'pending_fix',
+                'fixed_at': row['fixed_at']
+            })
+
+    elif status_filter == 'queue':
+        # Items in the processing queue
+        c.execute('''SELECT q.id as queue_id, q.reason, q.added_at, q.priority,
+                            b.id as book_id, b.path, b.current_author, b.current_title, b.status
+                     FROM queue q
+                     JOIN books b ON q.book_id = b.id
+                     ORDER BY q.priority, q.added_at
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['queue_id'],
+                'type': 'queue',
+                'book_id': row['book_id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
+                'path': row['path'],
+                'status': 'in_queue',
+                'reason': row['reason'],
+                'priority': row['priority'],
+                'added_at': row['added_at']
+            })
+
+    elif status_filter == 'fixed':
+        # Successfully fixed items
+        c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
+                            h.old_path, h.new_path, h.status, h.fixed_at,
+                            b.path
+                     FROM history h
+                     JOIN books b ON h.book_id = b.id
+                     WHERE h.status = 'fixed'
+                     ORDER BY h.fixed_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'fixed',
+                'book_id': row['book_id'],
+                'author': row['new_author'],
+                'title': row['new_title'],
+                'old_author': row['old_author'],
+                'old_title': row['old_title'],
+                'old_path': row['old_path'],
+                'new_path': row['new_path'],
+                'path': row['path'],
+                'status': 'fixed',
+                'fixed_at': row['fixed_at']
+            })
+
+    elif status_filter == 'verified':
+        # Verified/OK books
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at
+                     FROM books
+                     WHERE status = 'verified'
+                     ORDER BY updated_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'book',
+                'book_id': row['id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
+                'path': row['path'],
+                'status': 'verified'
+            })
+
+    elif status_filter == 'error':
+        # Error items from history
+        c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
+                            h.old_path, h.new_path, h.status, h.fixed_at, h.error_message,
+                            b.path
+                     FROM history h
+                     JOIN books b ON h.book_id = b.id
+                     WHERE h.status IN ('error', 'duplicate', 'corrupt_dest')
+                     ORDER BY h.fixed_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'error',
+                'book_id': row['book_id'],
+                'author': row['old_author'],
+                'title': row['old_title'],
+                'new_author': row['new_author'],
+                'new_title': row['new_title'],
+                'old_path': row['old_path'],
+                'new_path': row['new_path'],
+                'path': row['path'],
+                'status': row['status'],
+                'error_message': row['error_message'],
+                'fixed_at': row['fixed_at']
+            })
+
+    elif status_filter == 'attention':
+        # Items needing attention
+        c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
+                            h.old_path, h.new_path, h.status, h.fixed_at, h.error_message,
+                            b.path
+                     FROM history h
+                     JOIN books b ON h.book_id = b.id
+                     WHERE h.status = 'needs_attention'
+                     ORDER BY h.fixed_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'attention',
+                'book_id': row['book_id'],
+                'author': row['old_author'],
+                'title': row['old_title'],
+                'new_author': row['new_author'],
+                'new_title': row['new_title'],
+                'path': row['path'],
+                'status': 'needs_attention',
+                'error_message': row['error_message']
+            })
+        # Also get books with structure issues
+        c.execute('''SELECT id, path, current_author, current_title, status, error_message
+                     FROM books
+                     WHERE status IN ('needs_attention', 'structure_reversed')
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'book_attention',
+                'book_id': row['id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
+                'path': row['path'],
+                'status': row['status'],
+                'error_message': row['error_message']
+            })
+
+    else:  # 'all' - show everything mixed
+        # Get recent history items (includes pending, fixed, errors)
+        c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
+                            h.old_path, h.new_path, h.status, h.fixed_at, h.error_message,
+                            b.path, b.current_author, b.current_title
+                     FROM history h
+                     JOIN books b ON h.book_id = b.id
+                     ORDER BY h.fixed_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            item_type = 'pending_fix' if row['status'] == 'pending_fix' else \
+                        'fixed' if row['status'] == 'fixed' else \
+                        'error' if row['status'] in ('error', 'duplicate', 'corrupt_dest') else 'history'
+            items.append({
+                'id': row['id'],
+                'type': item_type,
+                'book_id': row['book_id'],
+                'author': row['old_author'] if row['status'] == 'pending_fix' else row['new_author'],
+                'title': row['old_title'] if row['status'] == 'pending_fix' else row['new_title'],
+                'old_author': row['old_author'],
+                'old_title': row['old_title'],
+                'new_author': row['new_author'],
+                'new_title': row['new_title'],
+                'old_path': row['old_path'],
+                'new_path': row['new_path'],
+                'path': row['path'],
+                'status': row['status'],
+                'error_message': row['error_message'],
+                'fixed_at': row['fixed_at']
+            })
+
+    conn.close()
+
+    # Calculate total for pagination
+    if status_filter == 'orphan':
+        total = counts['orphan']
+    elif status_filter == 'pending':
+        total = counts['pending']
+    elif status_filter == 'queue':
+        total = counts['queue']
+    elif status_filter == 'fixed':
+        total = counts['fixed']
+    elif status_filter == 'verified':
+        total = counts['verified']
+    elif status_filter == 'error':
+        total = counts['error']
+    elif status_filter == 'attention':
+        total = counts['attention']
+    else:
+        total = counts['all']
+
+    total_pages = (total + per_page - 1) // per_page if total > 0 else 1
+
+    return jsonify({
+        'success': True,
+        'items': items,
+        'counts': counts,
+        'filter': status_filter,
+        'page': page,
+        'per_page': per_page,
+        'total': total,
+        'total_pages': total_pages,
+        'skip_confirmations': config.get('skip_confirmations', False)
+    })
+
+
+@app.route('/library')
+def library_page():
+    """Unified library view - the main page."""
+    config = load_config()
+    return render_template('library.html',
+                          config=config,
+                          worker_running=is_worker_running())
+
+
+@app.route('/api/settings/skip_confirmations', methods=['POST'])
+def api_skip_confirmations():
+    """Toggle skip confirmations setting."""
+    data = request.json
+    value = data.get('value', False)
+
+    config = load_config()
+    config['skip_confirmations'] = value
+    save_config(config)
+
+    return jsonify({'success': True, 'value': value})
 
 
 @app.route('/api/version')

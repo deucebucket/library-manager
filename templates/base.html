@@ -282,6 +282,11 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link {% if request.path == '/library' %}active{% endif %}" href="/library">
+                            <i class="bi bi-collection"></i> Library
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link {% if request.path == '/queue' %}active{% endif %}" href="/queue">
                             <i class="bi bi-list-task"></i> Queue
                         </a>
@@ -289,11 +294,6 @@
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/history' and not request.args.get('status') %}active{% endif %}" href="/history">
                             <i class="bi bi-clock-history"></i> History
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link {% if request.args.get('status') == 'pending' %}active{% endif %}" href="/history?status=pending">
-                            <i class="bi bi-hourglass-split"></i> Pending
                         </a>
                     </li>
                     <li class="nav-item">

@@ -16,6 +16,11 @@
 
 ## Recent Changes (develop)
 
+> **beta.44** - Unified Library View (Issue #31 feedback)
+> - **New `/library` Page** - All views consolidated: filter chips for Pending, Orphans, Queue, Fixed, Errors, etc.
+> - **Skip Confirmations** - Toggle to disable "Are you sure?" dialogs for faster batch operations
+> - **Orphans Integrated** - No more separate page, orphans now appear in unified view with organize actions
+
 > **beta.43** - Book Profile System & Multibook Fix (Issue #29)
 > - **Smart Multibook Detection** - Fixed false positives where chapter files (e.g., `00 - Prologue.mp3`) were flagged as multibook
 > - **Confidence Scoring** - Books now track confidence % per field with source attribution

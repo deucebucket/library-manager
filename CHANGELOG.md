@@ -2,6 +2,35 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.44] - 2025-12-18
+
+### Added
+- **Unified Library View** - New `/library` page consolidates all views into one (Issue #31 feedback)
+  - Filter chips at top: All, Pending, Orphans, Queue, Fixed, Verified, Errors, Attention
+  - Single table showing all items with contextual actions
+  - Quick action bar: Scan, Process Queue, Apply All Pending, Organize Orphans
+  - Real-time activity stream showing operations as they happen
+  - Auto-refresh every 10 seconds
+  - Orphans now integrated into main view (no more separate dead-end page)
+
+- **Skip Confirmations Toggle** - New setting for faster batch workflows
+  - Toggle in Library view quick action bar
+  - When enabled, skips "Are you sure?" dialogs for apply/reject/undo/organize
+  - Persists to config, survives page refresh
+  - Also available in Settings page
+
+- **New API Endpoint** - `/api/library` returns unified data
+  - All items (books, orphans, pending fixes, queue, errors) in one response
+  - Filter counts for each category
+  - Pagination support
+  - Powers the new Library view
+
+### Changed
+- Navigation now includes "Library" link between Dashboard and Queue
+- Removed separate "Pending" nav link (now a filter chip in Library view)
+
+---
+
 ## [0.9.0-beta.43] - 2025-12-18
 
 ### Fixed
