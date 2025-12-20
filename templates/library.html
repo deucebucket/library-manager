@@ -383,25 +383,31 @@ function getDetails(item) {
         return escapeHtml(item.error_message.substring(0, 50)) + (item.error_message.length > 50 ? '...' : '');
     }
     // For verified items, show sources and confidence
-    if (item.status === 'verified' && item.sources && item.sources.length > 0) {
-        const sourceIcons = {
-            'bookdb': '<i class="bi bi-database text-primary" title="BookDB"></i>',
-            'audio': '<i class="bi bi-soundwave text-success" title="Audio Analysis"></i>',
-            'ai': '<i class="bi bi-robot text-info" title="AI Verification"></i>',
-            'id3': '<i class="bi bi-tag text-warning" title="ID3 Tags"></i>',
-            'json': '<i class="bi bi-filetype-json text-secondary" title="Metadata JSON"></i>',
-            'path': '<i class="bi bi-folder text-muted" title="Path Analysis"></i>',
-            'googlebooks': '<i class="bi bi-google text-danger" title="Google Books"></i>',
-            'openlibrary': '<i class="bi bi-book text-success" title="OpenLibrary"></i>',
-            'audnexus': '<i class="bi bi-headphones text-primary" title="Audnexus"></i>',
-            'hardcover': '<i class="bi bi-journal-bookmark text-warning" title="Hardcover"></i>',
-            'user': '<i class="bi bi-person-check text-success" title="Manual Override"></i>'
-        };
-        let sourceHtml = item.sources.map(s => sourceIcons[s] || `<span class="badge bg-secondary" style="font-size: 0.65rem;">${s}</span>`).join(' ');
-        if (item.confidence > 0) {
-            sourceHtml += ` <span class="text-muted" style="font-size: 0.75rem;">${item.confidence}%</span>`;
+    if (item.status === 'verified') {
+        if (item.sources && item.sources.length > 0) {
+            const sourceIcons = {
+                'bookdb': '<i class="bi bi-database text-primary" title="BookDB"></i>',
+                'audio': '<i class="bi bi-soundwave text-success" title="Audio Analysis"></i>',
+                'ai': '<i class="bi bi-robot text-info" title="AI Verification"></i>',
+                'id3': '<i class="bi bi-tag text-warning" title="ID3 Tags"></i>',
+                'json': '<i class="bi bi-filetype-json text-secondary" title="Metadata JSON"></i>',
+                'path': '<i class="bi bi-folder text-muted" title="Path Analysis"></i>',
+                'googlebooks': '<i class="bi bi-google text-danger" title="Google Books"></i>',
+                'openlibrary': '<i class="bi bi-book text-success" title="OpenLibrary"></i>',
+                'audnexus': '<i class="bi bi-headphones text-primary" title="Audnexus"></i>',
+                'hardcover': '<i class="bi bi-journal-bookmark text-warning" title="Hardcover"></i>',
+                'user': '<i class="bi bi-person-check text-success" title="Manual Override"></i>',
+                'api': '<i class="bi bi-cloud-check text-info" title="API Verified"></i>'
+            };
+            let sourceHtml = item.sources.map(s => sourceIcons[s] || `<span class="badge bg-secondary" style="font-size: 0.65rem;">${s}</span>`).join(' ');
+            if (item.confidence > 0) {
+                sourceHtml += ` <span class="text-muted" style="font-size: 0.75rem;">${item.confidence}%</span>`;
+            }
+            return sourceHtml;
+        } else {
+            // Legacy verified - no profile data, will be re-verified on next scan
+            return '<span class="badge bg-secondary" title="Verified before profile system - run Deep Scan to re-verify">Legacy</span>';
         }
-        return sourceHtml;
     }
     if (item.fixed_at) {
         return item.fixed_at.substring(5, 16);

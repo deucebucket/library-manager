@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.51"
+APP_VERSION = "0.9.0-beta.52"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -5500,12 +5500,26 @@ def deep_scan_library(config):
                     issues_found[path] = all_issues
 
                 # Add to database
-                c.execute('SELECT id, status FROM books WHERE path = ?', (path,))
+                c.execute('SELECT id, status, profile FROM books WHERE path = ?', (path,))
                 existing = c.fetchone()
 
                 if existing:
+                    # Skip books that are properly verified (have profile data)
+                    # Re-queue "legacy" verified books that have no profile
                     if existing['status'] in ['verified', 'fixed']:
-                        continue
+                        has_profile = existing['profile'] and len(existing['profile']) > 2
+                        if has_profile:
+                            continue  # Properly verified, skip
+                        else:
+                            # Legacy verified without profile - re-queue for proper verification
+                            logger.info(f"Re-queuing legacy verified book (no profile): {author}/{title}")
+                            c.execute('UPDATE books SET status = ?, verification_layer = 1 WHERE id = ?',
+                                     ('pending', existing['id']))
+                            c.execute('''INSERT OR IGNORE INTO queue (book_id, reason, priority)
+                                        VALUES (?, ?, ?)''',
+                                     (existing['id'], 'legacy_needs_profile', 3))
+                            queued += 1
+                            continue
                     book_id = existing['id']
                 else:
                     c.execute('''INSERT INTO books (path, current_author, current_title, status)
@@ -5689,8 +5703,23 @@ def process_layer_1_api(config, limit=None):
                     if title_sim >= 0.90 and author_sim >= 0.90:
                         # Book is already correctly named - mark as verified and remove from queue
                         logger.info(f"[LAYER 1] Verified OK ({avg_confidence:.0%}): {current_author}/{current_title}")
-                        c.execute('UPDATE books SET status = ?, verification_layer = 4 WHERE id = ?',
-                                 ('verified', row['book_id']))
+
+                        # Create profile with verification source
+                        api_source = best_match.get('source', 'api')
+                        profile = BookProfile()
+                        profile.author.add_source(api_source, match_author)
+                        profile.title.add_source(api_source, match_title)
+                        if best_match.get('series'):
+                            profile.series.add_source(api_source, best_match['series'])
+                        if best_match.get('series_num'):
+                            profile.series_num.add_source(api_source, best_match['series_num'])
+                        profile.verification_layers_used = ['api']
+                        profile.finalize()
+
+                        # Save profile and mark as verified
+                        profile_json = json.dumps(profile.to_dict())
+                        c.execute('UPDATE books SET status = ?, verification_layer = 4, profile = ?, confidence = ? WHERE id = ?',
+                                 ('verified', profile_json, profile.overall_confidence, row['book_id']))
                         c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                         resolved += 1
                     else:

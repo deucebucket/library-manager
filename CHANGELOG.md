@@ -2,6 +2,24 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.52] - 2025-12-20
+
+### Fixed
+- **Verification Now Saves Profile Data** - When Layer 1 (API) verifies a book, it now saves the verification source
+  - Shows which API confirmed the book (BookDB, OpenLibrary, Google Books, etc.)
+  - Displays confidence percentage in the Library view
+
+### Added
+- **Legacy Badge for Old Verifications** - Books verified before profile system show "Legacy" badge
+  - Hovering shows "Verified before profile system - run Deep Scan to re-verify"
+  - Clear indication of which books need re-verification
+
+- **Deep Scan Re-verifies Legacy Books** - Running a Deep Scan now re-queues legacy verified books
+  - Books with no profile data get re-processed through proper verification
+  - Populates profile with source and confidence data
+
+---
+
 ## [0.9.0-beta.51] - 2025-12-20
 
 ### Fixed
