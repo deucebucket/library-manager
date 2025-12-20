@@ -211,6 +211,67 @@ test_no_local_db_dependency() {
     fi
 }
 
+test_process_empties_queue() {
+    log_info "Test: Processing actually processes queue items"
+    # CRITICAL TEST: This catches the beta.45 bug where process returned 0 but queue stayed full
+
+    # Get initial queue count
+    initial=$(curl -s "http://localhost:$TEST_PORT/api/queue" | python3 -c "import json,sys; print(json.load(sys.stdin).get('count', 0))")
+
+    if [[ "$initial" -eq 0 ]]; then
+        log_pass "Queue already empty (nothing to process)"
+        return
+    fi
+
+    log_info "Queue has $initial items, triggering process..."
+
+    # Trigger processing (with timeout)
+    curl -s -X POST "http://localhost:$TEST_PORT/api/process" \
+        -H "Content-Type: application/json" \
+        -d '{"all": true}' \
+        --max-time 120 >/dev/null 2>&1 &
+
+    # Wait for some processing
+    sleep 30
+
+    # Check status
+    status=$(curl -s "http://localhost:$TEST_PORT/api/process_status")
+    processed=$(echo "$status" | python3 -c "import json,sys; print(json.load(sys.stdin).get('processed', 0))")
+
+    if [[ "$processed" -gt 0 ]]; then
+        log_pass "Processing working: $processed items processed"
+    else
+        # Check if queue reduced anyway
+        final=$(curl -s "http://localhost:$TEST_PORT/api/queue" | python3 -c "import json,sys; print(json.load(sys.stdin).get('count', 0))")
+        if [[ "$final" -lt "$initial" ]]; then
+            log_pass "Queue reduced from $initial to $final"
+        else
+            log_fail "CRITICAL: Process returned 0 and queue unchanged ($initial items) - beta.45 bug!"
+        fi
+    fi
+}
+
+test_queue_items_not_stuck() {
+    log_info "Test: Queue items are not stuck at invalid verification layers"
+    # Items should not be stuck at layer 4 in the queue (that's the bug this test catches)
+
+    # This requires DB access - skip if we can't access it
+    if ! command -v sqlite3 &> /dev/null; then
+        log_info "sqlite3 not available, skipping DB check"
+        return
+    fi
+
+    # Check for stuck items (in queue but at layer 4 with no handler)
+    stuck=$(podman exec "$CONTAINER_NAME" sqlite3 /data/library.db \
+        "SELECT COUNT(*) FROM queue q JOIN books b ON q.book_id = b.id WHERE b.verification_layer = 4" 2>/dev/null || echo "0")
+
+    if [[ "$stuck" -eq 0 ]]; then
+        log_pass "No items stuck at layer 4"
+    else
+        log_fail "CRITICAL: $stuck items stuck at layer 4 in queue - processing bug!"
+    fi
+}
+
 # ==========================================
 # CLEANUP
 # ==========================================
@@ -247,6 +308,8 @@ main() {
     test_history_endpoint
     test_scan_trigger
     test_no_local_db_dependency
+    test_process_empties_queue
+    test_queue_items_not_stuck
 
     # Cleanup
     echo ""

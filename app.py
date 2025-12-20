@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.48"
+APP_VERSION = "0.9.0-beta.49"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -5428,19 +5428,29 @@ def process_layer_1_api(config, limit=None):
             match_author = best_match.get('author', '')
 
             if match_title and match_author:
-                # Calculate match confidence
-                title_sim = fuzz.ratio(current_title.lower(), match_title.lower()) if current_title else 0
-                author_sim = fuzz.ratio(current_author.lower(), match_author.lower()) if current_author and not is_placeholder_author(current_author) else 100
+                # Calculate match confidence using word overlap similarity (returns 0.0-1.0)
+                title_sim = calculate_title_similarity(current_title, match_title) if current_title else 0
+                author_sim = calculate_title_similarity(current_author, match_author) if current_author and not is_placeholder_author(current_author) else 1.0
                 avg_confidence = (title_sim + author_sim) / 2
 
-                if avg_confidence >= confidence_threshold:
-                    # Good match - mark as complete
-                    logger.info(f"[LAYER 1] API match found ({avg_confidence:.0f}%): {current_author}/{current_title} -> {match_author}/{match_title}")
+                # confidence_threshold is 0-100 scale, convert to 0-1
+                threshold = confidence_threshold / 100.0 if confidence_threshold > 1 else confidence_threshold
+                if avg_confidence >= threshold:
+                    # Good match found - check if current values are correct or need fixing
+                    # If both title and author are very close (90%+), the book is already correct
+                    # If one differs significantly, advance to Layer 2 for AI verification
 
-                    # Create pending fix or apply (using existing logic would be ideal, but for now just advance)
-                    # For now, we update verification_layer to 4 (complete) and let existing logic handle it
-                    c.execute('UPDATE books SET verification_layer = 4 WHERE id = ?', (row['book_id'],))
-                    resolved += 1
+                    if title_sim >= 0.90 and author_sim >= 0.90:
+                        # Book is already correctly named - mark as verified and remove from queue
+                        logger.info(f"[LAYER 1] Verified OK ({avg_confidence:.0%}): {current_author}/{current_title}")
+                        c.execute('UPDATE books SET status = ?, verification_layer = 4 WHERE id = ?',
+                                 ('verified', row['book_id']))
+                        c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                        resolved += 1
+                    else:
+                        # API found the book but current values differ - let Layer 2 handle the fix
+                        logger.info(f"[LAYER 1] API match needs fix ({avg_confidence:.0%}, title={title_sim:.0%}, author={author_sim:.0%}): {current_author}/{current_title} -> {match_author}/{match_title}")
+                        c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (row['book_id'],))
                 else:
                     # Low confidence - advance to AI layer
                     logger.info(f"[LAYER 1] API match low confidence ({avg_confidence:.0f}%), advancing to AI: {current_author}/{current_title}")
@@ -6279,18 +6289,69 @@ def process_layer_3_audio(config, limit=None):
         audio_result = analyze_audio_with_gemini(audio_files[0], config)
 
         if audio_result and audio_result.get('author') and audio_result.get('title'):
-            # Audio analysis succeeded
+            # Audio analysis succeeded - create pending fix with extracted metadata
             new_author = audio_result.get('author', '')
             new_title = audio_result.get('title', '')
             new_narrator = audio_result.get('narrator', '')
             new_series = audio_result.get('series', '')
+            new_series_num = audio_result.get('series_num')
 
             logger.info(f"[LAYER 3] Audio extracted: {new_author}/{new_title} (narrator: {new_narrator})")
 
-            # Mark as resolved - the actual fix creation will be handled by process_queue logic
-            # For now, update verification_layer to 4 (complete)
-            c.execute('UPDATE books SET verification_layer = 4 WHERE id = ?', (row['book_id'],))
-            resolved += 1
+            current_author = row['current_author']
+            current_title = row['current_title']
+
+            # Check if extracted data differs from current values (returns 0.0-1.0)
+            author_match = calculate_title_similarity(current_author, new_author) if current_author else 0
+            title_match = calculate_title_similarity(current_title, new_title) if current_title else 0
+
+            if author_match >= 0.90 and title_match >= 0.90:
+                # Audio confirms current values are correct - mark verified
+                logger.info(f"[LAYER 3] Audio confirms existing metadata, marking verified: {current_author}/{current_title}")
+                c.execute('UPDATE books SET status = ?, verification_layer = 4 WHERE id = ?',
+                         ('verified', row['book_id']))
+                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                resolved += 1
+            else:
+                # Audio suggests different values - create pending fix
+                # Find library path
+                lib_path = None
+                for lp in config.get('library_paths', []):
+                    lp_path = Path(lp)
+                    try:
+                        book_path.relative_to(lp_path)
+                        lib_path = lp_path
+                        break
+                    except ValueError:
+                        continue
+
+                if lib_path is None:
+                    lib_path = book_path.parent.parent
+                    logger.warning(f"[LAYER 3] Book path {book_path} not under any configured library, guessing lib_path={lib_path}")
+
+                new_path = build_new_path(lib_path, new_author, new_title,
+                                          series=new_series, series_num=new_series_num,
+                                          narrator=new_narrator, config=config)
+
+                if new_path is None:
+                    logger.error(f"[LAYER 3] SAFETY BLOCK: Invalid path for '{new_author}' / '{new_title}'")
+                    c.execute('UPDATE books SET status = ?, verification_layer = 4, error_message = ? WHERE id = ?',
+                             ('error', 'Audio extraction produced invalid path', row['book_id']))
+                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                else:
+                    # Create pending fix for manual review
+                    logger.info(f"[LAYER 3] Creating pending fix: {current_author}/{current_title} -> {new_author}/{new_title}")
+                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                      new_narrator, new_series, new_series_num)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?)''',
+                             (row['book_id'], current_author, current_title,
+                              new_author, new_title, str(book_path), str(new_path),
+                              'Identified via audio analysis',
+                              new_narrator, new_series, str(new_series_num) if new_series_num else None))
+                    c.execute('UPDATE books SET status = ?, verification_layer = 4 WHERE id = ?',
+                             ('pending_fix', row['book_id']))
+                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                    resolved += 1
         else:
             # Audio analysis failed - this is the last layer, mark as needs attention
             logger.warning(f"[LAYER 3] Audio analysis failed, marking needs attention: {path}")

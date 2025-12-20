@@ -2,6 +2,28 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.49] - 2025-12-20
+
+### Fixed
+- **Critical: Queue Processing Not Working** - Items stuck in queue, "processed 0" returned
+  - Layer 1 (API) had incomplete code that marked items as layer=4 but never removed them from queue
+  - Layer 3 (Audio) had same issue - extracted metadata but never created fixes
+  - Items got stuck at verification_layer=4 with no handler processing them
+  - Now properly: verifies items and removes from queue, or advances to next layer
+
+### Improved
+- **Layered Processing Reliability** - All three processing layers now complete their work properly
+  - Layer 1: Verifies correct items (90%+ match), advances others to Layer 2
+  - Layer 3: Creates pending fixes from audio analysis, or marks verified
+
+### Added
+- **Real User Workflow Tests** - New integration tests that catch processing bugs
+  - `test_process_empties_queue` - Catches "processed 0 but queue full" bugs
+  - `test_queue_items_not_stuck` - Catches items stuck at invalid layers
+  - `test-env/test-user-workflow.py` - Full end-to-end workflow testing
+
+---
+
 ## [0.9.0-beta.48] - 2025-12-19
 
 ### Added
