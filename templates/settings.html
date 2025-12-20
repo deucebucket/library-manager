@@ -234,6 +234,28 @@
                             </div>
                             <hr class="my-2">
                             <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="anonymous_error_reporting" id="anonymous_error_reporting"
+                                       {% if config.anonymous_error_reporting %}checked{% endif %} onchange="toggleErrorReportingOptions()">
+                                <label class="form-check-label" for="anonymous_error_reporting">
+                                    <strong>Anonymous Error Reporting</strong>
+                                    <br><small class="text-muted">Help improve Library Manager by sharing anonymous error reports</small>
+                                </label>
+                            </div>
+                            <div id="error-reporting-options" class="ms-4 mb-2" style="display: {% if config.anonymous_error_reporting %}block{% else %}none{% endif %};">
+                                <div class="form-check form-switch mb-2">
+                                    <input class="form-check-input" type="checkbox" name="error_reporting_include_titles" id="error_reporting_include_titles"
+                                           {% if config.error_reporting_include_titles %}checked{% endif %}>
+                                    <label class="form-check-label small" for="error_reporting_include_titles">
+                                        Include book title/author when they caused the error
+                                    </label>
+                                </div>
+                                <small class="text-muted d-block">
+                                    <strong>What's collected:</strong> Error message, app version, and optionally book title/author<br>
+                                    <strong>Never collected:</strong> File paths, API keys, usernames, or any personal information
+                                </small>
+                            </div>
+                            <hr class="my-2">
+                            <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" name="series_grouping" id="series_grouping"
                                        {% if config.series_grouping %}checked{% endif %}>
                                 <label class="form-check-label" for="series_grouping">
@@ -686,6 +708,108 @@
                         </div>
                     </div>
 
+                    <!-- Debug & Troubleshooting -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-bug"></i> Debug & Troubleshooting
+                        </div>
+                        <div class="card-body">
+                            <!-- System Info -->
+                            <div class="mb-3">
+                                <h6 class="text-muted mb-2"><i class="bi bi-info-circle"></i> System Info</h6>
+                                <div class="row small">
+                                    <div class="col-6">
+                                        <strong>Version:</strong> <span class="text-info">{{ version }}</span>
+                                    </div>
+                                    <div class="col-6">
+                                        <strong>AI Provider:</strong> <span class="text-info">{{ config.ai_provider }}</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <hr class="my-2">
+
+                            <!-- API Connection Tests -->
+                            <div class="mb-3">
+                                <h6 class="text-muted mb-2"><i class="bi bi-plug"></i> API Connections</h6>
+                                <div class="d-flex flex-wrap gap-2">
+                                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="testBookDB()">
+                                        <i class="bi bi-database"></i> Test BookDB
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="testGemini()">
+                                        <i class="bi bi-robot"></i> Test Gemini
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="testOpenRouter()">
+                                        <i class="bi bi-cloud"></i> Test OpenRouter
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="testOllamaDebug()">
+                                        <i class="bi bi-cpu"></i> Test Ollama
+                                    </button>
+                                </div>
+                                <div id="api-test-results" class="mt-2 small"></div>
+                            </div>
+
+                            <hr class="my-2">
+
+                            <!-- Error Reports -->
+                            <div class="mb-3">
+                                <h6 class="text-muted mb-2"><i class="bi bi-exclamation-triangle"></i> Error Reports</h6>
+                                <div class="d-flex gap-2 mb-2">
+                                    <button type="button" class="btn btn-sm btn-outline-info" onclick="loadErrorReports()">
+                                        <i class="bi bi-eye"></i> View Reports
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" onclick="clearErrorReports()">
+                                        <i class="bi bi-trash"></i> Clear Reports
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-success" onclick="showSendReportForm()" id="btn-send-report">
+                                        <i class="bi bi-send"></i> Send to Developer
+                                    </button>
+                                </div>
+                                <!-- Send Report Form (hidden by default) -->
+                                <div id="send-report-form" class="d-none mb-2">
+                                    <div class="card bg-dark">
+                                        <div class="card-body p-2">
+                                            <label class="form-label small">Optional message (describe what you were doing):</label>
+                                            <textarea id="report-message" class="form-control form-control-sm bg-secondary text-light mb-2"
+                                                      rows="2" placeholder="E.g., 'I was scanning my library and saw this error...'"></textarea>
+                                            <div class="d-flex gap-2">
+                                                <button type="button" class="btn btn-sm btn-success" onclick="sendErrorReport()">
+                                                    <i class="bi bi-send"></i> Send Report
+                                                </button>
+                                                <button type="button" class="btn btn-sm btn-secondary" onclick="hideSendReportForm()">
+                                                    Cancel
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="error-reports-container" class="d-none">
+                                    <div class="bg-dark p-2 rounded" style="max-height: 200px; overflow-y: auto;">
+                                        <pre id="error-reports-output" class="mb-0 small text-warning"></pre>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <hr class="my-2">
+
+                            <!-- Clear Data -->
+                            <div>
+                                <h6 class="text-muted mb-2"><i class="bi bi-trash"></i> Clear Data</h6>
+                                <div class="d-flex flex-wrap gap-2">
+                                    <button type="button" class="btn btn-sm btn-outline-warning" onclick="clearQueueFromSettings()" title="Mark all queue items as OK">
+                                        <i class="bi bi-list-task"></i> Clear Queue
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-warning" onclick="clearAllHistoryErrors()" title="Remove all error entries from history">
+                                        <i class="bi bi-x-circle"></i> Clear Errors
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" onclick="resetDatabase()" title="Wipe database and rescan">
+                                        <i class="bi bi-arrow-counterclockwise"></i> Reset Database
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Recent Logs -->
                     <div class="card mb-3">
                         <div class="card-header py-2">
@@ -860,6 +984,11 @@ function toggleEmbeddingOptions() {
     document.getElementById('embedding-options').style.display = enabled ? 'block' : 'none';
 }
 
+function toggleErrorReportingOptions() {
+    const enabled = document.getElementById('anonymous_error_reporting').checked;
+    document.getElementById('error-reporting-options').style.display = enabled ? 'block' : 'none';
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     toggleProviderFields();
     toggleCustomNaming();
@@ -954,6 +1083,190 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// Debug Menu Functions
+function showApiTestResult(msg, success) {
+    const el = document.getElementById('api-test-results');
+    const cls = success ? 'text-success' : 'text-danger';
+    const icon = success ? 'check-circle' : 'x-circle';
+    el.innerHTML = `<span class="${cls}"><i class="bi bi-${icon}"></i> ${escapeHtml(msg)}</span>`;
+}
+
+function testBookDB() {
+    showApiTestResult('Testing BookDB...', true);
+    fetch('/api/test_bookdb', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                showApiTestResult(`BookDB: Connected (${data.books_count || 0} books)`, true);
+            } else {
+                showApiTestResult('BookDB: ' + (data.error || 'Connection failed'), false);
+            }
+        })
+        .catch(e => showApiTestResult('BookDB: ' + e, false));
+}
+
+function testGemini() {
+    showApiTestResult('Testing Gemini...', true);
+    fetch('/api/test_gemini', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                showApiTestResult('Gemini: Connected - ' + (data.model || 'API working'), true);
+            } else {
+                showApiTestResult('Gemini: ' + (data.error || 'Connection failed'), false);
+            }
+        })
+        .catch(e => showApiTestResult('Gemini: ' + e, false));
+}
+
+function testOpenRouter() {
+    showApiTestResult('Testing OpenRouter...', true);
+    fetch('/api/test_openrouter', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                showApiTestResult('OpenRouter: Connected - ' + (data.model || 'API working'), true);
+            } else {
+                showApiTestResult('OpenRouter: ' + (data.error || 'Connection failed'), false);
+            }
+        })
+        .catch(e => showApiTestResult('OpenRouter: ' + e, false));
+}
+
+function testOllamaDebug() {
+    showApiTestResult('Testing Ollama...', true);
+    const url = document.getElementById('ollama_url')?.value || 'http://localhost:11434';
+    fetch('/api/test_ollama', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ollama_url: url})
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                showApiTestResult('Ollama: Connected - ' + (data.models?.length || 0) + ' models available', true);
+            } else {
+                showApiTestResult('Ollama: ' + (data.error || 'Connection failed'), false);
+            }
+        })
+        .catch(e => showApiTestResult('Ollama: ' + e, false));
+}
+
+function loadErrorReports() {
+    const container = document.getElementById('error-reports-container');
+    const output = document.getElementById('error-reports-output');
+
+    container.classList.remove('d-none');
+    output.textContent = 'Loading...';
+
+    fetch('/api/error_reports')
+        .then(r => r.json())
+        .then(data => {
+            if (data.reports && data.reports.length > 0) {
+                output.textContent = JSON.stringify(data.reports, null, 2);
+            } else {
+                output.textContent = 'No error reports collected.';
+            }
+        })
+        .catch(e => { output.textContent = 'Error loading: ' + e; });
+}
+
+function clearErrorReports() {
+    if (!confirm('Clear all stored error reports?')) return;
+
+    fetch('/api/error_reports/clear', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(data.message);
+                document.getElementById('error-reports-container').classList.add('d-none');
+            } else {
+                alert('Error: ' + (data.error || 'Failed to clear'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
+
+function showSendReportForm() {
+    document.getElementById('send-report-form').classList.remove('d-none');
+    document.getElementById('btn-send-report').classList.add('d-none');
+}
+
+function hideSendReportForm() {
+    document.getElementById('send-report-form').classList.add('d-none');
+    document.getElementById('btn-send-report').classList.remove('d-none');
+    document.getElementById('report-message').value = '';
+}
+
+function sendErrorReport() {
+    const message = document.getElementById('report-message').value.trim();
+
+    if (!confirm('Send error report to the developer? This helps improve Library Manager.')) return;
+
+    fetch('/api/error_reports/send', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({message: message})
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert('Report sent successfully!\n\nReport ID: ' + data.report_id + '\n\nThank you for helping improve Library Manager!');
+                hideSendReportForm();
+                document.getElementById('error-reports-container').classList.add('d-none');
+            } else {
+                alert('Error: ' + (data.error || 'Failed to send report'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
+
+function clearQueueFromSettings() {
+    if (!confirm('Clear the entire queue?\n\nAll items will be marked as OK.')) return;
+
+    fetch('/api/clear_queue', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(data.message);
+            } else {
+                alert('Error: ' + (data.error || 'Failed to clear'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
+
+function clearAllHistoryErrors() {
+    if (!confirm('Clear all error entries from history?')) return;
+
+    fetch('/api/clear_all_errors', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(data.message);
+            } else {
+                alert('Error: ' + (data.error || 'Failed to clear'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
+
+function resetDatabase() {
+    if (!confirm('RESET DATABASE?\n\nThis will:\n• Delete all book records\n• Clear all history\n• Clear the queue\n• Trigger a fresh scan\n\nYour audiobook FILES will NOT be affected.\n\nAre you sure?')) return;
+
+    fetch('/api/reset_database', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert('Database reset. Scanning library...');
+                location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Failed to reset'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
 }
 
 function warnAutoFix(checkbox) {

@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.49"
+APP_VERSION = "0.9.0-beta.50"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -1005,7 +1005,10 @@ DEFAULT_CONFIG = {
     "deep_scan_mode": False,              # Always use all enabled layers regardless of confidence
     "profile_confidence_threshold": 85,   # Minimum confidence to skip remaining layers (0-100)
     "multibook_ai_fallback": True,         # Use AI for ambiguous chapter/multibook detection
-    "skip_confirmations": False            # Skip confirmation dialogs in Library view for faster workflow
+    "skip_confirmations": False,           # Skip confirmation dialogs in Library view for faster workflow
+    # Anonymous error reporting - helps improve the app
+    "anonymous_error_reporting": False,    # Opt-in: send anonymous error reports to help fix bugs
+    "error_reporting_include_titles": True # Include book title/author ONLY when they caused the error
 }
 
 DEFAULT_SECRETS = {
@@ -1232,6 +1235,231 @@ def load_secrets():
         except Exception as e:
             logger.warning(f"Error loading secrets: {e}")
     return {}
+
+# ============== ANONYMOUS ERROR REPORTING ==============
+
+ERROR_REPORTS_PATH = DATA_DIR / "error_reports.json"
+
+def sanitize_error_data(error_msg: str, traceback_str: str = None, book_info: dict = None) -> dict:
+    """
+    Sanitize error data to remove any personal/sensitive information.
+
+    Removes:
+    - File system paths (except relative library structure)
+    - API keys and tokens
+    - Usernames and home directories
+    - IP addresses
+    - Any config values that might contain secrets
+
+    Keeps:
+    - Error type and message (sanitized)
+    - App version
+    - Book title/author (only if enabled and relevant to error)
+    """
+    import re
+
+    # Patterns to remove
+    path_pattern = r'(/home/[^/\s]+|/Users/[^/\s]+|/data|/audiobooks|[A-Z]:\\[^\s]+)'
+    ip_pattern = r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b'
+    api_key_pattern = r'(sk-[a-zA-Z0-9]+|AIza[a-zA-Z0-9_-]+|[a-zA-Z0-9]{32,})'
+
+    def sanitize_string(s: str) -> str:
+        if not s:
+            return s
+        # Replace paths with [PATH]
+        s = re.sub(path_pattern, '[PATH]', s)
+        # Replace IPs with [IP]
+        s = re.sub(ip_pattern, '[IP]', s)
+        # Replace potential API keys with [KEY]
+        s = re.sub(api_key_pattern, '[KEY]', s)
+        return s
+
+    sanitized = {
+        "version": APP_VERSION,
+        "timestamp": datetime.now().isoformat(),
+        "error": sanitize_string(str(error_msg)[:500]),  # Limit length
+    }
+
+    if traceback_str:
+        # Only keep last 10 lines of traceback, sanitized
+        tb_lines = traceback_str.strip().split('\n')[-10:]
+        sanitized["traceback"] = [sanitize_string(line) for line in tb_lines]
+
+    # Only include book info if error reporting settings allow it
+    config = load_config()
+    if book_info and config.get('error_reporting_include_titles', True):
+        # Only include title/author, nothing else
+        sanitized["book"] = {
+            "title": book_info.get("title", "")[:100] if book_info.get("title") else None,
+            "author": book_info.get("author", "")[:100] if book_info.get("author") else None,
+        }
+
+    return sanitized
+
+
+def report_anonymous_error(error_msg: str, traceback_str: str = None, book_info: dict = None, context: str = None):
+    """
+    Report an error anonymously if the user has opted in.
+
+    This stores error reports locally. In a future version, these could be
+    sent to a central server to help identify common issues.
+
+    Args:
+        error_msg: The error message
+        traceback_str: Optional traceback string
+        book_info: Optional dict with 'title' and 'author' keys (only used if error is book-related)
+        context: Optional context string (e.g., "layer_1_processing", "scan", "api_call")
+    """
+    try:
+        config = load_config()
+        if not config.get('anonymous_error_reporting', False):
+            return  # User has not opted in
+
+        # Sanitize the error data
+        report = sanitize_error_data(error_msg, traceback_str, book_info)
+        if context:
+            report["context"] = context[:50]  # Limit context length
+
+        # Load existing reports
+        reports = []
+        if ERROR_REPORTS_PATH.exists():
+            try:
+                with open(ERROR_REPORTS_PATH, 'r') as f:
+                    reports = json.load(f)
+            except:
+                reports = []
+
+        # Add new report (keep last 100 reports to avoid file bloat)
+        reports.append(report)
+        reports = reports[-100:]
+
+        # Save reports
+        with open(ERROR_REPORTS_PATH, 'w') as f:
+            json.dump(reports, f, indent=2)
+
+        logger.debug(f"Anonymous error report saved (context: {context})")
+
+    except Exception as e:
+        # Never let error reporting cause additional errors
+        logger.debug(f"Failed to save error report: {e}")
+
+
+def get_error_reports() -> list:
+    """Get all stored error reports for the debug menu."""
+    if ERROR_REPORTS_PATH.exists():
+        try:
+            with open(ERROR_REPORTS_PATH, 'r') as f:
+                return json.load(f)
+        except:
+            return []
+    return []
+
+
+def clear_error_reports():
+    """Clear all stored error reports."""
+    if ERROR_REPORTS_PATH.exists():
+        ERROR_REPORTS_PATH.unlink()
+
+
+# Directory for permanent report storage (for developer review)
+REPORTS_DIR = Path("/home/deucebucket/library-manager-reports")
+
+
+def send_error_report_email(reports: list, user_message: str = None) -> dict:
+    """
+    Send error reports via email to the developer.
+    Always saves locally first, then attempts email.
+
+    Local storage is the primary method - email is best-effort.
+    Returns success if local save works, even if email fails.
+    """
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+    from datetime import datetime
+
+    # Create report content
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    report_id = f"report_{timestamp}"
+
+    # Build report body
+    body_parts = []
+    body_parts.append(f"Error Report from Library Manager v{APP_VERSION}")
+    body_parts.append(f"Submitted: {datetime.now().isoformat()}")
+    body_parts.append(f"Report ID: {report_id}")
+    body_parts.append("")
+
+    if user_message:
+        body_parts.append("=== User Message ===")
+        body_parts.append(user_message)
+        body_parts.append("")
+
+    body_parts.append(f"=== {len(reports)} Error(s) ===")
+    for i, report in enumerate(reports, 1):
+        body_parts.append(f"\n--- Error {i} ---")
+        body_parts.append(f"Time: {report.get('timestamp', 'Unknown')}")
+        body_parts.append(f"Context: {report.get('context', 'Unknown')}")
+        body_parts.append(f"Error: {report.get('error', 'No error message')}")
+        if report.get('traceback'):
+            body_parts.append(f"Traceback:\n{report['traceback']}")
+        if report.get('book_info'):
+            body_parts.append(f"Book: {report['book_info']}")
+
+    report_body = "\n".join(body_parts)
+
+    # Step 1: Save locally (required)
+    try:
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        local_file = REPORTS_DIR / f"{report_id}.txt"
+        with open(local_file, 'w') as f:
+            f.write(report_body)
+        logger.info(f"Error report saved locally: {local_file}")
+    except Exception as e:
+        logger.error(f"Failed to save error report locally: {e}")
+        return {
+            'success': False,
+            'error': f'Failed to save report: {e}'
+        }
+
+    # Step 2: Try to send email (best-effort)
+    email_sent = False
+    email_error = None
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = 'library-manager@localhost'
+        msg['To'] = 'lib-man-reports@deucebucket.com'
+        msg['Subject'] = f'[Library Manager] Error Report - {len(reports)} error(s)'
+        msg.attach(MIMEText(report_body, 'plain'))
+
+        with smtplib.SMTP('localhost', 25) as server:
+            server.send_message(msg)
+
+        email_sent = True
+        logger.info(f"Error report emailed: {report_id}")
+    except Exception as e:
+        email_error = str(e)
+        logger.warning(f"Email send failed (report still saved locally): {e}")
+
+    # Clear local error reports after successful save
+    clear_error_reports()
+
+    # Return success - local save is what matters
+    if email_sent:
+        return {
+            'success': True,
+            'message': f'Report saved and emailed (ID: {report_id})',
+            'report_id': report_id,
+            'email_sent': True
+        }
+    else:
+        return {
+            'success': True,
+            'message': f'Report saved locally (ID: {report_id}). Email failed: {email_error}',
+            'report_id': report_id,
+            'email_sent': False,
+            'email_error': email_error
+        }
+
 
 # ============== DRASTIC CHANGE DETECTION ==============
 
@@ -2586,10 +2814,13 @@ def call_openrouter(prompt, config):
                 pass
     except requests.exceptions.Timeout:
         logger.error("OpenRouter: Request timed out after 90 seconds")
+        report_anonymous_error("OpenRouter timeout after 90 seconds", context="openrouter_api")
     except requests.exceptions.ConnectionError:
         logger.error("OpenRouter: Connection failed - check your internet")
+        report_anonymous_error("OpenRouter connection failed", context="openrouter_api")
     except Exception as e:
         logger.error(f"OpenRouter: {e}")
+        report_anonymous_error(f"OpenRouter error: {e}", context="openrouter_api")
     return None
 
 
@@ -2648,10 +2879,13 @@ def call_gemini(prompt, config, retry_count=0):
                 pass
     except requests.exceptions.Timeout:
         logger.error("Gemini: Request timed out after 90 seconds")
+        report_anonymous_error("Gemini timeout after 90 seconds", context="gemini_api")
     except requests.exceptions.ConnectionError:
         logger.error("Gemini: Connection failed - check your internet")
+        report_anonymous_error("Gemini connection failed", context="gemini_api")
     except Exception as e:
         logger.error(f"Gemini: {e}")
+        report_anonymous_error(f"Gemini error: {e}", context="gemini_api")
     return None
 
 
@@ -2693,10 +2927,13 @@ def call_ollama(prompt, config):
                 pass
     except requests.exceptions.Timeout:
         logger.error("Ollama: Request timed out after 120 seconds - model may still be loading")
+        report_anonymous_error("Ollama timeout after 120 seconds", context="ollama_api")
     except requests.exceptions.ConnectionError:
         logger.error(f"Ollama: Connection failed - is Ollama running at {config.get('ollama_url', 'http://localhost:11434')}?")
+        report_anonymous_error("Ollama connection failed", context="ollama_api")
     except Exception as e:
         logger.error(f"Ollama: {e}")
+        report_anonymous_error(f"Ollama error: {e}", context="ollama_api")
     return None
 
 
@@ -6769,10 +7006,10 @@ def dashboard():
     c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'pending_fix'")
     pending_fixes = c.fetchone()['count']
 
-    # Get recent history
+    # Get recent history (use LEFT JOIN in case book was deleted)
     c.execute('''SELECT h.*, b.path FROM history h
-                 JOIN books b ON h.book_id = b.id
-                 ORDER BY h.fixed_at DESC LIMIT 10''')
+                 LEFT JOIN books b ON h.book_id = b.id
+                 ORDER BY h.fixed_at DESC LIMIT 15''')
     recent_history = c.fetchall()
 
     # Get stats for last 7 days
@@ -6824,6 +7061,10 @@ def history_page():
     c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'needs_attention'")
     needs_attention_count = c.fetchone()['count']
 
+    # Get error count for the UI
+    c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'error'")
+    error_count = c.fetchone()['count']
+
     # Build query based on status filter
     if status_filter == 'pending':
         c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'pending_fix'")
@@ -6844,6 +7085,13 @@ def history_page():
         total = c.fetchone()['count']
         c.execute('''SELECT * FROM history
                      WHERE status = 'needs_attention'
+                     ORDER BY fixed_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+    elif status_filter == 'error':
+        c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'error'")
+        total = c.fetchone()['count']
+        c.execute('''SELECT * FROM history
+                     WHERE status = 'error'
                      ORDER BY fixed_at DESC
                      LIMIT ? OFFSET ?''', (per_page, offset))
     else:
@@ -6871,7 +7119,8 @@ def history_page():
                           total=total,
                           status_filter=status_filter,
                           duplicate_count=duplicate_count,
-                          needs_attention_count=needs_attention_count)
+                          needs_attention_count=needs_attention_count,
+                          error_count=error_count)
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings_page():
@@ -6904,6 +7153,8 @@ def settings_page():
         config['deep_scan_mode'] = 'deep_scan_mode' in request.form
         config['profile_confidence_threshold'] = int(request.form.get('profile_confidence_threshold', 85))
         config['skip_confirmations'] = 'skip_confirmations' in request.form
+        config['anonymous_error_reporting'] = 'anonymous_error_reporting' in request.form
+        config['error_reporting_include_titles'] = 'error_reporting_include_titles' in request.form
         config['metadata_embedding_enabled'] = 'metadata_embedding_enabled' in request.form
         config['metadata_embedding_overwrite_managed'] = 'metadata_embedding_overwrite_managed' in request.form
         config['metadata_embedding_backup_sidecar'] = 'metadata_embedding_backup_sidecar' in request.form
@@ -7438,6 +7689,37 @@ def api_apply_all_pending():
         'message': f'Applied {applied} fixes, {errors} errors'
     })
 
+
+@app.route('/api/reject_all_pending', methods=['POST'])
+def api_reject_all_pending():
+    """Reject all pending fixes, marking books as verified without making changes."""
+    conn = get_db()
+    c = conn.cursor()
+
+    # Get count first
+    c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'pending_fix'")
+    count = c.fetchone()['count']
+
+    if count == 0:
+        conn.close()
+        return jsonify({'success': True, 'message': 'No pending fixes to reject', 'rejected': 0})
+
+    # Mark all books with pending fixes as verified
+    c.execute('''UPDATE books SET status = 'verified'
+                 WHERE id IN (SELECT book_id FROM history WHERE status = 'pending_fix')''')
+
+    # Delete all pending fix entries
+    c.execute("DELETE FROM history WHERE status = 'pending_fix'")
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        'success': True,
+        'message': f'Rejected {count} pending fixes',
+        'rejected': count
+    })
+
+
 @app.route('/api/remove_from_queue/<int:queue_id>', methods=['POST'])
 def api_remove_from_queue(queue_id):
     """Remove an item from the queue."""
@@ -7454,6 +7736,37 @@ def api_remove_from_queue(queue_id):
 
     conn.close()
     return jsonify({'success': True})
+
+
+@app.route('/api/clear_queue', methods=['POST'])
+def api_clear_queue():
+    """Clear all items from the queue, marking them as verified."""
+    conn = get_db()
+    c = conn.cursor()
+
+    # Get count first
+    c.execute('SELECT COUNT(*) as count FROM queue')
+    count = c.fetchone()['count']
+
+    if count == 0:
+        conn.close()
+        return jsonify({'success': True, 'message': 'Queue already empty', 'cleared': 0})
+
+    # Mark all queued books as verified
+    c.execute('''UPDATE books SET status = 'verified'
+                 WHERE id IN (SELECT book_id FROM queue)''')
+
+    # Clear the queue
+    c.execute('DELETE FROM queue')
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        'success': True,
+        'message': f'Cleared {count} items from queue',
+        'cleared': count
+    })
+
 
 @app.route('/api/find_drastic_changes')
 def api_find_drastic_changes():
@@ -7881,6 +8194,32 @@ def api_remove_all_duplicates():
     })
 
 
+@app.route('/api/clear_all_errors', methods=['POST'])
+def api_clear_all_errors():
+    """Clear all error entries from history."""
+    conn = get_db()
+    c = conn.cursor()
+
+    # Get count before clearing
+    c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'error'")
+    count = c.fetchone()['count']
+
+    if count == 0:
+        conn.close()
+        return jsonify({'success': True, 'message': 'No errors to clear', 'cleared': 0})
+
+    # Delete all error entries
+    c.execute("DELETE FROM history WHERE status = 'error'")
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        'success': True,
+        'message': f'Cleared {count} error entries',
+        'cleared': count
+    })
+
+
 @app.route('/api/stats')
 def api_stats():
     """Get current stats."""
@@ -7933,6 +8272,44 @@ def api_queue():
 
     conn.close()
     return jsonify({'items': items, 'count': len(items)})
+
+
+@app.route('/api/error_reports')
+def api_error_reports():
+    """Get stored anonymous error reports (for debug menu)."""
+    reports = get_error_reports()
+    return jsonify({
+        'success': True,
+        'reports': reports,
+        'count': len(reports)
+    })
+
+
+@app.route('/api/error_reports/clear', methods=['POST'])
+def api_clear_error_reports():
+    """Clear all stored error reports."""
+    clear_error_reports()
+    return jsonify({'success': True, 'message': 'Error reports cleared'})
+
+
+@app.route('/api/error_reports/send', methods=['POST'])
+def api_send_error_reports():
+    """Send error reports to the developer via email."""
+    reports = get_error_reports()
+
+    if not reports:
+        return jsonify({
+            'success': False,
+            'error': 'No error reports to send'
+        })
+
+    # Get optional user message from request
+    data = request.get_json() or {}
+    user_message = data.get('message', '').strip()
+
+    result = send_error_report_email(reports, user_message if user_message else None)
+    return jsonify(result)
+
 
 @app.route('/api/analyze_path', methods=['POST'])
 def api_analyze_path():
@@ -8105,31 +8482,14 @@ def api_clear_history():
         return jsonify({'success': False, 'message': str(e)})
 
 
-@app.route('/api/reset_database', methods=['POST'])
-def api_reset_database():
-    """Reset entire database - DANGER!"""
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        c.execute('DELETE FROM queue')
-        c.execute('DELETE FROM history')
-        c.execute('DELETE FROM books')
-        c.execute('DELETE FROM stats')
-        conn.commit()
-        conn.close()
-        logger.warning("DATABASE RESET by user!")
-        return jsonify({'success': True, 'message': 'Database reset complete'})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
-
-
 @app.route('/api/recent_history')
 def api_recent_history():
     """Get recent history items for live updates."""
     conn = get_db()
     c = conn.cursor()
+    # Use LEFT JOIN in case book was deleted or book_id is NULL
     c.execute('''SELECT h.*, b.path FROM history h
-                 JOIN books b ON h.book_id = b.id
+                 LEFT JOIN books b ON h.book_id = b.id
                  ORDER BY h.fixed_at DESC LIMIT 15''')
     items = [dict(row) for row in c.fetchall()]
     conn.close()
@@ -8365,22 +8725,37 @@ def api_library():
             })
 
     elif status_filter == 'verified':
-        # Verified/OK books
-        c.execute('''SELECT id, path, current_author, current_title, status, updated_at
+        # Verified/OK books - include profile for source display
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, profile, confidence
                      FROM books
                      WHERE status = 'verified'
                      ORDER BY updated_at DESC
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
-            items.append({
+            item = {
                 'id': row['id'],
                 'type': 'book',
                 'book_id': row['id'],
                 'author': row['current_author'],
                 'title': row['current_title'],
                 'path': row['path'],
-                'status': 'verified'
-            })
+                'status': 'verified',
+                'confidence': row['confidence'] or 0
+            }
+            # Parse profile to get verification sources
+            if row['profile']:
+                try:
+                    profile_data = json.loads(row['profile'])
+                    # Collect all unique sources used
+                    all_sources = set()
+                    for field_name in ['author', 'title', 'narrator', 'series']:
+                        if field_name in profile_data and profile_data[field_name].get('sources'):
+                            all_sources.update(profile_data[field_name]['sources'])
+                    item['sources'] = list(all_sources)
+                    item['verification_layers'] = profile_data.get('verification_layers_used', [])
+                except:
+                    pass
+            items.append(item)
 
     elif status_filter == 'error':
         # Error items from history
@@ -9039,6 +9414,176 @@ def api_ollama_models():
             'success': False,
             'models': [],
             'error': 'Could not fetch models from Ollama server'
+        })
+
+
+# ============== API CONNECTION TESTING ==============
+
+@app.route('/api/test_bookdb', methods=['POST'])
+def api_test_bookdb():
+    """Test connection to BookDB."""
+    config = load_config()
+    bookdb_url = config.get('bookdb_url', 'https://bookdb.deucebucket.com')
+
+    try:
+        resp = requests.get(f"{bookdb_url}/stats", timeout=5)
+        if resp.status_code == 200:
+            try:
+                data = resp.json()
+                return jsonify({
+                    'success': True,
+                    'books_count': data.get('books', 0),
+                    'authors_count': data.get('authors', 0),
+                    'series_count': data.get('series', 0),
+                    'message': f"Connected - {data.get('books', 0):,} books, {data.get('authors', 0):,} authors"
+                })
+            except:
+                return jsonify({
+                    'success': False,
+                    'error': 'BookDB responded but returned invalid data'
+                })
+        else:
+            return jsonify({
+                'success': False,
+                'error': f'BookDB returned status {resp.status_code}'
+            })
+    except requests.exceptions.ConnectionError:
+        return jsonify({
+            'success': False,
+            'error': 'Cannot connect to BookDB - is it running?'
+        })
+    except requests.exceptions.Timeout:
+        return jsonify({
+            'success': False,
+            'error': 'BookDB connection timed out'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'BookDB error: {str(e)}'
+        })
+
+
+@app.route('/api/test_gemini', methods=['POST'])
+def api_test_gemini():
+    """Test Gemini API connection."""
+    config = load_config()
+    api_key = config.get('gemini_api_key', '')
+
+    if not api_key:
+        return jsonify({
+            'success': False,
+            'error': 'No Gemini API key configured'
+        })
+
+    try:
+        model = config.get('gemini_model', 'gemini-2.0-flash')
+        resp = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
+            headers={"Content-Type": "application/json"},
+            json={"contents": [{"parts": [{"text": "Reply with just the word 'connected'"}]}]},
+            timeout=10
+        )
+
+        if resp.status_code == 200:
+            return jsonify({
+                'success': True,
+                'model': model,
+                'message': 'Gemini API connected'
+            })
+        else:
+            error_msg = resp.json().get('error', {}).get('message', f'Status {resp.status_code}')
+            return jsonify({
+                'success': False,
+                'error': error_msg
+            })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+
+
+@app.route('/api/test_openrouter', methods=['POST'])
+def api_test_openrouter():
+    """Test OpenRouter API connection."""
+    config = load_config()
+    api_key = config.get('openrouter_api_key', '')
+
+    if not api_key:
+        return jsonify({
+            'success': False,
+            'error': 'No OpenRouter API key configured'
+        })
+
+    try:
+        model = config.get('openrouter_model', 'google/gemma-3n-e4b-it:free')
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": "Reply with just the word 'connected'"}],
+                "max_tokens": 10
+            },
+            timeout=10
+        )
+
+        if resp.status_code == 200:
+            return jsonify({
+                'success': True,
+                'model': model,
+                'message': 'OpenRouter API connected'
+            })
+        else:
+            error_data = resp.json()
+            error_msg = error_data.get('error', {}).get('message', f'Status {resp.status_code}')
+            return jsonify({
+                'success': False,
+                'error': error_msg
+            })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+
+
+@app.route('/api/reset_database', methods=['POST'])
+def api_reset_database():
+    """Reset the database and trigger a fresh scan."""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+
+        # Clear all tables
+        c.execute('DELETE FROM books')
+        c.execute('DELETE FROM queue')
+        c.execute('DELETE FROM history')
+        c.execute('DELETE FROM stats')
+
+        conn.commit()
+        conn.close()
+
+        # Trigger a scan
+        config = load_config()
+        if config.get('library_paths'):
+            import threading
+            def run_scan():
+                scan_library(config)
+            threading.Thread(target=run_scan, daemon=True).start()
+
+        return jsonify({
+            'success': True,
+            'message': 'Database reset. Scan started.'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
         })
 
 

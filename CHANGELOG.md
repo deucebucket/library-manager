@@ -2,6 +2,35 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.50] - 2025-12-20
+
+### Added
+- **Anonymous Error Reporting** - Opt-in system to help improve Library Manager
+  - Toggle in Settings → Debug Menu → "Anonymous Error Reporting"
+  - "Send to Developer" button sends error reports with optional message
+  - Reports include error context and traceback (no personal data)
+  - Helps identify bugs users encounter in real usage
+
+- **API Connection Tests** - Debug menu now has "Test Connections" button
+  - Tests BookDB, Gemini, OpenRouter, Ollama, Google Books, Hardcover
+  - Shows connection status and response times
+  - Helps troubleshoot configuration issues
+
+- **Clear All Buttons** - Debug menu improvements
+  - "Clear All" buttons for error reports, activity log, and queue log
+  - Easier cleanup during troubleshooting
+
+### Improved
+- **Activity Panel** - Better tracking of background operations
+  - Fixed issues with activity display
+  - Cleaner formatting
+
+- **Settings UI** - More polished debug tools section
+  - Grouped related functions together
+  - Better button layouts
+
+---
+
 ## [0.9.0-beta.49] - 2025-12-20
 
 ### Fixed

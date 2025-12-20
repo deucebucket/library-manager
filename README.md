@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.48-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.50-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,15 @@
 ---
 
 ## Recent Changes (develop)
+
+> **beta.50** - Error Reporting & Debug Tools
+> - **Anonymous Error Reporting** - Opt-in system to send bug reports (Settings → Debug Menu)
+> - **API Connection Tests** - Test all API connections with one click
+> - **Clear All Buttons** - Quick cleanup for error reports, activity, and queue logs
+
+> **beta.49** - Critical Queue Processing Fix
+> - **Queue Actually Processes** - Fixed bug where items got stuck, "processed 0" returned
+> - **Layered Processing Works** - All three verification layers now complete properly
 
 > **beta.48** - Search Series Detection & Bug Report Privacy
 > - **Series Number Extraction** - Search "Horus Heresy Book 36" auto-extracts series info

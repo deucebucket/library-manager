@@ -19,6 +19,14 @@
             <i class="bi bi-x"></i> Clear Filter
         </a>
         {% endif %}
+        {% if status_filter == 'pending' and total > 0 %}
+        <button class="btn btn-sm btn-success" onclick="applyAllPending()">
+            <i class="bi bi-check-all"></i> Apply All
+        </button>
+        <button class="btn btn-sm btn-danger" onclick="rejectAllPending()">
+            <i class="bi bi-x-circle"></i> Reject All
+        </button>
+        {% endif %}
         {% if duplicate_count > 0 %}
         <a href="/history?status=duplicate" class="btn btn-sm btn-warning {% if status_filter == 'duplicate' %}active{% endif %}">
             <i class="bi bi-files"></i> {{ duplicate_count }} Duplicate{{ 's' if duplicate_count != 1 else '' }}
@@ -34,7 +42,17 @@
             <i class="bi bi-exclamation-triangle-fill"></i> {{ needs_attention_count }} Needs Attention
         </a>
         {% endif %}
-        <span class="text-muted">{{ total }} {% if status_filter == 'pending' %}pending{% elif status_filter == 'duplicate' %}duplicates{% elif status_filter == 'attention' %}unidentifiable{% else %}total{% endif %}</span>
+        {% if error_count is defined and error_count > 0 %}
+        <a href="/history?status=error" class="btn btn-sm btn-outline-danger {% if status_filter == 'error' %}active{% endif %}">
+            <i class="bi bi-x-circle-fill"></i> {{ error_count }} Error{{ 's' if error_count != 1 else '' }}
+        </a>
+        {% if status_filter == 'error' %}
+        <button class="btn btn-sm btn-danger" onclick="clearAllErrors()">
+            <i class="bi bi-trash-fill"></i> Clear All
+        </button>
+        {% endif %}
+        {% endif %}
+        <span class="text-muted">{{ total }} {% if status_filter == 'pending' %}pending{% elif status_filter == 'duplicate' %}duplicates{% elif status_filter == 'attention' %}unidentifiable{% elif status_filter == 'error' %}errors{% else %}total{% endif %}</span>
     </div>
 </div>
 
@@ -301,6 +319,54 @@ function replaceCorrupt(historyId) {
     if (!confirm('Replace corrupt destination with valid source?\n\nThis will:\n1. Delete the corrupt destination folder\n2. Move the valid source to the correct location\n\nThis cannot be undone!')) return;
 
     fetch(`/api/replace_corrupt/${historyId}`, {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(data.message);
+                location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
+
+function clearAllErrors() {
+    if (!confirm('Clear all error entries from history?\n\nThis will remove all error records. The actual files are not affected.')) return;
+
+    fetch('/api/clear_all_errors', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(data.message);
+                location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
+
+function applyAllPending() {
+    if (!confirm('Apply ALL pending fixes?\n\nThis will rename all folders according to the AI suggestions.\nMake sure you have reviewed them first!')) return;
+
+    fetch('/api/apply_all_pending', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(`Applied ${data.applied} fixes (${data.failed} failed)`);
+                location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
+
+function rejectAllPending() {
+    if (!confirm('Reject ALL pending fixes?\n\nThis will mark all pending items as OK without making any changes.')) return;
+
+    fetch('/api/reject_all_pending', {method: 'POST'})
         .then(r => r.json())
         .then(data => {
             if (data.success) {

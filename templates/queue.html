@@ -14,6 +14,11 @@
         <button class="btn btn-outline-secondary" onclick="refreshQueue()">
             <i class="bi bi-arrow-clockwise"></i> Refresh
         </button>
+        {% if queue_items %}
+        <button class="btn btn-outline-danger" onclick="clearQueue()" title="Mark all as OK and clear queue">
+            <i class="bi bi-trash"></i> Clear Queue
+        </button>
+        {% endif %}
     </div>
 </div>
 
@@ -419,6 +424,23 @@ function removeFromQueue(queueId) {
             document.getElementById(`queue-${queueId}`).remove();
             refreshQueue();
         });
+}
+
+function clearQueue() {
+    if (!confirm('Clear the entire queue?\n\nAll items will be marked as OK and removed from the queue.\nNo files will be changed.')) return;
+
+    fetch('/api/clear_queue', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                log(data.message);
+                alert(data.message);
+                location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
 }
 
 // Auto-refresh every 10 seconds
