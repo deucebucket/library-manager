@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.50"
+APP_VERSION = "0.9.0-beta.51"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -5667,7 +5667,16 @@ def process_layer_1_api(config, limit=None):
             if match_title and match_author:
                 # Calculate match confidence using word overlap similarity (returns 0.0-1.0)
                 title_sim = calculate_title_similarity(current_title, match_title) if current_title else 0
-                author_sim = calculate_title_similarity(current_author, match_author) if current_author and not is_placeholder_author(current_author) else 1.0
+
+                # IMPORTANT: If author is placeholder (Unknown, Various, etc.), we CANNOT verify as-is
+                # The book needs to be fixed, not verified. Advance to Layer 2 for proper identification.
+                if is_placeholder_author(current_author):
+                    logger.info(f"[LAYER 1] Placeholder author '{current_author}', advancing to AI for identification: {current_title}")
+                    c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (row['book_id'],))
+                    processed += 1
+                    continue
+
+                author_sim = calculate_title_similarity(current_author, match_author)
                 avg_confidence = (title_sim + author_sim) / 2
 
                 # confidence_threshold is 0-100 scale, convert to 0-1
@@ -7692,7 +7701,7 @@ def api_apply_all_pending():
 
 @app.route('/api/reject_all_pending', methods=['POST'])
 def api_reject_all_pending():
-    """Reject all pending fixes, marking books as verified without making changes."""
+    """Reject all pending fixes, resetting books to pending status."""
     conn = get_db()
     c = conn.cursor()
 
@@ -7704,8 +7713,9 @@ def api_reject_all_pending():
         conn.close()
         return jsonify({'success': True, 'message': 'No pending fixes to reject', 'rejected': 0})
 
-    # Mark all books with pending fixes as verified
-    c.execute('''UPDATE books SET status = 'verified'
+    # Reset books to pending status (NOT verified - user just rejected the proposed fix)
+    # Reset verification_layer so they can be re-processed if desired
+    c.execute('''UPDATE books SET status = 'pending', verification_layer = 0
                  WHERE id IN (SELECT book_id FROM history WHERE status = 'pending_fix')''')
 
     # Delete all pending fix entries
@@ -7715,7 +7725,7 @@ def api_reject_all_pending():
 
     return jsonify({
         'success': True,
-        'message': f'Rejected {count} pending fixes',
+        'message': f'Rejected {count} pending fixes (books reset to pending)',
         'rejected': count
     })
 
@@ -7752,8 +7762,9 @@ def api_clear_queue():
         conn.close()
         return jsonify({'success': True, 'message': 'Queue already empty', 'cleared': 0})
 
-    # Mark all queued books as verified
-    c.execute('''UPDATE books SET status = 'verified'
+    # Reset queued books to pending status (NOT verified - they weren't actually verified!)
+    # Also reset verification_layer so they can be re-processed if re-scanned
+    c.execute('''UPDATE books SET status = 'pending', verification_layer = 0
                  WHERE id IN (SELECT book_id FROM queue)''')
 
     # Clear the queue
@@ -7763,7 +7774,7 @@ def api_clear_queue():
 
     return jsonify({
         'success': True,
-        'message': f'Cleared {count} items from queue',
+        'message': f'Cleared {count} items from queue (reset to pending)',
         'cleared': count
     })
 

@@ -2,6 +2,24 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.51] - 2025-12-20
+
+### Fixed
+- **Critical: Placeholder Authors Incorrectly Verified** - Books with "Unknown" author were auto-verified
+  - Layer 1 API verification gave placeholder authors (Unknown, Various, etc.) 100% match score
+  - Now properly advances placeholder authors to Layer 2 (AI) for actual identification
+  - "Unknown / Trailer Park Elves" no longer shows as verified without knowing the real author
+
+- **Clear Queue Marked Books as Verified** - Clearing the queue falsely marked unverified books as verified
+  - Now resets books to `pending` status with `verification_layer=0`
+  - Books can be properly re-scanned and processed
+
+- **Reject All Pending Marked Books as Verified** - Rejecting proposed fixes falsely verified books
+  - Now resets books to `pending` status instead
+  - Rejecting a fix ≠ verifying the book is correct
+
+---
+
 ## [0.9.0-beta.50] - 2025-12-20
 
 ### Added
