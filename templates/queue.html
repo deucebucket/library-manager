@@ -147,6 +147,21 @@
                     <strong>Selected:</strong> <span id="selected-match-text"></span>
                     <button type="button" class="btn-close float-end" onclick="clearSelection()"></button>
                 </div>
+
+                <!-- Series Override (shown when a match is selected) -->
+                <div id="series-override" class="d-none">
+                    <div class="row mb-2">
+                        <div class="col-md-8">
+                            <label class="form-label small text-muted">Series Name <span class="text-info" id="series-source-hint"></span></label>
+                            <input type="text" class="form-control form-control-sm bg-dark text-light" id="override-series-name" placeholder="e.g., Horus Heresy">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small text-muted">Book # in Series</label>
+                            <input type="number" class="form-control form-control-sm bg-dark text-light" id="override-series-num" placeholder="e.g., 36" min="0" max="999">
+                        </div>
+                    </div>
+                    <small class="text-muted">Edit series info if it's missing or incorrect. Leave blank if not part of a series.</small>
+                </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -439,6 +454,11 @@ function editItem(queueId, author, title) {
     document.getElementById('search-query').value = title;  // Pre-fill search with title
     document.getElementById('search-results').style.display = 'none';
     document.getElementById('selected-match').classList.add('d-none');
+    // Reset series override fields
+    document.getElementById('series-override').classList.add('d-none');
+    document.getElementById('override-series-name').value = '';
+    document.getElementById('override-series-num').value = '';
+    document.getElementById('series-source-hint').textContent = '';
     selectedBookDBResult = null;
 
     if (!editModal) {
@@ -567,6 +587,22 @@ function selectResult(idx) {
     matchText.textContent = `${book.author_name || 'Unknown'} - ${book.name || book.title || 'Unknown'}${series}`;
     matchDiv.classList.remove('d-none');
 
+    // Show and populate series override fields
+    const seriesOverride = document.getElementById('series-override');
+    seriesOverride.classList.remove('d-none');
+    document.getElementById('override-series-name').value = book.series_name || '';
+    document.getElementById('override-series-num').value = book.series_position || '';
+
+    // Show hint if series was extracted from query
+    const sourceHint = document.getElementById('series-source-hint');
+    if (book.series_position_source === 'extracted_from_query') {
+        sourceHint.textContent = '(extracted from your search)';
+    } else if (book.series_name || book.series_position) {
+        sourceHint.textContent = '(from database)';
+    } else {
+        sourceHint.textContent = '';
+    }
+
     // Hide search results
     document.getElementById('search-results').style.display = 'none';
 
@@ -576,6 +612,10 @@ function selectResult(idx) {
 function clearSelection() {
     selectedBookDBResult = null;
     document.getElementById('selected-match').classList.add('d-none');
+    document.getElementById('series-override').classList.add('d-none');
+    document.getElementById('override-series-name').value = '';
+    document.getElementById('override-series-num').value = '';
+    document.getElementById('series-source-hint').textContent = '';
 }
 
 function saveManualMatch() {
@@ -588,15 +628,31 @@ function saveManualMatch() {
         return;
     }
 
+    // Get series override values
+    const overrideSeriesName = document.getElementById('override-series-name').value.trim();
+    const overrideSeriesNum = document.getElementById('override-series-num').value.trim();
+
     const payload = {
         queue_id: parseInt(queueId),
         author: author,
         title: title
     };
 
-    // Include BookDB result if one was selected
+    // Include BookDB result if one was selected, with series overrides applied
     if (selectedBookDBResult) {
-        payload.bookdb_result = selectedBookDBResult;
+        // Apply user's series overrides to the result
+        const resultWithOverrides = {...selectedBookDBResult};
+        if (overrideSeriesName) {
+            resultWithOverrides.series_name = overrideSeriesName;
+        }
+        if (overrideSeriesNum) {
+            resultWithOverrides.series_position = parseInt(overrideSeriesNum);
+        }
+        payload.bookdb_result = resultWithOverrides;
+    } else if (overrideSeriesName || overrideSeriesNum) {
+        // No BookDB result but user entered series info manually
+        payload.series_name = overrideSeriesName || null;
+        payload.series_position = overrideSeriesNum ? parseInt(overrideSeriesNum) : null;
     }
 
     fetch('/api/manual_match', {
@@ -905,9 +961,17 @@ function useBookFromDetail() {
 
         const matchDiv = document.getElementById('selected-match');
         const matchText = document.getElementById('selected-match-text');
-        const series = currentDetailBook.series_name ? ` (${currentDetailBook.series_name})` : '';
+        const series = currentDetailBook.series_name ? ` (${currentDetailBook.series_name}${currentDetailBook.series_position ? ' #' + currentDetailBook.series_position : ''})` : '';
         matchText.textContent = `${currentDetailBook.author_name || 'Unknown'} - ${currentDetailBook.name || currentDetailBook.title || 'Unknown'}${series}`;
         matchDiv.classList.remove('d-none');
+
+        // Also show and populate series override fields
+        const seriesOverride = document.getElementById('series-override');
+        seriesOverride.classList.remove('d-none');
+        document.getElementById('override-series-name').value = currentDetailBook.series_name || '';
+        document.getElementById('override-series-num').value = currentDetailBook.series_position || '';
+        document.getElementById('series-source-hint').textContent = currentDetailBook.series_name ? '(from database)' : '';
+
         document.getElementById('search-results').style.display = 'none';
     }
 

@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.47"
+APP_VERSION = "0.9.0-beta.48"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -8793,14 +8793,90 @@ def api_bug_report():
     import platform
     import sys
 
-    # Get config (sanitize API keys and tokens)
     config = load_config()
-    safe_config = {k: v for k, v in config.items()}
-    # Redact all sensitive keys
-    sensitive_keys = ['openrouter_api_key', 'gemini_api_key', 'abs_api_token', 'bookdb_api_key', 'google_books_api_key']
-    for key in sensitive_keys:
-        if safe_config.get(key):
-            safe_config[key] = '***REDACTED***'
+
+    # Test API connections instead of showing keys
+    api_status = {}
+
+    # Gemini
+    if config.get('gemini_api_key'):
+        try:
+            resp = requests.get(
+                f"https://generativelanguage.googleapis.com/v1beta/models?key={config['gemini_api_key']}",
+                timeout=5
+            )
+            api_status['gemini'] = 'connected' if resp.status_code == 200 else f'error ({resp.status_code})'
+        except:
+            api_status['gemini'] = 'connection failed'
+    else:
+        api_status['gemini'] = 'not configured'
+
+    # Google Books
+    if config.get('google_books_api_key'):
+        try:
+            resp = requests.get(
+                f"https://www.googleapis.com/books/v1/volumes?q=test&maxResults=1&key={config['google_books_api_key']}",
+                timeout=5
+            )
+            api_status['google_books'] = 'connected' if resp.status_code == 200 else f'error ({resp.status_code})'
+        except:
+            api_status['google_books'] = 'connection failed'
+    else:
+        api_status['google_books'] = 'not configured'
+
+    # OpenRouter
+    if config.get('openrouter_api_key'):
+        try:
+            resp = requests.get(
+                "https://openrouter.ai/api/v1/models",
+                headers={"Authorization": f"Bearer {config['openrouter_api_key']}"},
+                timeout=5
+            )
+            api_status['openrouter'] = 'connected' if resp.status_code == 200 else f'error ({resp.status_code})'
+        except:
+            api_status['openrouter'] = 'connection failed'
+    else:
+        api_status['openrouter'] = 'not configured'
+
+    # Audiobookshelf
+    if config.get('abs_url') and config.get('abs_api_token'):
+        try:
+            resp = requests.get(
+                f"{config['abs_url'].rstrip('/')}/api/libraries",
+                headers={"Authorization": f"Bearer {config['abs_api_token']}"},
+                timeout=5
+            )
+            api_status['audiobookshelf'] = 'connected' if resp.status_code == 200 else f'error ({resp.status_code})'
+        except:
+            api_status['audiobookshelf'] = 'connection failed'
+    else:
+        api_status['audiobookshelf'] = 'not configured'
+
+    # BookDB
+    bookdb_url = config.get('bookdb_url', 'https://bookdb.deucebucket.com')
+    try:
+        resp = requests.get(f"{bookdb_url}/health", timeout=5)
+        api_status['bookdb'] = 'connected' if resp.status_code == 200 else f'error ({resp.status_code})'
+    except:
+        api_status['bookdb'] = 'connection failed'
+
+    # Build safe config - only include non-sensitive settings
+    safe_config = {}
+    # Settings that are safe to share (no paths, no keys, no personal info)
+    safe_keys = [
+        'naming_format', 'series_grouping', 'auto_fix', 'protect_author_changes',
+        'scan_interval_hours', 'batch_size', 'max_requests_per_hour',
+        'enable_api_lookups', 'enable_ai_verification', 'enable_audio_analysis',
+        'deep_scan_mode', 'profile_confidence_threshold', 'skip_confirmations',
+        'ai_provider', 'openrouter_model', 'ollama_model', 'update_channel',
+        'enable_ebooks', 'embed_metadata', 'library_language'
+    ]
+    for key in safe_keys:
+        if key in config:
+            safe_config[key] = config[key]
+
+    # Show library path count, not actual paths
+    safe_config['library_paths_count'] = len(config.get('library_paths', []))
 
     # Get database stats
     conn = get_db()
@@ -8815,21 +8891,35 @@ def api_bug_report():
     error_count = c.fetchone()['count']
     conn.close()
 
-    # Get recent error/warning logs
+    # Get recent error/warning logs - sanitize paths
     log_file = BASE_DIR / 'app.log'
     recent_errors = []
     if log_file.exists():
         with open(log_file, 'r') as f:
             lines = f.readlines()[-200:]
-            recent_errors = [l.strip() for l in lines if 'ERROR' in l or 'WARNING' in l][-30:]
+            for line in lines:
+                if 'ERROR' in line or 'WARNING' in line:
+                    # Sanitize paths - replace anything that looks like a full path
+                    sanitized = re.sub(r'/[a-zA-Z0-9_\-./]+/([^/\s]+)', r'[path]/\1', line.strip())
+                    # Also sanitize Windows paths
+                    sanitized = re.sub(r'[A-Z]:\\[a-zA-Z0-9_\-\\]+\\([^\\]+)', r'[path]\\\1', sanitized)
+                    recent_errors.append(sanitized)
+            recent_errors = recent_errors[-30:]
 
     # Build report
     report = f"""## Bug Report - Library Manager
 
 ### System Info
-- **Python:** {sys.version}
+- **Python:** {sys.version.split()[0]}
 - **Platform:** {platform.system()} {platform.release()}
 - **App Version:** {APP_VERSION}
+
+### API Connection Status
+- **Gemini:** {api_status['gemini']}
+- **Google Books:** {api_status['google_books']}
+- **OpenRouter:** {api_status['openrouter']}
+- **Audiobookshelf:** {api_status['audiobookshelf']}
+- **BookDB:** {api_status['bookdb']}
 
 ### Configuration
 ```json
@@ -8842,7 +8932,7 @@ def api_bug_report():
 - History Entries: {history_count}
 - Books with Errors: {error_count}
 
-### Recent Errors/Warnings
+### Recent Errors/Warnings (paths sanitized)
 ```
 {chr(10).join(recent_errors) if recent_errors else 'No recent errors'}
 ```
@@ -9419,6 +9509,25 @@ def api_search_bookdb():
     if not query or len(query) < 2:
         return jsonify({'error': 'Query must be at least 2 characters', 'results': []})
 
+    # Extract series number from query (e.g., "Horus Heresy Book 36" or "#36")
+    extracted_series_num = None
+    extracted_series_name = None
+    series_patterns = [
+        r'(?:book|#|no\.?|number)\s*(\d+)',  # "Book 36", "#36", "No. 36"
+        r'(\d+)(?:st|nd|rd|th)\s+book',       # "36th book"
+        r'\b(\d+)\s*[-–]\s*\w',               # "36 - Title" at start
+    ]
+    for pattern in series_patterns:
+        match = re.search(pattern, query, re.IGNORECASE)
+        if match:
+            extracted_series_num = int(match.group(1))
+            break
+
+    # Also try to extract series name (text before "book N" or similar)
+    series_name_match = re.match(r'^(.+?)\s+(?:book|#|no\.?)\s*\d+', query, re.IGNORECASE)
+    if series_name_match:
+        extracted_series_name = series_name_match.group(1).strip()
+
     bookdb_error = None
     results = []
 
@@ -9439,17 +9548,32 @@ def api_search_bookdb():
 
         if resp.status_code == 200:
             results = resp.json()
+            # Enrich results with extracted series info if they lack it
+            if results and extracted_series_num:
+                for result in results:
+                    if not result.get('series_position'):
+                        result['series_position'] = extracted_series_num
+                        result['series_position_source'] = 'extracted_from_query'
+                    if not result.get('series_name') and extracted_series_name:
+                        result['series_name'] = extracted_series_name
+                        result['series_name_source'] = 'extracted_from_query'
             if results:
-                return jsonify({'results': results, 'count': len(results), 'source': 'bookdb'})
+                return jsonify({
+                    'results': results,
+                    'count': len(results),
+                    'source': 'bookdb',
+                    'extracted_series_num': extracted_series_num,
+                    'extracted_series_name': extracted_series_name
+                })
             # No results from BookDB - will try fallback
             bookdb_error = 'No results found in BookDB'
         else:
             bookdb_error = f'BookDB API error: {resp.status_code}'
 
     except requests.exceptions.ConnectionError:
-        bookdb_error = 'BookDB temporarily unavailable'
+        bookdb_error = 'BookDB server temporarily unavailable (not your issue - our server)'
     except requests.exceptions.Timeout:
-        bookdb_error = 'BookDB timeout'
+        bookdb_error = 'BookDB server timeout (not your issue - our server is slow/down)'
     except Exception as e:
         logger.error(f"BookBucket search error: {e}")
         bookdb_error = str(e)
@@ -9498,14 +9622,19 @@ def api_search_bookdb():
                         series_name = match.group(1)
                         series_num = int(match.group(2))
 
+                # Use extracted series info if we didn't find any in the subtitle
+                final_series_name = series_name or extracted_series_name
+                final_series_num = series_num or extracted_series_num
+
                 google_results.append({
                     'type': 'book',
                     'name': vol.get('title', ''),
                     'title': vol.get('title', ''),
                     'author_name': authors[0] if authors else '',
                     'year_published': vol.get('publishedDate', '')[:4] if vol.get('publishedDate') else None,
-                    'series_name': series_name,
-                    'series_position': series_num,
+                    'series_name': final_series_name,
+                    'series_position': final_series_num,
+                    'series_position_source': 'extracted_from_query' if (final_series_num and not series_num) else None,
                     'description': vol.get('description', '')[:500] if vol.get('description') else None,
                     'source': 'googlebooks'
                 })
@@ -9515,7 +9644,9 @@ def api_search_bookdb():
                     'results': google_results,
                     'count': len(google_results),
                     'source': 'googlebooks',
-                    'fallback_reason': bookdb_error
+                    'fallback_reason': bookdb_error,
+                    'extracted_series_num': extracted_series_num,
+                    'extracted_series_name': extracted_series_name
                 })
 
     except Exception as e:
@@ -9523,8 +9654,9 @@ def api_search_bookdb():
 
     # Both failed
     return jsonify({
-        'error': f'{bookdb_error}. Google Books fallback also failed.',
-        'results': []
+        'error': f'Search unavailable - this is a server issue on our end, not yours. Try again in a few minutes. ({bookdb_error})',
+        'results': [],
+        'server_issue': True
     })
 
 
@@ -9716,6 +9848,12 @@ def api_manual_match():
             new_series = bookdb_result.get('series_name')
             new_series_num = bookdb_result.get('series_position')
             new_year = bookdb_result.get('year_published')
+
+        # Also accept series fields directly (for manual entry without BookDB selection)
+        if not new_series and data.get('series_name'):
+            new_series = data.get('series_name')
+        if not new_series_num and data.get('series_position'):
+            new_series_num = data.get('series_position')
 
         if not new_author or not new_title:
             conn.close()

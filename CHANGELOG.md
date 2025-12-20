@@ -2,6 +2,30 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.48] - 2025-12-19
+
+### Added
+- **Series Number Extraction from Search** (Issue #34) - Manual match search now extracts series info from query
+  - "Horus Heresy Book 36" → auto-fills series="Horus Heresy", position=36
+  - "Mistborn #3" → extracts position=3
+  - "No. 5" format also supported
+  - Results without series data get enriched with extracted info
+
+- **Manual Series Override UI** - New editable fields when selecting a search result
+  - Series Name and Book # fields appear after selecting a result
+  - Pre-populated with data from database or extracted from query
+  - Shows hint "(from database)" or "(extracted from your search)"
+  - User can edit/correct before saving
+
+### Fixed
+- **Bug Report Privacy** (Issue #35) - Sensitive info no longer exposed in bug reports
+  - API keys replaced with connection status: `Gemini: connected`, `Google Books: not configured`
+  - Library paths hidden - shows `library_paths_count: 2` instead of actual paths
+  - Error log paths sanitized: `/home/user/books/file.mp3` → `[path]/file.mp3`
+  - Only safe config settings included (no secrets, no personal info)
+
+---
+
 ## [0.9.0-beta.47] - 2025-12-19
 
 ### Fixed
