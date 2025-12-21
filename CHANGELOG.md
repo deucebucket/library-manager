@@ -2,6 +2,16 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.53] - 2025-12-20
+
+### Fixed
+- **Critical: Process Button Skipped Layer 1** - Clicking "Process" went straight to Layer 2 (AI)
+  - Items queued at Layer 1 were never picked up because Layer 2 only looks for `verification_layer=2`
+  - Now properly runs Layer 1 (API) -> Layer 2 (AI) -> Layer 3 (Audio) even for single-click processing
+  - This was why users saw "Fetched 0 items from queue" despite having queued items
+
+---
+
 ## [0.9.0-beta.52] - 2025-12-20
 
 ### Fixed

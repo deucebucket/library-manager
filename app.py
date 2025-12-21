@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.52"
+APP_VERSION = "0.9.0-beta.53"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -7622,7 +7622,7 @@ def api_delete_corrupt():
 
 @app.route('/api/process', methods=['POST'])
 def api_process():
-    """Process the queue."""
+    """Process the queue using layered processing."""
     config = load_config()
     data = request.json if request.is_json else {}
     process_all = data.get('all', False)
@@ -7634,7 +7634,29 @@ def api_process():
         # Process entire queue in batches
         processed, fixed = process_all_queue(config)
     else:
-        processed, fixed = process_queue(config, limit)
+        # Use layered processing even for limited batches
+        # Layer 1: API lookups first
+        total_processed = 0
+        total_fixed = 0
+
+        if config.get('enable_api_lookups', True):
+            l1_processed, l1_resolved = process_layer_1_api(config, limit)
+            total_processed += l1_processed
+            logger.info(f"[LAYER 1] Processed {l1_processed}, resolved {l1_resolved}")
+
+        # Layer 2: AI verification for items that passed through Layer 1
+        if config.get('enable_ai_verification', True):
+            l2_processed, l2_fixed = process_queue(config, limit)
+            total_processed += l2_processed
+            total_fixed += l2_fixed
+
+        # Layer 3: Audio analysis (if enabled)
+        if config.get('enable_audio_analysis', False):
+            l3_processed, l3_fixed = process_layer_3_audio(config, limit)
+            total_processed += l3_processed
+            total_fixed += l3_fixed
+
+        processed, fixed = total_processed, total_fixed
 
     return jsonify({'success': True, 'processed': processed, 'fixed': fixed})
 
