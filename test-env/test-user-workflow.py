@@ -256,6 +256,45 @@ def test_02_process_empties_queue():
         return False
 
 
+def test_02b_single_process_works():
+    """
+    USER WORKFLOW: User clicks Process (single batch, not "all")
+    EXPECTED: Should still process items through Layer 1 -> Layer 2
+    BUG THIS CATCHES: beta.53 bug where single Process skipped Layer 1
+    """
+    log_info("TEST 2b: Single Process click should work (not just Process All)")
+
+    # Re-scan to get fresh items in queue
+    resp = api_post("/api/deep_rescan")
+    time.sleep(1)
+
+    initial_count = get_queue_count()
+    if initial_count == 0:
+        log_info("Queue empty after rescan, test inconclusive")
+        return True
+
+    log_info(f"Queue has {initial_count} items, processing with single click (no 'all' flag)...")
+
+    # Process WITHOUT "all" flag - this is what the UI does for single clicks
+    resp = api_post("/api/process", {"limit": 5})
+
+    if "error" in resp:
+        log_fail("Single process request failed", resp.get("error"))
+        return False
+
+    processed = resp.get("processed", 0)
+    log_info(f"Single process reported: {processed} processed")
+
+    # THE CRITICAL CHECK - single process should work, not return 0
+    if processed == 0 and initial_count > 0:
+        log_fail(f"CRITICAL BUG: Single Process returned 0 with {initial_count} queued items")
+        log_fail("This is the beta.53 bug - Process button skipped Layer 1")
+        return False
+
+    log_pass(f"Single Process worked: {processed} items processed")
+    return True
+
+
 def test_03_history_has_entries():
     """
     USER WORKFLOW: User checks History to see what happened
@@ -472,6 +511,7 @@ def main():
     # Run tests in order - each builds on the previous
     test_01_scan_populates_queue(test_lib)
     test_02_process_empties_queue()
+    test_02b_single_process_works()  # Catches beta.53 bug - single Process skipped Layer 1
     test_03_history_has_entries()
     test_04_pending_fixes_exist()
     # These tests modify files - only run if we have a test library
