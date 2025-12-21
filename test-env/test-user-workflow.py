@@ -209,9 +209,10 @@ def test_01_scan_populates_queue(test_library_path):
 
 def test_02_process_empties_queue():
     """
-    USER WORKFLOW: User clicks Process Queue
+    USER WORKFLOW: User clicks Process Queue button
     EXPECTED: Queue should be empty (or have fewer items) after processing
     BUG THIS CATCHES: The beta.45 bug where process returned 0 but queue stayed full
+                      The beta.53 bug where Process skipped Layer 1
     """
     log_info("TEST 2: Process should empty the queue")
 
@@ -222,8 +223,10 @@ def test_02_process_empties_queue():
 
     log_info(f"Queue has {initial_count} items, processing...")
 
-    # Process queue
-    resp = api_post("/api/process", {"all": True})
+    # Process queue - MUST match what UI actually sends!
+    # UI sends {limit: 5} or {limit: 3}, NOT {all: true}
+    # Using {all: true} would bypass bugs in the normal code path
+    resp = api_post("/api/process", {"limit": 5})
 
     if "error" in resp:
         log_fail("Process request failed", resp.get("error"))
