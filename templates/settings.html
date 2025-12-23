@@ -255,6 +255,70 @@
                                 </small>
                             </div>
                             <hr class="my-2">
+
+                            <!-- Watch Folder Settings -->
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="watch_mode" id="watch_mode"
+                                       {% if config.watch_mode %}checked{% endif %} onchange="toggleWatchOptions()">
+                                <label class="form-check-label" for="watch_mode">
+                                    <strong>Watch Folder Mode</strong>
+                                    <span class="badge bg-info">NEW</span>
+                                    <br><small class="text-muted">Monitor a folder for new audiobooks and automatically organize them</small>
+                                </label>
+                            </div>
+                            <div id="watch-options" class="ms-4 mb-3" style="display: {% if config.watch_mode %}block{% else %}none{% endif %};">
+                                <div class="mb-2">
+                                    <label class="form-label small mb-1" for="watch_folder">Watch Folder (input)</label>
+                                    <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                                           name="watch_folder" id="watch_folder" value="{{ config.watch_folder or '' }}"
+                                           placeholder="/path/to/downloads">
+                                    <small class="text-muted">Folder to monitor for new audiobooks</small>
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label small mb-1" for="watch_output_folder">Output Folder (optional)</label>
+                                    <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                                           name="watch_output_folder" id="watch_output_folder" value="{{ config.watch_output_folder or '' }}"
+                                           placeholder="Leave empty to use first library path">
+                                    <small class="text-muted">Where to move organized books (defaults to your library)</small>
+                                </div>
+                                <div class="row mb-2">
+                                    <div class="col-6">
+                                        <label class="form-label small mb-1" for="watch_interval_seconds">Check Interval</label>
+                                        <div class="input-group input-group-sm">
+                                            <input type="number" class="form-control bg-dark text-light border-secondary"
+                                                   name="watch_interval_seconds" id="watch_interval_seconds"
+                                                   value="{{ config.watch_interval_seconds or 60 }}" min="10" max="3600">
+                                            <span class="input-group-text bg-dark text-light border-secondary">sec</span>
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <label class="form-label small mb-1" for="watch_min_file_age_seconds">Min Age</label>
+                                        <div class="input-group input-group-sm">
+                                            <input type="number" class="form-control bg-dark text-light border-secondary"
+                                                   name="watch_min_file_age_seconds" id="watch_min_file_age_seconds"
+                                                   value="{{ config.watch_min_file_age_seconds or 30 }}" min="5" max="600">
+                                            <span class="input-group-text bg-dark text-light border-secondary">sec</span>
+                                        </div>
+                                        <small class="text-muted">Wait for downloads</small>
+                                    </div>
+                                </div>
+                                <div class="form-check form-switch mb-2">
+                                    <input class="form-check-input" type="checkbox" name="watch_use_hard_links" id="watch_use_hard_links"
+                                           {% if config.watch_use_hard_links %}checked{% endif %}>
+                                    <label class="form-check-label small" for="watch_use_hard_links">
+                                        Use hard links (saves space, same filesystem only)
+                                    </label>
+                                </div>
+                                <div class="form-check form-switch mb-2">
+                                    <input class="form-check-input" type="checkbox" name="watch_delete_empty_folders" id="watch_delete_empty_folders"
+                                           {% if config.watch_delete_empty_folders is not defined or config.watch_delete_empty_folders %}checked{% endif %}>
+                                    <label class="form-check-label small" for="watch_delete_empty_folders">
+                                        Delete empty folders after moving
+                                    </label>
+                                </div>
+                            </div>
+
+                            <hr class="my-2">
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" name="series_grouping" id="series_grouping"
                                        {% if config.series_grouping %}checked{% endif %}>
@@ -984,6 +1048,11 @@ function toggleEmbeddingOptions() {
     document.getElementById('embedding-options').style.display = enabled ? 'block' : 'none';
 }
 
+function toggleWatchOptions() {
+    const enabled = document.getElementById('watch_mode').checked;
+    document.getElementById('watch-options').style.display = enabled ? 'block' : 'none';
+}
+
 function toggleErrorReportingOptions() {
     const enabled = document.getElementById('anonymous_error_reporting').checked;
     document.getElementById('error-reporting-options').style.display = enabled ? 'block' : 'none';
@@ -993,6 +1062,7 @@ document.addEventListener('DOMContentLoaded', function() {
     toggleProviderFields();
     toggleCustomNaming();
     toggleEbookOptions();
+    toggleWatchOptions();
     updateNamingPreview();
     refreshLogs();
 });

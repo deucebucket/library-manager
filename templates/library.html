@@ -118,7 +118,27 @@
             <span class="ms-2">Attention</span>
             <span class="count" id="count-attention">0</span>
         </a>
+        <a href="#" class="filter-chip" data-filter="locked" onclick="setFilter('locked'); return false;">
+            <i class="bi bi-lock-fill text-info"></i>
+            <span class="ms-2">Locked</span>
+            <span class="count" id="count-locked">0</span>
+        </a>
     </div>
+</div>
+
+<!-- Search Box -->
+<div class="mb-3">
+    <div class="input-group" style="max-width: 400px;">
+        <span class="input-group-text bg-dark border-secondary"><i class="bi bi-search"></i></span>
+        <input type="text" class="form-control bg-dark text-light border-secondary" id="library-search"
+               placeholder="Search your library by author or title..."
+               onkeypress="if(event.key==='Enter') searchLibrary()">
+        <button class="btn btn-outline-info" type="button" onclick="searchLibrary()">Search</button>
+        <button class="btn btn-outline-secondary" type="button" onclick="clearSearch()" id="clear-search-btn" style="display: none;">
+            <i class="bi bi-x"></i>
+        </button>
+    </div>
+    <small class="text-muted" id="search-results-count" style="display: none;"></small>
 </div>
 
 <!-- Quick Actions Bar -->
@@ -219,6 +239,85 @@
         </div>
     </div>
 </div>
+
+<!-- Edit Book Modal -->
+<div class="modal fade" id="editBookModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-pencil"></i> Edit Book Metadata</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="edit-book-id">
+
+                <div class="alert alert-info">
+                    <i class="bi bi-lock-fill"></i> <strong>Your changes will be locked.</strong>
+                    Once you save, this book will be protected from automatic changes. The system will never overwrite your settings unless you unlock it.
+                </div>
+
+                <!-- Manual Entry -->
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Author</label>
+                        <input type="text" class="form-control bg-dark text-light" id="edit-author" placeholder="Author Name">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Title</label>
+                        <input type="text" class="form-control bg-dark text-light" id="edit-title" placeholder="Book Title">
+                    </div>
+                </div>
+
+                <hr class="text-muted">
+
+                <!-- Search BookDB -->
+                <div class="mb-3">
+                    <label class="form-label"><i class="bi bi-search"></i> Search Book Database</label>
+                    <div class="input-group">
+                        <input type="text" class="form-control bg-dark text-light" id="edit-search-query" placeholder="Search by title or author...">
+                        <button class="btn btn-outline-info" type="button" onclick="searchBookDB()">
+                            <i class="bi bi-search"></i> Search
+                        </button>
+                    </div>
+                    <small class="text-muted">Search across our database to find the correct match</small>
+                </div>
+
+                <!-- Search Results -->
+                <div id="edit-search-results" class="mb-3" style="max-height: 300px; overflow-y: auto; display: none;">
+                    <div class="list-group" id="edit-search-results-list">
+                    </div>
+                </div>
+
+                <!-- Selected Match -->
+                <div id="edit-selected-match" class="alert alert-success d-none">
+                    <strong>Selected:</strong> <span id="edit-selected-match-text"></span>
+                    <button type="button" class="btn-close float-end" onclick="clearBookDBSelection()"></button>
+                </div>
+
+                <!-- Series Override -->
+                <div id="edit-series-override" class="d-none">
+                    <div class="row mb-2">
+                        <div class="col-md-8">
+                            <label class="form-label small text-muted">Series Name</label>
+                            <input type="text" class="form-control form-control-sm bg-dark text-light" id="edit-series-name" placeholder="e.g., The Laundry Files">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small text-muted">Book # in Series</label>
+                            <input type="number" class="form-control form-control-sm bg-dark text-light" id="edit-series-num" placeholder="e.g., 5" min="0" max="999">
+                        </div>
+                    </div>
+                    <small class="text-muted">Edit series info if it's missing or incorrect. Leave blank if not part of a series.</small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveBookEdit()">
+                    <i class="bi bi-lock-fill"></i> Save & Lock
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -254,6 +353,8 @@ function setFilter(filter) {
     loadLibrary();
 }
 
+let currentSearch = '';
+
 function loadLibrary() {
     const tbody = document.getElementById('items-table');
     tbody.innerHTML = `
@@ -265,7 +366,11 @@ function loadLibrary() {
         </tr>
     `;
 
-    fetch(`/api/library?filter=${currentFilter}&page=${currentPage}`)
+    let url = `/api/library?filter=${currentFilter}&page=${currentPage}`;
+    if (currentSearch) {
+        url += `&search=${encodeURIComponent(currentSearch)}`;
+    }
+    fetch(url)
         .then(r => r.json())
         .then(data => {
             libraryData = data;
@@ -288,9 +393,19 @@ function loadLibrary() {
                 'fixed': 'Fixed Items',
                 'verified': 'Verified Books',
                 'error': 'Errors',
-                'attention': 'Needs Attention'
+                'attention': 'Needs Attention',
+                'locked': 'User-Locked Books',
+                'search': 'Search Results'
             };
             document.getElementById('showing-label').textContent = labels[currentFilter] || 'Library Items';
+
+            // Show search results count
+            if (currentFilter === 'search' && data.search) {
+                document.getElementById('search-results-count').style.display = 'inline';
+                document.getElementById('search-results-count').textContent = `Found ${data.total} results for "${data.search}"`;
+            } else {
+                document.getElementById('search-results-count').style.display = 'none';
+            }
             document.getElementById('item-count').textContent = data.total;
         })
         .catch(e => {
@@ -372,7 +487,13 @@ function getStatusBadge(item) {
         'needs_attention': '<span class="badge bg-warning text-dark status-badge"><i class="bi bi-eye"></i> Attention</span>',
         'structure_reversed': '<span class="badge bg-info status-badge"><i class="bi bi-arrow-left-right"></i> Reversed</span>'
     };
-    return badges[item.status] || badges[item.type] || `<span class="badge bg-secondary status-badge">${item.status || item.type}</span>`;
+    let badge = badges[item.status] || badges[item.type] || `<span class="badge bg-secondary status-badge">${item.status || item.type}</span>`;
+
+    // Add lock badge if user_locked
+    if (item.user_locked) {
+        badge = '<span class="badge bg-info status-badge" title="User-locked - protected from automatic changes"><i class="bi bi-lock-fill"></i></span> ' + badge;
+    }
+    return badge;
 }
 
 function getDetails(item) {
@@ -421,8 +542,25 @@ function getDetails(item) {
 function getActions(item) {
     let html = '';
 
+    // Edit button for any item with a book_id (can edit metadata and lock)
+    if (item.book_id) {
+        html += `
+            <button class="btn btn-outline-primary btn-sm action-btn me-1" onclick="editBook(${item.book_id}, '${escapeHtml(item.author || '')}', '${escapeHtml(item.title || '')}')" title="Edit & Lock">
+                <i class="bi bi-pencil"></i>
+            </button>
+        `;
+        // Unlock button if locked
+        if (item.user_locked) {
+            html += `
+                <button class="btn btn-outline-warning btn-sm action-btn me-1" onclick="unlockBook(${item.book_id})" title="Unlock">
+                    <i class="bi bi-unlock"></i>
+                </button>
+            `;
+        }
+    }
+
     if (item.type === 'pending_fix') {
-        html = `
+        html += `
             <button class="btn btn-success btn-sm action-btn" onclick="applyFix(${item.id})" title="Apply">
                 <i class="bi bi-check"></i>
             </button>
@@ -431,7 +569,7 @@ function getActions(item) {
             </button>
         `;
     } else if (item.type === 'orphan') {
-        html = `
+        html += `
             <button class="btn btn-primary btn-sm action-btn" onclick="editOrphan('${escapeHtml(item.author)}', '${escapeHtml(item.title)}', '${escapeHtml(item.author_path)}', ${JSON.stringify(item.files).replace(/"/g, '&quot;')})" title="Edit">
                 <i class="bi bi-pencil"></i>
             </button>
@@ -442,13 +580,13 @@ function getActions(item) {
             ` : ''}
         `;
     } else if (item.type === 'fixed' && item.old_path !== item.new_path) {
-        html = `
+        html += `
             <button class="btn btn-outline-warning btn-sm action-btn" onclick="undoFix(${item.id})" title="Undo">
                 <i class="bi bi-arrow-counterclockwise"></i>
             </button>
         `;
     } else if (item.type === 'error' || item.status === 'duplicate') {
-        html = `
+        html += `
             <button class="btn btn-outline-danger btn-sm action-btn" onclick="dismissError(${item.id})" title="Dismiss">
                 <i class="bi bi-trash"></i>
             </button>
@@ -461,7 +599,7 @@ function getActions(item) {
             ` + html;
         }
     } else if (item.type === 'queue') {
-        html = `
+        html += `
             <button class="btn btn-outline-danger btn-sm action-btn" onclick="removeFromQueue(${item.id})" title="Remove">
                 <i class="bi bi-x"></i>
             </button>
@@ -514,6 +652,36 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// Search functions
+function searchLibrary() {
+    const query = document.getElementById('library-search').value.trim();
+    if (!query) {
+        clearSearch();
+        return;
+    }
+    currentSearch = query;
+    currentFilter = 'search';
+    currentPage = 1;
+
+    // Update chip styling - remove active from all
+    document.querySelectorAll('.filter-chip').forEach(chip => {
+        chip.classList.remove('active');
+    });
+
+    // Show clear button
+    document.getElementById('clear-search-btn').style.display = 'inline-block';
+
+    loadLibrary();
+}
+
+function clearSearch() {
+    currentSearch = '';
+    document.getElementById('library-search').value = '';
+    document.getElementById('clear-search-btn').style.display = 'none';
+    document.getElementById('search-results-count').style.display = 'none';
+    setFilter('all');
 }
 
 // Activity stream
@@ -766,11 +934,186 @@ setInterval(() => {
     }
 }, 10000);
 
+// ===== EDIT BOOK FUNCTIONS =====
+let editBookModal = null;
+let selectedBookDBResult = null;
+
+function editBook(bookId, author, title) {
+    document.getElementById('edit-book-id').value = bookId;
+    document.getElementById('edit-author').value = author;
+    document.getElementById('edit-title').value = title;
+    document.getElementById('edit-search-query').value = title;  // Pre-fill search with title
+    document.getElementById('edit-search-results').style.display = 'none';
+    document.getElementById('edit-selected-match').classList.add('d-none');
+    document.getElementById('edit-series-override').classList.add('d-none');
+    document.getElementById('edit-series-name').value = '';
+    document.getElementById('edit-series-num').value = '';
+    selectedBookDBResult = null;
+
+    if (!editBookModal) {
+        editBookModal = new bootstrap.Modal(document.getElementById('editBookModal'));
+    }
+    editBookModal.show();
+}
+
+function searchBookDB() {
+    const query = document.getElementById('edit-search-query').value.trim();
+    if (query.length < 2) {
+        alert('Search query must be at least 2 characters');
+        return;
+    }
+
+    const resultsDiv = document.getElementById('edit-search-results');
+    const resultsList = document.getElementById('edit-search-results-list');
+    resultsList.innerHTML = '<div class="list-group-item bg-dark text-muted">Searching...</div>';
+    resultsDiv.style.display = 'block';
+
+    fetch(`/api/search_bookdb?q=${encodeURIComponent(query)}&limit=20`)
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                resultsList.innerHTML = `<div class="list-group-item bg-dark text-danger">${data.error}</div>`;
+                return;
+            }
+
+            if (!data.results || data.results.length === 0) {
+                resultsList.innerHTML = '<div class="list-group-item bg-dark text-muted">No results found</div>';
+                return;
+            }
+
+            resultsList.innerHTML = data.results.map((book, idx) => {
+                const author = book.author_name || 'Unknown Author';
+                const title = book.name || book.title || 'Unknown Title';
+                const series = book.series_name ? `${book.series_name}${book.series_position ? ' #' + book.series_position : ''}` : '';
+                const year = book.year_published ? book.year_published : '';
+
+                return `
+                    <a href="#" class="list-group-item list-group-item-action bg-dark text-light"
+                       onclick="selectBookDBResult(${idx}); return false;">
+                        <div class="fw-bold">${escapeHtml(title)}</div>
+                        <div class="text-info small">${escapeHtml(author)}</div>
+                        ${series ? `<div class="text-warning small">${escapeHtml(series)}</div>` : ''}
+                        ${year ? `<div class="text-muted small">${year}</div>` : ''}
+                    </a>
+                `;
+            }).join('');
+
+            window._bookDBResults = data.results;
+        })
+        .catch(e => {
+            resultsList.innerHTML = `<div class="list-group-item bg-dark text-danger">Error: ${e}</div>`;
+        });
+}
+
+function selectBookDBResult(idx) {
+    const book = window._bookDBResults[idx];
+    if (!book) return;
+
+    selectedBookDBResult = book;
+
+    if (book.author_name) {
+        document.getElementById('edit-author').value = book.author_name;
+    }
+    if (book.name || book.title) {
+        document.getElementById('edit-title').value = book.name || book.title;
+    }
+
+    const matchDiv = document.getElementById('edit-selected-match');
+    const matchText = document.getElementById('edit-selected-match-text');
+    const series = book.series_name ? ` (${book.series_name}${book.series_position ? ' #' + book.series_position : ''})` : '';
+    matchText.textContent = `${book.author_name || 'Unknown'} - ${book.name || book.title || 'Unknown'}${series}`;
+    matchDiv.classList.remove('d-none');
+
+    const seriesOverride = document.getElementById('edit-series-override');
+    seriesOverride.classList.remove('d-none');
+    document.getElementById('edit-series-name').value = book.series_name || '';
+    document.getElementById('edit-series-num').value = book.series_position || '';
+
+    document.getElementById('edit-search-results').style.display = 'none';
+}
+
+function clearBookDBSelection() {
+    selectedBookDBResult = null;
+    document.getElementById('edit-selected-match').classList.add('d-none');
+    document.getElementById('edit-series-override').classList.add('d-none');
+    document.getElementById('edit-series-name').value = '';
+    document.getElementById('edit-series-num').value = '';
+}
+
+function saveBookEdit() {
+    const bookId = document.getElementById('edit-book-id').value;
+    const author = document.getElementById('edit-author').value.trim();
+    const title = document.getElementById('edit-title').value.trim();
+
+    if (!author || !title) {
+        alert('Author and title are required');
+        return;
+    }
+
+    const overrideSeriesName = document.getElementById('edit-series-name').value.trim();
+    const overrideSeriesNum = document.getElementById('edit-series-num').value.trim();
+
+    const payload = {
+        book_id: parseInt(bookId),
+        author: author,
+        title: title
+    };
+
+    if (selectedBookDBResult) {
+        const resultWithOverrides = {...selectedBookDBResult};
+        if (overrideSeriesName) {
+            resultWithOverrides.series_name = overrideSeriesName;
+        }
+        if (overrideSeriesNum) {
+            resultWithOverrides.series_position = parseInt(overrideSeriesNum);
+        }
+        payload.bookdb_result = resultWithOverrides;
+    } else if (overrideSeriesName || overrideSeriesNum) {
+        payload.series_name = overrideSeriesName || null;
+        payload.series_position = overrideSeriesNum ? parseInt(overrideSeriesNum) : null;
+    }
+
+    fetch('/api/edit_book', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            editBookModal.hide();
+            addActivity('Book saved and locked!', 'success');
+            loadLibrary();
+        } else {
+            alert('Error: ' + (data.error || 'Unknown error'));
+        }
+    })
+    .catch(e => {
+        alert('Error: ' + e);
+    });
+}
+
+function unlockBook(bookId) {
+    if (!confirm('Unlock this book? The system will be able to re-process it on future scans.')) return;
+
+    fetch(`/api/unlock_book/${bookId}`, {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                addActivity('Book unlocked', 'info');
+                loadLibrary();
+            } else {
+                addActivity(`Error: ${data.error}`, 'error');
+            }
+        })
+        .catch(e => addActivity(`Error: ${e}`, 'error'));
+}
+
 // Initial load - check for URL filter parameter
 (function() {
     const urlParams = new URLSearchParams(window.location.search);
     const filterParam = urlParams.get('filter');
-    if (filterParam && ['all', 'pending', 'orphan', 'queue', 'fixed', 'verified', 'error', 'attention'].includes(filterParam)) {
+    if (filterParam && ['all', 'pending', 'orphan', 'queue', 'fixed', 'verified', 'error', 'attention', 'locked'].includes(filterParam)) {
         setFilter(filterParam);
     } else {
         loadLibrary();

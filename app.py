@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.53"
+APP_VERSION = "0.9.0-beta.55"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -1008,7 +1008,15 @@ DEFAULT_CONFIG = {
     "skip_confirmations": False,           # Skip confirmation dialogs in Library view for faster workflow
     # Anonymous error reporting - helps improve the app
     "anonymous_error_reporting": False,    # Opt-in: send anonymous error reports to help fix bugs
-    "error_reporting_include_titles": True # Include book title/author ONLY when they caused the error
+    "error_reporting_include_titles": True, # Include book title/author ONLY when they caused the error
+    # Watch Folder settings - monitor a folder for new audiobooks and organize them
+    "watch_mode": False,                   # Enable folder watching
+    "watch_folder": "",                    # Path to monitor for new audiobooks
+    "watch_output_folder": "",             # Where to move organized books (empty = same as library_paths[0])
+    "watch_use_hard_links": False,         # Hard link instead of move (saves space, same filesystem only)
+    "watch_interval_seconds": 60,          # How often to check for new files
+    "watch_delete_empty_folders": True,    # Remove empty source folders after moving
+    "watch_min_file_age_seconds": 30       # Minimum file age before processing (wait for downloads to complete)
 }
 
 DEFAULT_SECRETS = {
@@ -1096,6 +1104,12 @@ def init_db():
     # Add error_message column if it doesn't exist (migration)
     try:
         c.execute('ALTER TABLE books ADD COLUMN error_message TEXT')
+    except:
+        pass  # Column already exists
+
+    # Add user_locked column - when True, user has manually set metadata and it should not be changed
+    try:
+        c.execute('ALTER TABLE books ADD COLUMN user_locked INTEGER DEFAULT 0')
     except:
         pass  # Column already exists
 
@@ -5266,10 +5280,13 @@ def deep_scan_library(config):
                 path_str = str(loose_file)
 
                 # Check if already in books table
-                c.execute('SELECT id FROM books WHERE path = ?', (path_str,))
+                c.execute('SELECT id, user_locked FROM books WHERE path = ?', (path_str,))
                 existing = c.fetchone()
 
                 if existing:
+                    # Skip user-locked books
+                    if existing['user_locked']:
+                        continue
                     book_id = existing['id']
                 else:
                     # Create books record for the loose file
@@ -5304,10 +5321,13 @@ def deep_scan_library(config):
                     cleaned_filename = clean_search_title(filename)
                     path_str = str(loose_ebook)
 
-                    c.execute('SELECT id FROM books WHERE path = ?', (path_str,))
+                    c.execute('SELECT id, user_locked FROM books WHERE path = ?', (path_str,))
                     existing = c.fetchone()
 
                     if existing:
+                        # Skip user-locked books
+                        if existing['user_locked']:
+                            continue
                         book_id = existing['id']
                     else:
                         c.execute('''INSERT INTO books (path, current_author, current_title, status)
@@ -5500,10 +5520,14 @@ def deep_scan_library(config):
                     issues_found[path] = all_issues
 
                 # Add to database
-                c.execute('SELECT id, status, profile FROM books WHERE path = ?', (path,))
+                c.execute('SELECT id, status, profile, user_locked FROM books WHERE path = ?', (path,))
                 existing = c.fetchone()
 
                 if existing:
+                    # Skip user-locked books - user has manually set metadata, never change it
+                    if existing['user_locked']:
+                        continue
+
                     # Skip books that are properly verified (have profile data)
                     # Re-queue "legacy" verified books that have no profile
                     if existing['status'] in ['verified', 'fixed']:
@@ -5635,12 +5659,14 @@ def process_layer_1_api(config, limit=None):
     confidence_threshold = config.get('profile_confidence_threshold', 85)
 
     # Get items awaiting API lookup (layer 1) or new items (layer 0)
+    # Skip user-locked books - user has manually set metadata
     c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
                         b.path, b.current_author, b.current_title, b.verification_layer
                  FROM queue q
                  JOIN books b ON q.book_id = b.id
                  WHERE b.verification_layer IN (0, 1)
                    AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                   AND (b.user_locked IS NULL OR b.user_locked = 0)
                  ORDER BY q.priority, q.added_at
                  LIMIT ?''', (batch_size,))
     batch = c.fetchall()
@@ -5773,6 +5799,7 @@ def process_queue(config, limit=None):
 
     # Get batch from queue - LAYER 2 (AI): items at verification_layer=2 or legacy items (layer=0 when API is disabled)
     # Also process layer=0 items if API lookups are disabled (fallback to AI directly)
+    # Skip user-locked books - user has manually set metadata
     api_enabled = config.get('enable_api_lookups', True)
     if api_enabled:
         # Only process items that passed through Layer 1 (API)
@@ -5782,6 +5809,7 @@ def process_queue(config, limit=None):
                      JOIN books b ON q.book_id = b.id
                      WHERE b.verification_layer = 2
                        AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                       AND (b.user_locked IS NULL OR b.user_locked = 0)
                      ORDER BY q.priority, q.added_at
                      LIMIT ?''', (batch_size,))
     else:
@@ -5791,6 +5819,7 @@ def process_queue(config, limit=None):
                      FROM queue q
                      JOIN books b ON q.book_id = b.id
                      WHERE b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                       AND (b.user_locked IS NULL OR b.user_locked = 0)
                      ORDER BY q.priority, q.added_at
                      LIMIT ?''', (batch_size,))
     batch = c.fetchall()
@@ -6525,12 +6554,14 @@ def process_layer_3_audio(config, limit=None):
     batch_size = limit or config.get('batch_size', 3)
 
     # Get items awaiting audio analysis (layer 3)
+    # Skip user-locked books - user has manually set metadata
     c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
                         b.path, b.current_author, b.current_title
                  FROM queue q
                  JOIN books b ON q.book_id = b.id
                  WHERE b.verification_layer = 3
                    AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                   AND (b.user_locked IS NULL OR b.user_locked = 0)
                  ORDER BY q.priority, q.added_at
                  LIMIT ?''', (batch_size,))
     batch = c.fetchall()
@@ -6959,6 +6990,263 @@ def process_all_queue(config):
     logger.info(f"=== LAYERED PROCESSING COMPLETE: {total_processed} processed, {total_fixed} fixed ===")
     return total_processed, total_fixed
 
+
+# ============================================================================
+# WATCH FOLDER FUNCTIONALITY
+# ============================================================================
+
+# Track processed watch folder items to avoid reprocessing
+watch_folder_processed = set()
+watch_folder_last_scan = 0
+
+def get_watch_folder_items(watch_folder: str, min_age_seconds: int = 30) -> list:
+    """
+    Scan watch folder for audiobook folders/files ready for processing.
+    Returns list of paths that are old enough (not still downloading).
+    """
+    items = []
+    watch_path = Path(watch_folder)
+
+    if not watch_path.exists():
+        logger.warning(f"Watch folder does not exist: {watch_folder}")
+        return items
+
+    current_time = time.time()
+
+    # Look for audiobook folders (contain audio files)
+    audio_extensions = {'.mp3', '.m4a', '.m4b', '.flac', '.ogg', '.opus', '.wav', '.aac'}
+
+    for item in watch_path.iterdir():
+        item_path = str(item.resolve())
+
+        # Skip if already processed
+        if item_path in watch_folder_processed:
+            continue
+
+        # Check if folder contains audio files or is an audio file
+        has_audio = False
+        newest_mtime = 0
+
+        if item.is_dir():
+            for f in item.rglob('*'):
+                if f.is_file():
+                    if f.suffix.lower() in audio_extensions:
+                        has_audio = True
+                    try:
+                        mtime = f.stat().st_mtime
+                        if mtime > newest_mtime:
+                            newest_mtime = mtime
+                    except:
+                        pass
+        elif item.is_file() and item.suffix.lower() in audio_extensions:
+            has_audio = True
+            try:
+                newest_mtime = item.stat().st_mtime
+            except:
+                pass
+
+        if not has_audio:
+            continue
+
+        # Check file age - skip if too recent (still downloading)
+        file_age = current_time - newest_mtime
+        if file_age < min_age_seconds:
+            logger.debug(f"Watch folder: Skipping {item.name} - too recent ({file_age:.0f}s < {min_age_seconds}s)")
+            continue
+
+        items.append(item_path)
+
+    return items
+
+
+def move_to_output_folder(source_path: str, output_folder: str, author: str, title: str,
+                          use_hard_links: bool = False, delete_empty: bool = True) -> tuple:
+    """
+    Move or hard-link an audiobook to the output folder with proper naming.
+    Returns (success: bool, new_path: str, error: str or None)
+    """
+    source = Path(source_path)
+    output = Path(output_folder)
+
+    if not source.exists():
+        return False, None, f"Source does not exist: {source_path}"
+
+    if not output.exists():
+        try:
+            output.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            return False, None, f"Cannot create output folder: {e}"
+
+    # Sanitize author and title for filesystem
+    safe_author = sanitize_path_component(author) if author else "Unknown"
+    safe_title = sanitize_path_component(title) if title else source.name
+
+    # Build destination path: output/Author/Title
+    dest_folder = output / safe_author / safe_title
+
+    # Check for existing destination
+    if dest_folder.exists():
+        # Add version suffix
+        version = 2
+        while True:
+            versioned = output / safe_author / f"{safe_title} [Version {chr(64+version)}]"
+            if not versioned.exists():
+                dest_folder = versioned
+                break
+            version += 1
+            if version > 26:
+                return False, None, f"Too many versions exist for {safe_author}/{safe_title}"
+
+    try:
+        dest_folder.mkdir(parents=True, exist_ok=True)
+
+        if source.is_file():
+            # Single file - move/link to destination folder
+            dest_file = dest_folder / source.name
+            if use_hard_links:
+                try:
+                    os.link(source, dest_file)
+                except OSError as e:
+                    if "Invalid cross-device link" in str(e) or e.errno == 18:
+                        # Cross-filesystem - fall back to copy
+                        logger.warning(f"Hard link failed (cross-filesystem), falling back to copy: {source.name}")
+                        shutil.copy2(source, dest_file)
+                    else:
+                        raise
+            else:
+                shutil.move(str(source), str(dest_file))
+        else:
+            # Directory - move/link all files
+            for src_file in source.rglob('*'):
+                if src_file.is_file():
+                    rel_path = src_file.relative_to(source)
+                    dest_file = dest_folder / rel_path
+                    dest_file.parent.mkdir(parents=True, exist_ok=True)
+
+                    if use_hard_links:
+                        try:
+                            os.link(src_file, dest_file)
+                        except OSError as e:
+                            if "Invalid cross-device link" in str(e) or e.errno == 18:
+                                logger.warning(f"Hard link failed, copying: {src_file.name}")
+                                shutil.copy2(src_file, dest_file)
+                            else:
+                                raise
+                    else:
+                        shutil.move(str(src_file), str(dest_file))
+
+            # Clean up empty source folder if not using hard links
+            if not use_hard_links and delete_empty:
+                try:
+                    # Remove empty directories bottom-up
+                    for dirpath, dirnames, filenames in os.walk(str(source), topdown=False):
+                        if not filenames and not dirnames:
+                            os.rmdir(dirpath)
+                    if source.exists() and not any(source.iterdir()):
+                        source.rmdir()
+                except Exception as e:
+                    logger.debug(f"Could not clean up empty folder {source}: {e}")
+
+        return True, str(dest_folder), None
+
+    except Exception as e:
+        logger.error(f"Move/link error for {source_path}: {e}")
+        return False, None, str(e)
+
+
+def process_watch_folder(config: dict) -> int:
+    """
+    Process items in the watch folder.
+    Returns number of items processed.
+    """
+    global watch_folder_processed, watch_folder_last_scan
+
+    watch_folder = config.get('watch_folder', '').strip()
+    output_folder = config.get('watch_output_folder', '').strip()
+    use_hard_links = config.get('watch_use_hard_links', False)
+    delete_empty = config.get('watch_delete_empty_folders', True)
+    min_age = config.get('watch_min_file_age_seconds', 30)
+
+    if not watch_folder:
+        return 0
+
+    # Default output to first library path
+    if not output_folder:
+        library_paths = config.get('library_paths', [])
+        if not library_paths:
+            logger.warning("Watch folder: No output folder and no library paths configured")
+            return 0
+        output_folder = library_paths[0]
+
+    logger.info(f"=== WATCH FOLDER SCAN: {watch_folder} ===")
+
+    items = get_watch_folder_items(watch_folder, min_age)
+    if not items:
+        logger.debug("Watch folder: No new items to process")
+        return 0
+
+    logger.info(f"Watch folder: Found {len(items)} new items to process")
+    processed = 0
+
+    conn = get_db()
+    c = conn.cursor()
+
+    for item_path in items:
+        try:
+            item = Path(item_path)
+            logger.info(f"Watch folder: Processing {item.name}")
+
+            # Analyze the path to extract author/title
+            analysis = analyze_path(item_path)
+            author = analysis.get('author', 'Unknown')
+            title = analysis.get('title', item.name)
+
+            # Try API lookups for better identification
+            try:
+                secrets = load_secrets()
+                candidates = gather_all_api_candidates(author, title, config, secrets)
+                if candidates:
+                    # Use best match
+                    best = candidates[0]
+                    if best.get('confidence', 0) > 60:
+                        author = best.get('author', author)
+                        title = best.get('title', title)
+                        logger.info(f"Watch folder: Identified as {author} - {title}")
+            except Exception as e:
+                logger.debug(f"Watch folder: API lookup failed, using path analysis: {e}")
+
+            # Move to output folder
+            success, new_path, error = move_to_output_folder(
+                item_path, output_folder, author, title,
+                use_hard_links=use_hard_links, delete_empty=delete_empty
+            )
+
+            if success:
+                logger.info(f"Watch folder: Moved to {new_path}")
+                watch_folder_processed.add(item_path)
+                processed += 1
+
+                # Add to books table so it gets processed by normal scan
+                try:
+                    c.execute('''INSERT OR REPLACE INTO books
+                                 (path, current_author, current_title, status, added_at, updated_at)
+                                 VALUES (?, ?, ?, 'pending', datetime('now'), datetime('now'))''',
+                              (new_path, author, title))
+                    conn.commit()
+                except Exception as e:
+                    logger.debug(f"Watch folder: Could not add to books table: {e}")
+            else:
+                logger.error(f"Watch folder: Failed to move {item.name}: {error}")
+
+        except Exception as e:
+            logger.error(f"Watch folder: Error processing {item_path}: {e}")
+
+    conn.close()
+    watch_folder_last_scan = time.time()
+    logger.info(f"Watch folder: Processed {processed}/{len(items)} items")
+    return processed
+
+
 def background_worker():
     """Background worker that periodically scans and processes."""
     global worker_running
@@ -6991,23 +7279,62 @@ def background_worker():
 
     logger.info("Background worker thread stopped")
 
+
+# Watch folder worker - runs on its own interval
+watch_worker_thread = None
+watch_worker_running = False
+
+def watch_folder_worker():
+    """Background worker that monitors watch folder for new audiobooks."""
+    global watch_worker_running
+
+    logger.info("Watch folder worker thread started")
+
+    while watch_worker_running:
+        config = load_config()
+
+        if config.get('watch_mode', False) and config.get('watch_folder', '').strip():
+            try:
+                process_watch_folder(config)
+            except Exception as e:
+                logger.error(f"Watch folder worker error: {e}", exc_info=True)
+
+        # Sleep for watch interval (default 60 seconds)
+        interval = config.get('watch_interval_seconds', 60)
+        for _ in range(int(interval)):
+            if not watch_worker_running:
+                break
+            time.sleep(1)
+
+    logger.info("Watch folder worker thread stopped")
+
+
 def start_worker():
     """Start the background worker."""
-    global worker_thread, worker_running
+    global worker_thread, worker_running, watch_worker_thread, watch_worker_running
 
     if worker_thread and worker_thread.is_alive():
         logger.info("Worker already running")
-        return
+    else:
+        worker_running = True
+        worker_thread = threading.Thread(target=background_worker, daemon=True)
+        worker_thread.start()
+        logger.info("Background worker started")
 
-    worker_running = True
-    worker_thread = threading.Thread(target=background_worker, daemon=True)
-    worker_thread.start()
-    logger.info("Background worker started")
+    # Also start watch folder worker
+    config = load_config()
+    if config.get('watch_mode', False) and config.get('watch_folder', '').strip():
+        if not (watch_worker_thread and watch_worker_thread.is_alive()):
+            watch_worker_running = True
+            watch_worker_thread = threading.Thread(target=watch_folder_worker, daemon=True)
+            watch_worker_thread.start()
+            logger.info("Watch folder worker started")
 
 def stop_worker():
     """Stop the background worker."""
-    global worker_running
+    global worker_running, watch_worker_running
     worker_running = False
+    watch_worker_running = False
     logger.info("Background worker stop requested")
 
 def is_worker_running():
@@ -7104,39 +7431,45 @@ def history_page():
     error_count = c.fetchone()['count']
 
     # Build query based on status filter
+    # Join with books table to get user_locked status
     if status_filter == 'pending':
         c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'pending_fix'")
         total = c.fetchone()['count']
-        c.execute('''SELECT * FROM history
-                     WHERE status = 'pending_fix'
-                     ORDER BY fixed_at DESC
+        c.execute('''SELECT h.*, b.user_locked FROM history h
+                     LEFT JOIN books b ON h.book_id = b.id
+                     WHERE h.status = 'pending_fix'
+                     ORDER BY h.fixed_at DESC
                      LIMIT ? OFFSET ?''', (per_page, offset))
     elif status_filter == 'duplicate':
         c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'duplicate'")
         total = c.fetchone()['count']
-        c.execute('''SELECT * FROM history
-                     WHERE status = 'duplicate'
-                     ORDER BY fixed_at DESC
+        c.execute('''SELECT h.*, b.user_locked FROM history h
+                     LEFT JOIN books b ON h.book_id = b.id
+                     WHERE h.status = 'duplicate'
+                     ORDER BY h.fixed_at DESC
                      LIMIT ? OFFSET ?''', (per_page, offset))
     elif status_filter == 'attention':
         c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'needs_attention'")
         total = c.fetchone()['count']
-        c.execute('''SELECT * FROM history
-                     WHERE status = 'needs_attention'
-                     ORDER BY fixed_at DESC
+        c.execute('''SELECT h.*, b.user_locked FROM history h
+                     LEFT JOIN books b ON h.book_id = b.id
+                     WHERE h.status = 'needs_attention'
+                     ORDER BY h.fixed_at DESC
                      LIMIT ? OFFSET ?''', (per_page, offset))
     elif status_filter == 'error':
         c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'error'")
         total = c.fetchone()['count']
-        c.execute('''SELECT * FROM history
-                     WHERE status = 'error'
-                     ORDER BY fixed_at DESC
+        c.execute('''SELECT h.*, b.user_locked FROM history h
+                     LEFT JOIN books b ON h.book_id = b.id
+                     WHERE h.status = 'error'
+                     ORDER BY h.fixed_at DESC
                      LIMIT ? OFFSET ?''', (per_page, offset))
     else:
         c.execute('SELECT COUNT(*) as count FROM history')
         total = c.fetchone()['count']
-        c.execute('''SELECT * FROM history
-                     ORDER BY fixed_at DESC
+        c.execute('''SELECT h.*, b.user_locked FROM history h
+                     LEFT JOIN books b ON h.book_id = b.id
+                     ORDER BY h.fixed_at DESC
                      LIMIT ? OFFSET ?''', (per_page, offset))
     rows = c.fetchall()
     conn.close()
@@ -8649,6 +8982,9 @@ def api_library():
 
     items = []
 
+    # Get search parameter
+    search_query = request.args.get('search', '').strip()
+
     # === COUNTS for filter chips ===
     counts = {
         'all': 0,
@@ -8658,7 +8994,8 @@ def api_library():
         'fixed': 0,
         'verified': 0,
         'error': 0,
-        'attention': 0
+        'attention': 0,
+        'locked': 0
     }
 
     # Count books by status
@@ -8686,6 +9023,10 @@ def api_library():
     c.execute("SELECT COUNT(*) FROM books WHERE status IN ('needs_attention', 'structure_reversed')")
     attention_books = c.fetchone()[0]
     counts['attention'] = attention_history + attention_books
+
+    # Count user-locked books
+    c.execute("SELECT COUNT(*) FROM books WHERE user_locked = 1")
+    counts['locked'] = c.fetchone()[0]
 
     # Count orphans (detected on-the-fly)
     orphan_list = []
@@ -8788,7 +9129,7 @@ def api_library():
 
     elif status_filter == 'verified':
         # Verified/OK books - include profile for source display
-        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, profile, confidence
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, profile, confidence, user_locked
                      FROM books
                      WHERE status = 'verified'
                      ORDER BY updated_at DESC
@@ -8802,7 +9143,8 @@ def api_library():
                 'title': row['current_title'],
                 'path': row['path'],
                 'status': 'verified',
-                'confidence': row['confidence'] or 0
+                'confidence': row['confidence'] or 0,
+                'user_locked': row['user_locked'] == 1
             }
             # Parse profile to get verification sources
             if row['profile']:
@@ -8886,11 +9228,55 @@ def api_library():
                 'error_message': row['error_message']
             })
 
+    elif status_filter == 'locked':
+        # User-locked books - books where user has manually set metadata
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked
+                     FROM books
+                     WHERE user_locked = 1
+                     ORDER BY updated_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'book',
+                'book_id': row['id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
+                'path': row['path'],
+                'status': row['status'],
+                'user_locked': True
+            })
+
+    elif status_filter == 'search' and search_query:
+        # Search across all books by author or title
+        search_pattern = f'%{search_query}%'
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked
+                     FROM books
+                     WHERE current_author LIKE ? OR current_title LIKE ?
+                     ORDER BY current_author, current_title
+                     LIMIT ? OFFSET ?''', (search_pattern, search_pattern, per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'book',
+                'book_id': row['id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
+                'path': row['path'],
+                'status': row['status'],
+                'user_locked': row['user_locked'] == 1
+            })
+        # Get total for search results
+        c.execute('''SELECT COUNT(*) FROM books
+                     WHERE current_author LIKE ? OR current_title LIKE ?''',
+                  (search_pattern, search_pattern))
+        counts['search'] = c.fetchone()[0]
+
     else:  # 'all' - show everything mixed
         # Get recent history items (includes pending, fixed, errors)
         c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
                             h.old_path, h.new_path, h.status, h.fixed_at, h.error_message,
-                            b.path, b.current_author, b.current_title
+                            b.path, b.current_author, b.current_title, b.user_locked
                      FROM history h
                      JOIN books b ON h.book_id = b.id
                      ORDER BY h.fixed_at DESC
@@ -8914,7 +9300,8 @@ def api_library():
                 'path': row['path'],
                 'status': row['status'],
                 'error_message': row['error_message'],
-                'fixed_at': row['fixed_at']
+                'fixed_at': row['fixed_at'],
+                'user_locked': row['user_locked'] == 1
             })
 
     conn.close()
@@ -8934,6 +9321,10 @@ def api_library():
         total = counts['error']
     elif status_filter == 'attention':
         total = counts['attention']
+    elif status_filter == 'locked':
+        total = counts['locked']
+    elif status_filter == 'search':
+        total = counts.get('search', 0)
     else:
         total = counts['all']
 
@@ -8944,6 +9335,7 @@ def api_library():
         'items': items,
         'counts': counts,
         'filter': status_filter,
+        'search': search_query,
         'page': page,
         'per_page': per_page,
         'total': total,
@@ -10580,6 +10972,174 @@ def api_manual_match():
         })
     except Exception as e:
         logger.error(f"Error in manual_match: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/edit_book', methods=['POST'])
+def api_edit_book():
+    """
+    Edit a book's metadata and lock it from future changes.
+    Can edit from history (pending or fixed) or directly from books table.
+    User edits are "cemented" - the system will never overwrite them.
+    """
+    try:
+        data = request.get_json() or {}
+        history_id = data.get('history_id')
+        book_id = data.get('book_id')
+
+        # Manual entry fields
+        new_author = data.get('author', '').strip()
+        new_title = data.get('title', '').strip()
+
+        # Or BookDB selection
+        bookdb_result = data.get('bookdb_result')
+
+        if not history_id and not book_id:
+            return jsonify({'success': False, 'error': 'history_id or book_id required'})
+
+        conn = get_db()
+        c = conn.cursor()
+
+        # Get the book info
+        if history_id:
+            c.execute('''SELECT h.id as history_id, h.book_id, h.old_path, h.new_path,
+                                h.old_author, h.old_title, h.status as history_status,
+                                b.path, b.current_author, b.current_title
+                         FROM history h
+                         JOIN books b ON h.book_id = b.id
+                         WHERE h.id = ?''', (history_id,))
+            item = c.fetchone()
+            if not item:
+                conn.close()
+                return jsonify({'success': False, 'error': 'History item not found'})
+            book_id = item['book_id']
+            old_path = item['old_path'] or item['path']
+            old_author = item['old_author'] or item['current_author']
+            old_title = item['old_title'] or item['current_title']
+            history_status = item['history_status']
+        else:
+            c.execute('SELECT id, path, current_author, current_title FROM books WHERE id = ?', (book_id,))
+            item = c.fetchone()
+            if not item:
+                conn.close()
+                return jsonify({'success': False, 'error': 'Book not found'})
+            old_path = item['path']
+            old_author = item['current_author']
+            old_title = item['current_title']
+            history_status = None
+
+        # Determine new values from BookDB result if provided
+        new_series = None
+        new_series_num = None
+        new_narrator = None
+        new_year = None
+        if bookdb_result:
+            new_author = bookdb_result.get('author_name') or new_author
+            new_title = bookdb_result.get('name') or bookdb_result.get('title') or new_title
+            new_series = bookdb_result.get('series_name')
+            new_series_num = bookdb_result.get('series_position')
+            new_year = bookdb_result.get('year_published')
+
+        # Also accept series fields directly
+        if not new_series and data.get('series_name'):
+            new_series = data.get('series_name')
+        if not new_series_num and data.get('series_position'):
+            new_series_num = data.get('series_position')
+
+        if not new_author or not new_title:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Author and title required'})
+
+        # Find which library this book belongs to
+        config = load_config()
+        lib_path = None
+        for lp in config.get('library_paths', []):
+            lp_path = Path(lp)
+            try:
+                Path(old_path).relative_to(lp_path)
+                lib_path = lp_path
+                break
+            except ValueError:
+                continue
+
+        if lib_path is None:
+            lib_path = Path(old_path).parent.parent
+
+        # Build the new path
+        new_path = build_new_path(lib_path, new_author, new_title,
+                                  series=new_series, series_num=new_series_num,
+                                  narrator=new_narrator, year=new_year, config=config)
+
+        if new_path is None:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Could not build valid path for this metadata'})
+
+        # Delete any existing pending entries for this book
+        c.execute("DELETE FROM history WHERE book_id = ? AND status = 'pending_fix'", (book_id,))
+
+        # Insert/update as pending fix
+        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
+                                          new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?)''',
+                 (book_id, old_author, old_title,
+                  new_author, new_title, old_path, str(new_path),
+                  new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                  str(new_year) if new_year else None, None, None))
+
+        # Update book status and LOCK it - user has set metadata, never change it
+        c.execute('UPDATE books SET status = ?, user_locked = 1, current_author = ?, current_title = ? WHERE id = ?',
+                  ('pending_fix', new_author, new_title, book_id))
+
+        # Remove from queue if present
+        c.execute('DELETE FROM queue WHERE book_id = ?', (book_id,))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': f'Saved and locked: {old_author}/{old_title} → {new_author}/{new_title}',
+            'new_author': new_author,
+            'new_title': new_title,
+            'locked': True
+        })
+    except Exception as e:
+        logger.error(f"Error in edit_book: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/unlock_book/<int:book_id>', methods=['POST'])
+def api_unlock_book(book_id):
+    """
+    Unlock a book so it can be re-processed by the system.
+    Removes the user_locked flag.
+    """
+    try:
+        conn = get_db()
+        c = conn.cursor()
+
+        c.execute('SELECT id, path, current_author, current_title, user_locked FROM books WHERE id = ?', (book_id,))
+        book = c.fetchone()
+
+        if not book:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Book not found'})
+
+        if not book['user_locked']:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Book is not locked'})
+
+        # Unlock the book
+        c.execute('UPDATE books SET user_locked = 0 WHERE id = ?', (book_id,))
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': f'Unlocked: {book["current_author"]}/{book["current_title"]} - will be re-processed on next scan'
+        })
+    except Exception as e:
+        logger.error(f"Error unlocking book: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
 

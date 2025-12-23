@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.50-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.55-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,57 +16,45 @@
 
 ## Recent Changes (develop)
 
+> **beta.55** - Watch Folder & Library Enhancements
+> - **Watch Folder Mode** (Issue #32) - Monitor a downloads folder, auto-organize new audiobooks
+>   - Hard link support (save disk space)
+>   - Configurable check interval and min file age
+> - **Library Search** - Find any book by author or title
+> - **Locked Books Filter** - View all user-locked books in one place
+> - **Edit from Library** - Edit any book directly (not just from History)
+
+> **beta.54** - User Edit & Lock System (Issue #36)
+> - **Edit Any Book** - Correct wrong identifications before applying
+> - **Lock Metadata** - User edits are "cemented" and never overwritten
+> - **Unlock Option** - Re-enable processing when needed
+
+> **beta.53** - Critical Process Button Fix
+> - **Process Button Works** - Fixed bug where clicking Process skipped Layer 1 (API)
+
+> **beta.52** - Profile Data & Legacy Badges
+> - **Verification Source Tracking** - Shows which API verified each book
+> - **Legacy Badge** - Identifies books verified before profile system
+
+> **beta.51** - Placeholder Author Fix
+> - **Placeholder Authors Go to AI** - "Unknown" authors no longer incorrectly verified
+
 > **beta.50** - Error Reporting & Debug Tools
-> - **Anonymous Error Reporting** - Opt-in system to send bug reports (Settings → Debug Menu)
-> - **API Connection Tests** - Test all API connections with one click
-> - **Clear All Buttons** - Quick cleanup for error reports, activity, and queue logs
+> - **Anonymous Error Reporting** - Opt-in system to send bug reports
+> - **API Connection Tests** - Test all connections with one click
 
-> **beta.49** - Critical Queue Processing Fix
-> - **Queue Actually Processes** - Fixed bug where items got stuck, "processed 0" returned
-> - **Layered Processing Works** - All three verification layers now complete properly
+> **beta.49** - Queue Processing Fix
+> - **Queue Actually Processes** - Fixed "processed 0" bug
 
-> **beta.48** - Search Series Detection & Bug Report Privacy
-> - **Series Number Extraction** - Search "Horus Heresy Book 36" auto-extracts series info
-> - **Manual Series Override** - Edit series name/number when search results lack it
-> - **Private Bug Reports** - API keys replaced with connection status, library paths hidden
+> **beta.48** - Search Series Detection
+> - **Series Number Extraction** - "Horus Heresy Book 36" auto-extracts series info
 
-> **beta.47** - Settings Overhaul, UI Cleanup & Bug Fixes
-> - **Settings Actually Save** - All verification layer toggles and confidence threshold now persist
-> - **Unified Navigation** - Removed Queue/Orphans from navbar (use Library filters instead)
-> - **Search Fix** - Leading track numbers stripped (`06 - Dragon Teeth` → `Dragon Teeth`)
-> - **Companion Files** - Orphan organize now moves covers, NFO, metadata with audio files
-> - **Clearer Descriptions** - All settings now have plain-language explanations
+> **beta.47** - Settings Overhaul
+> - **Settings Actually Save** - All verification toggles now persist
+> - **Unified Navigation** - Cleaner navbar with Library filters
 
 > **beta.46** - UnRaid Config Fix
-> - **Auto-Detect `/config`** - Now works with UnRaid's default mount point (was only checking `/data`)
-
-> **beta.45** - Layered Processing Architecture
-> - **Independent Verification Layers** - Queue processing now uses Layer 1 (API), Layer 2 (AI), Layer 3 (Audio)
-> - **Faster Processing** - API lookups happen first (fast/free), only failures go to AI
-
-> **beta.44** - Unified Library View (Issue #31 feedback)
-> - **New `/library` Page** - All views consolidated: filter chips for Pending, Orphans, Queue, Fixed, Errors, etc.
-> - **Skip Confirmations** - Toggle to disable "Are you sure?" dialogs for faster batch operations
-> - **Orphans Integrated** - No more separate page, orphans now appear in unified view with organize actions
-
-> **beta.43** - Book Profile System & Multibook Fix (Issue #29)
-> - **Smart Multibook Detection** - Fixed false positives where chapter files (e.g., `00 - Prologue.mp3`) were flagged as multibook
-> - **Confidence Scoring** - Books now track confidence % per field with source attribution
-> - **Verification Layer Settings** - Toggle API lookups, AI verification, and audio analysis independently
-
-> **beta.42** - Version Conflict Handling
-> - **Different Versions Get Unique Paths** - Multiple recordings of same book now work (e.g., `[Version B]`)
-> - **Corrupt Dest Handling** - Valid source moves to `[Valid Copy]` when existing copy is corrupt
-
-> **beta.40-41** - Dashboard & Conflict Fixes
-> - **Dashboard Shows Real Status** - Fixed bug where errors showed as "Fixed"
-> - **Narrator Extraction** - Pulls narrator from audio tags to distinguish versions
-
-> **beta.39** - Update Channel Fix
-> - **Beta/Stable Now Works** - Selecting "Beta" in Settings actually pulls from develop branch
-
-> **beta.38** - ABS Connection Fix (Issue #27)
-> - **ABS Token Persists** - Audiobookshelf connection survives restarts and settings saves
+> - **Auto-Detect `/config`** - Works with UnRaid's default mount point
 
 [Full Changelog](CHANGELOG.md)
 
@@ -152,7 +140,10 @@ Build your own folder structure:
 
 ### Additional Features
 - **Web dashboard** with dark theme
+- **Watch folder mode** - monitor downloads folder, auto-organize new audiobooks
 - **Manual book matching** - search 50M+ database directly
+- **Edit & lock metadata** - correct wrong matches, lock to prevent overwriting
+- **Library search** - find any book by author or title
 - **Loose file detection** - auto-creates folders for dumped files
 - **Ebook management (Beta)** - organize ebooks alongside audiobooks
 - **Health scan** - detect corrupt/incomplete audio files
@@ -275,10 +266,13 @@ See [docs/DOCKER.md](docs/DOCKER.md) for detailed setup guides.
 | `/api/deep_rescan` | POST | Re-verify all books |
 | `/api/process` | POST | Process queue items |
 | `/api/queue` | GET | Get queue |
+| `/api/library` | GET | Get library with filters |
 | `/api/stats` | GET | Dashboard stats |
 | `/api/apply_fix/{id}` | POST | Apply pending fix |
 | `/api/reject_fix/{id}` | POST | Reject suggestion |
 | `/api/undo/{id}` | POST | Revert applied fix |
+| `/api/edit_book` | POST | Edit & lock book metadata |
+| `/api/unlock_book/{id}` | POST | Unlock book for reprocessing |
 | `/api/analyze_path` | POST | Test path analysis |
 
 ---

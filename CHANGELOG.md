@@ -2,6 +2,67 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.55] - 2025-12-22
+
+### Added
+- **Watch Folder Mode** (Issue #32) - Monitor a folder for new audiobooks and organize automatically
+  - Enable in Settings → Behavior → Watch Folder Mode
+  - Set Watch Folder (input path to monitor for new downloads)
+  - Set Output Folder (where to move organized books - defaults to library)
+  - Configurable check interval (default 60 seconds)
+  - Min file age setting (wait for downloads to complete)
+  - **Hard link support** - save disk space by hard linking instead of moving (same filesystem only)
+  - Delete empty folders option after moving
+  - Runs as separate worker thread for fast response
+  - Uses API lookups to identify books before moving
+
+- **Library Search** - Find books in your library by author or title
+  - New search box on Library page
+  - Real-time search across your entire collection
+  - Quick way to find specific books to edit or lock
+
+- **Locked Books Filter** - View all user-locked books
+  - New "Locked" filter chip on Library page
+  - See which books have been manually edited and locked
+  - Quick access to unlock if needed
+
+- **Edit from Library** - Edit any book directly from Library view
+  - Edit button on all library items (not just History)
+  - Same BookDB search and manual entry as History page
+  - Locks book after editing to protect your changes
+
+### Changed
+- **Library API** - Now returns `locked` count and `user_locked` field for each item
+- **Library filters** - Added `locked` and `search` filter options
+
+---
+
+## [0.9.0-beta.54] - 2025-12-22
+
+### Added
+- **User Edit & Lock System** - Manually edit any book's metadata and lock it from future changes
+  - Edit button on all History items (pending, fixed, verified)
+  - Search BookDB to find the correct match
+  - Manually set author, title, series name, and series number
+  - **Changes are "cemented"** - system will never overwrite user-set metadata
+  - Lock icon shows which books have user-locked settings
+  - Unlock button available to allow re-processing if desired
+
+### Changed
+- **Locked Books Skip Processing** - User-locked books are completely skipped during:
+  - Library scanning (won't be re-queued)
+  - Layer 1 API processing
+  - Layer 2 AI processing
+  - Layer 3 Audio analysis
+  - Protects your manual corrections from being overwritten
+
+### Fixed
+- **Issue #36 Continuation** - Users can now correct wrong AI identifications before applying fixes
+  - Previously could only Apply or Reject - no way to fix wrong matches
+  - Now has Edit button to search and select the correct book
+
+---
+
 ## [0.9.0-beta.53] - 2025-12-20
 
 ### Fixed
