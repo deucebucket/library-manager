@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.55"
+APP_VERSION = "0.9.0-beta.56"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -5403,10 +5403,10 @@ def deep_scan_library(config):
                     logger.debug(f"Skipping system folder: {path}")
                     continue
 
-                # Check if this is a SERIES folder containing multiple book subfolders
+                # Check if this is a SERIES folder containing book subfolders
                 # If so, skip it - we should process the books inside, not the series folder itself
                 subdirs = [d for d in title_dir.iterdir() if d.is_dir()]
-                if len(subdirs) >= 2:
+                if len(subdirs) >= 1:
                     # Count how many look like book folders (numbered, "Book N", etc.)
                     book_folder_patterns = [
                         r'^\d+\s*[-–—:.]?\s*\w',     # "01 Title", "1 - Title", "01. Title"
@@ -5419,10 +5419,20 @@ def deep_scan_library(config):
                         1 for d in subdirs
                         if any(re.search(p, d.name, re.IGNORECASE) for p in book_folder_patterns)
                     )
-                    if book_like_count >= 2:
-                        # This is a series folder, not a book - skip it
-                        logger.info(f"Skipping series folder (contains {book_like_count} book subfolders): {path}")
-                        # Mark in database as series_folder so we don't keep checking it
+                    # Issue #36 fix: Detect series folder even with just 1 book-like subfolder
+                    # Also check: if folder has no direct audio but subfolders do, it's a series folder
+                    direct_audio = [f for f in title_dir.iterdir()
+                                   if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
+                    subfolder_has_audio = any(
+                        any(f.suffix.lower() in AUDIO_EXTENSIONS for f in d.iterdir() if f.is_file())
+                        for d in subdirs
+                    )
+                    is_series = (book_like_count >= 1) or (not direct_audio and subfolder_has_audio and len(subdirs) >= 1)
+                    if is_series:
+                        # This is a series folder - process the book subfolders inside it
+                        series_name = title  # The folder name is the series name
+                        logger.info(f"Processing series folder '{series_name}' with {len(subdirs)} book subfolders: {path}")
+                        # Mark in database as series_folder
                         c.execute('SELECT id FROM books WHERE path = ?', (path,))
                         existing = c.fetchone()
                         if existing:
@@ -5431,7 +5441,60 @@ def deep_scan_library(config):
                             c.execute('''INSERT INTO books (path, current_author, current_title, status)
                                          VALUES (?, ?, ?, 'series_folder')''', (path, author, title))
                         conn.commit()
-                        continue
+
+                        # Process each book subfolder inside the series
+                        for book_dir in subdirs:
+                            if not book_dir.is_dir():
+                                continue
+                            book_title = book_dir.name
+                            book_path = str(book_dir)
+
+                            # Skip disc/chapter folders
+                            if is_disc_chapter_folder(book_title):
+                                continue
+
+                            # Check for audio files in this book folder
+                            book_audio = [f for f in book_dir.iterdir()
+                                         if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
+                            if not book_audio:
+                                # Also check one level deeper (for disc subfolders)
+                                book_audio = [f for f in book_dir.rglob('*')
+                                             if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
+                            if not book_audio:
+                                continue  # No audio files, skip
+
+                            checked += 1
+
+                            # Check if already tracked
+                            c.execute('SELECT id, status, profile, user_locked FROM books WHERE path = ?', (book_path,))
+                            existing_book = c.fetchone()
+
+                            if existing_book:
+                                if existing_book['user_locked']:
+                                    continue
+                                if existing_book['status'] in ['verified', 'fixed']:
+                                    has_profile = existing_book['profile'] and len(existing_book['profile']) > 2
+                                    if has_profile:
+                                        continue
+                                book_id = existing_book['id']
+                            else:
+                                c.execute('''INSERT INTO books (path, current_author, current_title, status)
+                                             VALUES (?, ?, ?, 'pending')''', (book_path, author, book_title))
+                                conn.commit()
+                                book_id = c.lastrowid
+                                scanned += 1
+
+                            # Queue for processing
+                            c.execute('SELECT id FROM queue WHERE book_id = ?', (book_id,))
+                            if not c.fetchone():
+                                c.execute('''INSERT INTO queue (book_id, reason, priority)
+                                            VALUES (?, ?, ?)''',
+                                         (book_id, f'series_book:{series_name}', 3))
+                                c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
+                                conn.commit()
+                                queued += 1
+
+                        continue  # Done with this series folder
 
                 # Check if this folder contains multiple AUDIO FILES that look like different books
                 # (e.g., "Book 1.m4b", "Book 2.m4b" or "Necroscope Book 1.m4b", "Necroscope Book 2.m4b")
@@ -7196,10 +7259,10 @@ def process_watch_folder(config: dict) -> int:
             item = Path(item_path)
             logger.info(f"Watch folder: Processing {item.name}")
 
-            # Analyze the path to extract author/title
-            analysis = analyze_path(item_path)
-            author = analysis.get('author', 'Unknown')
-            title = analysis.get('title', item.name)
+            # Extract author/title from the folder/file name
+            author_hint, title_part = extract_author_title(item.stem if item.is_file() else item.name)
+            author = author_hint if author_hint else 'Unknown'
+            title = title_part if title_part else item.name
 
             # Try API lookups for better identification
             try:
@@ -7537,6 +7600,14 @@ def settings_page():
         config['update_channel'] = request.form.get('update_channel', 'stable')
         config['naming_format'] = request.form.get('naming_format', 'author/title')
         config['custom_naming_template'] = request.form.get('custom_naming_template', '{author}/{title}').strip()
+        # Watch folder settings
+        config['watch_mode'] = 'watch_mode' in request.form
+        config['watch_folder'] = request.form.get('watch_folder', '').strip()
+        config['watch_output_folder'] = request.form.get('watch_output_folder', '').strip()
+        config['watch_use_hard_links'] = 'watch_use_hard_links' in request.form
+        config['watch_interval_seconds'] = int(request.form.get('watch_interval_seconds', 60))
+        config['watch_delete_empty_folders'] = 'watch_delete_empty_folders' in request.form
+        config['watch_min_file_age_seconds'] = int(request.form.get('watch_min_file_age_seconds', 30))
 
         # Save config (without secrets)
         save_config(config)
@@ -10569,24 +10640,35 @@ def api_search_bookdb():
     if not query or len(query) < 2:
         return jsonify({'error': 'Query must be at least 2 characters', 'results': []})
 
-    # Extract series number from query (e.g., "Horus Heresy Book 36" or "#36")
+    # Keep original query for series number extraction
+    original_query = query
+
+    # Extract series number from ORIGINAL query (e.g., "Horus Heresy Book 36" or "#36")
+    # Do this BEFORE cleaning so we capture the book number
     extracted_series_num = None
     extracted_series_name = None
     series_patterns = [
         r'(?:book|#|no\.?|number)\s*(\d+)',  # "Book 36", "#36", "No. 36"
         r'(\d+)(?:st|nd|rd|th)\s+book',       # "36th book"
-        r'\b(\d+)\s*[-–]\s*\w',               # "36 - Title" at start
+        r'^\s*(\d+)\s*[-–]\s*\w',             # "5 - Title" at start (Issue #38)
     ]
     for pattern in series_patterns:
-        match = re.search(pattern, query, re.IGNORECASE)
+        match = re.search(pattern, original_query, re.IGNORECASE)
         if match:
             extracted_series_num = int(match.group(1))
             break
 
     # Also try to extract series name (text before "book N" or similar)
-    series_name_match = re.match(r'^(.+?)\s+(?:book|#|no\.?)\s*\d+', query, re.IGNORECASE)
+    series_name_match = re.match(r'^(.+?)\s+(?:book|#|no\.?)\s*\d+', original_query, re.IGNORECASE)
     if series_name_match:
         extracted_series_name = series_name_match.group(1).strip()
+
+    # Issue #38: Clean the query to strip leading book numbers like "5 - " or "01. "
+    # This prevents book numbers from polluting search results
+    # Preserves actual titles like "1984" (number without separator)
+    clean_query = clean_search_title(query)
+    if clean_query and len(clean_query) >= 2:
+        query = clean_query
 
     bookdb_error = None
     results = []

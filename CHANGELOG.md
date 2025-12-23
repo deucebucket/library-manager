@@ -2,6 +2,31 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.56] - 2025-12-23
+
+### Fixed
+- **Watch Folder Settings Not Saving** (Issue #32) - Toggle and settings now save properly from UI
+  - Previously required manual editing of config.json
+  - All watch folder settings (mode, paths, intervals, hard links) now save correctly
+
+- **Watch Folder `analyze_path` Error** (Issue #32) - Fixed `name 'analyze_path' is not defined` error
+  - Watch folder processing now uses `extract_author_title` for path analysis
+  - Books are properly identified before moving to output folder
+
+- **False Positive Series Folder Detection** (Issue #36) - Series folders with 1 book no longer flagged as needing fixes
+  - Previously required 2+ books in series folder to be detected as series
+  - Now detects series folders even with just 1 numbered book subfolder
+  - Also detects series structure when folder has no direct audio but subfolders do
+  - Properly scans book folders inside series folders (3-level structure: Author/Series/Book)
+
+- **Book Numbers Polluting Search** (Issue #38) - Leading book numbers no longer break BookDB searches
+  - Searches like "5 - The Rhesus Chart" now find the correct book
+  - Extracts series number from query before cleaning (preserves book position)
+  - Cleans query to remove leading numbers before sending to BookDB
+  - Titles like "1984" are preserved (only strips numbers followed by separators)
+
+---
+
 ## [0.9.0-beta.55] - 2025-12-22
 
 ### Added

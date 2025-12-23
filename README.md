@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.55-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.56-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,12 +16,15 @@
 
 ## Recent Changes (develop)
 
+> **beta.56** - Bug Fixes for Watch Folder & Series Detection
+> - **Watch Folder Settings Save** (Issue #32) - Toggle and all settings now save from UI
+> - **Watch Folder Processing Fixed** (Issue #32) - Fixed `analyze_path` error
+> - **Series Folder Detection** (Issue #36) - Detects series folders even with 1 book
+> - **Search Numbers Fixed** (Issue #38) - Book numbers no longer pollute searches
+
 > **beta.55** - Watch Folder & Library Enhancements
 > - **Watch Folder Mode** (Issue #32) - Monitor a downloads folder, auto-organize new audiobooks
->   - Hard link support (save disk space)
->   - Configurable check interval and min file age
 > - **Library Search** - Find any book by author or title
-> - **Locked Books Filter** - View all user-locked books in one place
 > - **Edit from Library** - Edit any book directly (not just from History)
 
 > **beta.54** - User Edit & Lock System (Issue #36)

@@ -20,8 +20,10 @@ from app import (
     detect_multibook_vs_chapters,
     sanitize_path_component,
     analyze_full_path,
+    extract_author_title,
     AUDIO_EXTENSIONS
 )
+import re
 
 def test_result(name, passed, details=""):
     status = "\033[92mPASS\033[0m" if passed else "\033[91mFAIL\033[0m"
@@ -259,6 +261,68 @@ def main():
         if test_result(f"Sanitize: '{input_val}'",
                        result == expected,
                        f"Expected '{expected}', got '{result}'"):
+            passed += 1
+        else:
+            failed += 1
+
+    # ==========================================
+    # Issue #36: extract_author_title (used by watch folder)
+    # ==========================================
+    print("\n--- Issue #36: Author-Title Extraction (Watch Folder) ---")
+
+    extract_tests = [
+        ("Brandon Sanderson - Mistborn", ("Brandon Sanderson", "Mistborn")),
+        ("Stephen King - The Shining", ("Stephen King", "The Shining")),
+        ("The Lord of the Rings", (None, "The Lord of the Rings")),  # No separator
+        ("Terry Pratchett / Discworld 01", ("Terry Pratchett", "Discworld 01")),  # Slash separator
+        ("Author_Name _ Book Title", ("Author_Name", "Book Title")),  # Underscore separator
+    ]
+
+    for input_val, expected in extract_tests:
+        author, title = extract_author_title(input_val)
+        expected_author, expected_title = expected
+        match = (author == expected_author and title == expected_title)
+        if test_result(f"Extract: '{input_val}'",
+                       match,
+                       f"Expected ({expected_author}, {expected_title}), got ({author}, {title})"):
+            passed += 1
+        else:
+            failed += 1
+
+    # ==========================================
+    # Issue #36: Series folder detection patterns
+    # ==========================================
+    print("\n--- Issue #36: Series Folder Detection ---")
+
+    # These patterns should identify numbered book folders
+    book_folder_patterns = [
+        r'^\d+\s*[-–—:.]?\s*\w',     # "01 Title", "1 - Title", "01. Title"
+        r'^#?\d+\s*[-–—:]',          # "#1 - Title"
+        r'book\s*\d+',               # "Book 1", "Book1"
+        r'vol(ume)?\s*\d+',          # "Volume 1", "Vol 1"
+        r'part\s*\d+',               # "Part 1"
+    ]
+
+    def is_book_like_folder(name):
+        return any(re.search(p, name, re.IGNORECASE) for p in book_folder_patterns)
+
+    series_folder_tests = [
+        ("4 - The Apocalypse Codex", True),      # Issue #36 case
+        ("01 - Foundation", True),               # Numbered
+        ("Book 1 - The Way of Kings", True),     # "Book N"
+        ("Volume 3", True),                      # "Volume N"
+        ("Part 2 - Chapter Two", True),          # "Part N"
+        ("#5 - Fifth Entry", True),              # "#N"
+        ("The Apocalypse Codex", False),         # Plain title - not a numbered book
+        ("Random Book Title", False),            # Plain title
+        ("Audio Files", False),                  # Not a book folder
+    ]
+
+    for folder_name, should_match in series_folder_tests:
+        result = is_book_like_folder(folder_name)
+        if test_result(f"Series book: '{folder_name}'",
+                       result == should_match,
+                       f"Expected {should_match}, got {result}"):
             passed += 1
         else:
             failed += 1
