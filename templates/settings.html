@@ -996,14 +996,14 @@ function refreshOllamaModels() {
             select.innerHTML = '';
             data.models.forEach(model => {
                 const opt = document.createElement('option');
-                opt.value = model.name;
-                opt.textContent = model.name + (model.size ? ' (' + model.size + ')' : '');
-                if (model.name === currentValue) opt.selected = true;
+                opt.value = model;
+                opt.textContent = model;
+                if (model === currentValue) opt.selected = true;
                 select.appendChild(opt);
             });
             // If current value wasn't found, select first
             if (!select.value && data.models.length > 0) {
-                select.value = data.models[0].name;
+                select.value = data.models[0];
             }
         } else {
             // No models found or error - show defaults

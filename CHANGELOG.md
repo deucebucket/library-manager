@@ -2,6 +2,15 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.59] - 2025-12-24
+
+### Fixed
+- **Ollama Model Dropdown** (Issue #41) - Model names now display correctly instead of "undefined"
+  - Fixed JavaScript that was treating model name strings as objects
+  - Dropdown now properly shows available models from Ollama server
+
+---
+
 ## [0.9.0-beta.58] - 2025-12-24
 
 ### Fixed
