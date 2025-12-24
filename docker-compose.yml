@@ -21,6 +21,10 @@ services:
     environment:
       - TZ=America/Chicago  # Change to your timezone
       - PORT=5757  # Change if port conflicts (also update ports: above)
+      # UnRaid users: Set PUID/PGID to match your user (typically 99/100)
+      # This ensures files are created with correct ownership
+      # - PUID=99
+      # - PGID=100
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5757/"]
       interval: 30s

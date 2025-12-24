@@ -2,6 +2,17 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.57] - 2025-12-23
+
+### Added
+- **PUID/PGID Support** (Issue #39) - Docker container now respects user permissions
+  - Set `PUID` and `PGID` environment variables to control file ownership
+  - UnRaid users: use `PUID=99` and `PGID=100` for "nobody" user
+  - Defaults to root (0/0) for backwards compatibility
+  - Files created by the container will have correct ownership
+
+---
+
 ## [0.9.0-beta.56] - 2025-12-23
 
 ### Fixed
