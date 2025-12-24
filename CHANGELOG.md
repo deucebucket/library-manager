@@ -2,6 +2,17 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.58] - 2025-12-24
+
+### Fixed
+- **PUID/PGID Improvements** (Issue #39) - Fixed startup errors with common GIDs
+  - Handles existing GIDs (e.g., GID 100 = "users" group in Debian)
+  - Uses `-o` flag for useradd to allow duplicate UIDs
+  - Log file moved to `/data/app.log` (persistent, accessible to non-root user)
+  - Properly sets ownership of data directories before starting app
+
+---
+
 ## [0.9.0-beta.57] - 2025-12-23
 
 ### Added

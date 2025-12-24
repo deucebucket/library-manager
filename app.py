@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.57"
+APP_VERSION = "0.9.0-beta.58"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -891,15 +891,13 @@ def extract_narrator_from_folder(folder_path):
     return None
 
 
-# Configure logging - use script directory for log file
+# Configure logging - start with console only, add file handler after DATA_DIR is detected
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_FILE = os.path.join(APP_DIR, 'app.log')
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(LOG_FILE),
         logging.StreamHandler()
     ]
 )
@@ -960,8 +958,13 @@ def _detect_data_dir():
 DATA_DIR = _detect_data_dir()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+# Add file handler now that we know DATA_DIR (log to persistent storage)
+LOG_FILE = DATA_DIR / 'app.log'
+_file_handler = logging.FileHandler(LOG_FILE)
+_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logging.getLogger().addHandler(_file_handler)
+
 # Log where we're storing data (helps debug mount issues)
-import logging
 _startup_logger = logging.getLogger(__name__)
 _startup_logger.info(f"Data directory: {DATA_DIR} (config persistence location)")
 
@@ -8922,7 +8925,7 @@ def api_stop_worker():
 def api_logs():
     """Get recent log entries."""
     try:
-        log_file = BASE_DIR / 'app.log'
+        log_file = DATA_DIR / 'app.log'
         if log_file.exists():
             with open(log_file, 'r') as f:
                 # Read last 100 lines
@@ -9853,7 +9856,7 @@ def api_bug_report():
     conn.close()
 
     # Get recent error/warning logs - sanitize paths
-    log_file = BASE_DIR / 'app.log'
+    log_file = DATA_DIR / 'app.log'
     recent_errors = []
     if log_file.exists():
         with open(log_file, 'r') as f:

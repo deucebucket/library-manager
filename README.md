@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.57-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.58-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,9 +16,9 @@
 
 ## Recent Changes (develop)
 
-> **beta.57** - Docker PUID/PGID Support (Issue #39)
-> - **File Permissions Fixed** - Container now respects PUID/PGID for file ownership
-> - UnRaid users: set `PUID=99` `PGID=100` for correct "nobody" ownership
+> **beta.58** - PUID/PGID Fix (Issue #39)
+> - **Startup Fix** - Handles existing GIDs (e.g., GID 100 = "users")
+> - **Log File Moved** - Now in `/data/app.log` (persistent, correct permissions)
 
 > **beta.56** - Bug Fixes for Watch Folder & Series Detection
 > - **Watch Folder Settings Save** (Issue #32) - Toggle and all settings now save from UI
