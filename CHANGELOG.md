@@ -2,6 +2,19 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.61] - 2025-12-24
+
+### Improved
+- **Watch Folder Unknown Author Handling** (Issue #40) - Unknown authors now flagged for review
+  - When watch folder can't determine author (shows as "Unknown"), item is flagged for user attention
+  - File is still moved to library (so watch folder doesn't fill up)
+  - But status is set to `needs_attention` instead of `pending`
+  - Shows up in the "Attention" tab with message explaining the issue
+  - User can edit to correct author/title before processing continues
+  - Uses existing `is_placeholder_author()` to catch all placeholder names (Unknown, Various, N/A, etc.)
+
+---
+
 ## [0.9.0-beta.60] - 2025-12-24
 
 ### Fixed

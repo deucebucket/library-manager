@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.60"
+APP_VERSION = "0.9.0-beta.61"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -7286,6 +7286,12 @@ def process_watch_folder(config: dict) -> int:
             except Exception as e:
                 logger.debug(f"Watch folder: API lookup failed, using path analysis: {e}")
 
+            # Issue #40: Check if author is still unknown/placeholder after API lookup
+            # If so, flag for user attention instead of auto-processing
+            author_is_placeholder = is_placeholder_author(author)
+            if author_is_placeholder:
+                logger.warning(f"Watch folder: Unknown author for '{title}' - will require user review")
+
             # Move to output folder
             success, new_path, error = move_to_output_folder(
                 item_path, output_folder, author, title,
@@ -7297,12 +7303,22 @@ def process_watch_folder(config: dict) -> int:
                 watch_folder_processed.add(item_path)
                 processed += 1
 
-                # Add to books table so it gets processed by normal scan
+                # Add to books table
+                # Issue #40: If author is unknown, mark as needs_attention for user review
                 try:
-                    c.execute('''INSERT OR REPLACE INTO books
-                                 (path, current_author, current_title, status, added_at, updated_at)
-                                 VALUES (?, ?, ?, 'pending', datetime('now'), datetime('now'))''',
-                              (new_path, author, title))
+                    if author_is_placeholder:
+                        # Unknown author - requires user intervention before processing
+                        c.execute('''INSERT OR REPLACE INTO books
+                                     (path, current_author, current_title, status, error_message, added_at, updated_at)
+                                     VALUES (?, ?, ?, 'needs_attention', ?, datetime('now'), datetime('now'))''',
+                                  (new_path, author, title, 'Watch folder: Could not determine author - please review and correct'))
+                        logger.info(f"Watch folder: Flagged for attention (unknown author): {title}")
+                    else:
+                        # Known author - normal processing
+                        c.execute('''INSERT OR REPLACE INTO books
+                                     (path, current_author, current_title, status, added_at, updated_at)
+                                     VALUES (?, ?, ?, 'pending', datetime('now'), datetime('now'))''',
+                                  (new_path, author, title))
                     conn.commit()
                 except Exception as e:
                     logger.debug(f"Watch folder: Could not add to books table: {e}")
