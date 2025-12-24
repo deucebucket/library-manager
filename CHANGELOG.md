@@ -2,6 +2,17 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.60] - 2025-12-24
+
+### Fixed
+- **Series Folders Showing in Queue** (Issue #36) - Series folders no longer appear as items needing fixes
+  - When a folder is detected as a series folder, it's now removed from the processing queue
+  - Same fix applied for multi-book collection folders
+  - Queue view now filters out series_folder and multi_book_files status items
+  - Queue count now accurately excludes these non-processable items
+
+---
+
 ## [0.9.0-beta.59] - 2025-12-24
 
 ### Fixed

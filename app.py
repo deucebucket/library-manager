@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.59"
+APP_VERSION = "0.9.0-beta.60"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -5440,6 +5440,9 @@ def deep_scan_library(config):
                         existing = c.fetchone()
                         if existing:
                             c.execute('UPDATE books SET status = ? WHERE id = ?', ('series_folder', existing['id']))
+                            # Issue #36: Remove from queue if it was previously queued
+                            # Series folders should never be in the processing queue
+                            c.execute('DELETE FROM queue WHERE book_id = ?', (existing['id'],))
                         else:
                             c.execute('''INSERT INTO books (path, current_author, current_title, status)
                                          VALUES (?, ?, ?, 'series_folder')''', (path, author, title))
@@ -5515,6 +5518,8 @@ def deep_scan_library(config):
                         existing = c.fetchone()
                         if existing:
                             c.execute('UPDATE books SET status = ? WHERE id = ?', ('multi_book_files', existing['id']))
+                            # Issue #36: Remove from queue if it was previously queued
+                            c.execute('DELETE FROM queue WHERE book_id = ?', (existing['id'],))
                         else:
                             c.execute('''INSERT INTO books (path, current_author, current_title, status)
                                          VALUES (?, ?, ?, 'multi_book_files')''', (path, author, title))
@@ -9079,7 +9084,10 @@ def api_library():
     c.execute("SELECT COUNT(*) FROM history WHERE status = 'pending_fix'")
     counts['pending'] = c.fetchone()[0]
 
-    c.execute("SELECT COUNT(*) FROM queue")
+    # Issue #36: Queue count should exclude series_folder and multi_book_files
+    c.execute('''SELECT COUNT(*) FROM queue q
+                 JOIN books b ON q.book_id = b.id
+                 WHERE b.status NOT IN ('series_folder', 'multi_book_files', 'verified', 'fixed')''')
     counts['queue'] = c.fetchone()[0]
 
     c.execute("SELECT COUNT(*) FROM history WHERE status = 'fixed'")
@@ -9155,10 +9163,12 @@ def api_library():
 
     elif status_filter == 'queue':
         # Items in the processing queue
+        # Issue #36: Filter out series_folder and multi_book_files - they should never appear in queue
         c.execute('''SELECT q.id as queue_id, q.reason, q.added_at, q.priority,
                             b.id as book_id, b.path, b.current_author, b.current_title, b.status
                      FROM queue q
                      JOIN books b ON q.book_id = b.id
+                     WHERE b.status NOT IN ('series_folder', 'multi_book_files', 'verified', 'fixed')
                      ORDER BY q.priority, q.added_at
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
