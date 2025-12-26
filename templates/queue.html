@@ -470,6 +470,13 @@ let selectedBookDBResult = null;
 let editModal = null;
 
 function editItem(queueId, author, title) {
+    // Warn user if processing is active - items may change while they're editing
+    if (isProcessing) {
+        if (!confirm('Queue is currently processing. The item you edit might be processed before you save.\n\nEdit anyway?')) {
+            return;
+        }
+    }
+
     document.getElementById('edit-queue-id').value = queueId;
     document.getElementById('edit-author').value = author;
     document.getElementById('edit-title').value = title;

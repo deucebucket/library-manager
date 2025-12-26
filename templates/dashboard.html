@@ -122,21 +122,21 @@
                             </td>
                             <td>
                                 {% if h.status == 'undone' %}
-                                <span class="badge bg-info">Undone</span>
+                                <span class="badge bg-info" title="Rename was reverted to original">Undone</span>
                                 {% elif h.status == 'fixed' %}
-                                <span class="badge bg-success">Fixed</span>
+                                <span class="badge bg-success" title="Rename was applied successfully">Fixed</span>
                                 {% elif h.status == 'error' %}
                                 <span class="badge bg-danger" title="{{ h.error_message or 'Error' }}">Error</span>
                                 {% elif h.status == 'duplicate' %}
-                                <span class="badge bg-warning text-dark">Duplicate</span>
+                                <span class="badge bg-warning text-dark" title="Multiple copies of the same book detected">Duplicate</span>
                                 {% elif h.status == 'conflict' %}
-                                <span class="badge bg-warning text-dark">Conflict</span>
+                                <span class="badge bg-warning text-dark" title="Destination folder already exists with different content">Conflict</span>
                                 {% elif h.status == 'corrupt_dest' %}
-                                <span class="badge bg-danger">Corrupt</span>
+                                <span class="badge bg-danger" title="Destination path has issues - needs manual review">Corrupt</span>
                                 {% elif h.status == 'pending_fix' %}
-                                <span class="badge bg-secondary">Pending</span>
+                                <span class="badge bg-secondary" title="Rename pending - click to review and apply">Pending</span>
                                 {% elif h.status == 'attention' %}
-                                <span class="badge bg-danger">Needs Attention</span>
+                                <span class="badge bg-danger" title="Could not auto-identify - please edit manually">Needs Attention</span>
                                 {% else %}
                                 <span class="badge bg-secondary">{{ h.status }}</span>
                                 {% endif %}
@@ -349,14 +349,14 @@ function refreshDashboard() {
                             <span class="text-info">${escapeHtml(h.new_title)}</span>
                         </td>
                         <td>
-                            ${h.status === 'undone' ? '<span class="badge bg-info">Undone</span>' :
-                              h.status === 'fixed' ? '<span class="badge bg-success">Fixed</span>' :
+                            ${h.status === 'undone' ? '<span class="badge bg-info" title="Rename was reverted to original">Undone</span>' :
+                              h.status === 'fixed' ? '<span class="badge bg-success" title="Rename was applied successfully">Fixed</span>' :
                               h.status === 'error' ? '<span class="badge bg-danger" title="' + escapeHtml(h.error_message || 'Error') + '">Error</span>' :
-                              h.status === 'duplicate' ? '<span class="badge bg-warning text-dark">Duplicate</span>' :
-                              h.status === 'conflict' ? '<span class="badge bg-warning text-dark">Conflict</span>' :
-                              h.status === 'corrupt_dest' ? '<span class="badge bg-danger">Corrupt</span>' :
-                              h.status === 'pending_fix' ? '<span class="badge bg-secondary">Pending</span>' :
-                              h.status === 'attention' ? '<span class="badge bg-danger">Needs Attention</span>' :
+                              h.status === 'duplicate' ? '<span class="badge bg-warning text-dark" title="Multiple copies of the same book detected">Duplicate</span>' :
+                              h.status === 'conflict' ? '<span class="badge bg-warning text-dark" title="Destination folder already exists with different content">Conflict</span>' :
+                              h.status === 'corrupt_dest' ? '<span class="badge bg-danger" title="Destination path has issues - needs manual review">Corrupt</span>' :
+                              h.status === 'pending_fix' ? '<span class="badge bg-secondary" title="Rename pending - click to review and apply">Pending</span>' :
+                              h.status === 'attention' ? '<span class="badge bg-danger" title="Could not auto-identify - please edit manually">Needs Attention</span>' :
                               '<span class="badge bg-secondary">' + escapeHtml(h.status) + '</span>'}
                         </td>
                         <td>

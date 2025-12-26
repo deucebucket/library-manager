@@ -2,6 +2,30 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.62] - 2025-12-26
+
+### Improved
+- **Settings Page Reorganization** - Cleaner 5-tab layout for better discoverability
+  - **Library** - Paths, naming format, watch folder, ebook management
+  - **Processing** - Background processing, confidence settings, identification layers
+  - **AI Setup** - Provider selection (Gemini/OpenRouter/Ollama), metadata sources
+  - **Safety** - Auto-apply, author approval, trust the process, metadata embedding
+  - **Advanced** - Language, error reporting, updates, danger zone, backup, debug/logs
+  - "How It Works" banner now remembers dismissal via localStorage
+
+### Added
+- **UI Tooltips** (Issue #43) - Hover over status badges to see what they mean
+  - Library page: Tooltips on all status badges (OK, Needs Fix, Processing, etc.)
+  - Dashboard page: Tooltips on status counts
+  - History page: Tooltips on Fixed/Pending/Undone badges
+
+- **Edit Warning During Processing** (Issue #42) - Warning when editing during queue processing
+  - If you click Edit while processing is active, you get a warning that the item may change
+  - "Don't show again" option suppresses warning for the rest of the session
+  - Prevents confusion when items change mid-edit
+
+---
+
 ## [0.9.0-beta.61] - 2025-12-24
 
 ### Improved

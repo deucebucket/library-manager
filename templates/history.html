@@ -100,11 +100,11 @@
                             <i class="bi bi-exclamation-triangle"></i> Review
                         </span>
                         {% elif h.status == 'fixed' %}
-                        <span class="badge bg-success">Applied</span>
+                        <span class="badge bg-success" title="Rename was applied successfully">Applied</span>
                         {% elif h.status == 'pending_fix' %}
-                        <span class="badge bg-warning text-dark">Pending</span>
+                        <span class="badge bg-warning text-dark" title="Rename pending - click Apply to execute">Pending</span>
                         {% elif h.status == 'undone' %}
-                        <span class="badge bg-info">Undone</span>
+                        <span class="badge bg-info" title="Rename was reverted to original">Undone</span>
                         {% elif h.status == 'duplicate' %}
                         <span class="badge bg-warning text-dark" title="{{ h.error_message or 'Duplicate detected' }}" style="cursor: help;">
                             <i class="bi bi-files"></i> Duplicate

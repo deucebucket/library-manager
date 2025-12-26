@@ -326,6 +326,8 @@ let currentFilter = 'all';
 let currentPage = 1;
 let libraryData = null;
 let skipConfirmations = {{ 'true' if config.get('skip_confirmations') else 'false' }};
+let isProcessing = false;
+let suppressProcessingWarning = false;
 
 // Toggle skip confirmations
 document.getElementById('skip-confirm-toggle').addEventListener('change', function() {
@@ -476,16 +478,16 @@ function renderItems(items) {
 
 function getStatusBadge(item) {
     const badges = {
-        'pending_fix': '<span class="badge bg-warning text-dark status-badge"><i class="bi bi-hourglass"></i> Pending</span>',
-        'orphan': '<span class="badge bg-info status-badge"><i class="bi bi-file-music"></i> Orphan</span>',
-        'in_queue': '<span class="badge bg-primary status-badge"><i class="bi bi-list-task"></i> Queued</span>',
-        'fixed': '<span class="badge bg-success status-badge"><i class="bi bi-check"></i> Fixed</span>',
-        'verified': '<span class="badge bg-success status-badge"><i class="bi bi-patch-check"></i> OK</span>',
-        'error': '<span class="badge bg-danger status-badge"><i class="bi bi-x"></i> Error</span>',
-        'duplicate': '<span class="badge bg-warning text-dark status-badge"><i class="bi bi-files"></i> Duplicate</span>',
-        'corrupt_dest': '<span class="badge bg-danger status-badge"><i class="bi bi-exclamation"></i> Corrupt</span>',
-        'needs_attention': '<span class="badge bg-warning text-dark status-badge"><i class="bi bi-eye"></i> Attention</span>',
-        'structure_reversed': '<span class="badge bg-info status-badge"><i class="bi bi-arrow-left-right"></i> Reversed</span>'
+        'pending_fix': '<span class="badge bg-warning text-dark status-badge" title="Rename pending - click to review and apply"><i class="bi bi-hourglass"></i> Pending</span>',
+        'orphan': '<span class="badge bg-info status-badge" title="Loose audio files without a proper folder structure"><i class="bi bi-file-music"></i> Orphan</span>',
+        'in_queue': '<span class="badge bg-primary status-badge" title="Waiting to be identified - will be processed in Queue"><i class="bi bi-list-task"></i> Queued</span>',
+        'fixed': '<span class="badge bg-success status-badge" title="Rename was applied successfully"><i class="bi bi-check"></i> Fixed</span>',
+        'verified': '<span class="badge bg-success status-badge" title="Book identified and structure is correct"><i class="bi bi-patch-check"></i> OK</span>',
+        'error': '<span class="badge bg-danger status-badge" title="Something went wrong - check the error message"><i class="bi bi-x"></i> Error</span>',
+        'duplicate': '<span class="badge bg-warning text-dark status-badge" title="Multiple copies of the same book detected"><i class="bi bi-files"></i> Duplicate</span>',
+        'corrupt_dest': '<span class="badge bg-danger status-badge" title="Destination path has issues - needs manual review"><i class="bi bi-exclamation"></i> Corrupt</span>',
+        'needs_attention': '<span class="badge bg-warning text-dark status-badge" title="Could not auto-identify - please edit manually"><i class="bi bi-eye"></i> Attention</span>',
+        'structure_reversed': '<span class="badge bg-info status-badge" title="Author and title folders are swapped (e.g. Title/Author instead of Author/Title)"><i class="bi bi-arrow-left-right"></i> Reversed</span>'
     };
     let badge = badges[item.status] || badges[item.type] || `<span class="badge bg-secondary status-badge">${item.status || item.type}</span>`;
 
@@ -730,18 +732,22 @@ function processQueue() {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Processing...';
     addActivity('Processing queue...', 'info');
+    isProcessing = true;
+    suppressProcessingWarning = false;  // Reset warning suppression for new processing session
 
     fetch('/api/process', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({limit: 5})})
         .then(r => r.json())
         .then(data => {
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue';
+            isProcessing = false;
             addActivity(`Processed ${data.fixed} items`, 'success');
             loadLibrary();
         })
         .catch(e => {
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue';
+            isProcessing = false;
             addActivity(`Error: ${e}`, 'error');
         });
 }
@@ -753,18 +759,22 @@ function applyAllPending() {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Applying...';
     addActivity('Applying all pending fixes...', 'info');
+    isProcessing = true;
+    suppressProcessingWarning = false;
 
     fetch('/api/apply_all_pending', {method: 'POST'})
         .then(r => r.json())
         .then(data => {
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-check-all"></i> Apply All Pending';
+            isProcessing = false;
             addActivity(data.message, data.success ? 'success' : 'error');
             loadLibrary();
         })
         .catch(e => {
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-check-all"></i> Apply All Pending';
+            isProcessing = false;
             addActivity(`Error: ${e}`, 'error');
         });
 }
@@ -939,6 +949,13 @@ let editBookModal = null;
 let selectedBookDBResult = null;
 
 function editBook(bookId, author, title) {
+    // Warn if processing is active (item may change before save)
+    if (isProcessing && !suppressProcessingWarning) {
+        const result = confirm('Processing is active. The item may change before you save.\n\nClick OK to continue (won\'t ask again this session)\nClick Cancel to wait');
+        if (!result) return;
+        suppressProcessingWarning = true;  // Don't show again this processing session
+    }
+
     document.getElementById('edit-book-id').value = bookId;
     document.getElementById('edit-author').value = author;
     document.getElementById('edit-title').value = title;
