@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.58-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.62-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,51 +16,23 @@
 
 ## Recent Changes (develop)
 
+> **beta.62** - Settings Reorganization & UI Polish
+> - **Settings Redesign** - Reorganized from 3 tabs to 5 cleaner tabs (Library, Processing, AI Setup, Safety, Advanced)
+> - **UI Tooltips** (Issue #43) - Hover over status badges to see what they mean
+> - **Edit Warning** (Issue #42) - Warning when editing during queue processing
+
+> **beta.61** - Watch Folder Unknown Author Handling (Issue #40)
+> - **Flag Unknown Authors** - Files with unknown authors flagged for review instead of auto-processing
+
+> **beta.60** - Series Folder Queue Fix (Issue #36)
+> - **Series Folders Hidden** - Series folders no longer appear in queue as items needing fixes
+
+> **beta.59** - Ollama Model Dropdown Fix (Issue #41)
+> - **Model Names Display** - Fixed "undefined" showing in Ollama model dropdown
+
 > **beta.58** - PUID/PGID Fix (Issue #39)
 > - **Startup Fix** - Handles existing GIDs (e.g., GID 100 = "users")
 > - **Log File Moved** - Now in `/data/app.log` (persistent, correct permissions)
-
-> **beta.56** - Bug Fixes for Watch Folder & Series Detection
-> - **Watch Folder Settings Save** (Issue #32) - Toggle and all settings now save from UI
-> - **Series Folder Detection** (Issue #36) - Detects series folders even with 1 book
-> - **Search Numbers Fixed** (Issue #38) - Book numbers no longer pollute searches
-
-> **beta.55** - Watch Folder & Library Enhancements
-> - **Watch Folder Mode** (Issue #32) - Monitor a downloads folder, auto-organize new audiobooks
-> - **Library Search** - Find any book by author or title
-> - **Edit from Library** - Edit any book directly (not just from History)
-
-> **beta.54** - User Edit & Lock System (Issue #36)
-> - **Edit Any Book** - Correct wrong identifications before applying
-> - **Lock Metadata** - User edits are "cemented" and never overwritten
-> - **Unlock Option** - Re-enable processing when needed
-
-> **beta.53** - Critical Process Button Fix
-> - **Process Button Works** - Fixed bug where clicking Process skipped Layer 1 (API)
-
-> **beta.52** - Profile Data & Legacy Badges
-> - **Verification Source Tracking** - Shows which API verified each book
-> - **Legacy Badge** - Identifies books verified before profile system
-
-> **beta.51** - Placeholder Author Fix
-> - **Placeholder Authors Go to AI** - "Unknown" authors no longer incorrectly verified
-
-> **beta.50** - Error Reporting & Debug Tools
-> - **Anonymous Error Reporting** - Opt-in system to send bug reports
-> - **API Connection Tests** - Test all connections with one click
-
-> **beta.49** - Queue Processing Fix
-> - **Queue Actually Processes** - Fixed "processed 0" bug
-
-> **beta.48** - Search Series Detection
-> - **Series Number Extraction** - "Horus Heresy Book 36" auto-extracts series info
-
-> **beta.47** - Settings Overhaul
-> - **Settings Actually Save** - All verification toggles now persist
-> - **Unified Navigation** - Cleaner navbar with Library filters
-
-> **beta.46** - UnRaid Config Fix
-> - **Auto-Detect `/config`** - Works with UnRaid's default mount point
 
 [Full Changelog](CHANGELOG.md)
 
