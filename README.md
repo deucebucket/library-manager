@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.62-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.63-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,10 @@
 ---
 
 ## Recent Changes (develop)
+
+> **beta.63** - BookDB Integration Fix (Issue #45)
+> - **BookDB Now Works** - Metadata lookups use BookDB automatically (no configuration needed)
+> - **Faster Searches** - Edit dialog search now returns results in ~2.5s instead of timing out
 
 > **beta.62** - Settings Reorganization & UI Polish
 > - **Settings Redesign** - Reorganized from 3 tabs to 5 cleaner tabs (Library, Processing, AI Setup, Safety, Advanced)

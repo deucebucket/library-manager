@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.62"
+APP_VERSION = "0.9.0-beta.63"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -2039,6 +2039,8 @@ def clean_search_title(messy_name):
 
 # BookDB API endpoint (our private metadata service)
 BOOKDB_API_URL = "https://bookdb.deucebucket.com"
+# Public API key for Library Manager users (no config needed)
+BOOKDB_PUBLIC_KEY = "lm-public-2024_85TbJ2lbrXGm38tBgliPAcAexLA_AeWxyqvHPbwRIrA"
 
 def search_bookdb(title, author=None, api_key=None):
     """
@@ -2409,11 +2411,11 @@ def lookup_book_metadata(messy_name, config, folder_path=None):
     audible_region = get_audible_region_for_language(preferred_lang)
 
     # 0. Try BookDB first (our private metadata service with fuzzy matching)
-    bookdb_key = config.get('bookdb_api_key')
-    if bookdb_key:
-        result = validate_result(search_bookdb(clean_title, author=author_hint, api_key=bookdb_key), clean_title)
-        if result:
-            return result
+    # Use user's key if configured, otherwise fall back to public key
+    bookdb_key = config.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
+    result = validate_result(search_bookdb(clean_title, author=author_hint, api_key=bookdb_key), clean_title)
+    if result:
+        return result
 
     # 1. Try Audnexus (best for audiobooks, pulls from Audible)
     result = validate_result(search_audnexus(clean_title, author=author_hint, region=audible_region), clean_title)
@@ -2458,7 +2460,7 @@ def gather_all_api_candidates(title, author=None, config=None):
 
     # Search each API and collect all results
     apis = [
-        ('BookDB', lambda t, a: search_bookdb(t, a, config.get('bookdb_api_key') if config else None)),
+        ('BookDB', lambda t, a: search_bookdb(t, a, (config.get('bookdb_api_key') if config else None) or BOOKDB_PUBLIC_KEY)),
         ('Audnexus', lambda t, a: search_audnexus(t, a, region=audible_region)),
         ('OpenLibrary', lambda t, a: search_openlibrary(t, a, lang=preferred_lang)),
         ('GoogleBooks', lambda t, a: search_google_books(t, a, config.get('google_books_api_key') if config else None, lang=preferred_lang)),

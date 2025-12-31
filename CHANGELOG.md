@@ -2,6 +2,22 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.63] - 2025-12-31
+
+### Fixed
+- **BookDB Integration** (Issue #45) - BookDB metadata lookups now work without configuration
+  - Hardcoded public API key so users don't need to configure `bookdb_api_key`
+  - Layer 1 API lookups now properly use BookDB as the first source
+  - Edit dialog "Search Book Database" now returns results from BookDB instead of falling back to Google Books
+  - Fixed slow queries that were causing timeouts (was doing full table scans on 50M books)
+
+### Improved
+- **BookDB Search Performance** - Searches now complete in ~2.5 seconds instead of timing out
+  - Optimized FTS (Full-Text Search) queries to avoid slow OR LIKE clauses
+  - Better author-filtered matching for accurate results
+
+---
+
 ## [0.9.0-beta.62] - 2025-12-26
 
 ### Improved
