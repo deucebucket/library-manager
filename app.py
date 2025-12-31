@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.63"
+APP_VERSION = "0.9.0-beta.64"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -7351,10 +7351,9 @@ def background_worker():
                 # Scan library
                 scan_library(config)
 
-                # Process queue if auto_fix is enabled
-                if config.get('auto_fix', False):
-                    logger.debug("Worker: Auto-fix enabled, processing queue")
-                    process_all_queue(config)
+                # Process queue (auto_fix setting controls whether fixes are applied or sent to pending)
+                logger.debug("Worker: Processing queue")
+                process_all_queue(config)
             except Exception as e:
                 logger.error(f"Worker error: {e}", exc_info=True)
 

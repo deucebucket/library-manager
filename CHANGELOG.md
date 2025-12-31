@@ -2,6 +2,17 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.64] - 2025-12-31
+
+### Fixed
+- **Queue Not Auto-Processing** (Issue #44) - Queue now processes automatically regardless of Auto-Fix setting
+  - Previously, queue processing was tied to the Auto-Fix toggle - queue would never process unless Auto-Fix was enabled
+  - Now queue always processes on schedule (scans library, runs Layer 1/2/3 identification)
+  - Auto-Fix toggle now only controls whether fixes are applied automatically or sent to Pending for manual review
+  - This is how it always should have worked - Auto-Fix should control renaming, not identification
+
+---
+
 ## [0.9.0-beta.63] - 2025-12-31
 
 ### Fixed
