@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.65"
+APP_VERSION = "0.9.0-beta.66"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -11238,7 +11238,8 @@ def api_edit_book():
         # Find which library this book belongs to (or should go to for watch folder items)
         config = load_config()
         lib_path = None
-        source_type = item.get('source_type') or 'library'
+        # Issue #51: sqlite3.Row doesn't have .get() - use bracket access with fallback
+        source_type = item['source_type'] if item['source_type'] else 'library'
 
         # Issue #49: For watch folder items, use the output folder as destination
         if source_type == 'watch_folder':

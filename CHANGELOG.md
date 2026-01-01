@@ -2,6 +2,16 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.66] - 2026-01-01
+
+### Fixed
+- **Edit Book SQLite Error** (Issue #51) - Fixed crash when editing books in Attention tab
+  - Error was: `'sqlite3.Row' object has no attribute 'get'`
+  - Row objects use bracket access `row['column']`, not `.get()` method
+  - Edit & Lock now works correctly for all book types
+
+---
+
 ## [0.9.0-beta.65] - 2026-01-01
 
 ### Fixed
