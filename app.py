@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.64"
+APP_VERSION = "0.9.0-beta.65"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -1116,6 +1116,13 @@ def init_db():
     except:
         pass  # Column already exists
 
+    # Add source_type column - tracks where the book came from ('library' or 'watch_folder')
+    # Used to handle watch folder items that failed to move and need special processing
+    try:
+        c.execute("ALTER TABLE books ADD COLUMN source_type TEXT DEFAULT 'library'")
+    except:
+        pass  # Column already exists
+
     # Queue table - books needing AI analysis
     c.execute('''CREATE TABLE IF NOT EXISTS queue (
         id INTEGER PRIMARY KEY,
@@ -2009,9 +2016,14 @@ def clean_search_title(messy_name):
     # Remove bracketed content like [bitsearch.to], [64k], [r1.1]
     clean = re.sub(r'\[.*?\]', '', clean)
     # Remove parenthetical junk like (Unabridged), (2019) - but keep series info like (Book 1)
-    clean = re.sub(r'\((?:Unabridged|Abridged|MP3|M4B|EPUB|PDF|64k|128k|r\d+\.\d+|multi).*?\)', '', clean, flags=re.IGNORECASE)
-    # Remove curly brace junk like {465mb}, {narrator}
-    clean = re.sub(r'\{[^}]*(?:mb|kb|kbps|narrator|reader)[^}]*\}', '', clean, flags=re.IGNORECASE)
+    clean = re.sub(r'\((?:Unabridged|Abridged|MP3|M4B|EPUB|PDF|64k|128k|192k|256k|320k|VBR|r\d+\.\d+|multi|mono|stereo).*?\)', '', clean, flags=re.IGNORECASE)
+    # Remove curly brace junk like {465mb}, {narrator}, {128k}
+    clean = re.sub(r'\{[^}]*\}', '', clean)
+    # Issue #48: Remove standalone encoding info (bitrates, file sizes, channel info)
+    clean = re.sub(r'\b\d+k(?:bps)?\b', '', clean, flags=re.IGNORECASE)  # 128k, 64kbps
+    clean = re.sub(r'\b\d+(?:\.\d+)?(?:mb|gb|kb)\b', '', clean, flags=re.IGNORECASE)  # 463mb, 1.2gb
+    clean = re.sub(r'\b(?:mono|stereo|multi)\b', '', clean, flags=re.IGNORECASE)  # audio channels
+    clean = re.sub(r'\b(?:vbr|cbr|aac|lame|opus)\b', '', clean, flags=re.IGNORECASE)  # codec info
     # Remove file extensions
     clean = re.sub(r'\.(mp3|m4b|m4a|epub|pdf|mobi|webm|opus)$', '', clean, flags=re.IGNORECASE)
     # Remove "by Author" at the end temporarily for searching
@@ -2260,12 +2272,15 @@ def search_audnexus(title, author=None, region=None):
         if region and region != 'us':
             url += f"&region={region}"
 
+        logger.debug(f"Audnexus: Searching for '{query}'")
         resp = requests.get(url, timeout=10, headers={'Accept': 'application/json'})
         if resp.status_code != 200:
+            logger.debug(f"Audnexus: API returned status {resp.status_code}")
             return None
 
         data = resp.json()
         if not data or not isinstance(data, list) or len(data) == 0:
+            logger.debug(f"Audnexus: No results for '{query}'")
             return None
 
         # Get best match
@@ -2281,9 +2296,10 @@ def search_audnexus(title, author=None, region=None):
         if result['title'] and result['author']:
             logger.info(f"Audnexus found: {result['author']} - {result['title']}")
             return result
+        logger.debug(f"Audnexus: Result missing title or author for '{query}'")
         return None
     except Exception as e:
-        logger.debug(f"Audnexus search failed: {e}")
+        logger.warning(f"Audnexus search failed for '{title}': {e}")
         return None
 
 def search_hardcover(title, author=None):
@@ -2475,12 +2491,13 @@ def gather_all_api_candidates(title, author=None, config=None):
                 # Filter garbage matches
                 suggested_title = result.get('title', '')
                 if is_garbage_match(clean_title, suggested_title):
-                    logger.debug(f"REJECTED garbage from {api_name}: '{clean_title}' -> '{suggested_title}'")
+                    logger.info(f"[LAYER 1] REJECTED garbage from {api_name}: '{clean_title}' -> '{suggested_title}'")
                 else:
                     # Ensure source attribution for Book Profile system
                     result['source'] = api_name.lower()
                     result['search_query'] = f"{author} - {clean_title}" if author else clean_title
                     candidates.append(result)
+                    logger.info(f"[LAYER 1] {api_name} matched: {result.get('author')} - {result.get('title')}")
 
             # Also search without author (might find different results)
             if author:
@@ -5358,6 +5375,17 @@ def deep_scan_library(config):
 
             author = author_dir.name
 
+            # Issue #46: Skip watch folder if it's inside the library path
+            # This prevents the watch folder name from being used as an author
+            watch_folder = config.get('watch_folder', '').strip()
+            if watch_folder:
+                try:
+                    if author_dir.resolve() == Path(watch_folder).resolve():
+                        logger.debug(f"Skipping watch folder at author level: {author}")
+                        continue
+                except Exception:
+                    pass
+
             # Skip system folders at author level - these are NEVER authors
             author_system_folders = {'metadata', 'tmp', 'temp', 'cache', 'config', 'data', 'logs', 'log',
                                      'backup', 'backups', 'old', 'new', 'test', 'tests', 'sample', 'samples',
@@ -6762,12 +6790,21 @@ def apply_fix(history_id):
     old_path = Path(fix['old_path'])
     new_path = Path(fix['new_path'])
 
+    # Issue #49: Check if this is a watch folder item
+    book_id = fix['book_id']
+    c.execute('SELECT source_type FROM books WHERE id = ?', (book_id,))
+    book_row = c.fetchone()
+    source_type = book_row['source_type'] if book_row and book_row['source_type'] else 'library'
+    is_watch_folder_item = (source_type == 'watch_folder')
+
     # CRITICAL SAFETY: Validate paths before any file operations
     config = load_config()
     library_paths = [Path(p).resolve() for p in config.get('library_paths', [])]
+    watch_folder = config.get('watch_folder', '').strip()
 
-    # Check old_path is in a library
+    # Check old_path is in a library (or watch folder for watch folder items)
     old_in_library = False
+    old_in_watch_folder = False
     for lib in library_paths:
         try:
             old_path.resolve().relative_to(lib)
@@ -6776,7 +6813,15 @@ def apply_fix(history_id):
         except ValueError:
             continue
 
-    # Check new_path is in a library
+    # Issue #49: Also check if old_path is in watch folder
+    if watch_folder and not old_in_library:
+        try:
+            old_path.resolve().relative_to(Path(watch_folder).resolve())
+            old_in_watch_folder = True
+        except ValueError:
+            pass
+
+    # Check new_path is in a library (always required - this is where the book goes)
     new_in_library = False
     for lib in library_paths:
         try:
@@ -6786,8 +6831,11 @@ def apply_fix(history_id):
         except ValueError:
             continue
 
-    if not old_in_library or not new_in_library:
-        error_msg = f"SAFETY BLOCK: Path outside library! old_in_lib={old_in_library}, new_in_lib={new_in_library}"
+    # Issue #49: Allow watch folder items to have old_path in watch folder
+    old_path_valid = old_in_library or (is_watch_folder_item and old_in_watch_folder)
+
+    if not old_path_valid or not new_in_library:
+        error_msg = f"SAFETY BLOCK: Path outside library! old_in_lib={old_in_library}, old_in_watch={old_in_watch_folder}, new_in_lib={new_in_library}"
         logger.error(error_msg)
         c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
                  ('error', error_msg, history_id))
@@ -6879,7 +6927,8 @@ def apply_fix(history_id):
             pass
 
         # Update book record
-        c.execute('''UPDATE books SET path = ?, current_author = ?, current_title = ?, status = ?
+        # Issue #49: For watch folder items, also update source_type to 'library' since it's now in the library
+        c.execute('''UPDATE books SET path = ?, current_author = ?, current_title = ?, status = ?, source_type = 'library'
                      WHERE id = ?''',
                  (str(new_path), fix['new_author'], fix['new_title'], 'fixed', fix['book_id']))
 
@@ -7326,6 +7375,28 @@ def process_watch_folder(config: dict) -> int:
                     logger.debug(f"Watch folder: Could not add to books table: {e}")
             else:
                 logger.error(f"Watch folder: Failed to move {item.name}: {error}")
+                # Issue #49: Track failed items in the database so user can see and fix them
+                # Add to watch_folder_processed to prevent infinite retry loop
+                watch_folder_processed.add(item_path)
+                try:
+                    # Check if this item is already tracked
+                    c.execute('SELECT id FROM books WHERE path = ?', (item_path,))
+                    existing = c.fetchone()
+                    if existing:
+                        # Update existing record with error
+                        c.execute('''UPDATE books SET status = ?, error_message = ?, source_type = ?, updated_at = datetime('now')
+                                     WHERE id = ?''',
+                                  ('watch_folder_error', f'Watch folder: {error}', 'watch_folder', existing['id']))
+                    else:
+                        # Insert new record for the failed item
+                        c.execute('''INSERT INTO books
+                                     (path, current_author, current_title, status, error_message, source_type, added_at, updated_at)
+                                     VALUES (?, ?, ?, 'watch_folder_error', ?, 'watch_folder', datetime('now'), datetime('now'))''',
+                                  (item_path, author, title, f'Watch folder: {error}'))
+                    conn.commit()
+                    logger.info(f"Watch folder: Tracked failure for user review: {item.name}")
+                except Exception as db_err:
+                    logger.debug(f"Watch folder: Could not track failure in DB: {db_err}")
 
         except Exception as e:
             logger.error(f"Watch folder: Error processing {item_path}: {e}")
@@ -9116,10 +9187,9 @@ def api_library():
     c.execute("SELECT COUNT(*) FROM history WHERE status IN ('error', 'duplicate', 'corrupt_dest')")
     counts['error'] = c.fetchone()[0]
 
-    c.execute("SELECT COUNT(*) FROM books WHERE status IN ('needs_attention', 'structure_reversed')")
     c.execute("SELECT COUNT(*) FROM history WHERE status = 'needs_attention'")
     attention_history = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM books WHERE status IN ('needs_attention', 'structure_reversed')")
+    c.execute("SELECT COUNT(*) FROM books WHERE status IN ('needs_attention', 'structure_reversed', 'watch_folder_error')")
     attention_books = c.fetchone()[0]
     counts['attention'] = attention_history + attention_books
 
@@ -9312,10 +9382,10 @@ def api_library():
                 'status': 'needs_attention',
                 'error_message': row['error_message']
             })
-        # Also get books with structure issues
-        c.execute('''SELECT id, path, current_author, current_title, status, error_message
+        # Also get books with structure issues or watch folder errors
+        c.execute('''SELECT id, path, current_author, current_title, status, error_message, source_type
                      FROM books
-                     WHERE status IN ('needs_attention', 'structure_reversed')
+                     WHERE status IN ('needs_attention', 'structure_reversed', 'watch_folder_error')
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9326,7 +9396,8 @@ def api_library():
                 'title': row['current_title'],
                 'path': row['path'],
                 'status': row['status'],
-                'error_message': row['error_message']
+                'error_message': row['error_message'],
+                'source_type': row['source_type'] if row['source_type'] else 'library'
             })
 
     elif status_filter == 'locked':
@@ -11116,7 +11187,7 @@ def api_edit_book():
         if history_id:
             c.execute('''SELECT h.id as history_id, h.book_id, h.old_path, h.new_path,
                                 h.old_author, h.old_title, h.status as history_status,
-                                b.path, b.current_author, b.current_title
+                                b.path, b.current_author, b.current_title, b.source_type
                          FROM history h
                          JOIN books b ON h.book_id = b.id
                          WHERE h.id = ?''', (history_id,))
@@ -11130,7 +11201,7 @@ def api_edit_book():
             old_title = item['old_title'] or item['current_title']
             history_status = item['history_status']
         else:
-            c.execute('SELECT id, path, current_author, current_title FROM books WHERE id = ?', (book_id,))
+            c.execute('SELECT id, path, current_author, current_title, source_type FROM books WHERE id = ?', (book_id,))
             item = c.fetchone()
             if not item:
                 conn.close()
@@ -11162,20 +11233,35 @@ def api_edit_book():
             conn.close()
             return jsonify({'success': False, 'error': 'Author and title required'})
 
-        # Find which library this book belongs to
+        # Find which library this book belongs to (or should go to for watch folder items)
         config = load_config()
         lib_path = None
-        for lp in config.get('library_paths', []):
-            lp_path = Path(lp)
-            try:
-                Path(old_path).relative_to(lp_path)
-                lib_path = lp_path
-                break
-            except ValueError:
-                continue
+        source_type = item.get('source_type') or 'library'
 
-        if lib_path is None:
-            lib_path = Path(old_path).parent.parent
+        # Issue #49: For watch folder items, use the output folder as destination
+        if source_type == 'watch_folder':
+            # Watch folder items go to watch_output_folder or first library path
+            output_folder = config.get('watch_output_folder', '').strip()
+            if output_folder:
+                lib_path = Path(output_folder)
+            elif config.get('library_paths'):
+                lib_path = Path(config['library_paths'][0])
+            else:
+                conn.close()
+                return jsonify({'success': False, 'error': 'No output folder configured for watch folder items'})
+        else:
+            # Normal library item - find which library it belongs to
+            for lp in config.get('library_paths', []):
+                lp_path = Path(lp)
+                try:
+                    Path(old_path).relative_to(lp_path)
+                    lib_path = lp_path
+                    break
+                except ValueError:
+                    continue
+
+            if lib_path is None:
+                lib_path = Path(old_path).parent.parent
 
         # Build the new path
         new_path = build_new_path(lib_path, new_author, new_title,

@@ -2,6 +2,34 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.65] - 2026-01-01
+
+### Fixed
+- **Watch Folder Retry Loop** (Issue #49) - Failed watch folder items no longer retry forever
+  - Items that fail to move (e.g., "Too many versions exist") are now tracked in the database
+  - Failed items show up in "Needs Attention" with the error message
+  - User can edit the author/title and apply the fix to retry with corrected metadata
+  - Successfully applied fixes move the item from watch folder to library
+  - Prevents infinite retry loops that spam logs with the same error
+
+- **Watch Folder Treated as Author** (Issue #46) - Watch folder inside library no longer parsed as author
+  - If watch folder is inside a library path (e.g., `/library/watch`), it's now skipped during library scans
+  - Prevents the watch folder name from appearing as an author in the library
+
+### Improved
+- **Encoding Info Cleanup** (Issue #48) - More aggressive cleanup of encoding artifacts from titles
+  - Now strips standalone bitrates (128k, 64kbps, etc.) even outside brackets
+  - Removes file sizes (463mb, 1.2gb) with or without curly braces
+  - Strips audio channel info (mono, stereo, multi)
+  - Removes codec info (vbr, cbr, aac, lame, opus)
+
+- **Audnexus Logging** (Issue #45) - Better logging to debug API issues
+  - Errors now logged at WARNING level instead of DEBUG
+  - Each API's results logged at INFO level showing what was matched
+  - Garbage match rejections logged at INFO level for visibility
+
+---
+
 ## [0.9.0-beta.64] - 2025-12-31
 
 ### Fixed

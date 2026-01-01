@@ -487,7 +487,8 @@ function getStatusBadge(item) {
         'duplicate': '<span class="badge bg-warning text-dark status-badge" title="Multiple copies of the same book detected"><i class="bi bi-files"></i> Duplicate</span>',
         'corrupt_dest': '<span class="badge bg-danger status-badge" title="Destination path has issues - needs manual review"><i class="bi bi-exclamation"></i> Corrupt</span>',
         'needs_attention': '<span class="badge bg-warning text-dark status-badge" title="Could not auto-identify - please edit manually"><i class="bi bi-eye"></i> Attention</span>',
-        'structure_reversed': '<span class="badge bg-info status-badge" title="Author and title folders are swapped (e.g. Title/Author instead of Author/Title)"><i class="bi bi-arrow-left-right"></i> Reversed</span>'
+        'structure_reversed': '<span class="badge bg-info status-badge" title="Author and title folders are swapped (e.g. Title/Author instead of Author/Title)"><i class="bi bi-arrow-left-right"></i> Reversed</span>',
+        'watch_folder_error': '<span class="badge bg-danger status-badge" title="Failed to move from watch folder - edit author/title and retry"><i class="bi bi-folder-x"></i> Watch Error</span>'
     };
     let badge = badges[item.status] || badges[item.type] || `<span class="badge bg-secondary status-badge">${item.status || item.type}</span>`;
 

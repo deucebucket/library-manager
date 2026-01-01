@@ -214,6 +214,7 @@ test_no_local_db_dependency() {
 test_process_empties_queue() {
     log_info "Test: Processing actually processes queue items"
     # CRITICAL TEST: This catches the beta.45 bug where process returned 0 but queue stayed full
+    # NOTE: Processing is rate-limited (~30s per batch of 3), so we need realistic wait times
 
     # Get initial queue count
     initial=$(curl -s "http://localhost:$TEST_PORT/api/queue" | python3 -c "import json,sys; print(json.load(sys.stdin).get('count', 0))")
@@ -229,25 +230,33 @@ test_process_empties_queue() {
     curl -s -X POST "http://localhost:$TEST_PORT/api/process" \
         -H "Content-Type: application/json" \
         -d '{"all": true}' \
-        --max-time 120 >/dev/null 2>&1 &
+        --max-time 180 >/dev/null 2>&1 &
 
-    # Wait for some processing
-    sleep 30
-
-    # Check status
-    status=$(curl -s "http://localhost:$TEST_PORT/api/process_status")
-    processed=$(echo "$status" | python3 -c "import json,sys; print(json.load(sys.stdin).get('processed', 0))")
-
-    if [[ "$processed" -gt 0 ]]; then
-        log_pass "Processing working: $processed items processed"
-    else
-        # Check if queue reduced anyway
-        final=$(curl -s "http://localhost:$TEST_PORT/api/queue" | python3 -c "import json,sys; print(json.load(sys.stdin).get('count', 0))")
-        if [[ "$final" -lt "$initial" ]]; then
-            log_pass "Queue reduced from $initial to $final"
-        else
-            log_fail "CRITICAL: Process returned 0 and queue unchanged ($initial items) - beta.45 bug!"
+    # Wait for processing with progress checks (realistic timing for rate-limited APIs)
+    # Each batch of 3 items takes ~30s due to rate limits, so wait up to 90s
+    for i in {1..6}; do
+        sleep 15
+        status=$(curl -s "http://localhost:$TEST_PORT/api/process_status")
+        processed=$(echo "$status" | python3 -c "import json,sys; print(json.load(sys.stdin).get('processed', 0))" 2>/dev/null || echo "0")
+        if [[ "$processed" -gt 0 ]]; then
+            log_pass "Processing working: $processed items processed after $((i*15))s"
+            return
         fi
+        # Also check if queue reduced
+        current=$(curl -s "http://localhost:$TEST_PORT/api/queue" | python3 -c "import json,sys; print(json.load(sys.stdin).get('count', 0))" 2>/dev/null || echo "$initial")
+        if [[ "$current" -lt "$initial" ]]; then
+            log_pass "Queue reduced from $initial to $current after $((i*15))s"
+            return
+        fi
+        log_info "  ...waiting ($((i*15))s elapsed, queue: $current)"
+    done
+
+    # Final check after 90s
+    final=$(curl -s "http://localhost:$TEST_PORT/api/queue" | python3 -c "import json,sys; print(json.load(sys.stdin).get('count', 0))")
+    if [[ "$final" -lt "$initial" ]]; then
+        log_pass "Queue reduced from $initial to $final"
+    else
+        log_fail "CRITICAL: Process returned 0 and queue unchanged ($initial items) after 90s - beta.45 bug!"
     fi
 }
 
@@ -269,6 +278,29 @@ test_queue_items_not_stuck() {
         log_pass "No items stuck at layer 4"
     else
         log_fail "CRITICAL: $stuck items stuck at layer 4 in queue - processing bug!"
+    fi
+}
+
+test_book_verification() {
+    log_info "Test: Book identification verification"
+    # Runs the Python verification test that checks:
+    # - Real books are correctly identified
+    # - Problem patterns are detected (reversed structure, missing author)
+    # - Series folders are detected
+    # - Queue reasons are correct
+
+    if ! command -v python3 &> /dev/null; then
+        log_info "python3 not available, skipping verification test"
+        return
+    fi
+
+    # Run the verification test against the test database
+    if python3 "$TEST_DIR/test-book-verification.py" "$TEST_DIR/fresh-deploy/data/library.db" >/dev/null 2>&1; then
+        log_pass "Book identification verification passed"
+    else
+        log_fail "Book identification verification failed"
+        # Run again to show output
+        python3 "$TEST_DIR/test-book-verification.py" "$TEST_DIR/fresh-deploy/data/library.db" 2>&1 | tail -20
     fi
 }
 
@@ -310,6 +342,7 @@ main() {
     test_no_local_db_dependency
     test_process_empties_queue
     test_queue_items_not_stuck
+    test_book_verification
 
     # Cleanup
     echo ""

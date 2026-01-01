@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.63-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.65-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,6 +16,15 @@
 
 ## Recent Changes (develop)
 
+> **beta.65** - Watch Folder Improvements
+> - **Watch Folder Retry Fix** (Issue #49) - Failed items no longer retry forever, now tracked for user review
+> - **Watch Folder Author Fix** (Issue #46) - Watch folder inside library no longer treated as an author
+> - **Encoding Cleanup** (Issue #48) - Better stripping of bitrates, file sizes, codec info from titles
+> - **Audnexus Logging** (Issue #45) - Improved logging to debug API issues
+
+> **beta.64** - Queue Processing Fix (Issue #44)
+> - **Auto-Processing Fixed** - Queue now processes automatically regardless of Auto-Fix setting
+
 > **beta.63** - BookDB Integration Fix (Issue #45)
 > - **BookDB Now Works** - Metadata lookups use BookDB automatically (no configuration needed)
 > - **Faster Searches** - Edit dialog search now returns results in ~2.5s instead of timing out
@@ -24,19 +33,6 @@
 > - **Settings Redesign** - Reorganized from 3 tabs to 5 cleaner tabs (Library, Processing, AI Setup, Safety, Advanced)
 > - **UI Tooltips** (Issue #43) - Hover over status badges to see what they mean
 > - **Edit Warning** (Issue #42) - Warning when editing during queue processing
-
-> **beta.61** - Watch Folder Unknown Author Handling (Issue #40)
-> - **Flag Unknown Authors** - Files with unknown authors flagged for review instead of auto-processing
-
-> **beta.60** - Series Folder Queue Fix (Issue #36)
-> - **Series Folders Hidden** - Series folders no longer appear in queue as items needing fixes
-
-> **beta.59** - Ollama Model Dropdown Fix (Issue #41)
-> - **Model Names Display** - Fixed "undefined" showing in Ollama model dropdown
-
-> **beta.58** - PUID/PGID Fix (Issue #39)
-> - **Startup Fix** - Handles existing GIDs (e.g., GID 100 = "users")
-> - **Log File Moved** - Now in `/data/app.log` (persistent, correct permissions)
 
 [Full Changelog](CHANGELOG.md)
 
