@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.68"
+APP_VERSION = "0.9.0-beta.69"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -5573,67 +5573,12 @@ def deep_scan_library(config):
 
                 all_issues = author_issues + title_issues + clean_issues
 
-                # CRITICAL: Detect REVERSED STRUCTURE (Series/Author instead of Author/Series)
-                # When: author folder looks like a title AND title folder looks like an author
-                author_looks_like_title = any(i in author_issues for i in [
-                    'year_in_author', 'title_words_in_author', 'author_contains_book_number',
-                    'not_a_name_pattern', 'author_starts_with_number'
-                ])
-                title_looks_like_author = 'title_looks_like_author' in title_issues
-
-                # Issue #52: More restrictive check for title looking like a name
-                # Don't just match "Word Word" - that catches titles like "Leviathan Wakes"
-                # Require the first word to be a common first name OR the pattern to be very specific
-                title_is_name_pattern = False
-                if re.match(r'^[A-Z][a-z]+\s+[A-Z][a-z]+$', title):
-                    # Two-word pattern - check if first word is likely a first name
-                    first_word = title.split()[0].lower()
-                    # Common first names that would indicate this is actually a person's name
-                    common_first_names = {
-                        'james', 'john', 'robert', 'michael', 'william', 'david', 'richard', 'joseph',
-                        'thomas', 'charles', 'christopher', 'daniel', 'matthew', 'anthony', 'mark',
-                        'donald', 'steven', 'paul', 'andrew', 'joshua', 'kenneth', 'kevin', 'brian',
-                        'george', 'edward', 'ronald', 'timothy', 'jason', 'jeffrey', 'ryan', 'jacob',
-                        'mary', 'patricia', 'jennifer', 'linda', 'elizabeth', 'barbara', 'susan',
-                        'jessica', 'sarah', 'karen', 'nancy', 'lisa', 'betty', 'margaret', 'sandra',
-                        'ashley', 'dorothy', 'kimberly', 'emily', 'donna', 'michelle', 'carol', 'amanda',
-                        'anne', 'anna', 'stephen', 'peter', 'nicholas', 'scott', 'frank', 'brandon',
-                        'benjamin', 'samuel', 'gregory', 'alexander', 'patrick', 'jack', 'dennis',
-                        'freida', 'frida', 'colleen', 'terry', 'diana', 'ruth', 'sharon', 'laura'
-                    }
-                    # Common title words that should NOT trigger reversed detection
-                    title_words_not_names = {
-                        'dark', 'last', 'first', 'final', 'dead', 'blood', 'night', 'shadow',
-                        'black', 'white', 'red', 'blue', 'green', 'golden', 'silver', 'iron',
-                        'stone', 'fire', 'ice', 'water', 'wind', 'storm', 'rain', 'snow',
-                        'winter', 'summer', 'spring', 'fallen', 'rising', 'broken', 'lost',
-                        'silent', 'secret', 'hidden', 'ancient', 'eternal', 'endless', 'infinite',
-                        'leviathan', 'dragon', 'phoenix', 'wolf', 'lion', 'eagle', 'raven',
-                        'kingdom', 'empire', 'throne', 'crown', 'sword', 'blade', 'shield'
-                    }
-                    if first_word in common_first_names and first_word not in title_words_not_names:
-                        title_is_name_pattern = True
-                # Also match more specific patterns that are clearly names
-                elif re.match(r'^[A-Z]\.\s*[A-Z][a-z]+$|^[A-Z][a-z]+,\s+[A-Z]', title):
-                    title_is_name_pattern = True
-
-                if author_looks_like_title and (title_looks_like_author or title_is_name_pattern):
-                    # This is a reversed structure! Mark it specially
-                    all_issues = ['STRUCTURE_REVERSED'] + all_issues
-                    logger.info(f"Detected reversed structure: '{author}' is title, '{title}' is author")
-
-                    # Set status to 'structure_reversed' so we handle it differently
-                    c.execute('SELECT id FROM books WHERE path = ?', (path,))
-                    existing_rev = c.fetchone()
-                    if existing_rev:
-                        c.execute('UPDATE books SET status = ? WHERE id = ?',
-                                  ('structure_reversed', existing_rev['id']))
-                    else:
-                        c.execute('''INSERT INTO books (path, current_author, current_title, status)
-                                     VALUES (?, ?, ?, 'structure_reversed')''', (path, author, title))
-                    conn.commit()
-                    # Don't add to regular queue - needs special handling
-                    continue
+                # NOTE: Removed "reversed structure detection" in beta.69
+                # The old code tried to guess if author/title were swapped based on regex patterns.
+                # This caused false positives (Issue #52). Instead, we now let all items go through
+                # the normal API lookup flow. If the structure IS wrong, APIs won't find matches
+                # and the item will end up in "Needs Attention" for the user to fix manually.
+                # Trust the APIs, don't guess with patterns.
 
                 # Check for nested structure (disc folders inside book folder)
                 nested_dirs = [d for d in title_dir.iterdir() if d.is_dir()]
@@ -8859,9 +8804,6 @@ def api_stats():
     c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'verified'")
     verified = c.fetchone()['count']
 
-    c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'structure_reversed'")
-    structure_reversed = c.fetchone()['count']
-
     conn.close()
 
     return jsonify({
@@ -8870,7 +8812,6 @@ def api_stats():
         'fixed': fixed,
         'pending_fixes': pending,
         'verified': verified,
-        'structure_reversed': structure_reversed,
         'worker_running': is_worker_running(),
         'processing': processing_status
     })
@@ -8971,90 +8912,10 @@ def api_analyze_path():
     return jsonify(result)
 
 
-@app.route('/api/structure_reversed')
-def api_structure_reversed():
-    """Get items with reversed folder structure (Series/Author instead of Author/Series)."""
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute('''SELECT id, path, current_author, current_title
-                 FROM books
-                 WHERE status = 'structure_reversed'
-                 ORDER BY path''')
-    items = []
-    for row in c.fetchall():
-        items.append({
-            'id': row['id'],
-            'path': row['path'],
-            'detected_series': row['current_author'],  # What we think is the series/title
-            'detected_author': row['current_title'],   # What we think is the author
-            'suggestion': f"Move to: {row['current_title']}/{row['current_author']}"
-        })
-
-    conn.close()
-    return jsonify({'items': items, 'count': len(items)})
-
-
-@app.route('/api/structure_reversed/fix/<int:book_id>', methods=['POST'])
-def api_fix_structure_reversed(book_id):
-    """Fix a reversed structure by swapping author/title in the path."""
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute('SELECT * FROM books WHERE id = ?', (book_id,))
-    book = c.fetchone()
-    if not book:
-        return jsonify({'success': False, 'error': 'Book not found'}), 404
-
-    if book['status'] != 'structure_reversed':
-        return jsonify({'success': False, 'error': 'Book is not marked as structure_reversed'}), 400
-
-    old_path = Path(book['path'])
-    detected_series = book['current_author']  # This is actually the series/title
-    detected_author = book['current_title']   # This is actually the author
-
-    # Build new path: Author/Series (or Author/Title if no series)
-    lib_root = old_path.parent.parent  # Go up from Title/Author to library root
-    new_path = lib_root / detected_author / detected_series
-
-    try:
-        if not old_path.exists():
-            c.execute('UPDATE books SET status = ? WHERE id = ?', ('missing', book_id))
-            conn.commit()
-            return jsonify({'success': False, 'error': 'Source path no longer exists'}), 400
-
-        # Create target directory if needed
-        new_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Move the folder
-        import shutil
-        shutil.move(str(old_path), str(new_path))
-
-        # Update database
-        c.execute('''UPDATE books SET
-                     path = ?,
-                     current_author = ?,
-                     current_title = ?,
-                     status = 'fixed'
-                     WHERE id = ?''',
-                  (str(new_path), detected_author, detected_series, book_id))
-        conn.commit()
-
-        logger.info(f"Fixed reversed structure: {old_path} -> {new_path}")
-
-        return jsonify({
-            'success': True,
-            'old_path': str(old_path),
-            'new_path': str(new_path),
-            'author': detected_author,
-            'title': detected_series
-        })
-
-    except Exception as e:
-        logger.error(f"Failed to fix reversed structure: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-    finally:
-        conn.close()
+# NOTE: Removed /api/structure_reversed endpoints in beta.69
+# The reversed structure detection was causing false positives (Issue #52).
+# Items that need attention now go through normal API lookup flow and end up
+# in "Needs Attention" if APIs can't find matches. Users can fix manually there.
 
 
 @app.route('/api/worker/start', methods=['POST'])

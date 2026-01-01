@@ -2,6 +2,18 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.69] - 2026-01-01
+
+### Removed
+- **Reversed Structure Detection** - Completely removed the pattern-based "reversed detection" system
+  - Was causing false positives (Issue #52) by guessing author/title based on regex patterns
+  - Now trusts API lookups instead: if structure is wrong, APIs won't find matches → item goes to "Needs Attention"
+  - Simpler approach: scan → API lookup → done (or manual review if no match)
+  - Removed ~100 lines of pattern matching code and 2 API endpoints
+  - Philosophy: trust the APIs, don't guess with scripts
+
+---
+
 ## [0.9.0-beta.68] - 2026-01-01
 
 ### Fixed
