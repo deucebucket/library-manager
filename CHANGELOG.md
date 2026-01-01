@@ -2,6 +2,17 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.67] - 2026-01-01
+
+### Fixed
+- **Watch Folder Creating Duplicates** - Fixed bug where hard link fallback created duplicates
+  - When `watch_use_hard_links` is enabled but source/dest are on different filesystems
+  - Hard link would fail, system would copy file, but **never delete the original**
+  - Now properly deletes source files after successful copy fallback
+  - This was causing duplicate audiobooks when watch folder was on a different drive
+
+---
+
 ## [0.9.0-beta.66] - 2026-01-01
 
 ### Fixed

@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.66"
+APP_VERSION = "0.9.0-beta.67"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -7224,6 +7224,10 @@ def move_to_output_folder(source_path: str, output_folder: str, author: str, tit
     try:
         dest_folder.mkdir(parents=True, exist_ok=True)
 
+        # Track if we fell back to copy (need to delete originals afterward)
+        used_copy_fallback = False
+        files_to_delete = []
+
         if source.is_file():
             # Single file - move/link to destination folder
             dest_file = dest_folder / source.name
@@ -7232,9 +7236,11 @@ def move_to_output_folder(source_path: str, output_folder: str, author: str, tit
                     os.link(source, dest_file)
                 except OSError as e:
                     if "Invalid cross-device link" in str(e) or e.errno == 18:
-                        # Cross-filesystem - fall back to copy
-                        logger.warning(f"Hard link failed (cross-filesystem), falling back to copy: {source.name}")
+                        # Cross-filesystem - fall back to copy, then delete original
+                        logger.warning(f"Hard link failed (cross-filesystem), falling back to copy+delete: {source.name}")
                         shutil.copy2(source, dest_file)
+                        used_copy_fallback = True
+                        files_to_delete.append(source)
                     else:
                         raise
             else:
@@ -7252,15 +7258,17 @@ def move_to_output_folder(source_path: str, output_folder: str, author: str, tit
                             os.link(src_file, dest_file)
                         except OSError as e:
                             if "Invalid cross-device link" in str(e) or e.errno == 18:
-                                logger.warning(f"Hard link failed, copying: {src_file.name}")
+                                logger.warning(f"Hard link failed, copy+delete: {src_file.name}")
                                 shutil.copy2(src_file, dest_file)
+                                used_copy_fallback = True
+                                files_to_delete.append(src_file)
                             else:
                                 raise
                     else:
                         shutil.move(str(src_file), str(dest_file))
 
-            # Clean up empty source folder if not using hard links
-            if not use_hard_links and delete_empty:
+            # Clean up empty source folder if not using hard links OR if we used copy fallback
+            if (not use_hard_links or used_copy_fallback) and delete_empty:
                 try:
                     # Remove empty directories bottom-up
                     for dirpath, dirnames, filenames in os.walk(str(source), topdown=False):
@@ -7270,6 +7278,16 @@ def move_to_output_folder(source_path: str, output_folder: str, author: str, tit
                         source.rmdir()
                 except Exception as e:
                     logger.debug(f"Could not clean up empty folder {source}: {e}")
+
+        # Delete originals if we used copy fallback (handles both single files and directories)
+        if used_copy_fallback and delete_empty:
+            for f in files_to_delete:
+                try:
+                    if f.exists():
+                        f.unlink()
+                        logger.debug(f"Deleted source after copy fallback: {f}")
+                except Exception as e:
+                    logger.warning(f"Could not delete source {f}: {e}")
 
         return True, str(dest_folder), None
 
