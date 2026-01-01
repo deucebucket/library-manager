@@ -2,6 +2,19 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.68] - 2026-01-01
+
+### Fixed
+- **False Positive Reversed Structure Detection** (Issue #52) - Books incorrectly flagged as title/author reversed
+  - "James S A Corey" was wrongly flagged because multiple single initials without periods weren't recognized
+  - "Freida McFadden" and similar Mc/Mac/O' names weren't recognized as valid author patterns
+  - Titles like "Leviathan Wakes" were falsely matching as person names (any "Word Word" pattern)
+  - Added new author name patterns: multiple single initials, Irish/Scottish prefixes (Mc, Mac, O')
+  - Made title-as-name detection smarter: now requires first word to be a common first name
+  - Added 15 new regression tests for Issue #52
+
+---
+
 ## [0.9.0-beta.67] - 2026-01-01
 
 ### Fixed

@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.67"
+APP_VERSION = "0.9.0-beta.68"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -4694,6 +4694,12 @@ def analyze_author(author):
         r'^[A-Z][a-z]+\s+[A-Z]\.[A-Z]\.\s*[A-Z][a-z]+$',     # Brandon R.R. Author
         r'^[A-Z][a-z]+\s+[A-Z]\.\s*(Le|De|Von|Van|La|Du)\s+[A-Z][a-z]+$',  # Ursula K. Le Guin
         r'^[A-Z][a-z]+\s+(Le|De|Von|Van|La|Du)\s+[A-Z][a-z]+$',  # Anne De Vries
+        # Issue #52: Additional name patterns
+        r'^[A-Z][a-z]+\s+[A-Z]\s+[A-Z]\s+[A-Z][a-z]+$',  # James S A Corey (single initials without periods)
+        r'^[A-Z][a-z]+\s+[A-Z]\s+[A-Z][a-z]+$',          # First A Last (one single initial)
+        r'^[A-Z][a-z]+\s+(Mc|Mac|O\')[A-Z][a-z]+$',      # Freida McFadden, Anne MacLeod, Mary O'Brien
+        r'^[A-Z][a-z]+\s+[A-Z][a-z]+\s+(Mc|Mac|O\')[A-Z][a-z]+$',  # First Middle McLastname
+        r'^[A-Z][a-z]+\s+[A-Z]\.\s+(Mc|Mac|O\')[A-Z][a-z]+$',  # First M. McLastname
     ]
     looks_like_name = any(re.match(p, author) for p in name_patterns)
 
@@ -5575,11 +5581,41 @@ def deep_scan_library(config):
                 ])
                 title_looks_like_author = 'title_looks_like_author' in title_issues
 
-                # Check if title folder is a proper name pattern (First Last)
-                title_is_name_pattern = bool(re.match(
-                    r'^[A-Z][a-z]+\s+[A-Z][a-z]+$|^[A-Z]\.\s*[A-Z][a-z]+$|^[A-Z][a-z]+,\s+[A-Z]',
-                    title
-                ))
+                # Issue #52: More restrictive check for title looking like a name
+                # Don't just match "Word Word" - that catches titles like "Leviathan Wakes"
+                # Require the first word to be a common first name OR the pattern to be very specific
+                title_is_name_pattern = False
+                if re.match(r'^[A-Z][a-z]+\s+[A-Z][a-z]+$', title):
+                    # Two-word pattern - check if first word is likely a first name
+                    first_word = title.split()[0].lower()
+                    # Common first names that would indicate this is actually a person's name
+                    common_first_names = {
+                        'james', 'john', 'robert', 'michael', 'william', 'david', 'richard', 'joseph',
+                        'thomas', 'charles', 'christopher', 'daniel', 'matthew', 'anthony', 'mark',
+                        'donald', 'steven', 'paul', 'andrew', 'joshua', 'kenneth', 'kevin', 'brian',
+                        'george', 'edward', 'ronald', 'timothy', 'jason', 'jeffrey', 'ryan', 'jacob',
+                        'mary', 'patricia', 'jennifer', 'linda', 'elizabeth', 'barbara', 'susan',
+                        'jessica', 'sarah', 'karen', 'nancy', 'lisa', 'betty', 'margaret', 'sandra',
+                        'ashley', 'dorothy', 'kimberly', 'emily', 'donna', 'michelle', 'carol', 'amanda',
+                        'anne', 'anna', 'stephen', 'peter', 'nicholas', 'scott', 'frank', 'brandon',
+                        'benjamin', 'samuel', 'gregory', 'alexander', 'patrick', 'jack', 'dennis',
+                        'freida', 'frida', 'colleen', 'terry', 'diana', 'ruth', 'sharon', 'laura'
+                    }
+                    # Common title words that should NOT trigger reversed detection
+                    title_words_not_names = {
+                        'dark', 'last', 'first', 'final', 'dead', 'blood', 'night', 'shadow',
+                        'black', 'white', 'red', 'blue', 'green', 'golden', 'silver', 'iron',
+                        'stone', 'fire', 'ice', 'water', 'wind', 'storm', 'rain', 'snow',
+                        'winter', 'summer', 'spring', 'fallen', 'rising', 'broken', 'lost',
+                        'silent', 'secret', 'hidden', 'ancient', 'eternal', 'endless', 'infinite',
+                        'leviathan', 'dragon', 'phoenix', 'wolf', 'lion', 'eagle', 'raven',
+                        'kingdom', 'empire', 'throne', 'crown', 'sword', 'blade', 'shield'
+                    }
+                    if first_word in common_first_names and first_word not in title_words_not_names:
+                        title_is_name_pattern = True
+                # Also match more specific patterns that are clearly names
+                elif re.match(r'^[A-Z]\.\s*[A-Z][a-z]+$|^[A-Z][a-z]+,\s+[A-Z]', title):
+                    title_is_name_pattern = True
 
                 if author_looks_like_title and (title_looks_like_author or title_is_name_pattern):
                     # This is a reversed structure! Mark it specially

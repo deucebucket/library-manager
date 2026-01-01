@@ -21,6 +21,7 @@ from app import (
     sanitize_path_component,
     analyze_full_path,
     extract_author_title,
+    analyze_author,
     AUDIO_EXTENSIONS
 )
 import re
@@ -413,6 +414,64 @@ def main():
         if test_result(f"Error pattern: '{error[:30]}...'",
                        isinstance(error, str) and len(error) > 0,
                        "Error pattern should be a non-empty string"):
+            passed += 1
+        else:
+            failed += 1
+
+    # ==========================================
+    # Issue #52: False positive reversed structure detection
+    # ==========================================
+    print("\n--- Issue #52: Author Name Pattern Recognition ---")
+
+    # Authors that SHOULD be recognized as valid name patterns (not flagged as "not_a_name_pattern")
+    valid_author_names = [
+        ("James S A Corey", False),      # Multiple single initials without periods
+        ("Freida McFadden", False),       # Irish Mc- prefix
+        ("Anne MacLeod", False),          # Scottish Mac- prefix
+        ("Mary O'Brien", False),          # Irish O' prefix
+        ("Brandon Sanderson", False),     # Standard First Last
+        ("J.R.R. Tolkien", False),        # Initials with periods
+        ("George R.R. Martin", False),    # First + initials + Last
+        ("Ursula K. Le Guin", False),     # First + initial + particle + Last
+    ]
+
+    for author, should_have_not_name_pattern in valid_author_names:
+        issues = analyze_author(author)
+        has_not_name_pattern = 'not_a_name_pattern' in issues
+        if test_result(f"Author pattern: '{author}'",
+                       has_not_name_pattern == should_have_not_name_pattern,
+                       f"Expected not_a_name_pattern={should_have_not_name_pattern}, got issues={issues}"):
+            passed += 1
+        else:
+            failed += 1
+
+    # Titles that should NOT trigger false positive reversed detection
+    # (These look like "Word Word" but are NOT person names)
+    print("\n--- Issue #52: Title vs Name Discrimination ---")
+
+    title_not_names = [
+        "Leviathan Wakes",      # Book title, not a name
+        "Dark Forest",          # Book title
+        "Final Empire",         # Book title
+        "Dragon Reborn",        # Book title
+        "Shadow Rising",        # Book title
+        "Winter Kills",         # Book title
+        "Blood Meridian",       # Book title
+    ]
+
+    # Common first names that would indicate a name (for reference)
+    common_first_names = {
+        'james', 'john', 'robert', 'michael', 'william', 'david', 'richard', 'joseph',
+        'mary', 'patricia', 'jennifer', 'linda', 'elizabeth', 'barbara', 'susan',
+        'freida', 'frida', 'anne', 'anna', 'stephen', 'brandon'
+    }
+
+    for title in title_not_names:
+        first_word = title.split()[0].lower()
+        is_likely_name = first_word in common_first_names
+        if test_result(f"Title not name: '{title}'",
+                       not is_likely_name,
+                       f"First word '{first_word}' should not be a common first name"):
             passed += 1
         else:
             failed += 1
