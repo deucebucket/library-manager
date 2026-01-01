@@ -57,3 +57,4 @@ test-env/test-audiobooks/
 test-env/fresh-deploy/
 test-env/chaos-test-library/
 .TODO.md
+CLAUDE.md

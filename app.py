@@ -1557,7 +1557,9 @@ def is_placeholder_author(name):
                            'audiobook', 'audiobooks', 'ebook', 'ebooks', 'book', 'books',
                            'author', 'authors', 'narrator', 'untitled', 'no author',
                            'metadata', 'tmp', 'temp', 'streams', 'cache', 'data', 'log', 'logs',
-                           'audio', 'media', 'files', 'downloads', 'torrents'}
+                           'audio', 'media', 'files', 'downloads', 'torrents',
+                           # Issue #46: Common watch/import folder names
+                           'watch', 'incoming', 'new', 'import', 'imports', 'inbox', 'input', 'drop'}
     return name_lower in placeholder_authors
 
 # ============== LANGUAGE DETECTION ==============
