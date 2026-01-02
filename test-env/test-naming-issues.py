@@ -23,6 +23,7 @@ from app import (
     extract_author_title,
     analyze_author,
     calculate_title_similarity,
+    clean_author_name,
     AUDIO_EXTENSIONS
 )
 import re
@@ -508,6 +509,93 @@ def main():
         if test_result(f"Strip prefix: '{folder_name}' under '{parent_author}'",
                        title == expected_title,
                        f"Expected '{expected_title}', got '{title}'"):
+            passed += 1
+        else:
+            failed += 1
+
+    # ==========================================
+    # Issue #50: Author sanity check - strip junk suffixes
+    # ==========================================
+    print("\n--- Issue #50: Author sanity check (strip Bibliography, Collection, etc.) ---")
+
+    author_sanity_tests = [
+        # (input_author, expected_clean_author)
+        ("Peter F. Hamilton Bibliography", "Peter F. Hamilton"),
+        ("Stephen King Collection", "Stephen King"),
+        ("Brandon Sanderson Anthology", "Brandon Sanderson"),
+        ("Isaac Asimov Complete Works", "Isaac Asimov"),
+        ("J.R.R. Tolkien Selected Works", "J.R.R. Tolkien"),
+        ("Terry Pratchett Best of", "Terry Pratchett"),
+        ("Neil Gaiman Works of", "Neil Gaiman"),
+        ("Robert Jordan Omnibus", "Robert Jordan"),
+        # Should NOT strip (valid author names)
+        ("Peter Hamilton", "Peter Hamilton"),  # No junk suffix
+        ("Stephen King", "Stephen King"),
+        ("Collection Adams", "Collection Adams"),  # "Collection" is part of name, not suffix
+        # Calibre IDs in author names
+        ("Peter F. Hamilton (123)", "Peter F. Hamilton"),
+        ("Stephen King (4567)", "Stephen King"),
+    ]
+
+    for input_author, expected in author_sanity_tests:
+        result = clean_author_name(input_author)
+        if test_result(f"Clean author: '{input_author}'",
+                       result == expected,
+                       f"Expected '{expected}', got '{result}'"):
+            passed += 1
+        else:
+            failed += 1
+
+    # ==========================================
+    # Issue #50: Title sanity check - strip Calibre IDs
+    # ==========================================
+    print("\n--- Issue #50: Title sanity check (strip Calibre IDs) ---")
+
+    calibre_id_tests = [
+        # (input_title, expected_clean_title)
+        ("The Great Gatsby (123)", "The Great Gatsby"),
+        ("Foundation (4567)", "Foundation"),
+        ("Mistborn (1)", "Mistborn"),
+        ("The Hobbit (99999)", "The Hobbit"),
+        # Should NOT strip (valid series info or other content)
+        ("Foundation (Book 1)", "Foundation (Book 1)"),
+        ("Mistborn (Part 2)", "Mistborn (Part 2)"),
+        ("The Expanse (Volume 3)", "The Expanse (Volume 3)"),
+        ("1984", "1984"),  # No parens
+        ("Catch-22", "Catch-22"),  # Numbers in title, no parens
+    ]
+
+    for input_title, expected in calibre_id_tests:
+        result = clean_search_title(input_title)
+        if test_result(f"Strip Calibre ID: '{input_title}'",
+                       result == expected,
+                       f"Expected '{expected}', got '{result}'"):
+            passed += 1
+        else:
+            failed += 1
+
+    # ==========================================
+    # Issue #50: extract_author_title integration test
+    # ==========================================
+    print("\n--- Issue #50: extract_author_title with author cleaning ---")
+
+    extract_integration_tests = [
+        # (input_name, expected_author, expected_title)
+        ("Peter F. Hamilton Bibliography - Pandora's Star", "Peter F. Hamilton", "Pandora's Star"),
+        ("Stephen King Collection - The Shining", "Stephen King", "The Shining"),
+        ("Brandon Sanderson Anthology - Mistborn", "Brandon Sanderson", "Mistborn"),
+        # Normal cases (no cleaning needed)
+        ("Brandon Sanderson - Mistborn", "Brandon Sanderson", "Mistborn"),
+        ("Stephen King - It", "Stephen King", "It"),
+    ]
+
+    for input_name, expected_author, expected_title in extract_integration_tests:
+        author, title = extract_author_title(input_name)
+        author_match = author == expected_author
+        title_match = title == expected_title
+        if test_result(f"Extract: '{input_name}'",
+                       author_match and title_match,
+                       f"Expected ({expected_author}, {expected_title}), got ({author}, {title})"):
             passed += 1
         else:
             failed += 1

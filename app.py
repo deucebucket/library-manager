@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.70"
+APP_VERSION = "0.9.0-beta.71"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -2019,6 +2019,9 @@ def clean_search_title(messy_name):
     clean = re.sub(r'\[.*?\]', '', clean)
     # Remove parenthetical junk like (Unabridged), (2019) - but keep series info like (Book 1)
     clean = re.sub(r'\((?:Unabridged|Abridged|MP3|M4B|EPUB|PDF|64k|128k|192k|256k|320k|VBR|r\d+\.\d+|multi|mono|stereo).*?\)', '', clean, flags=re.IGNORECASE)
+    # Issue #50: Remove Calibre-style IDs - just bare numbers in parens at end like "(123)"
+    # These are Calibre's internal book IDs, not series info. Must NOT match "(Book 1)" etc.
+    clean = re.sub(r'\s*\(\d+\)$', '', clean)
     # Remove curly brace junk like {465mb}, {narrator}, {128k}
     clean = re.sub(r'\{[^}]*\}', '', clean)
     # Issue #48: Remove standalone encoding info (bitrates, file sizes, channel info)
@@ -2365,6 +2368,37 @@ def search_hardcover(title, author=None):
         logger.debug(f"Hardcover search failed: {e}")
         return None
 
+def clean_author_name(author):
+    """Issue #50: Strip junk suffixes from author names.
+
+    Handles Calibre-style folder names like 'Peter F. Hamilton Bibliography'
+    which should become just 'Peter F. Hamilton'.
+    """
+    import re
+    if not author:
+        return author
+
+    clean = author
+    # Common junk suffixes found in library folder names
+    junk_patterns = [
+        r'\s+bibliography\s*$',
+        r'\s+collection\s*$',
+        r'\s+anthology\s*$',
+        r'\s+complete\s+works\s*$',
+        r'\s+selected\s+works\s*$',
+        r'\s+best\s+of\s*$',
+        r'\s+works\s+of\s*$',
+        r'\s+omnibus\s*$',
+    ]
+    for pattern in junk_patterns:
+        clean = re.sub(pattern, '', clean, flags=re.IGNORECASE)
+
+    # Also strip Calibre-style IDs from author names: "Author Name (123)"
+    clean = re.sub(r'\s*\(\d+\)\s*$', '', clean)
+
+    return clean.strip()
+
+
 def extract_author_title(messy_name):
     """Try to extract author and title from a folder name like 'Author - Title' or 'Author/Title'."""
     import re
@@ -2380,6 +2414,8 @@ def extract_author_title(messy_name):
                 title = parts[1].strip()
                 # Basic validation - author shouldn't be too long or look like a title
                 if len(author) < 50 and not re.search(r'\d{4}|book|vol|part|\[', author, re.I):
+                    # Issue #50: Clean author name (strip Bibliography, Collection, etc.)
+                    author = clean_author_name(author)
                     return author, title
 
     # No separator found - just return the whole thing as title

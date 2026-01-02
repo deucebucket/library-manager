@@ -2,6 +2,26 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.71] - 2026-01-01
+
+### Fixed
+- **Author Sanity Check** (Issue #50) - Strip junk suffixes from author folder names
+  - "Peter F. Hamilton Bibliography" → "Peter F. Hamilton"
+  - "Stephen King Collection" → "Stephen King"
+  - Handles: Bibliography, Collection, Anthology, Complete Works, Selected Works, Best of, Works of, Omnibus
+  - Also strips Calibre-style IDs from author names: "Author Name (123)" → "Author Name"
+
+- **Title Sanity Check** (Issue #50) - Strip Calibre-style IDs from book titles
+  - "The Great Gatsby (123)" → "The Great Gatsby" (Calibre internal book ID)
+  - "Foundation (4567)" → "Foundation"
+  - Preserves valid series info: "(Book 1)", "(Part 2)", "(Volume 3)" are NOT stripped
+  - Only strips bare numeric IDs in parentheses at the end
+
+### Added
+- 27 new regression tests for Issue #50 (author sanity + title sanity + integration)
+
+---
+
 ## [0.9.0-beta.70] - 2026-01-01
 
 ### Fixed
