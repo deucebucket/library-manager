@@ -22,6 +22,7 @@ from app import (
     analyze_full_path,
     extract_author_title,
     analyze_author,
+    calculate_title_similarity,
     AUDIO_EXTENSIONS
 )
 import re
@@ -472,6 +473,41 @@ def main():
         if test_result(f"Title not name: '{title}'",
                        not is_likely_name,
                        f"First word '{first_word}' should not be a common first name"):
+            passed += 1
+        else:
+            failed += 1
+
+    # ==========================================
+    # Issue #53: Author prefix stripping from book folder names
+    # ==========================================
+    print("\n--- Issue #53: Author Prefix Stripping ---")
+
+    # Test cases: (parent_author, folder_name, expected_title)
+    author_prefix_tests = [
+        # Should strip author prefix
+        ("David Baldacci", "David Baldacci - Dream Town", "Dream Town"),
+        ("David Baldacci", "David Baldacci - The Guilty", "The Guilty"),
+        ("Brandon Sanderson", "Brandon Sanderson - Mistborn", "Mistborn"),
+        ("J.R.R. Tolkien", "J.R.R. Tolkien - The Hobbit", "The Hobbit"),
+        # Should NOT strip (different author or no separator)
+        ("David Baldacci", "Stephen King - The Shining", "Stephen King - The Shining"),
+        ("David Baldacci", "Dream Town", "Dream Town"),  # No author prefix
+        ("Unknown", "Author Name - Book Title", "Author Name - Book Title"),  # Parent is placeholder
+    ]
+
+    for parent_author, folder_name, expected_title in author_prefix_tests:
+        # Simulate the stripping logic from app.py
+        title = folder_name
+        if parent_author and parent_author != 'Unknown':
+            _, extracted_title = extract_author_title(title)
+            if extracted_title != title:
+                stripped_author = title[:len(title) - len(extracted_title)].strip(' -–/')
+                if calculate_title_similarity(stripped_author, parent_author) >= 0.85:
+                    title = extracted_title
+
+        if test_result(f"Strip prefix: '{folder_name}' under '{parent_author}'",
+                       title == expected_title,
+                       f"Expected '{expected_title}', got '{title}'"):
             passed += 1
         else:
             failed += 1

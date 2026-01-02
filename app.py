@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.69"
+APP_VERSION = "0.9.0-beta.70"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -5427,6 +5427,19 @@ def deep_scan_library(config):
                 title = title_dir.name
                 path = str(title_dir)
 
+                # Issue #53: Strip author prefix from book folder name
+                # If folder is "David Baldacci - Dream Town" and parent is "David Baldacci",
+                # extract just "Dream Town" as the title
+                if author:
+                    _, extracted_title = extract_author_title(title)
+                    # Only use extracted title if it looks like we stripped the author
+                    if extracted_title != title:
+                        # Verify the stripped part matches the parent author
+                        stripped_author = title[:len(title) - len(extracted_title)].strip(' -–/')
+                        if calculate_title_similarity(stripped_author, author) >= 0.85:
+                            title = extracted_title
+                            logger.debug(f"Stripped author prefix from book folder: '{title_dir.name}' -> '{title}'")
+
                 # Skip if this looks like a disc/chapter folder
                 if is_disc_chapter_folder(title):
                     # But flag the parent!
@@ -5492,6 +5505,19 @@ def deep_scan_library(config):
                                 continue
                             book_title = book_dir.name
                             book_path = str(book_dir)
+
+                            # Issue #53: Strip author prefix from book folder name
+                            # If folder is "David Baldacci - Dream Town" and parent is "David Baldacci",
+                            # extract just "Dream Town" as the title
+                            if author:
+                                _, extracted_title = extract_author_title(book_title)
+                                # Only use extracted title if it looks like we stripped the author
+                                if extracted_title != book_title:
+                                    # Verify the stripped part matches the parent author
+                                    stripped_author = book_title[:len(book_title) - len(extracted_title)].strip(' -–/')
+                                    if calculate_title_similarity(stripped_author, author) >= 0.85:
+                                        book_title = extracted_title
+                                        logger.debug(f"Stripped author prefix from book folder: '{book_dir.name}' -> '{book_title}'")
 
                             # Skip disc/chapter folders
                             if is_disc_chapter_folder(book_title):

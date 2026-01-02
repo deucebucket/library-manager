@@ -2,6 +2,18 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.70] - 2026-01-01
+
+### Fixed
+- **Author Prefix in Book Folder Names** (Issue #53 - Dennis's Log) - Fixed incorrect title extraction from folders
+  - When a book folder is named "David Baldacci - Dream Town" under "David Baldacci/", the title was being stored as "David Baldacci - Dream Town" instead of just "Dream Town"
+  - This caused 1% API confidence (comparing "David Baldacci - Dream Town" vs "Dream Town") and unnecessary AI processing
+  - Also caused useless pending approvals: "PENDING APPROVAL: David Baldacci -> David Baldacci"
+  - Now strips author prefix from book folder names when it matches the parent folder author
+  - Added 7 new regression tests for Issue #53
+
+---
+
 ## [0.9.0-beta.69] - 2026-01-01
 
 ### Removed
