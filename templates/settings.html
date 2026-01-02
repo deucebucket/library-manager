@@ -151,6 +151,15 @@
                                     <br><small class="text-muted">Use <code>Author/Series/1 - Title/</code> format</small>
                                 </label>
                             </div>
+
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="standardize_author_initials" id="standardize_author_initials"
+                                       {% if config.standardize_author_initials %}checked{% endif %}>
+                                <label class="form-check-label" for="standardize_author_initials">
+                                    <strong>Standardize Author Initials</strong>
+                                    <br><small class="text-muted">Normalize to <code>J. R. R. Tolkien</code> format</small>
+                                </label>
+                            </div>
                         </div>
                     </div>
                 </div>

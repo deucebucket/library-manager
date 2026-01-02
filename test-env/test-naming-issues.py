@@ -24,6 +24,7 @@ from app import (
     analyze_author,
     calculate_title_similarity,
     clean_author_name,
+    standardize_initials,
     AUDIO_EXTENSIONS
 )
 import re
@@ -599,6 +600,79 @@ def main():
             passed += 1
         else:
             failed += 1
+
+    # ==========================================
+    # Issue #54: Standardize author initials
+    # ==========================================
+    print("\n--- Issue #54: Standardize Author Initials ---")
+
+    initials_tests = [
+        # (input, expected)
+        # Multiple single initials without periods
+        ("James S A Corey", "James S. A. Corey"),
+        # Initials stuck together without spaces
+        ("James S.A. Corey", "James S. A. Corey"),
+        # All caps initials
+        ("JRR Tolkien", "J. R. R. Tolkien"),
+        ("J.R.R. Tolkien", "J. R. R. Tolkien"),
+        # Two-letter initials
+        ("CS Lewis", "C. S. Lewis"),
+        ("C.S. Lewis", "C. S. Lewis"),
+        # Single initial with space
+        ("Peter F Hamilton", "Peter F. Hamilton"),
+        # Already correct
+        ("Peter F. Hamilton", "Peter F. Hamilton"),
+        # No initials - should be unchanged
+        ("Stephen King", "Stephen King"),
+        ("Brandon Sanderson", "Brandon Sanderson"),
+        # Mc/Mac/O' prefixes - should NOT be treated as initials
+        ("Freida McFadden", "Freida McFadden"),
+        ("Anne MacLeod", "Anne MacLeod"),
+        ("Mary O'Brien", "Mary O'Brien"),
+        # Mixed: initials + Mc/Mac prefix
+        ("J. K. MacArthur", "J. K. MacArthur"),
+    ]
+
+    for input_name, expected in initials_tests:
+        result = standardize_initials(input_name)
+        if test_result(f"Initials: '{input_name}'",
+                       result == expected,
+                       f"Expected '{expected}', got '{result}'"):
+            passed += 1
+        else:
+            failed += 1
+
+    # Test clean_author_name with config
+    print("\n--- Issue #54: clean_author_name with initials setting ---")
+
+    # Without config (should not standardize)
+    result = clean_author_name("James S A Corey")
+    if test_result("clean_author_name without config",
+                   result == "James S A Corey",
+                   f"Expected unchanged, got '{result}'"):
+        passed += 1
+    else:
+        failed += 1
+
+    # With config enabled (should standardize)
+    config = {'standardize_author_initials': True}
+    result = clean_author_name("James S A Corey", config)
+    if test_result("clean_author_name with config enabled",
+                   result == "James S. A. Corey",
+                   f"Expected 'James S. A. Corey', got '{result}'"):
+        passed += 1
+    else:
+        failed += 1
+
+    # With config disabled (should not standardize)
+    config = {'standardize_author_initials': False}
+    result = clean_author_name("James S A Corey", config)
+    if test_result("clean_author_name with config disabled",
+                   result == "James S A Corey",
+                   f"Expected unchanged, got '{result}'"):
+        passed += 1
+    else:
+        failed += 1
 
     # ==========================================
     # Summary

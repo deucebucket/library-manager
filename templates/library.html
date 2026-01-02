@@ -123,6 +123,24 @@
             <span class="ms-2">Locked</span>
             <span class="count" id="count-locked">0</span>
         </a>
+
+        <!-- Issue #53: Media type filters -->
+        <span class="text-muted mx-2">|</span>
+        <a href="#" class="filter-chip" data-filter="audiobook_only" onclick="setFilter('audiobook_only'); return false;">
+            <i class="bi bi-headphones"></i>
+            <span class="ms-2">Audio Only</span>
+            <span class="count" id="count-audiobook_only">0</span>
+        </a>
+        <a href="#" class="filter-chip" data-filter="ebook_only" onclick="setFilter('ebook_only'); return false;">
+            <i class="bi bi-book"></i>
+            <span class="ms-2">Ebook Only</span>
+            <span class="count" id="count-ebook_only">0</span>
+        </a>
+        <a href="#" class="filter-chip" data-filter="both_formats" onclick="setFilter('both_formats'); return false;">
+            <i class="bi bi-collection"></i>
+            <span class="ms-2">Both</span>
+            <span class="count" id="count-both_formats">0</span>
+        </a>
     </div>
 </div>
 
@@ -1131,7 +1149,10 @@ function unlockBook(bookId) {
 (function() {
     const urlParams = new URLSearchParams(window.location.search);
     const filterParam = urlParams.get('filter');
-    if (filterParam && ['all', 'pending', 'orphan', 'queue', 'fixed', 'verified', 'error', 'attention', 'locked'].includes(filterParam)) {
+    // Issue #53: Added media type filters
+    const validFilters = ['all', 'pending', 'orphan', 'queue', 'fixed', 'verified', 'error', 'attention', 'locked',
+                          'audiobook_only', 'ebook_only', 'both_formats'];
+    if (filterParam && validFilters.includes(filterParam)) {
         setFilter(filterParam);
     } else {
         loadLibrary();

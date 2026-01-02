@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.65-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.72-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,23 +16,23 @@
 
 ## Recent Changes (develop)
 
-> **beta.65** - Watch Folder Improvements
-> - **Watch Folder Retry Fix** (Issue #49) - Failed items no longer retry forever, now tracked for user review
-> - **Watch Folder Author Fix** (Issue #46) - Watch folder inside library no longer treated as an author
-> - **Encoding Cleanup** (Issue #48) - Better stripping of bitrates, file sizes, codec info from titles
-> - **Audnexus Logging** (Issue #45) - Improved logging to debug API issues
+> **beta.72** - Multi-Edit, Media Filters & Author Initials
+> - **Multi-Edit Queue** (Issue #37) - Edit all queue items at once in a single modal view
+> - **Media Type Filter** (Issue #53) - Filter library by format (Audio Only / Ebook Only / Both)
+> - **Standardize Author Initials** (Issue #54) - Normalize "J R R Tolkien" → "J. R. R. Tolkien"
+> - **ABS Integration Docs** (Issue #47) - Info banner explaining Audiobookshelf features
+> - **BookDB Rate Limiting** - Prevents timeouts for users with large libraries
 
-> **beta.64** - Queue Processing Fix (Issue #44)
-> - **Auto-Processing Fixed** - Queue now processes automatically regardless of Auto-Fix setting
+> **beta.71** - Author & Title Sanity Checks (Issue #50)
+> - **Author Cleanup** - Strips "Bibliography", "Collection", Calibre IDs from author names
+> - **Title Cleanup** - Strips Calibre-style numeric IDs from book titles
 
-> **beta.63** - BookDB Integration Fix (Issue #45)
-> - **BookDB Now Works** - Metadata lookups use BookDB automatically (no configuration needed)
-> - **Faster Searches** - Edit dialog search now returns results in ~2.5s instead of timing out
+> **beta.69-70** - Reversed Structure & Path Fixes
+> - **Removed False Positives** - Simplified reversed structure detection
+> - **Author Prefix Fix** - "Author - Title" in book folder no longer duplicates author
 
-> **beta.62** - Settings Reorganization & UI Polish
-> - **Settings Redesign** - Reorganized from 3 tabs to 5 cleaner tabs (Library, Processing, AI Setup, Safety, Advanced)
-> - **UI Tooltips** (Issue #43) - Hover over status badges to see what they mean
-> - **Edit Warning** (Issue #42) - Warning when editing during queue processing
+> **beta.65-68** - Watch Folder & Bug Fixes
+> - Watch folder retry loop fixed, encoding cleanup improved, SQLite errors fixed
 
 [Full Changelog](CHANGELOG.md)
 

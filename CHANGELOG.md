@@ -2,6 +2,54 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.72] - 2026-01-02
+
+### Added
+- **Multi-Edit Queue** (Issue #37) - Edit multiple queue items at once in a single view
+  - "Multi-Edit" button opens modal showing all queue items in editable table
+  - Edit author/title inline for each item
+  - Search button per item to auto-fill from BookDB
+  - Mark items as OK directly from the modal
+  - "Save All Changes" applies all edits as pending fixes
+  - Modified items highlighted, count shown in footer
+
+- **Media Type Filter** (Issue #53) - Filter library by format: Audio Only, Ebook Only, or Both
+  - New filter chips on Library page to find books missing a format
+  - Helps identify audiobooks that don't have ebooks and vice versa
+  - `media_type` column tracks format for each book
+  - Works with existing filters (combine with Verified, Attention, etc.)
+
+- **Standardize Author Initials** (Issue #54) - Option to normalize author initials to consistent format
+  - "James S A Corey" → "James S. A. Corey"
+  - "JRR Tolkien" → "J. R. R. Tolkien"
+  - "C.S. Lewis" → "C. S. Lewis"
+  - Preserves Mc/Mac/O' prefixes (McFadden, MacLeod, O'Brien)
+  - Toggle in Settings → Library → "Standardize Author Initials"
+
+- **ABS Integration Explanation** (Issue #47) - Info banner explaining what the Audiobookshelf integration does
+  - Explains Progress Grid, Archive Candidates, Untouched, and User Groups features
+  - Describes how Library Manager and ABS work together
+  - Tips for enabling ABS-compatible folder structure
+  - Dismissible banner (remembers preference)
+
+- **BookDB Rate Limiting** - Added rate limiting and backoff for BookDB API calls
+  - 0.5 second delay between calls (prevents hammering)
+  - Exponential backoff on 429 responses (30s, 60s, 90s)
+  - Prevents users with large libraries from getting rate-limited
+
+### Added (Tests)
+- 17 new tests for Issue #54 (author initials standardization)
+- 7 new tests for Issue #53 (media type filter + detect_media_type function)
+- 6 new tests for Issue #37 (multi-edit queue modal)
+- New UI feature test suite (`test-env/test-ui-features.py`) - 22 tests total
+  - Tests for Issue #47 (ABS explanation banner)
+  - Tests for Issue #43 (tooltips on badges)
+  - Tests for Issue #42 (edit warning during processing)
+  - Tests for Issue #53 (media type filters)
+  - Tests for Issue #37 (multi-edit queue)
+
+---
+
 ## [0.9.0-beta.71] - 2026-01-01
 
 ### Fixed

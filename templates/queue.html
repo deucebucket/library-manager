@@ -5,6 +5,12 @@
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-list-task"></i> Processing Queue <span class="badge bg-warning" id="queue-badge">{{ queue_items|length }}</span></h2>
     <div>
+        {% if queue_items %}
+        <!-- Issue #37: Multi-edit button -->
+        <button class="btn btn-info" onclick="openMultiEdit()" title="Edit multiple books at once">
+            <i class="bi bi-pencil-square"></i> Multi-Edit
+        </button>
+        {% endif %}
         <button class="btn btn-success" onclick="processAll()" id="process-all-btn">
             <i class="bi bi-play-fill"></i> Process All
         </button>
@@ -255,6 +261,48 @@
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
                 <button type="button" class="btn btn-primary" onclick="useBookFromDetail()">
                     <i class="bi bi-check-lg"></i> Use This Book
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Issue #37: Multi-Edit Modal -->
+<div class="modal fade" id="multiEditModal" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-pencil-square"></i> Multi-Edit Queue Items</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" style="max-height: 70vh; overflow-y: auto;">
+                <div class="alert alert-info py-2 mb-3">
+                    <i class="bi bi-info-circle"></i> Edit multiple items at once. Changes are saved when you click "Save All Changes".
+                </div>
+                <table class="table table-sm table-dark mb-0" id="multi-edit-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 30%;">Author</th>
+                            <th style="width: 35%;">Title</th>
+                            <th style="width: 20%;">Issue</th>
+                            <th style="width: 15%;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="multi-edit-body">
+                        <!-- Rows populated by JavaScript -->
+                    </tbody>
+                </table>
+            </div>
+            <div class="modal-footer">
+                <div class="me-auto">
+                    <span id="multi-edit-count" class="text-muted">0 items</span>
+                    <span id="multi-edit-modified" class="text-warning ms-2" style="display: none;">
+                        <i class="bi bi-pencil"></i> <span id="modified-count">0</span> modified
+                    </span>
+                </div>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-success" onclick="saveAllMultiEdits()">
+                    <i class="bi bi-check-all"></i> Save All Changes
                 </button>
             </div>
         </div>
@@ -1005,6 +1053,197 @@ function useBookFromDetail() {
     }
 
     detailModal.hide();
+}
+
+// ============================================
+// Issue #37: Multi-Edit Functions
+// ============================================
+let multiEditModal = null;
+let multiEditData = [];  // Track original and current values
+
+function openMultiEdit() {
+    // Initialize modal
+    if (!multiEditModal) {
+        multiEditModal = new bootstrap.Modal(document.getElementById('multiEditModal'));
+    }
+
+    // Get all queue items from the table
+    const rows = document.querySelectorAll('#queue-body tr');
+    multiEditData = [];
+    const tbody = document.getElementById('multi-edit-body');
+    tbody.innerHTML = '';
+
+    rows.forEach(row => {
+        const id = row.id.replace('queue-', '');
+        const authorCell = row.querySelector('td:first-child .text-warning');
+        const titleCell = row.querySelector('td:nth-child(2)');
+        const issueCell = row.querySelector('td:nth-child(3) .badge');
+
+        const author = authorCell?.textContent?.trim() || '';
+        const title = titleCell?.textContent?.trim() || '';
+        const issue = issueCell?.textContent?.trim() || '';
+
+        multiEditData.push({
+            id: id,
+            originalAuthor: author,
+            originalTitle: title,
+            currentAuthor: author,
+            currentTitle: title
+        });
+
+        const tr = document.createElement('tr');
+        tr.id = `multi-${id}`;
+        tr.innerHTML = `
+            <td>
+                <input type="text" class="form-control form-control-sm bg-dark text-light multi-author"
+                       data-id="${id}" value="${escapeHtml(author)}"
+                       oninput="trackMultiEdit(${id})">
+            </td>
+            <td>
+                <input type="text" class="form-control form-control-sm bg-dark text-light multi-title"
+                       data-id="${id}" value="${escapeHtml(title)}"
+                       oninput="trackMultiEdit(${id})">
+            </td>
+            <td><small class="badge bg-secondary">${escapeHtml(issue)}</small></td>
+            <td>
+                <button class="btn btn-sm btn-outline-info" onclick="searchForMultiItem(${id})" title="Search database">
+                    <i class="bi bi-search"></i>
+                </button>
+                <button class="btn btn-sm btn-outline-success" onclick="markMultiItemOK(${id})" title="Mark as OK (remove from queue)">
+                    <i class="bi bi-check"></i>
+                </button>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    });
+
+    document.getElementById('multi-edit-count').textContent = `${multiEditData.length} items`;
+    updateModifiedCount();
+    multiEditModal.show();
+}
+
+function trackMultiEdit(id) {
+    const item = multiEditData.find(d => d.id == id);
+    if (!item) return;
+
+    const authorInput = document.querySelector(`#multi-${id} .multi-author`);
+    const titleInput = document.querySelector(`#multi-${id} .multi-title`);
+
+    item.currentAuthor = authorInput?.value || '';
+    item.currentTitle = titleInput?.value || '';
+
+    // Check if modified
+    const row = document.getElementById(`multi-${id}`);
+    const isModified = item.currentAuthor !== item.originalAuthor || item.currentTitle !== item.originalTitle;
+    row.classList.toggle('table-warning', isModified);
+
+    updateModifiedCount();
+}
+
+function updateModifiedCount() {
+    const modified = multiEditData.filter(d =>
+        d.currentAuthor !== d.originalAuthor || d.currentTitle !== d.originalTitle
+    ).length;
+
+    document.getElementById('modified-count').textContent = modified;
+    document.getElementById('multi-edit-modified').style.display = modified > 0 ? 'inline' : 'none';
+}
+
+async function searchForMultiItem(id) {
+    const item = multiEditData.find(d => d.id == id);
+    if (!item) return;
+
+    const btn = document.querySelector(`#multi-${id} .btn-outline-info`);
+    const originalHtml = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    btn.disabled = true;
+
+    try {
+        const query = item.currentTitle || item.currentAuthor;
+        const resp = await fetch(`/api/search?q=${encodeURIComponent(query)}&limit=1`);
+        const data = await resp.json();
+
+        if (data.success && data.results?.length > 0) {
+            const result = data.results[0];
+            const authorInput = document.querySelector(`#multi-${id} .multi-author`);
+            const titleInput = document.querySelector(`#multi-${id} .multi-title`);
+
+            authorInput.value = result.author_name || result.author || '';
+            titleInput.value = result.name || result.title || '';
+
+            item.currentAuthor = authorInput.value;
+            item.currentTitle = titleInput.value;
+
+            trackMultiEdit(id);
+            log(`Found: ${result.author_name} - ${result.name || result.title}`);
+        } else {
+            log(`No results for "${query}"`);
+        }
+    } catch (e) {
+        log(`Search error: ${e}`);
+    }
+
+    btn.innerHTML = originalHtml;
+    btn.disabled = false;
+}
+
+function markMultiItemOK(id) {
+    // Remove from queue and hide row
+    fetch(`/api/queue/${id}/remove`, { method: 'POST' })
+        .then(resp => resp.json())
+        .then(data => {
+            if (data.success) {
+                const row = document.getElementById(`multi-${id}`);
+                row.remove();
+                multiEditData = multiEditData.filter(d => d.id != id);
+                document.getElementById('multi-edit-count').textContent = `${multiEditData.length} items`;
+                log(`Removed item ${id} from queue`);
+            }
+        });
+}
+
+async function saveAllMultiEdits() {
+    const modified = multiEditData.filter(d =>
+        d.currentAuthor !== d.originalAuthor || d.currentTitle !== d.originalTitle
+    );
+
+    if (modified.length === 0) {
+        multiEditModal.hide();
+        return;
+    }
+
+    const saveBtn = document.querySelector('#multiEditModal .btn-success');
+    saveBtn.disabled = true;
+    saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving...';
+
+    let saved = 0;
+    for (const item of modified) {
+        try {
+            const resp = await fetch('/api/queue/manual_match', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    queue_id: parseInt(item.id),
+                    author: item.currentAuthor,
+                    title: item.currentTitle
+                })
+            });
+            const data = await resp.json();
+            if (data.success) {
+                saved++;
+                log(`Saved: ${item.currentAuthor} - ${item.currentTitle}`);
+            }
+        } catch (e) {
+            log(`Error saving item ${item.id}: ${e}`);
+        }
+    }
+
+    saveBtn.disabled = false;
+    saveBtn.innerHTML = '<i class="bi bi-check-all"></i> Save All Changes';
+
+    log(`Saved ${saved}/${modified.length} items as pending fixes`);
+    multiEditModal.hide();
+    refreshQueue();
 }
 </script>
 {% endblock %}

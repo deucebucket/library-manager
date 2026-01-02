@@ -991,6 +991,7 @@ DEFAULT_CONFIG = {
     "update_channel": "beta",  # "stable", "beta", or "nightly"
     "naming_format": "author/title",  # "author/title", "author - title", "custom"
     "custom_naming_template": "{author}/{title}",  # Custom template with {author}, {title}, {series}, etc.
+    "standardize_author_initials": False,  # Normalize initials: "James S A Corey" → "James S. A. Corey" (Issue #54)
     # Metadata embedding settings
     "metadata_embedding_enabled": False,  # Embed tags into audio files when fixes are applied
     "metadata_embedding_overwrite_managed": True,  # Overwrite managed fields (title/author/series/etc)
@@ -1120,6 +1121,13 @@ def init_db():
     # Used to handle watch folder items that failed to move and need special processing
     try:
         c.execute("ALTER TABLE books ADD COLUMN source_type TEXT DEFAULT 'library'")
+    except:
+        pass  # Column already exists
+
+    # Add media_type column - tracks what formats exist ('audiobook', 'ebook', 'both')
+    # Issue #53: Used for filtering library by format
+    try:
+        c.execute("ALTER TABLE books ADD COLUMN media_type TEXT DEFAULT 'audiobook'")
     except:
         pass  # Column already exists
 
@@ -1809,6 +1817,7 @@ def _call_ollama_simple(prompt, config):
 # - Google Books: ~1000/day free = ~40/hour - 1 req/2sec
 # - Hardcover: Beta API, be conservative - 1 req/2sec
 API_RATE_LIMITS = {
+    'bookdb': {'last_call': 0, 'min_delay': 0.5},        # 0.5 sec between calls (our API, 500/hour limit)
     'audnexus': {'last_call': 0, 'min_delay': 1.5},      # 1.5 sec between calls
     'openlibrary': {'last_call': 0, 'min_delay': 1.5},   # 1.5 sec between calls
     'googlebooks': {'last_call': 0, 'min_delay': 2.5},   # 2.5 sec between calls (stricter)
@@ -2059,7 +2068,7 @@ BOOKDB_API_URL = "https://bookdb.deucebucket.com"
 # Public API key for Library Manager users (no config needed)
 BOOKDB_PUBLIC_KEY = "lm-public-2024_85TbJ2lbrXGm38tBgliPAcAexLA_AeWxyqvHPbwRIrA"
 
-def search_bookdb(title, author=None, api_key=None):
+def search_bookdb(title, author=None, api_key=None, retry_count=0):
     """
     Search our private BookDB metadata service.
     Uses fuzzy matching via Qdrant vectors - great for messy filenames.
@@ -2067,6 +2076,8 @@ def search_bookdb(title, author=None, api_key=None):
     """
     if not api_key:
         return None
+
+    rate_limit_wait('bookdb')
 
     try:
         # Build the filename to match - include author if we have it
@@ -2078,6 +2089,13 @@ def search_bookdb(title, author=None, api_key=None):
             headers={"X-API-Key": api_key},
             timeout=10
         )
+
+        # Handle rate limiting with exponential backoff
+        if resp.status_code == 429 and retry_count < 3:
+            wait_time = 30 * (retry_count + 1)  # 30s, 60s, 90s
+            logger.info(f"BookDB rate limited, waiting {wait_time}s before retry...")
+            time.sleep(wait_time)
+            return search_bookdb(title, author, api_key, retry_count + 1)
 
         if resp.status_code != 200:
             logger.debug(f"BookDB returned status {resp.status_code}")
@@ -2368,11 +2386,77 @@ def search_hardcover(title, author=None):
         logger.debug(f"Hardcover search failed: {e}")
         return None
 
-def clean_author_name(author):
+def standardize_initials(name):
+    """Issue #54: Normalize author initials to consistent "A. B." format.
+
+    Examples:
+        "James S A Corey" → "James S. A. Corey"
+        "James S.A. Corey" → "James S. A. Corey"
+        "J.R.R. Tolkien" → "J. R. R. Tolkien"
+        "JRR Tolkien" → "J. R. R. Tolkien"
+        "C.S. Lewis" → "C. S. Lewis"
+        "CS Lewis" → "C. S. Lewis"
+
+    Preserves:
+        - Full names: "Stephen King" (unchanged)
+        - Mc/Mac/O' prefixes: "Freida McFadden" (unchanged)
+    """
+    import re
+    if not name:
+        return name
+
+    words = name.split()
+    result = []
+
+    for word in words:
+        # Skip Mc/Mac/O' prefixes - these are part of surnames, not initials
+        if re.match(r'^(Mc|Mac|O\')', word, re.IGNORECASE):
+            result.append(word)
+            continue
+
+        # Check if this word is entirely uppercase letters (initials without periods)
+        # e.g., "JRR" → "J. R. R."
+        if re.match(r'^[A-Z]{2,}$', word):
+            # Split into individual letters with periods
+            expanded = '. '.join(list(word)) + '.'
+            result.append(expanded)
+            continue
+
+        # Check if this is initials with periods stuck together
+        # e.g., "J.R.R." → "J. R. R."
+        if re.match(r'^([A-Z]\.)+$', word):
+            # Add spaces after each period
+            expanded = ' '.join(word.split('.')[:-1]) + '.'
+            expanded = '. '.join(c for c in expanded.replace(' ', '') if c != '.') + '.'
+            result.append(expanded)
+            continue
+
+        # Check if this is a single letter (initial without period)
+        # e.g., "S" in "James S A Corey" → "S."
+        if re.match(r'^[A-Z]$', word):
+            result.append(word + '.')
+            continue
+
+        # Check if this is a single initial with period
+        # e.g., "S." - already correct
+        if re.match(r'^[A-Z]\.$', word):
+            result.append(word)
+            continue
+
+        # Regular word - keep as is
+        result.append(word)
+
+    return ' '.join(result)
+
+
+def clean_author_name(author, config=None):
     """Issue #50: Strip junk suffixes from author names.
 
     Handles Calibre-style folder names like 'Peter F. Hamilton Bibliography'
     which should become just 'Peter F. Hamilton'.
+
+    If config is provided and standardize_author_initials is enabled,
+    also normalizes initials to "A. B." format (Issue #54).
     """
     import re
     if not author:
@@ -2396,7 +2480,13 @@ def clean_author_name(author):
     # Also strip Calibre-style IDs from author names: "Author Name (123)"
     clean = re.sub(r'\s*\(\d+\)\s*$', '', clean)
 
-    return clean.strip()
+    clean = clean.strip()
+
+    # Issue #54: Standardize initials if enabled
+    if config and config.get('standardize_author_initials', False):
+        clean = standardize_initials(clean)
+
+    return clean
 
 
 def extract_author_title(messy_name):
@@ -3316,6 +3406,52 @@ import hashlib
 AUDIO_EXTENSIONS = {'.m4b', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.wma', '.aac'}
 EBOOK_EXTENSIONS = {'.epub', '.pdf', '.mobi', '.azw3'}
 
+
+def detect_media_type(path):
+    """Issue #53: Detect what media types exist in a book folder.
+
+    Returns: 'audiobook', 'ebook', or 'both'
+    """
+    path = Path(path) if isinstance(path, str) else path
+
+    if not path.exists():
+        return 'audiobook'  # Default for missing paths
+
+    has_audio = False
+    has_ebook = False
+
+    # Check if it's a file or directory
+    if path.is_file():
+        ext = path.suffix.lower()
+        if ext in AUDIO_EXTENSIONS:
+            has_audio = True
+        elif ext in EBOOK_EXTENSIONS:
+            has_ebook = True
+    else:
+        # It's a directory - scan for files
+        try:
+            for item in path.rglob('*'):
+                if item.is_file():
+                    ext = item.suffix.lower()
+                    if ext in AUDIO_EXTENSIONS:
+                        has_audio = True
+                    elif ext in EBOOK_EXTENSIONS:
+                        has_ebook = True
+
+                    # Early exit if we found both
+                    if has_audio and has_ebook:
+                        break
+        except PermissionError:
+            pass
+
+    if has_audio and has_ebook:
+        return 'both'
+    elif has_ebook:
+        return 'ebook'
+    else:
+        return 'audiobook'
+
+
 # Patterns for disc/chapter folders (these are NOT book titles)
 DISC_CHAPTER_PATTERNS = [
     r'^(disc|disk|cd|part|chapter|ch)\s*\d+',  # "Disc 1", "Part 2", "Chapter 3"
@@ -3729,7 +3865,7 @@ def group_loose_files(files):
     return groups
 
 
-def search_bookdb_api(title):
+def search_bookdb_api(title, retry_count=0):
     """
     Search the BookBucket API for a book (public endpoint, no auth needed).
     Uses Qdrant vector search - fast even with 50M books.
@@ -3745,6 +3881,8 @@ def search_bookdb_api(title):
     if is_unsearchable_query(search_title):
         logger.debug(f"BookDB API: Skipping unsearchable query '{search_title}'")
         return None
+
+    rate_limit_wait('bookdb')
 
     try:
         # Use longer timeout for cold start (embedding model can take 45-60s to load)
@@ -3762,6 +3900,13 @@ def search_bookdb_api(title):
                     logger.debug(f"BookDB API timeout on first attempt, retrying...")
                     continue
                 raise
+
+        # Handle rate limiting with exponential backoff
+        if response.status_code == 429 and retry_count < 3:
+            wait_time = 30 * (retry_count + 1)  # 30s, 60s, 90s
+            logger.info(f"BookDB API rate limited, waiting {wait_time}s before retry...")
+            time.sleep(wait_time)
+            return search_bookdb_api(title, retry_count + 1)
 
         if response.status_code == 200:
             results = response.json()
@@ -9141,12 +9286,27 @@ def api_library():
         'verified': 0,
         'error': 0,
         'attention': 0,
-        'locked': 0
+        'locked': 0,
+        # Issue #53: Media type counts
+        'audiobook_only': 0,
+        'ebook_only': 0,
+        'both_formats': 0
     }
+
+    # Get media type filter (Issue #53)
+    media_filter = request.args.get('media', 'all')  # 'all', 'audiobook', 'ebook', 'both'
 
     # Count books by status
     c.execute("SELECT COUNT(*) FROM books")
     counts['all'] = c.fetchone()[0]
+
+    # Issue #53: Count by media type
+    c.execute("SELECT COUNT(*) FROM books WHERE media_type = 'audiobook' OR media_type IS NULL")
+    counts['audiobook_only'] = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM books WHERE media_type = 'ebook'")
+    counts['ebook_only'] = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM books WHERE media_type = 'both'")
+    counts['both_formats'] = c.fetchone()[0]
 
     c.execute("SELECT COUNT(*) FROM history WHERE status = 'pending_fix'")
     counts['pending'] = c.fetchone()[0]
@@ -9398,10 +9558,68 @@ def api_library():
                 'user_locked': True
             })
 
+    # Issue #53: Media type filters
+    elif status_filter == 'audiobook_only':
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
+                     FROM books
+                     WHERE media_type = 'audiobook' OR media_type IS NULL
+                     ORDER BY current_author, current_title
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'book',
+                'book_id': row['id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
+                'path': row['path'],
+                'status': row['status'],
+                'user_locked': row['user_locked'] == 1,
+                'media_type': row['media_type'] or 'audiobook'
+            })
+
+    elif status_filter == 'ebook_only':
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
+                     FROM books
+                     WHERE media_type = 'ebook'
+                     ORDER BY current_author, current_title
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'book',
+                'book_id': row['id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
+                'path': row['path'],
+                'status': row['status'],
+                'user_locked': row['user_locked'] == 1,
+                'media_type': 'ebook'
+            })
+
+    elif status_filter == 'both_formats':
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
+                     FROM books
+                     WHERE media_type = 'both'
+                     ORDER BY current_author, current_title
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'book',
+                'book_id': row['id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
+                'path': row['path'],
+                'status': row['status'],
+                'user_locked': row['user_locked'] == 1,
+                'media_type': 'both'
+            })
+
     elif status_filter == 'search' and search_query:
         # Search across all books by author or title
         search_pattern = f'%{search_query}%'
-        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
                      FROM books
                      WHERE current_author LIKE ? OR current_title LIKE ?
                      ORDER BY current_author, current_title
@@ -9415,7 +9633,8 @@ def api_library():
                 'title': row['current_title'],
                 'path': row['path'],
                 'status': row['status'],
-                'user_locked': row['user_locked'] == 1
+                'user_locked': row['user_locked'] == 1,
+                'media_type': row['media_type'] or 'audiobook'
             })
         # Get total for search results
         c.execute('''SELECT COUNT(*) FROM books
@@ -9476,6 +9695,13 @@ def api_library():
         total = counts['locked']
     elif status_filter == 'search':
         total = counts.get('search', 0)
+    # Issue #53: Media type filters
+    elif status_filter == 'audiobook_only':
+        total = counts['audiobook_only']
+    elif status_filter == 'ebook_only':
+        total = counts['ebook_only']
+    elif status_filter == 'both_formats':
+        total = counts['both_formats']
     else:
         total = counts['all']
 

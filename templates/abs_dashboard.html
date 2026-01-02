@@ -7,6 +7,31 @@
     <span class="text-muted">v{{ version }}</span>
 </div>
 
+<!-- What does this do? -->
+<div class="alert alert-info alert-dismissible fade show mb-4" role="alert" id="abs-info-banner">
+    <h5 class="alert-heading"><i class="bi bi-info-circle"></i> What does this integration do?</h5>
+    <p class="mb-2"><strong>Current features:</strong></p>
+    <ul class="mb-2">
+        <li><strong>Progress Grid</strong> - See which books each user has started, finished, or is currently reading</li>
+        <li><strong>Archive Candidates</strong> - Find books everyone has finished (safe to archive to free up space)</li>
+        <li><strong>Untouched</strong> - Find books no one has ever started (consider promoting or removing)</li>
+        <li><strong>User Groups</strong> - Create groups to set archive rules (e.g., "archive when Family group finishes")</li>
+    </ul>
+    <p class="mb-2"><strong>How it works with Library Manager:</strong></p>
+    <ul class="mb-0">
+        <li>Library Manager organizes and renames your audiobook files on disk</li>
+        <li>Audiobookshelf reads those same files and serves them to listeners</li>
+        <li>This dashboard pulls progress data FROM ABS to help you manage your library</li>
+        <li><em>Tip:</em> Enable "Series Grouping" in Settings to use ABS-compatible folder structure</li>
+    </ul>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close" onclick="localStorage.setItem('abs_info_dismissed', 'true')"></button>
+</div>
+<script>
+if (localStorage.getItem('abs_info_dismissed') === 'true') {
+    document.getElementById('abs-info-banner')?.remove();
+}
+</script>
+
 {% if not abs_connected %}
 <!-- Connection Setup -->
 <div class="card mb-4">
