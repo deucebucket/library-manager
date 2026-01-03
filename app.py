@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.75"
+APP_VERSION = "0.9.0-beta.76"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -7926,6 +7926,8 @@ def settings_page():
         config['watch_interval_seconds'] = int(request.form.get('watch_interval_seconds', 60))
         config['watch_delete_empty_folders'] = 'watch_delete_empty_folders' in request.form
         config['watch_min_file_age_seconds'] = int(request.form.get('watch_min_file_age_seconds', 30))
+        # Author initials setting (Issue #54)
+        config['standardize_author_initials'] = 'standardize_author_initials' in request.form
 
         # Save config (without secrets)
         save_config(config)

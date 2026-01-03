@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.75-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.76-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,9 @@
 ---
 
 ## Recent Changes (develop)
+
+> **beta.76** - Settings Save Fix (Issue #56)
+> - **Author Initials Toggle** - Setting now saves from web UI
 
 > **beta.75** - Multi-Edit Queue Fix
 > - **Queue Page Restored** - `/queue` now renders properly with Multi-Edit button accessible

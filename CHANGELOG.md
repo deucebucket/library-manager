@@ -2,6 +2,13 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.76] - 2026-01-03
+
+### Fixed
+- **Standardize Author Initials Setting Not Saving** (Issue #56) - Toggle now saves from web UI
+  - Setting was missing from the form submission handler
+  - Manually editing config.json was the only workaround
+
 ## [0.9.0-beta.75] - 2026-01-03
 
 ### Fixed
