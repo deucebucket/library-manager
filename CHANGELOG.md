@@ -2,6 +2,13 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.73] - 2026-01-02
+
+### Fixed
+- **SQLite Database Locking** (Issue #55) - Added `busy_timeout` pragma to handle large libraries
+  - Prevents "database is locked" errors during concurrent operations
+  - Added timeout to `init_db()` function as well
+
 ## [0.9.0-beta.72] - 2026-01-02
 
 ### Added

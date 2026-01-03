@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.72"
+APP_VERSION = "0.9.0-beta.73"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -1090,7 +1090,7 @@ def init_config():
 
 def init_db():
     """Initialize SQLite database."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     c = conn.cursor()
 
     # Books table - tracks all scanned books
@@ -1215,6 +1215,7 @@ def get_db():
     conn = sqlite3.connect(DB_PATH, timeout=30)  # Wait up to 30 seconds for lock
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA journal_mode=WAL')  # Better concurrent access
+    conn.execute('PRAGMA busy_timeout=30000')  # 30s SQLite-level busy wait
     return conn
 
 # ============== CONFIG ==============

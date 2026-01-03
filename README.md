@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.72-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.73-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,12 +16,14 @@
 
 ## Recent Changes (develop)
 
+> **beta.73** - SQLite Locking Fix (Issue #55)
+> - **Database Locking Fix** - Added `busy_timeout` pragma for large libraries
+
 > **beta.72** - Multi-Edit, Media Filters & Author Initials
 > - **Multi-Edit Queue** (Issue #37) - Edit all queue items at once in a single modal view
 > - **Media Type Filter** (Issue #53) - Filter library by format (Audio Only / Ebook Only / Both)
 > - **Standardize Author Initials** (Issue #54) - Normalize "J R R Tolkien" → "J. R. R. Tolkien"
 > - **ABS Integration Docs** (Issue #47) - Info banner explaining Audiobookshelf features
-> - **BookDB Rate Limiting** - Prevents timeouts for users with large libraries
 
 > **beta.71** - Author & Title Sanity Checks (Issue #50)
 > - **Author Cleanup** - Strips "Bibliography", "Collection", Calibre IDs from author names
