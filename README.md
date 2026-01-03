@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.73-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.74-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,9 @@
 ---
 
 ## Recent Changes (develop)
+
+> **beta.74** - BookDB Standalone Books Fix
+> - **BookDB Fix** - Now returns results for standalone books (not just series)
 
 > **beta.73** - SQLite Locking Fix (Issue #55)
 > - **Database Locking Fix** - Added `busy_timeout` pragma for large libraries

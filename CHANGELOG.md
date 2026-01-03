@@ -2,6 +2,14 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.74] - 2026-01-03
+
+### Fixed
+- **BookDB Rejecting Standalone Books** - BookDB was only returning results for series books
+  - Standalone books (no series) were being discarded even when found
+  - Now properly returns author/title for books not in a series
+  - Fixes David Baldacci and other prolific authors with many standalone titles
+
 ## [0.9.0-beta.73] - 2026-01-02
 
 ### Fixed

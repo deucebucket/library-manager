@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.73"
+APP_VERSION = "0.9.0-beta.74"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -2112,13 +2112,14 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0):
         series = data.get('series')
         books = data.get('books', [])
 
-        if not series:
+        # Need either series or books to return a result
+        if not series and not books:
             return None
 
-        # Find the best matching book in the series
+        # Find the best matching book
         best_book = None
         if books:
-            # Try to match title to a specific book in series
+            # Try to match title to a specific book
             title_lower = title.lower()
             for book in books:
                 book_title = book.get('title', '').lower()
@@ -2129,13 +2130,14 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0):
             if not best_book:
                 best_book = books[0]
 
+        # Build result - handle standalone books (no series) and series books
         result = {
-            'title': best_book.get('title') if best_book else series.get('name'),
-            'author': series.get('author_name', ''),
+            'title': best_book.get('title') if best_book else (series.get('name') if series else None),
+            'author': best_book.get('author_name') if best_book else (series.get('author_name', '') if series else ''),
             'year': best_book.get('year_published') if best_book else None,
-            'series': series.get('name'),
+            'series': series.get('name') if series else None,
             'series_num': best_book.get('series_position') if best_book else None,
-            'variant': series.get('variant'),  # Graphic Audio, BBC Radio, etc.
+            'variant': series.get('variant') if series else None,
             'edition': best_book.get('edition') if best_book else None,
             'source': 'bookdb',
             'confidence': data.get('confidence', 0)
