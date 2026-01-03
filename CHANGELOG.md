@@ -2,6 +2,13 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.75] - 2026-01-03
+
+### Fixed
+- **Multi-Edit Queue Accessible** (Issue #37) - Queue page now renders properly with Multi-Edit
+  - `/queue` route was incorrectly redirecting to library view
+  - Multi-Edit button and functionality now accessible at `/queue`
+
 ## [0.9.0-beta.74] - 2026-01-03
 
 ### Fixed

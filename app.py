@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.74"
+APP_VERSION = "0.9.0-beta.75"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -7774,8 +7774,19 @@ def orphans_page():
 
 @app.route('/queue')
 def queue_page():
-    """Redirect to unified Library view with queue filter."""
-    return redirect('/library?filter=queue')
+    """Queue page with Multi-Edit support."""
+    conn = get_db()
+    c = conn.cursor()
+
+    c.execute('''SELECT q.id, q.reason, q.added_at,
+                        b.id as book_id, b.path, b.current_author, b.current_title
+                 FROM queue q
+                 JOIN books b ON q.book_id = b.id
+                 ORDER BY q.priority, q.added_at''')
+    queue_items = [dict(row) for row in c.fetchall()]
+    conn.close()
+
+    return render_template('queue.html', queue_items=queue_items)
 
 @app.route('/history')
 def history_page():
