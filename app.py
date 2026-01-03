@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.76"
+APP_VERSION = "0.9.0-beta.77"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -2091,10 +2091,14 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0):
             timeout=10
         )
 
-        # Handle rate limiting with exponential backoff
+        # Handle rate limiting - respect Retry-After header from server
         if resp.status_code == 429 and retry_count < 3:
-            wait_time = 30 * (retry_count + 1)  # 30s, 60s, 90s
-            logger.info(f"BookDB rate limited, waiting {wait_time}s before retry...")
+            retry_after = resp.headers.get('Retry-After', '60')
+            try:
+                wait_time = min(int(retry_after), 300)  # Cap at 5 minutes
+            except ValueError:
+                wait_time = 60 * (retry_count + 1)  # Fallback: 60s, 120s, 180s
+            logger.info(f"BookDB rate limited, waiting {wait_time}s (Retry-After: {retry_after})...")
             time.sleep(wait_time)
             return search_bookdb(title, author, api_key, retry_count + 1)
 
@@ -3904,10 +3908,14 @@ def search_bookdb_api(title, retry_count=0):
                     continue
                 raise
 
-        # Handle rate limiting with exponential backoff
+        # Handle rate limiting - respect Retry-After header from server
         if response.status_code == 429 and retry_count < 3:
-            wait_time = 30 * (retry_count + 1)  # 30s, 60s, 90s
-            logger.info(f"BookDB API rate limited, waiting {wait_time}s before retry...")
+            retry_after = response.headers.get('Retry-After', '60')
+            try:
+                wait_time = min(int(retry_after), 300)  # Cap at 5 minutes
+            except ValueError:
+                wait_time = 60 * (retry_count + 1)  # Fallback: 60s, 120s, 180s
+            logger.info(f"BookDB API rate limited, waiting {wait_time}s (Retry-After: {retry_after})...")
             time.sleep(wait_time)
             return search_bookdb_api(title, retry_count + 1)
 

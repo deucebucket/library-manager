@@ -2,6 +2,14 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.77] - 2026-01-03
+
+### Improved
+- **BookDB Rate Limiting** - Better handling of API rate limits
+  - Server now returns proper `Retry-After` headers on all 429 responses
+  - Client respects `Retry-After` instead of hardcoded backoff times
+  - Prevents hammering the API when rate limited
+
 ## [0.9.0-beta.76] - 2026-01-03
 
 ### Fixed
