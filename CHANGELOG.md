@@ -2,6 +2,19 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.78] - 2026-01-04
+
+### Fixed
+- **SQLite Database Locking (Proper Fix)** - Complete architectural fix for database locking during processing
+  - Previous fix (beta.73) only added `busy_timeout` which was a band-aid
+  - Root cause: Worker functions held DB connections open during external API calls (10-30+ seconds)
+  - Refactored `process_layer_1_api()`, `process_queue()`, and `process_layer_3_audio()` to use 3-phase approach:
+    - Phase 1: Quick fetch, release connection immediately
+    - Phase 2: External work (API/AI/audio calls) with NO database lock held
+    - Phase 3: Quick write, release connection
+  - Eliminates "database is locked" errors when triggering deep rescan during processing
+  - Connection now held for milliseconds instead of 20-30+ seconds
+
 ## [0.9.0-beta.77] - 2026-01-03
 
 ### Improved

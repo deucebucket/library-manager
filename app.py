@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.77"
+APP_VERSION = "0.9.0-beta.78"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -5949,11 +5949,18 @@ def process_layer_1_api(config, limit=None):
     Items that fail are advanced to layer 2 (AI verification).
 
     This is faster and cheaper than AI, so we try it first.
+
+    NOTE: This function uses a 3-phase approach to avoid holding DB locks during
+    external API calls (which can take 10-30+ seconds for a batch):
+      Phase 1: Quick fetch, release connection
+      Phase 2: External API work (no DB connection held)
+      Phase 3: Quick write, release connection
     """
     if not config.get('enable_api_lookups', True):
         logger.info("[LAYER 1] API lookups disabled, skipping")
         return 0, 0
 
+    # === PHASE 1: Fetch batch (quick read, release connection immediately) ===
     conn = get_db()
     c = conn.cursor()
 
@@ -5971,24 +5978,35 @@ def process_layer_1_api(config, limit=None):
                    AND (b.user_locked IS NULL OR b.user_locked = 0)
                  ORDER BY q.priority, q.added_at
                  LIMIT ?''', (batch_size,))
-    batch = c.fetchall()
+    # Convert to dicts immediately - sqlite3.Row objects become invalid after conn.close()
+    batch = [dict(row) for row in c.fetchall()]
+    conn.close()  # Release DB lock BEFORE external API calls
 
     if not batch:
-        conn.close()
         return 0, 0
 
     logger.info(f"[LAYER 1] Processing {len(batch)} items via API lookup")
 
-    processed = 0
-    resolved = 0
+    # === PHASE 2: External API lookups (NO database connection held) ===
+    # Collect all actions to perform, then apply them in phase 3
+    actions = []  # List of action dicts describing what to do for each item
 
     for row in batch:
-        path = row['path']
         current_author = row['current_author']
         current_title = row['current_title']
 
-        # Use existing API candidate gathering function
+        # Use existing API candidate gathering function (EXTERNAL CALLS HAPPEN HERE)
         candidates = gather_all_api_candidates(current_title, current_author, config)
+
+        # Determine what action to take based on API results
+        action = {
+            'book_id': row['book_id'],
+            'queue_id': row['queue_id'],
+            'type': None,  # Will be set below
+            'profile_json': None,
+            'confidence': None,
+            'log_message': None
+        }
 
         if candidates:
             # Sort by author match quality - prefer exact matches
@@ -6013,59 +6031,74 @@ def process_layer_1_api(config, limit=None):
                 # IMPORTANT: If author is placeholder (Unknown, Various, etc.), we CANNOT verify as-is
                 # The book needs to be fixed, not verified. Advance to Layer 2 for proper identification.
                 if is_placeholder_author(current_author):
-                    logger.info(f"[LAYER 1] Placeholder author '{current_author}', advancing to AI for identification: {current_title}")
-                    c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (row['book_id'],))
-                    processed += 1
-                    continue
-
-                author_sim = calculate_title_similarity(current_author, match_author)
-                avg_confidence = (title_sim + author_sim) / 2
-
-                # confidence_threshold is 0-100 scale, convert to 0-1
-                threshold = confidence_threshold / 100.0 if confidence_threshold > 1 else confidence_threshold
-                if avg_confidence >= threshold:
-                    # Good match found - check if current values are correct or need fixing
-                    # If both title and author are very close (90%+), the book is already correct
-                    # If one differs significantly, advance to Layer 2 for AI verification
-
-                    if title_sim >= 0.90 and author_sim >= 0.90:
-                        # Book is already correctly named - mark as verified and remove from queue
-                        logger.info(f"[LAYER 1] Verified OK ({avg_confidence:.0%}): {current_author}/{current_title}")
-
-                        # Create profile with verification source
-                        api_source = best_match.get('source', 'api')
-                        profile = BookProfile()
-                        profile.author.add_source(api_source, match_author)
-                        profile.title.add_source(api_source, match_title)
-                        if best_match.get('series'):
-                            profile.series.add_source(api_source, best_match['series'])
-                        if best_match.get('series_num'):
-                            profile.series_num.add_source(api_source, best_match['series_num'])
-                        profile.verification_layers_used = ['api']
-                        profile.finalize()
-
-                        # Save profile and mark as verified
-                        profile_json = json.dumps(profile.to_dict())
-                        c.execute('UPDATE books SET status = ?, verification_layer = 4, profile = ?, confidence = ? WHERE id = ?',
-                                 ('verified', profile_json, profile.overall_confidence, row['book_id']))
-                        c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                        resolved += 1
-                    else:
-                        # API found the book but current values differ - let Layer 2 handle the fix
-                        logger.info(f"[LAYER 1] API match needs fix ({avg_confidence:.0%}, title={title_sim:.0%}, author={author_sim:.0%}): {current_author}/{current_title} -> {match_author}/{match_title}")
-                        c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (row['book_id'],))
+                    action['type'] = 'advance_to_layer2'
+                    action['log_message'] = f"[LAYER 1] Placeholder author '{current_author}', advancing to AI for identification: {current_title}"
                 else:
-                    # Low confidence - advance to AI layer
-                    logger.info(f"[LAYER 1] API match low confidence ({avg_confidence:.0f}%), advancing to AI: {current_author}/{current_title}")
-                    c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (row['book_id'],))
+                    author_sim = calculate_title_similarity(current_author, match_author)
+                    avg_confidence = (title_sim + author_sim) / 2
+
+                    # confidence_threshold is 0-100 scale, convert to 0-1
+                    threshold = confidence_threshold / 100.0 if confidence_threshold > 1 else confidence_threshold
+                    if avg_confidence >= threshold:
+                        # Good match found - check if current values are correct or need fixing
+                        if title_sim >= 0.90 and author_sim >= 0.90:
+                            # Book is already correctly named - mark as verified and remove from queue
+                            action['type'] = 'verified'
+                            action['log_message'] = f"[LAYER 1] Verified OK ({avg_confidence:.0%}): {current_author}/{current_title}"
+
+                            # Create profile with verification source
+                            api_source = best_match.get('source', 'api')
+                            profile = BookProfile()
+                            profile.author.add_source(api_source, match_author)
+                            profile.title.add_source(api_source, match_title)
+                            if best_match.get('series'):
+                                profile.series.add_source(api_source, best_match['series'])
+                            if best_match.get('series_num'):
+                                profile.series_num.add_source(api_source, best_match['series_num'])
+                            profile.verification_layers_used = ['api']
+                            profile.finalize()
+
+                            action['profile_json'] = json.dumps(profile.to_dict())
+                            action['confidence'] = profile.overall_confidence
+                        else:
+                            # API found the book but current values differ - let Layer 2 handle the fix
+                            action['type'] = 'advance_to_layer2'
+                            action['log_message'] = f"[LAYER 1] API match needs fix ({avg_confidence:.0%}, title={title_sim:.0%}, author={author_sim:.0%}): {current_author}/{current_title} -> {match_author}/{match_title}"
+                    else:
+                        # Low confidence - advance to AI layer
+                        action['type'] = 'advance_to_layer2'
+                        action['log_message'] = f"[LAYER 1] API match low confidence ({avg_confidence:.0f}%), advancing to AI: {current_author}/{current_title}"
             else:
                 # No good match found - advance to AI
-                logger.info(f"[LAYER 1] No API match, advancing to AI: {current_author}/{current_title}")
-                c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (row['book_id'],))
+                action['type'] = 'advance_to_layer2'
+                action['log_message'] = f"[LAYER 1] No API match, advancing to AI: {current_author}/{current_title}"
         else:
             # No candidates at all - advance to AI
-            logger.info(f"[LAYER 1] No API candidates, advancing to AI: {current_author}/{current_title}")
-            c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (row['book_id'],))
+            action['type'] = 'advance_to_layer2'
+            action['log_message'] = f"[LAYER 1] No API candidates, advancing to AI: {current_author}/{current_title}"
+
+        actions.append(action)
+
+    # === PHASE 3: Apply all updates (quick write, release connection) ===
+    conn = get_db()
+    c = conn.cursor()
+
+    processed = 0
+    resolved = 0
+
+    for action in actions:
+        # Log the message (was logged inline before, now batched)
+        if action['log_message']:
+            logger.info(action['log_message'])
+
+        if action['type'] == 'verified':
+            # Save profile and mark as verified
+            c.execute('UPDATE books SET status = ?, verification_layer = 4, profile = ?, confidence = ? WHERE id = ?',
+                     ('verified', action['profile_json'], action['confidence'], action['book_id']))
+            c.execute('DELETE FROM queue WHERE id = ?', (action['queue_id'],))
+            resolved += 1
+        elif action['type'] == 'advance_to_layer2':
+            c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (action['book_id'],))
 
         processed += 1
 
@@ -6077,13 +6110,27 @@ def process_layer_1_api(config, limit=None):
 
 
 def process_queue(config, limit=None):
-    """Process items in the queue."""
+    """
+    Process items in the queue using AI verification (Layer 2).
+
+    NOTE: This function uses a 3-phase approach to avoid holding DB locks during
+    external AI API calls (which can take 5-30+ seconds):
+      Phase 1: Quick fetch, release connection
+      Phase 2: External AI call (no DB connection held)
+      Phase 3: Reconnect and process results
+    """
     # Check rate limit first
     allowed, calls_made, max_calls = check_rate_limit(config)
     if not allowed:
         logger.warning(f"Rate limit reached: {calls_made}/{max_calls} calls. Waiting...")
         return 0, 0
 
+    # Check if AI verification is enabled (before opening connection)
+    if not config.get('enable_ai_verification', True):
+        logger.info("[LAYER 2] AI verification disabled, skipping")
+        return 0, 0
+
+    # === PHASE 1: Fetch batch (quick read, release connection immediately) ===
     conn = get_db()
     c = conn.cursor()
 
@@ -6092,12 +6139,6 @@ def process_queue(config, limit=None):
         batch_size = min(batch_size, limit)
 
     logger.info(f"[LAYER 2/AI] process_queue called with batch_size={batch_size}, limit={limit} (API: {calls_made}/{max_calls})")
-
-    # Check if AI verification is enabled
-    if not config.get('enable_ai_verification', True):
-        logger.info("[LAYER 2] AI verification disabled, skipping")
-        conn.close()
-        return 0, 0
 
     # Get batch from queue - LAYER 2 (AI): items at verification_layer=2 or legacy items (layer=0 when API is disabled)
     # Also process layer=0 items if API lookups are disabled (fallback to AI directly)
@@ -6124,13 +6165,14 @@ def process_queue(config, limit=None):
                        AND (b.user_locked IS NULL OR b.user_locked = 0)
                      ORDER BY q.priority, q.added_at
                      LIMIT ?''', (batch_size,))
-    batch = c.fetchall()
+    # Convert to dicts immediately - sqlite3.Row objects become invalid after conn.close()
+    batch = [dict(row) for row in c.fetchall()]
+    conn.close()  # Release DB lock BEFORE external AI call
 
     logger.info(f"[LAYER 2/AI] Fetched {len(batch)} items from queue")
 
     if not batch:
         logger.info("[DEBUG] No items in batch, returning 0")
-        conn.close()
         return 0, 0  # (processed, fixed)
 
     # Build messy names for AI
@@ -6140,19 +6182,22 @@ def process_queue(config, limit=None):
     for i, name in enumerate(messy_names):
         logger.info(f"[DEBUG]   Item {i+1}: {name}")
 
+    # === PHASE 2: External AI call (NO database connection held) ===
     results = call_ai(messy_names, config)
     logger.info(f"[DEBUG] AI returned {len(results) if results else 0} results")
+
+    if not results:
+        logger.warning("No results from AI")
+        return 0, 0  # (processed, fixed)
+
+    # === PHASE 3: Process results and apply DB updates ===
+    conn = get_db()
+    c = conn.cursor()
 
     # Update API call stats (INSERT if not exists, then UPDATE to preserve other columns)
     today = datetime.now().strftime('%Y-%m-%d')
     c.execute('INSERT OR IGNORE INTO stats (date) VALUES (?)', (today,))
     c.execute('UPDATE stats SET api_calls = COALESCE(api_calls, 0) + 1 WHERE date = ?', (today,))
-
-    if not results:
-        logger.warning("No results from AI")
-        conn.commit()
-        conn.close()
-        return 0, 0  # (processed, fixed)
 
     processed = 0
     fixed = 0
@@ -6839,6 +6884,12 @@ def process_layer_3_audio(config, limit=None):
     Processes items at verification_layer=3 using Gemini audio analysis.
     This is the most expensive layer - extracts metadata from audiobook intros.
     Items that still can't be identified are marked as 'needs_attention'.
+
+    NOTE: This function uses a 3-phase approach to avoid holding DB locks during
+    expensive Gemini audio analysis calls (which can take 10-30+ seconds per item):
+      Phase 1: Quick fetch, release connection
+      Phase 2: Audio analysis (no DB connection held)
+      Phase 3: Quick write, release connection
     """
     if not config.get('enable_audio_analysis', False):
         logger.info("[LAYER 3] Audio analysis disabled, skipping")
@@ -6850,6 +6901,7 @@ def process_layer_3_audio(config, limit=None):
         logger.info("[LAYER 3] No Gemini API key for audio analysis, skipping")
         return 0, 0
 
+    # === PHASE 1: Fetch batch (quick read, release connection immediately) ===
     conn = get_db()
     c = conn.cursor()
 
@@ -6866,16 +6918,18 @@ def process_layer_3_audio(config, limit=None):
                    AND (b.user_locked IS NULL OR b.user_locked = 0)
                  ORDER BY q.priority, q.added_at
                  LIMIT ?''', (batch_size,))
-    batch = c.fetchall()
+    # Convert to dicts immediately - sqlite3.Row objects become invalid after conn.close()
+    batch = [dict(row) for row in c.fetchall()]
+    conn.close()  # Release DB lock BEFORE expensive audio analysis
 
     if not batch:
-        conn.close()
         return 0, 0
 
     logger.info(f"[LAYER 3] Processing {len(batch)} items via audio analysis")
 
-    processed = 0
-    resolved = 0
+    # === PHASE 2: Audio analysis (NO database connection held) ===
+    # Collect all analysis results, then apply them in phase 3
+    analysis_results = []  # List of (row, action_type, action_data)
 
     for row in batch:
         path = row['path']
@@ -6885,19 +6939,17 @@ def process_layer_3_audio(config, limit=None):
         audio_files = find_audio_files(str(book_path)) if book_path.is_dir() else [str(book_path)]
 
         if not audio_files:
-            # No audio files - mark as needs attention
-            logger.warning(f"[LAYER 3] No audio files found, marking needs attention: {path}")
-            c.execute('UPDATE books SET status = ?, verification_layer = 4, error_message = ? WHERE id = ?',
-                     ('needs_attention', 'No audio files found for analysis', row['book_id']))
-            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-            processed += 1
+            # No audio files - will mark as needs attention
+            analysis_results.append((row, 'no_audio', {
+                'log_message': f"[LAYER 3] No audio files found, marking needs attention: {path}"
+            }))
             continue
 
-        # Try audio analysis with Gemini
+        # Try audio analysis with Gemini (EXPENSIVE EXTERNAL CALL)
         audio_result = analyze_audio_with_gemini(audio_files[0], config)
 
         if audio_result and audio_result.get('author') and audio_result.get('title'):
-            # Audio analysis succeeded - create pending fix with extracted metadata
+            # Audio analysis succeeded
             new_author = audio_result.get('author', '')
             new_title = audio_result.get('title', '')
             new_narrator = audio_result.get('narrator', '')
@@ -6914,15 +6966,12 @@ def process_layer_3_audio(config, limit=None):
             title_match = calculate_title_similarity(current_title, new_title) if current_title else 0
 
             if author_match >= 0.90 and title_match >= 0.90:
-                # Audio confirms current values are correct - mark verified
-                logger.info(f"[LAYER 3] Audio confirms existing metadata, marking verified: {current_author}/{current_title}")
-                c.execute('UPDATE books SET status = ?, verification_layer = 4 WHERE id = ?',
-                         ('verified', row['book_id']))
-                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                resolved += 1
+                # Audio confirms current values are correct
+                analysis_results.append((row, 'verified', {
+                    'log_message': f"[LAYER 3] Audio confirms existing metadata, marking verified: {current_author}/{current_title}"
+                }))
             else:
-                # Audio suggests different values - create pending fix
-                # Find library path
+                # Audio suggests different values - build new path
                 lib_path = None
                 for lp in config.get('library_paths', []):
                     lp_path = Path(lp)
@@ -6942,27 +6991,74 @@ def process_layer_3_audio(config, limit=None):
                                           narrator=new_narrator, config=config)
 
                 if new_path is None:
-                    logger.error(f"[LAYER 3] SAFETY BLOCK: Invalid path for '{new_author}' / '{new_title}'")
-                    c.execute('UPDATE books SET status = ?, verification_layer = 4, error_message = ? WHERE id = ?',
-                             ('error', 'Audio extraction produced invalid path', row['book_id']))
-                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                    analysis_results.append((row, 'error', {
+                        'log_message': f"[LAYER 3] SAFETY BLOCK: Invalid path for '{new_author}' / '{new_title}'",
+                        'error_message': 'Audio extraction produced invalid path'
+                    }))
                 else:
-                    # Create pending fix for manual review
-                    logger.info(f"[LAYER 3] Creating pending fix: {current_author}/{current_title} -> {new_author}/{new_title}")
-                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                      new_narrator, new_series, new_series_num)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?)''',
-                             (row['book_id'], current_author, current_title,
-                              new_author, new_title, str(book_path), str(new_path),
-                              'Identified via audio analysis',
-                              new_narrator, new_series, str(new_series_num) if new_series_num else None))
-                    c.execute('UPDATE books SET status = ?, verification_layer = 4 WHERE id = ?',
-                             ('pending_fix', row['book_id']))
-                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                    resolved += 1
+                    analysis_results.append((row, 'pending_fix', {
+                        'log_message': f"[LAYER 3] Creating pending fix: {current_author}/{current_title} -> {new_author}/{new_title}",
+                        'new_author': new_author,
+                        'new_title': new_title,
+                        'new_narrator': new_narrator,
+                        'new_series': new_series,
+                        'new_series_num': new_series_num,
+                        'new_path': str(new_path),
+                        'book_path': str(book_path)
+                    }))
         else:
-            # Audio analysis failed - this is the last layer, mark as needs attention
-            logger.warning(f"[LAYER 3] Audio analysis failed, marking needs attention: {path}")
+            # Audio analysis failed
+            analysis_results.append((row, 'failed', {
+                'log_message': f"[LAYER 3] Audio analysis failed, marking needs attention: {path}"
+            }))
+
+    # === PHASE 3: Apply all updates (quick write, release connection) ===
+    conn = get_db()
+    c = conn.cursor()
+
+    processed = 0
+    resolved = 0
+
+    for row, action_type, action_data in analysis_results:
+        # Log the message
+        if action_data.get('log_message'):
+            if 'SAFETY BLOCK' in action_data['log_message'] or 'failed' in action_data['log_message'] or 'No audio' in action_data['log_message']:
+                logger.warning(action_data['log_message'])
+            else:
+                logger.info(action_data['log_message'])
+
+        if action_type == 'no_audio':
+            c.execute('UPDATE books SET status = ?, verification_layer = 4, error_message = ? WHERE id = ?',
+                     ('needs_attention', 'No audio files found for analysis', row['book_id']))
+            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+
+        elif action_type == 'verified':
+            c.execute('UPDATE books SET status = ?, verification_layer = 4 WHERE id = ?',
+                     ('verified', row['book_id']))
+            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+            resolved += 1
+
+        elif action_type == 'error':
+            c.execute('UPDATE books SET status = ?, verification_layer = 4, error_message = ? WHERE id = ?',
+                     ('error', action_data['error_message'], row['book_id']))
+            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+
+        elif action_type == 'pending_fix':
+            c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                              new_narrator, new_series, new_series_num)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?)''',
+                     (row['book_id'], row['current_author'], row['current_title'],
+                      action_data['new_author'], action_data['new_title'],
+                      action_data['book_path'], action_data['new_path'],
+                      'Identified via audio analysis',
+                      action_data['new_narrator'], action_data['new_series'],
+                      str(action_data['new_series_num']) if action_data['new_series_num'] else None))
+            c.execute('UPDATE books SET status = ?, verification_layer = 4 WHERE id = ?',
+                     ('pending_fix', row['book_id']))
+            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+            resolved += 1
+
+        elif action_type == 'failed':
             c.execute('UPDATE books SET status = ?, verification_layer = 4, error_message = ? WHERE id = ?',
                      ('needs_attention', 'All verification layers exhausted - manual review required', row['book_id']))
             c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
