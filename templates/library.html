@@ -124,7 +124,8 @@
             <span class="count" id="count-locked">0</span>
         </a>
 
-        <!-- Issue #53: Media type filters -->
+        <!-- Issue #53: Media type filters - only shown when ebook management is enabled -->
+        {% if config.ebook_management %}
         <span class="text-muted mx-2">|</span>
         <a href="#" class="filter-chip" data-filter="audiobook_only" onclick="setFilter('audiobook_only'); return false;">
             <i class="bi bi-headphones"></i>
@@ -141,6 +142,7 @@
             <span class="ms-2">Both</span>
             <span class="count" id="count-both_formats">0</span>
         </a>
+        {% endif %}
     </div>
 </div>
 
@@ -1149,9 +1151,9 @@ function unlockBook(bookId) {
 (function() {
     const urlParams = new URLSearchParams(window.location.search);
     const filterParam = urlParams.get('filter');
-    // Issue #53: Added media type filters
-    const validFilters = ['all', 'pending', 'orphan', 'queue', 'fixed', 'verified', 'error', 'attention', 'locked',
-                          'audiobook_only', 'ebook_only', 'both_formats'];
+    // Issue #53: Media type filters only valid when ebook management is enabled
+    const validFilters = ['all', 'pending', 'orphan', 'queue', 'fixed', 'verified', 'error', 'attention', 'locked'
+        {% if config.ebook_management %}, 'audiobook_only', 'ebook_only', 'both_formats'{% endif %}];
     if (filterParam && validFilters.includes(filterParam)) {
         setFilter(filterParam);
     } else {
