@@ -2,6 +2,14 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.79] - 2026-01-06
+
+### Improved
+- **Hide Media Type Filters When Irrelevant** (Issue #57 feedback) - UI cleanup for audio-only users
+  - "Audio Only", "Ebook Only", and "Both" filter chips now hidden when Ebook Management is disabled
+  - Reduces UI clutter for users who only manage audiobooks
+  - URL parameters for these filters are also ignored when ebook management is off
+
 ## [0.9.0-beta.78] - 2026-01-04
 
 ### Fixed
