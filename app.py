@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.79"
+APP_VERSION = "0.9.0-beta.80"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -2315,11 +2315,30 @@ def search_audnexus(title, author=None, region=None):
 
         # Get best match
         best = data[0]
+
+        # Extract series info - Audnexus returns series as object or seriesName/seriesPosition fields
+        series_name = None
+        series_num = None
+        if best.get('series'):
+            # Series can be an object with name field
+            if isinstance(best['series'], dict):
+                series_name = best['series'].get('name')
+                series_num = best['series'].get('position')
+            elif isinstance(best['series'], str):
+                series_name = best['series']
+        # Also check flat fields (some Audnexus responses use these)
+        if not series_name:
+            series_name = best.get('seriesName') or best.get('series_name')
+        if not series_num:
+            series_num = best.get('seriesPosition') or best.get('series_position')
+
         result = {
             'title': best.get('title', ''),
             'author': best.get('authors', [{}])[0].get('name', '') if best.get('authors') else '',
             'year': best.get('releaseDate', '')[:4] if best.get('releaseDate') else None,
             'narrator': best.get('narrators', [{}])[0].get('name', '') if best.get('narrators') else None,
+            'series': series_name,
+            'series_num': series_num,
             'source': 'audnexus'
         }
 
@@ -2342,7 +2361,7 @@ def search_hardcover(title, author=None):
         if author:
             query = f"{title} {author}"
 
-        # Hardcover uses GraphQL
+        # Hardcover uses GraphQL - request series info too
         graphql_query = {
             "query": """
                 query SearchBooks($query: String!) {
@@ -2351,6 +2370,7 @@ def search_hardcover(title, author=None):
                             title
                             contributions { author { name } }
                             releaseYear
+                            series { name position }
                         }
                     }
                 }
@@ -2378,10 +2398,17 @@ def search_hardcover(title, author=None):
         contributions = best.get('contributions', [])
         author_name = contributions[0].get('author', {}).get('name', '') if contributions else ''
 
+        # Extract series info from Hardcover response
+        series_info = best.get('series', {}) or {}
+        series_name = series_info.get('name') if isinstance(series_info, dict) else None
+        series_num = series_info.get('position') if isinstance(series_info, dict) else None
+
         result = {
             'title': best.get('title', ''),
             'author': author_name,
             'year': best.get('releaseYear'),
+            'series': series_name,
+            'series_num': series_num,
             'source': 'hardcover'
         }
 
@@ -3587,10 +3614,40 @@ def find_orphan_audio_files(lib_path):
 
 
 def organize_orphan_files(author_path, book_title, files, config=None):
-    """Create a book folder and move orphan files into it, including companion files."""
+    """Create a book folder and move orphan files into it, including companion files.
+
+    Issue #57: If files are within a watch folder context and watch_output_folder is configured,
+    the organized files will be placed in watch_output_folder/Author/Title instead of in-place.
+    """
     import shutil
 
     author_dir = Path(author_path)
+    author_name = author_dir.name  # Extract author name for potential output folder path
+
+    # Issue #57: Check if we should use watch_output_folder instead of organizing in-place
+    # This applies when the orphan files are within the watch folder area
+    destination_base = author_dir  # Default: organize in place (current author folder)
+
+    if config:
+        watch_folder = config.get('watch_folder', '').strip()
+        watch_output_folder = config.get('watch_output_folder', '').strip()
+
+        if watch_folder and watch_output_folder:
+            try:
+                watch_path = Path(watch_folder).resolve()
+                author_path_resolved = author_dir.resolve()
+
+                # Check if author_path is within the watch folder tree
+                try:
+                    author_path_resolved.relative_to(watch_path)
+                    # Files are in watch folder context - use output folder
+                    destination_base = Path(watch_output_folder) / author_name
+                    logger.info(f"Orphan organization: Using watch output folder: {destination_base}")
+                except ValueError:
+                    # Not in watch folder - organize in place (default)
+                    pass
+            except Exception as e:
+                logger.debug(f"Orphan organization: Path check failed, organizing in place: {e}")
 
     # Clean up the book title for folder name
     clean_title = book_title
@@ -3604,7 +3661,8 @@ def organize_orphan_files(author_path, book_title, files, config=None):
     if not clean_title:
         return False, "Could not determine book title"
 
-    book_dir = author_dir / clean_title
+    # Issue #57: Use destination_base (could be author_dir or watch_output_folder/author)
+    book_dir = destination_base / clean_title
 
     # Check if folder already exists
     if book_dir.exists():
@@ -6055,6 +6113,16 @@ def process_layer_1_api(config, limit=None):
                                 profile.series.add_source(api_source, best_match['series'])
                             if best_match.get('series_num'):
                                 profile.series_num.add_source(api_source, best_match['series_num'])
+
+                            # Issue #57: Fallback - extract series from title if API didn't provide it
+                            # This ensures consistent series detection between Layer 1 and Layer 2
+                            if not best_match.get('series'):
+                                extracted_series, extracted_num, _ = extract_series_from_title(match_title)
+                                if extracted_series:
+                                    profile.series.add_source('path', extracted_series)
+                                    if extracted_num:
+                                        profile.series_num.add_source('path', extracted_num)
+
                             profile.verification_layers_used = ['api']
                             profile.finalize()
 
@@ -7674,16 +7742,18 @@ def process_watch_folder(config: dict) -> int:
                 try:
                     if author_is_placeholder:
                         # Unknown author - requires user intervention before processing
+                        # Issue #57: Include source_type for watch folder tracking
                         c.execute('''INSERT OR REPLACE INTO books
-                                     (path, current_author, current_title, status, error_message, added_at, updated_at)
-                                     VALUES (?, ?, ?, 'needs_attention', ?, datetime('now'), datetime('now'))''',
+                                     (path, current_author, current_title, status, error_message, source_type, added_at, updated_at)
+                                     VALUES (?, ?, ?, 'needs_attention', ?, 'watch_folder', datetime('now'), datetime('now'))''',
                                   (new_path, author, title, 'Watch folder: Could not determine author - please review and correct'))
                         logger.info(f"Watch folder: Flagged for attention (unknown author): {title}")
                     else:
                         # Known author - normal processing
+                        # Issue #57: Include source_type for watch folder tracking
                         c.execute('''INSERT OR REPLACE INTO books
-                                     (path, current_author, current_title, status, added_at, updated_at)
-                                     VALUES (?, ?, ?, 'pending', datetime('now'), datetime('now'))''',
+                                     (path, current_author, current_title, status, source_type, added_at, updated_at)
+                                     VALUES (?, ?, ?, 'pending', 'watch_folder', datetime('now'), datetime('now'))''',
                                   (new_path, author, title))
                     conn.commit()
                 except Exception as e:
