@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.80"
+APP_VERSION = "0.9.0-beta.81"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -1085,6 +1085,31 @@ def init_config():
         with open(SECRETS_PATH, 'w') as f:
             json.dump(DEFAULT_SECRETS, f, indent=2)
         logger.info(f"Created default secrets at {SECRETS_PATH}")
+
+
+def needs_setup(config):
+    """Check if app needs initial setup wizard.
+
+    Returns True only for fresh installs that haven't been configured.
+    Existing users who update will NOT see the wizard.
+
+    Logic:
+    - If user already has library_paths configured -> skip wizard
+    - If setup_completed flag is set -> skip wizard
+    - Otherwise (fresh install with no paths) -> show wizard
+    """
+    # Existing users already have library_paths - don't show wizard
+    paths = config.get('library_paths', [])
+    if paths and len(paths) > 0:
+        return False  # Already configured = skip wizard
+
+    # New flag for explicit wizard completion
+    if config.get('setup_completed', False):
+        return False
+
+    # Fresh install with no paths = show wizard
+    return True
+
 
 # ============== DATABASE ==============
 
@@ -7896,6 +7921,11 @@ def inject_worker_status():
 @app.route('/')
 def dashboard():
     """Main dashboard."""
+    # Check if first-run setup is needed
+    config = load_config()
+    if needs_setup(config):
+        return redirect(url_for('setup_wizard'))
+
     conn = get_db()
     c = conn.cursor()
 
@@ -7940,6 +7970,68 @@ def dashboard():
                           daily_stats=daily_stats,
                           config=config,
                           worker_running=worker_running)
+
+
+@app.route('/setup')
+def setup_wizard():
+    """First-run setup wizard for new users."""
+    config = load_config()
+    # If already configured, redirect to library
+    if not needs_setup(config):
+        return redirect(url_for('library'))
+    return render_template('setup_wizard.html', config=config)
+
+
+@app.route('/api/setup/complete', methods=['POST'])
+def complete_setup():
+    """Save initial setup configuration.
+
+    IMPORTANT: This MERGES with existing config, never overwrites.
+    If user has existing settings, they are preserved.
+    """
+    data = request.json
+    config = load_config()  # Load existing config first
+    secrets = load_secrets()
+
+    # MERGE library paths - add new ones, keep existing
+    existing_paths = config.get('library_paths', [])
+    new_paths = data.get('library_paths', [])
+    for path in new_paths:
+        if path and path not in existing_paths:
+            existing_paths.append(path)
+    config['library_paths'] = existing_paths
+
+    # Only update AI provider if user selected one in wizard
+    if data.get('ai_provider'):
+        config['ai_provider'] = data['ai_provider']
+
+    # Only save API keys if provided (don't clear existing)
+    if data.get('gemini_api_key'):
+        secrets['gemini_api_key'] = data['gemini_api_key']
+    if data.get('openrouter_api_key'):
+        secrets['openrouter_api_key'] = data['openrouter_api_key']
+    if data.get('ollama_url'):
+        config['ollama_url'] = data['ollama_url']
+    if data.get('ollama_model'):
+        config['ollama_model'] = data['ollama_model']
+
+    # Only update toggles if explicitly set in wizard
+    if 'auto_fix' in data:
+        config['auto_fix'] = data['auto_fix']
+    if 'ebook_management' in data:
+        config['ebook_management'] = data['ebook_management']
+    if 'trust_the_process' in data:
+        config['trust_the_process'] = data['trust_the_process']
+
+    # Mark setup as completed (prevents re-showing wizard)
+    config['setup_completed'] = True
+
+    save_config(config)
+    save_secrets(secrets)
+
+    logger.info(f"Setup wizard completed. Library paths: {config['library_paths']}")
+    return jsonify({'success': True, 'redirect': '/library'})
+
 
 @app.route('/orphans')
 def orphans_page():

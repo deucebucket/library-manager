@@ -1,0 +1,818 @@
+{% extends "base.html" %}
+{% block title %}Setup - Library Manager{% endblock %}
+{% block content %}
+
+<style>
+    /* Setup Wizard Styles */
+    .setup-container {
+        max-width: 700px;
+        margin: 0 auto;
+    }
+
+    .step-indicators {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        margin-bottom: 2rem;
+        flex-wrap: wrap;
+        gap: 5px;
+    }
+
+    .step-indicator {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        background: #16213e;
+        border: 2px solid #0f3460;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+        color: #888;
+        transition: all 0.3s ease;
+    }
+
+    .step-indicator.active {
+        background: #e94560;
+        border-color: #e94560;
+        color: #fff;
+        transform: scale(1.1);
+    }
+
+    .step-indicator.completed {
+        background: #00d9ff;
+        border-color: #00d9ff;
+        color: #000;
+    }
+
+    .step-line {
+        width: 40px;
+        height: 2px;
+        background: #0f3460;
+        transition: background 0.3s ease;
+    }
+
+    .step-line.completed {
+        background: #00d9ff;
+    }
+
+    .setup-step {
+        animation: fadeIn 0.3s ease;
+    }
+
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    .setup-card {
+        background: rgba(22, 33, 62, 0.9);
+        border: 1px solid rgba(0, 217, 255, 0.2);
+        border-radius: 16px;
+    }
+
+    .setup-card .card-body {
+        padding: 2rem;
+    }
+
+    .option-card {
+        background: rgba(15, 52, 96, 0.5);
+        border: 2px solid transparent;
+        border-radius: 12px;
+        padding: 1rem;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+
+    .option-card:hover {
+        border-color: rgba(0, 217, 255, 0.5);
+        background: rgba(15, 52, 96, 0.8);
+    }
+
+    .option-card.selected {
+        border-color: #00d9ff;
+        background: rgba(0, 217, 255, 0.1);
+    }
+
+    .option-card input[type="radio"] {
+        display: none;
+    }
+
+    .path-item {
+        background: rgba(15, 52, 96, 0.5);
+        border-radius: 8px;
+        padding: 0.75rem 1rem;
+        margin-bottom: 0.5rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+
+    .path-item.valid {
+        border-left: 3px solid #00d9ff;
+    }
+
+    .path-item.invalid {
+        border-left: 3px solid #e94560;
+    }
+
+    .btn-nav {
+        min-width: 120px;
+    }
+
+    .feature-icon {
+        font-size: 2.5rem;
+        margin-bottom: 1rem;
+    }
+
+    .summary-item {
+        background: rgba(15, 52, 96, 0.3);
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 0.75rem;
+    }
+
+    .summary-item .label {
+        color: rgba(255,255,255,0.6);
+        font-size: 0.85rem;
+    }
+
+    .summary-item .value {
+        font-weight: 600;
+        color: #00d9ff;
+    }
+
+    /* Hide navbar during setup for cleaner experience */
+    .navbar {
+        display: none !important;
+    }
+
+    .setup-header {
+        text-align: center;
+        margin-bottom: 1rem;
+        padding-top: 1rem;
+    }
+
+    .setup-header h1 {
+        font-size: 1.5rem;
+        color: #00d9ff;
+    }
+</style>
+
+<div class="setup-container">
+    <!-- Header -->
+    <div class="setup-header">
+        <h1><i class="bi bi-book"></i> Library Manager</h1>
+    </div>
+
+    <!-- Step Indicators -->
+    <div class="step-indicators">
+        <div class="step-indicator active" id="step-ind-1">1</div>
+        <div class="step-line" id="line-1"></div>
+        <div class="step-indicator" id="step-ind-2">2</div>
+        <div class="step-line" id="line-2"></div>
+        <div class="step-indicator" id="step-ind-3">3</div>
+        <div class="step-line" id="line-3"></div>
+        <div class="step-indicator" id="step-ind-4">4</div>
+        <div class="step-line" id="line-4"></div>
+        <div class="step-indicator" id="step-ind-5">5</div>
+        <div class="step-line" id="line-5"></div>
+        <div class="step-indicator" id="step-ind-6">6</div>
+    </div>
+
+    <!-- Step 1: Welcome -->
+    <div class="setup-step" id="step-1">
+        <div class="card setup-card">
+            <div class="card-body text-center py-5">
+                <div class="feature-icon text-primary">
+                    <i class="bi bi-magic"></i>
+                </div>
+                <h2 class="mb-3">Welcome to Library Manager!</h2>
+                <p class="lead mb-4">Let's get your audiobook library organized.</p>
+
+                <div class="row text-start mb-4 justify-content-center">
+                    <div class="col-md-10">
+                        <div class="d-flex align-items-start mb-3">
+                            <i class="bi bi-1-circle-fill text-primary me-3 fs-4"></i>
+                            <div>
+                                <strong>Scan</strong>
+                                <p class="text-muted mb-0 small">Find all your audiobooks, even messy folder names</p>
+                            </div>
+                        </div>
+                        <div class="d-flex align-items-start mb-3">
+                            <i class="bi bi-2-circle-fill text-primary me-3 fs-4"></i>
+                            <div>
+                                <strong>Identify</strong>
+                                <p class="text-muted mb-0 small">Look up correct metadata from book databases</p>
+                            </div>
+                        </div>
+                        <div class="d-flex align-items-start">
+                            <i class="bi bi-3-circle-fill text-primary me-3 fs-4"></i>
+                            <div>
+                                <strong>Fix</strong>
+                                <p class="text-muted mb-0 small">Rename folders to clean, consistent format</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <p class="text-muted mb-4">This setup takes about 2 minutes.</p>
+
+                <button class="btn btn-primary btn-lg" onclick="goToStep(2)">
+                    Get Started <i class="bi bi-arrow-right ms-2"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Step 2: Library Path -->
+    <div class="setup-step d-none" id="step-2">
+        <div class="card setup-card">
+            <div class="card-body">
+                <h3 class="mb-4"><i class="bi bi-folder text-warning me-2"></i> Where are your audiobooks?</h3>
+
+                <p class="text-muted mb-4">
+                    Enter the folder path where your audiobooks are stored. You can add multiple folders if needed.
+                </p>
+
+                <div class="mb-3">
+                    <label class="form-label">Folder Path</label>
+                    <div class="input-group">
+                        <input type="text" class="form-control bg-dark text-light" id="path-input"
+                               placeholder="/path/to/audiobooks" onkeypress="if(event.key==='Enter') testAndAddPath()">
+                        <button class="btn btn-outline-info" type="button" onclick="testAndAddPath()">
+                            <i class="bi bi-plus-lg"></i> Add
+                        </button>
+                    </div>
+                    <div class="form-text">
+                        <i class="bi bi-info-circle"></i>
+                        Docker users: Use the path inside the container (e.g., /audiobooks)
+                    </div>
+                </div>
+
+                <div id="path-list" class="mb-4">
+                    <!-- Added paths will appear here -->
+                </div>
+
+                <div id="path-error" class="alert alert-danger d-none">
+                    <i class="bi bi-exclamation-triangle"></i> <span id="path-error-text"></span>
+                </div>
+
+                <div id="path-success" class="alert alert-success d-none">
+                    <i class="bi bi-check-circle"></i> <span id="path-success-text"></span>
+                </div>
+
+                <div class="d-flex justify-content-between mt-4">
+                    <button class="btn btn-outline-secondary btn-nav" onclick="goToStep(1)">
+                        <i class="bi bi-arrow-left me-2"></i> Back
+                    </button>
+                    <button class="btn btn-primary btn-nav" id="step2-next" onclick="goToStep(3)" disabled>
+                        Next <i class="bi bi-arrow-right ms-2"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Step 3: Media Type -->
+    <div class="setup-step d-none" id="step-3">
+        <div class="card setup-card">
+            <div class="card-body">
+                <h3 class="mb-4"><i class="bi bi-collection text-info me-2"></i> What are you managing?</h3>
+
+                <p class="text-muted mb-4">
+                    Library Manager can organize audiobooks, ebooks, or both. What does your library contain?
+                </p>
+
+                <div class="row g-3">
+                    <div class="col-12">
+                        <label class="option-card d-block selected" onclick="selectMediaType('audiobooks')">
+                            <input type="radio" name="media_type" value="audiobooks" checked>
+                            <div class="d-flex align-items-center">
+                                <i class="bi bi-headphones fs-2 text-primary me-3"></i>
+                                <div>
+                                    <strong>Audiobooks Only</strong>
+                                    <p class="text-muted mb-0 small">MP3, M4B, and other audio files</p>
+                                </div>
+                            </div>
+                        </label>
+                    </div>
+                    <div class="col-12">
+                        <label class="option-card d-block" onclick="selectMediaType('ebooks')">
+                            <input type="radio" name="media_type" value="ebooks">
+                            <div class="d-flex align-items-center">
+                                <i class="bi bi-book fs-2 text-success me-3"></i>
+                                <div>
+                                    <strong>Ebooks Only</strong>
+                                    <p class="text-muted mb-0 small">EPUB, PDF, MOBI files</p>
+                                </div>
+                            </div>
+                        </label>
+                    </div>
+                    <div class="col-12">
+                        <label class="option-card d-block" onclick="selectMediaType('both')">
+                            <input type="radio" name="media_type" value="both">
+                            <div class="d-flex align-items-center">
+                                <i class="bi bi-stack fs-2 text-warning me-3"></i>
+                                <div>
+                                    <strong>Both Audiobooks and Ebooks</strong>
+                                    <p class="text-muted mb-0 small">Manage both formats in your library</p>
+                                </div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="d-flex justify-content-between mt-4">
+                    <button class="btn btn-outline-secondary btn-nav" onclick="goToStep(2)">
+                        <i class="bi bi-arrow-left me-2"></i> Back
+                    </button>
+                    <button class="btn btn-primary btn-nav" onclick="goToStep(4)">
+                        Next <i class="bi bi-arrow-right ms-2"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Step 4: AI Provider -->
+    <div class="setup-step d-none" id="step-4">
+        <div class="card setup-card">
+            <div class="card-body">
+                <h3 class="mb-4"><i class="bi bi-robot text-success me-2"></i> How should we identify your books?</h3>
+
+                <p class="text-muted mb-4">
+                    AI helps identify books from messy folder names. Choose how you want this to work.
+                </p>
+
+                <div class="row g-3 mb-4">
+                    <div class="col-12">
+                        <label class="option-card d-block selected" onclick="selectProvider('openrouter')">
+                            <input type="radio" name="ai_provider" value="openrouter" checked>
+                            <div class="d-flex align-items-center">
+                                <i class="bi bi-cloud fs-2 text-info me-3"></i>
+                                <div class="flex-grow-1">
+                                    <strong>Free Cloud AI</strong>
+                                    <span class="badge bg-success ms-2">Recommended</span>
+                                    <p class="text-muted mb-0 small">Uses free AI models online. Works great, may have rate limits during busy times.</p>
+                                </div>
+                            </div>
+                        </label>
+                    </div>
+                    <div class="col-12">
+                        <label class="option-card d-block" onclick="selectProvider('gemini')">
+                            <input type="radio" name="ai_provider" value="gemini">
+                            <div class="d-flex align-items-center">
+                                <i class="bi bi-google fs-2 text-warning me-3"></i>
+                                <div class="flex-grow-1">
+                                    <strong>Google Gemini</strong>
+                                    <p class="text-muted mb-0 small">Fast and accurate. Requires a free API key from Google.</p>
+                                </div>
+                            </div>
+                        </label>
+                    </div>
+                    <div class="col-12">
+                        <label class="option-card d-block" onclick="selectProvider('ollama')">
+                            <input type="radio" name="ai_provider" value="ollama">
+                            <div class="d-flex align-items-center">
+                                <i class="bi bi-pc-display fs-2 text-secondary me-3"></i>
+                                <div class="flex-grow-1">
+                                    <strong>Ollama (Local)</strong>
+                                    <p class="text-muted mb-0 small">Run AI on your own computer. Requires Ollama to be installed.</p>
+                                </div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- API Key Input (shown for gemini) -->
+                <div id="api-key-section" class="d-none mb-4">
+                    <label class="form-label" id="api-key-label">API Key</label>
+                    <input type="password" class="form-control bg-dark text-light" id="api-key-input"
+                           placeholder="Enter your API key">
+                    <div class="form-text" id="api-key-help">
+                        Get a free key from <a href="https://aistudio.google.com/apikey" target="_blank" class="text-info">Google AI Studio</a>
+                    </div>
+                </div>
+
+                <!-- Ollama URL Input (shown for ollama) -->
+                <div id="ollama-section" class="d-none mb-4">
+                    <label class="form-label">Ollama URL</label>
+                    <input type="text" class="form-control bg-dark text-light" id="ollama-url-input"
+                           value="http://localhost:11434" placeholder="http://localhost:11434">
+                    <div class="form-text">
+                        Default is http://localhost:11434. Change if Ollama runs on a different machine.
+                    </div>
+                </div>
+
+                <div class="d-flex justify-content-between mt-4">
+                    <button class="btn btn-outline-secondary btn-nav" onclick="goToStep(3)">
+                        <i class="bi bi-arrow-left me-2"></i> Back
+                    </button>
+                    <button class="btn btn-primary btn-nav" onclick="goToStep(5)">
+                        Next <i class="bi bi-arrow-right ms-2"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Step 5: Safety Settings -->
+    <div class="setup-step d-none" id="step-5">
+        <div class="card setup-card">
+            <div class="card-body">
+                <h3 class="mb-4"><i class="bi bi-shield-check text-primary me-2"></i> How hands-on do you want to be?</h3>
+
+                <p class="text-muted mb-4">
+                    These settings control how much Library Manager does automatically vs. asking for your approval.
+                </p>
+
+                <div class="mb-4">
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="auto-fix-toggle">
+                        <label class="form-check-label" for="auto-fix-toggle">
+                            <strong>Auto-Fix Mode</strong>
+                            <p class="text-muted mb-0 small">
+                                <span class="text-warning"><i class="bi bi-info-circle"></i> Recommended: OFF for new users</span><br>
+                                When OFF: Shows you proposed changes before applying them<br>
+                                When ON: Automatically applies safe renames without asking
+                            </p>
+                        </label>
+                    </div>
+
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="trust-toggle">
+                        <label class="form-check-label" for="trust-toggle">
+                            <strong>Trust the Process</strong>
+                            <p class="text-muted mb-0 small">
+                                When ON: Applies fixes even when confidence is moderate<br>
+                                When OFF: Only applies high-confidence matches
+                            </p>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="alert alert-info">
+                    <i class="bi bi-lightbulb"></i>
+                    <strong>Tip:</strong> You can always change these settings later. Start conservative and adjust as you get comfortable.
+                </div>
+
+                <div class="d-flex justify-content-between mt-4">
+                    <button class="btn btn-outline-secondary btn-nav" onclick="goToStep(4)">
+                        <i class="bi bi-arrow-left me-2"></i> Back
+                    </button>
+                    <button class="btn btn-primary btn-nav" onclick="goToStep(6)">
+                        Next <i class="bi bi-arrow-right ms-2"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Step 6: Review & Finish -->
+    <div class="setup-step d-none" id="step-6">
+        <div class="card setup-card">
+            <div class="card-body">
+                <h3 class="mb-4"><i class="bi bi-check-circle text-success me-2"></i> Review Your Settings</h3>
+
+                <p class="text-muted mb-4">
+                    Here's what you've configured. Click any section to go back and change it.
+                </p>
+
+                <div class="summary-item" onclick="goToStep(2)" style="cursor: pointer;">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <div class="label">Library Paths</div>
+                            <div class="value" id="summary-paths">Not set</div>
+                        </div>
+                        <i class="bi bi-pencil text-muted"></i>
+                    </div>
+                </div>
+
+                <div class="summary-item" onclick="goToStep(3)" style="cursor: pointer;">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <div class="label">Media Type</div>
+                            <div class="value" id="summary-media">Not set</div>
+                        </div>
+                        <i class="bi bi-pencil text-muted"></i>
+                    </div>
+                </div>
+
+                <div class="summary-item" onclick="goToStep(4)" style="cursor: pointer;">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <div class="label">AI Provider</div>
+                            <div class="value" id="summary-ai">Not set</div>
+                        </div>
+                        <i class="bi bi-pencil text-muted"></i>
+                    </div>
+                </div>
+
+                <div class="summary-item" onclick="goToStep(5)" style="cursor: pointer;">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <div class="label">Safety Settings</div>
+                            <div class="value" id="summary-safety">Not set</div>
+                        </div>
+                        <i class="bi bi-pencil text-muted"></i>
+                    </div>
+                </div>
+
+                <div id="setup-error" class="alert alert-danger d-none mt-4">
+                    <i class="bi bi-exclamation-triangle"></i> <span id="setup-error-text"></span>
+                </div>
+
+                <div class="d-flex justify-content-between mt-4">
+                    <button class="btn btn-outline-secondary btn-nav" onclick="goToStep(5)">
+                        <i class="bi bi-arrow-left me-2"></i> Back
+                    </button>
+                    <button class="btn btn-success btn-lg" id="finish-btn" onclick="completeSetup()">
+                        <i class="bi bi-rocket-takeoff me-2"></i> Start Scanning!
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Setup wizard state
+    let currentStep = 1;
+    let setupData = {
+        library_paths: [],
+        ai_provider: 'openrouter',
+        media_type: 'audiobooks',
+        ebook_management: false,
+        auto_fix: false,
+        trust_the_process: false,
+        gemini_api_key: '',
+        openrouter_api_key: '',
+        ollama_url: 'http://localhost:11434'
+    };
+
+    // Navigation
+    function goToStep(step) {
+        // Validate before proceeding forward
+        if (step > currentStep && !validateCurrentStep()) {
+            return;
+        }
+
+        // Hide current step
+        document.getElementById(`step-${currentStep}`).classList.add('d-none');
+
+        // Update indicators
+        for (let i = 1; i <= 6; i++) {
+            const ind = document.getElementById(`step-ind-${i}`);
+            const line = document.getElementById(`line-${i}`);
+
+            ind.classList.remove('active', 'completed');
+            if (line) line.classList.remove('completed');
+
+            if (i < step) {
+                ind.classList.add('completed');
+                if (line) line.classList.add('completed');
+            } else if (i === step) {
+                ind.classList.add('active');
+            }
+        }
+
+        // Show new step
+        document.getElementById(`step-${step}`).classList.remove('d-none');
+        currentStep = step;
+
+        // Update summary on step 6
+        if (step === 6) {
+            updateSummary();
+        }
+    }
+
+    function validateCurrentStep() {
+        if (currentStep === 2) {
+            if (setupData.library_paths.length === 0) {
+                showPathError('Please add at least one library path.');
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Step 2: Library Paths
+    function testAndAddPath() {
+        const pathInput = document.getElementById('path-input');
+        const path = pathInput.value.trim();
+
+        if (!path) {
+            showPathError('Please enter a path.');
+            return;
+        }
+
+        // Check if already added
+        if (setupData.library_paths.includes(path)) {
+            showPathError('This path has already been added.');
+            return;
+        }
+
+        // Test the path
+        hidePathMessages();
+        pathInput.disabled = true;
+
+        fetch('/api/check_path', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({path: path})
+        })
+        .then(r => r.json())
+        .then(data => {
+            pathInput.disabled = false;
+
+            if (data.exists) {
+                // Add to list
+                setupData.library_paths.push(path);
+                renderPathList();
+                pathInput.value = '';
+
+                // Show success
+                showPathSuccess(`Added! Found ${data.items || 0} items in this folder.`);
+
+                // Enable next button
+                document.getElementById('step2-next').disabled = false;
+            } else {
+                showPathError(data.error || 'Path not found or not accessible.');
+            }
+        })
+        .catch(e => {
+            pathInput.disabled = false;
+            showPathError('Error checking path: ' + e);
+        });
+    }
+
+    function removePath(index) {
+        setupData.library_paths.splice(index, 1);
+        renderPathList();
+
+        // Disable next if no paths
+        if (setupData.library_paths.length === 0) {
+            document.getElementById('step2-next').disabled = true;
+        }
+    }
+
+    function renderPathList() {
+        const container = document.getElementById('path-list');
+        if (setupData.library_paths.length === 0) {
+            container.innerHTML = '<p class="text-muted text-center py-3">No paths added yet</p>';
+            return;
+        }
+
+        container.innerHTML = setupData.library_paths.map((path, i) => `
+            <div class="path-item valid">
+                <span><i class="bi bi-folder-fill text-warning me-2"></i> ${path}</span>
+                <button class="btn btn-sm btn-outline-danger" onclick="removePath(${i})">
+                    <i class="bi bi-x"></i>
+                </button>
+            </div>
+        `).join('');
+    }
+
+    function showPathError(msg) {
+        document.getElementById('path-error-text').textContent = msg;
+        document.getElementById('path-error').classList.remove('d-none');
+        document.getElementById('path-success').classList.add('d-none');
+    }
+
+    function showPathSuccess(msg) {
+        document.getElementById('path-success-text').textContent = msg;
+        document.getElementById('path-success').classList.remove('d-none');
+        document.getElementById('path-error').classList.add('d-none');
+    }
+
+    function hidePathMessages() {
+        document.getElementById('path-error').classList.add('d-none');
+        document.getElementById('path-success').classList.add('d-none');
+    }
+
+    // Step 3: Media Type
+    function selectMediaType(type) {
+        setupData.media_type = type;
+        setupData.ebook_management = (type === 'ebooks' || type === 'both');
+
+        // Update UI
+        document.querySelectorAll('#step-3 .option-card').forEach(card => {
+            card.classList.remove('selected');
+        });
+        event.currentTarget.classList.add('selected');
+    }
+
+    // Step 4: AI Provider
+    function selectProvider(provider) {
+        setupData.ai_provider = provider;
+
+        // Update UI
+        document.querySelectorAll('#step-4 .option-card').forEach(card => {
+            card.classList.remove('selected');
+        });
+        event.currentTarget.classList.add('selected');
+
+        // Show/hide API key section
+        const apiKeySection = document.getElementById('api-key-section');
+        const ollamaSection = document.getElementById('ollama-section');
+
+        apiKeySection.classList.add('d-none');
+        ollamaSection.classList.add('d-none');
+
+        if (provider === 'gemini') {
+            apiKeySection.classList.remove('d-none');
+            document.getElementById('api-key-label').textContent = 'Gemini API Key';
+            document.getElementById('api-key-help').innerHTML = 'Get a free key from <a href="https://aistudio.google.com/apikey" target="_blank" class="text-info">Google AI Studio</a>';
+        } else if (provider === 'ollama') {
+            ollamaSection.classList.remove('d-none');
+        }
+    }
+
+    // Step 6: Summary
+    function updateSummary() {
+        // Paths
+        if (setupData.library_paths.length > 0) {
+            document.getElementById('summary-paths').textContent =
+                setupData.library_paths.length === 1
+                    ? setupData.library_paths[0]
+                    : `${setupData.library_paths.length} folders configured`;
+        }
+
+        // Media type
+        const mediaLabels = {
+            'audiobooks': 'Audiobooks Only',
+            'ebooks': 'Ebooks Only',
+            'both': 'Audiobooks and Ebooks'
+        };
+        document.getElementById('summary-media').textContent = mediaLabels[setupData.media_type] || 'Not set';
+
+        // AI Provider
+        const providerLabels = {
+            'openrouter': 'Free Cloud AI',
+            'gemini': 'Google Gemini',
+            'ollama': 'Ollama (Local)'
+        };
+        document.getElementById('summary-ai').textContent = providerLabels[setupData.ai_provider] || 'Not set';
+
+        // Safety
+        const autoFix = document.getElementById('auto-fix-toggle').checked;
+        const trust = document.getElementById('trust-toggle').checked;
+        let safetyText = [];
+        if (autoFix) safetyText.push('Auto-Fix ON');
+        else safetyText.push('Manual approval');
+        if (trust) safetyText.push('Trust mode ON');
+        document.getElementById('summary-safety').textContent = safetyText.join(', ') || 'Conservative (recommended)';
+    }
+
+    // Complete setup
+    function completeSetup() {
+        const finishBtn = document.getElementById('finish-btn');
+        finishBtn.disabled = true;
+        finishBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Saving...';
+
+        // Collect final data
+        setupData.auto_fix = document.getElementById('auto-fix-toggle').checked;
+        setupData.trust_the_process = document.getElementById('trust-toggle').checked;
+
+        if (setupData.ai_provider === 'gemini') {
+            setupData.gemini_api_key = document.getElementById('api-key-input').value.trim();
+        } else if (setupData.ai_provider === 'ollama') {
+            setupData.ollama_url = document.getElementById('ollama-url-input').value.trim();
+        }
+
+        // Send to server
+        fetch('/api/setup/complete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(setupData)
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                finishBtn.innerHTML = '<i class="bi bi-check-circle me-2"></i> Done!';
+                setTimeout(() => {
+                    window.location.href = data.redirect || '/library';
+                }, 500);
+            } else {
+                finishBtn.disabled = false;
+                finishBtn.innerHTML = '<i class="bi bi-rocket-takeoff me-2"></i> Start Scanning!';
+                document.getElementById('setup-error-text').textContent = data.error || 'Setup failed';
+                document.getElementById('setup-error').classList.remove('d-none');
+            }
+        })
+        .catch(e => {
+            finishBtn.disabled = false;
+            finishBtn.innerHTML = '<i class="bi bi-rocket-takeoff me-2"></i> Start Scanning!';
+            document.getElementById('setup-error-text').textContent = 'Error: ' + e;
+            document.getElementById('setup-error').classList.remove('d-none');
+        });
+    }
+
+    // Initialize
+    renderPathList();
+</script>
+{% endblock %}
