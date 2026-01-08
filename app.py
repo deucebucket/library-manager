@@ -7924,7 +7924,7 @@ def dashboard():
     # Check if first-run setup is needed
     config = load_config()
     if needs_setup(config):
-        return redirect(url_for('setup_wizard'))
+        return redirect('/setup')
 
     conn = get_db()
     c = conn.cursor()
@@ -7978,7 +7978,7 @@ def setup_wizard():
     config = load_config()
     # If already configured, redirect to library
     if not needs_setup(config):
-        return redirect(url_for('library'))
+        return redirect('/library')
     return render_template('setup_wizard.html', config=config)
 
 
