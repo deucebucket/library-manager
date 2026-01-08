@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.81"
+APP_VERSION = "0.9.0-beta.82"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -28,6 +28,7 @@ import os
 import sys
 import json
 import time
+import shutil
 import sqlite3
 import threading
 import logging
@@ -6616,6 +6617,17 @@ def process_queue(config, limit=None):
                     processed += 1
                     continue
 
+            # Issue #57 fix: Check if book is already in correct location
+            # Without this check, we'd compare the folder to itself and mark it as "duplicate"
+            if old_path.resolve() == new_path.resolve():
+                logger.info(f"Already correct: {old_path.name}")
+                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                c.execute('UPDATE books SET status = ?, new_author = ?, new_title = ? WHERE id = ?',
+                         ('verified', new_author, new_title, row['book_id']))
+                conn.commit()
+                processed += 1
+                continue
+
             # Only auto-fix if enabled AND NOT a drastic change (unless Trust the Process mode)
             # In Trust the Process mode, verified drastic changes can be auto-fixed
             trust_mode = config.get('trust_the_process', False)
@@ -6623,8 +6635,6 @@ def process_queue(config, limit=None):
             if can_auto_fix:
                 # Actually rename the folder
                 try:
-                    import shutil
-
                     if new_path.exists():
                         # Destination already exists - check if it has files
                         existing_files = list(new_path.iterdir())
