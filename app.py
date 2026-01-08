@@ -975,7 +975,7 @@ SECRETS_PATH = DATA_DIR / 'secrets.json'
 
 DEFAULT_CONFIG = {
     "library_paths": [],  # Empty by default - user configures via Settings
-    "ai_provider": "openrouter",  # "openrouter", "gemini", or "ollama"
+    "ai_provider": "gemini",  # "gemini", "openrouter", or "ollama"
     "openrouter_model": "google/gemma-3n-e4b-it:free",
     "gemini_model": "gemini-2.0-flash",
     "ollama_url": "http://localhost:11434",  # Ollama server URL
@@ -7986,8 +7986,8 @@ def dashboard():
 def setup_wizard():
     """First-run setup wizard for new users."""
     config = load_config()
-    # If already configured, redirect to library
-    if not needs_setup(config):
+    # If already configured, redirect to library (unless force=1 for screenshots/testing)
+    if not needs_setup(config) and request.args.get('force') != '1':
         return redirect('/library')
     return render_template('setup_wizard.html', config=config)
 

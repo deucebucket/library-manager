@@ -342,31 +342,31 @@
                 <h3 class="mb-4"><i class="bi bi-robot text-success me-2"></i> How should we identify your books?</h3>
 
                 <p class="text-muted mb-4">
-                    AI helps identify books from messy folder names. Choose how you want this to work.
+                    AI helps identify books from messy folder names. All options require a free API key.
                 </p>
 
                 <div class="row g-3 mb-4">
                     <div class="col-12">
-                        <label class="option-card d-block selected" onclick="selectProvider('openrouter')">
-                            <input type="radio" name="ai_provider" value="openrouter" checked>
+                        <label class="option-card d-block selected" onclick="selectProvider('gemini')">
+                            <input type="radio" name="ai_provider" value="gemini" checked>
                             <div class="d-flex align-items-center">
-                                <i class="bi bi-cloud fs-2 text-info me-3"></i>
+                                <i class="bi bi-google fs-2 text-warning me-3"></i>
                                 <div class="flex-grow-1">
-                                    <strong>Free Cloud AI</strong>
+                                    <strong>Google Gemini</strong>
                                     <span class="badge bg-success ms-2">Recommended</span>
-                                    <p class="text-muted mb-0 small">Uses free AI models online. Works great, may have rate limits during busy times.</p>
+                                    <p class="text-muted mb-0 small">Fast, accurate, and free tier allows 1,500 requests/day.</p>
                                 </div>
                             </div>
                         </label>
                     </div>
                     <div class="col-12">
-                        <label class="option-card d-block" onclick="selectProvider('gemini')">
-                            <input type="radio" name="ai_provider" value="gemini">
+                        <label class="option-card d-block" onclick="selectProvider('openrouter')">
+                            <input type="radio" name="ai_provider" value="openrouter">
                             <div class="d-flex align-items-center">
-                                <i class="bi bi-google fs-2 text-warning me-3"></i>
+                                <i class="bi bi-cloud fs-2 text-info me-3"></i>
                                 <div class="flex-grow-1">
-                                    <strong>Google Gemini</strong>
-                                    <p class="text-muted mb-0 small">Fast and accurate. Requires a free API key from Google.</p>
+                                    <strong>OpenRouter</strong>
+                                    <p class="text-muted mb-0 small">Access to many AI models. Free tier has lower rate limits.</p>
                                 </div>
                             </div>
                         </label>
@@ -378,30 +378,43 @@
                                 <i class="bi bi-pc-display fs-2 text-secondary me-3"></i>
                                 <div class="flex-grow-1">
                                     <strong>Ollama (Local)</strong>
-                                    <p class="text-muted mb-0 small">Run AI on your own computer. Requires Ollama to be installed.</p>
+                                    <p class="text-muted mb-0 small">Run AI on your own computer. No API key needed, but requires Ollama installed.</p>
                                 </div>
                             </div>
                         </label>
                     </div>
                 </div>
 
-                <!-- API Key Input (shown for gemini) -->
-                <div id="api-key-section" class="d-none mb-4">
-                    <label class="form-label" id="api-key-label">API Key</label>
-                    <input type="password" class="form-control bg-dark text-light" id="api-key-input"
-                           placeholder="Enter your API key">
-                    <div class="form-text" id="api-key-help">
-                        Get a free key from <a href="https://aistudio.google.com/apikey" target="_blank" class="text-info">Google AI Studio</a>
+                <!-- Gemini API Key Input -->
+                <div id="gemini-section" class="mb-4">
+                    <label class="form-label">Gemini API Key</label>
+                    <input type="password" class="form-control bg-dark text-light" id="gemini-api-key-input"
+                           placeholder="Enter your Gemini API key">
+                    <div class="form-text">
+                        <i class="bi bi-info-circle"></i> Get a free key from <a href="https://aistudio.google.com/apikey" target="_blank" class="text-info">Google AI Studio</a>
+                        <br><small class="text-muted">Sign in with Google, click "Create API Key", copy and paste here.</small>
                     </div>
                 </div>
 
-                <!-- Ollama URL Input (shown for ollama) -->
+                <!-- OpenRouter API Key Input -->
+                <div id="openrouter-section" class="d-none mb-4">
+                    <label class="form-label">OpenRouter API Key</label>
+                    <input type="password" class="form-control bg-dark text-light" id="openrouter-api-key-input"
+                           placeholder="Enter your OpenRouter API key">
+                    <div class="form-text">
+                        <i class="bi bi-info-circle"></i> Get a free key from <a href="https://openrouter.ai/keys" target="_blank" class="text-info">OpenRouter</a>
+                        <br><small class="text-muted">Create account, go to Keys, click "Create Key", copy and paste here.</small>
+                    </div>
+                </div>
+
+                <!-- Ollama URL Input -->
                 <div id="ollama-section" class="d-none mb-4">
                     <label class="form-label">Ollama URL</label>
                     <input type="text" class="form-control bg-dark text-light" id="ollama-url-input"
                            value="http://localhost:11434" placeholder="http://localhost:11434">
                     <div class="form-text">
-                        Default is http://localhost:11434. Change if Ollama runs on a different machine.
+                        <i class="bi bi-info-circle"></i> Default is http://localhost:11434. Change if Ollama runs on a different machine.
+                        <br><small class="text-muted">Download Ollama from <a href="https://ollama.ai" target="_blank" class="text-info">ollama.ai</a></small>
                     </div>
                 </div>
 
@@ -544,7 +557,7 @@
     let currentStep = 1;
     let setupData = {
         library_paths: [],
-        ai_provider: 'openrouter',
+        ai_provider: 'gemini',
         media_type: 'audiobooks',
         ebook_management: false,
         auto_fix: false,
@@ -716,17 +729,19 @@
         });
         event.currentTarget.classList.add('selected');
 
-        // Show/hide API key section
-        const apiKeySection = document.getElementById('api-key-section');
+        // Show/hide the right input section
+        const geminiSection = document.getElementById('gemini-section');
+        const openrouterSection = document.getElementById('openrouter-section');
         const ollamaSection = document.getElementById('ollama-section');
 
-        apiKeySection.classList.add('d-none');
+        geminiSection.classList.add('d-none');
+        openrouterSection.classList.add('d-none');
         ollamaSection.classList.add('d-none');
 
         if (provider === 'gemini') {
-            apiKeySection.classList.remove('d-none');
-            document.getElementById('api-key-label').textContent = 'Gemini API Key';
-            document.getElementById('api-key-help').innerHTML = 'Get a free key from <a href="https://aistudio.google.com/apikey" target="_blank" class="text-info">Google AI Studio</a>';
+            geminiSection.classList.remove('d-none');
+        } else if (provider === 'openrouter') {
+            openrouterSection.classList.remove('d-none');
         } else if (provider === 'ollama') {
             ollamaSection.classList.remove('d-none');
         }
@@ -752,8 +767,8 @@
 
         // AI Provider
         const providerLabels = {
-            'openrouter': 'Free Cloud AI',
             'gemini': 'Google Gemini',
+            'openrouter': 'OpenRouter',
             'ollama': 'Ollama (Local)'
         };
         document.getElementById('summary-ai').textContent = providerLabels[setupData.ai_provider] || 'Not set';
@@ -779,7 +794,9 @@
         setupData.trust_the_process = document.getElementById('trust-toggle').checked;
 
         if (setupData.ai_provider === 'gemini') {
-            setupData.gemini_api_key = document.getElementById('api-key-input').value.trim();
+            setupData.gemini_api_key = document.getElementById('gemini-api-key-input').value.trim();
+        } else if (setupData.ai_provider === 'openrouter') {
+            setupData.openrouter_api_key = document.getElementById('openrouter-api-key-input').value.trim();
         } else if (setupData.ai_provider === 'ollama') {
             setupData.ollama_url = document.getElementById('ollama-url-input').value.trim();
         }
