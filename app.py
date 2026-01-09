@@ -9539,11 +9539,23 @@ def api_organize_all_orphans():
                 results['errors'] += 1
                 results['details'].append(f"Error: {orphan['author']}: {message}")
 
+    # Issue #57: Auto-scan after organizing to pick up newly created book folders
+    # This ensures the database reflects the new folder structure
+    scan_results = {'checked': 0, 'scanned': 0, 'queued': 0}
+    if results['organized'] > 0:
+        try:
+            checked, scanned, queued = scan_library(config)
+            scan_results = {'checked': checked, 'scanned': scanned, 'queued': queued}
+            logger.info(f"Post-organize scan: checked={checked}, scanned={scanned}, queued={queued}")
+        except Exception as e:
+            logger.error(f"Post-organize scan failed: {e}")
+
     return jsonify({
         'success': True,
         'organized': results['organized'],
         'errors': results['errors'],
-        'details': results['details'][:20]  # Limit details
+        'details': results['details'][:20],  # Limit details
+        'scan': scan_results  # Include scan results so UI knows items were added
     })
 
 

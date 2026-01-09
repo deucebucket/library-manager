@@ -400,11 +400,16 @@ function loadLibrary() {
             renderItems(data.items);
             renderPagination(data.page, data.total_pages);
 
-            // Show/hide contextual buttons
-            document.getElementById('btn-apply-all').style.display = data.counts.pending > 0 ? 'inline-block' : 'none';
-            document.getElementById('pending-count-btn').textContent = data.counts.pending;
-            document.getElementById('btn-organize-orphans').style.display = data.counts.orphan > 0 ? 'inline-block' : 'none';
-            document.getElementById('orphan-count-btn').textContent = data.counts.orphan;
+            // Show/hide contextual buttons (with null checks for robustness)
+            const btnApplyAll = document.getElementById('btn-apply-all');
+            const pendingCountBtn = document.getElementById('pending-count-btn');
+            const btnOrganizeOrphans = document.getElementById('btn-organize-orphans');
+            const orphanCountBtn = document.getElementById('orphan-count-btn');
+
+            if (btnApplyAll) btnApplyAll.style.display = data.counts.pending > 0 ? 'inline-block' : 'none';
+            if (pendingCountBtn) pendingCountBtn.textContent = data.counts.pending;
+            if (btnOrganizeOrphans) btnOrganizeOrphans.style.display = data.counts.orphan > 0 ? 'inline-block' : 'none';
+            if (orphanCountBtn) orphanCountBtn.textContent = data.counts.orphan;
 
             // Update label
             const labels = {
@@ -419,16 +424,21 @@ function loadLibrary() {
                 'locked': 'User-Locked Books',
                 'search': 'Search Results'
             };
-            document.getElementById('showing-label').textContent = labels[currentFilter] || 'Library Items';
+            const showingLabel = document.getElementById('showing-label');
+            if (showingLabel) showingLabel.textContent = labels[currentFilter] || 'Library Items';
 
             // Show search results count
+            const searchResultsCount = document.getElementById('search-results-count');
             if (currentFilter === 'search' && data.search) {
-                document.getElementById('search-results-count').style.display = 'inline';
-                document.getElementById('search-results-count').textContent = `Found ${data.total} results for "${data.search}"`;
+                if (searchResultsCount) {
+                    searchResultsCount.style.display = 'inline';
+                    searchResultsCount.textContent = `Found ${data.total} results for "${data.search}"`;
+                }
             } else {
-                document.getElementById('search-results-count').style.display = 'none';
+                if (searchResultsCount) searchResultsCount.style.display = 'none';
             }
-            document.getElementById('item-count').textContent = data.total;
+            const itemCount = document.getElementById('item-count');
+            if (itemCount) itemCount.textContent = data.total;
         })
         .catch(e => {
             tbody.innerHTML = `
