@@ -2,6 +2,32 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.84] - 2026-01-09
+
+### Fixed
+- **Output Folder Routing** (Issue #57 follow-up) - Books from watch folder now go to configured output folder
+  - Fixed: When `watch_output_folder` was set, books from watch folder were still being sorted in-place
+  - Now correctly routes to the configured output folder during queue processing and manual matching
+  - Affected areas: `process_queue()`, `api_manual_match()`, watch folder processing
+
+- **Author Initials Not Applied to AI Results** (Issue #57 follow-up) - Standardization now works everywhere
+  - Fixed: "Peter F Hamilton" and "Peter F. Hamilton" folders created as separate authors
+  - `standardize_author_initials` setting now applies to all author sources:
+    - AI/API identification results
+    - Audio analysis (Layer 3) results
+    - Manual matches and edits
+    - Watch folder processing
+  - Previously only applied during path extraction, not when authors came from APIs
+
+### Improved
+- **Clearer Queue Processing Status** (Issue #57 feedback) - Better feedback on what happened
+  - Processing now shows "X renamed, Y already correct" instead of just "Processed X items"
+  - Shows remaining queue count when not complete: "3 remaining in queue"
+  - Added tooltips to Fixed/Verified filter chips explaining the difference:
+    - **Fixed**: "Books that were renamed/moved to new locations"
+    - **Verified**: "Books already in correct location - no changes needed"
+  - Status badges now have more descriptive tooltips
+
 ## [0.9.0-beta.79] - 2026-01-06
 
 ### Improved

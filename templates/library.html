@@ -98,12 +98,12 @@
             <span class="ms-2">Queue</span>
             <span class="count" id="count-queue">0</span>
         </a>
-        <a href="#" class="filter-chip" data-filter="fixed" onclick="setFilter('fixed'); return false;">
+        <a href="#" class="filter-chip" data-filter="fixed" onclick="setFilter('fixed'); return false;" title="Books that were renamed/moved to new locations">
             <i class="bi bi-check-circle text-success"></i>
             <span class="ms-2">Fixed</span>
             <span class="count" id="count-fixed">0</span>
         </a>
-        <a href="#" class="filter-chip" data-filter="verified" onclick="setFilter('verified'); return false;">
+        <a href="#" class="filter-chip" data-filter="verified" onclick="setFilter('verified'); return false;" title="Books already in correct location - no changes needed">
             <i class="bi bi-patch-check text-success"></i>
             <span class="ms-2">Verified</span>
             <span class="count" id="count-verified">0</span>
@@ -511,8 +511,8 @@ function getStatusBadge(item) {
         'pending_fix': '<span class="badge bg-warning text-dark status-badge" title="Rename pending - click to review and apply"><i class="bi bi-hourglass"></i> Pending</span>',
         'orphan': '<span class="badge bg-info status-badge" title="Loose audio files without a proper folder structure"><i class="bi bi-file-music"></i> Orphan</span>',
         'in_queue': '<span class="badge bg-primary status-badge" title="Waiting to be identified - will be processed in Queue"><i class="bi bi-list-task"></i> Queued</span>',
-        'fixed': '<span class="badge bg-success status-badge" title="Rename was applied successfully"><i class="bi bi-check"></i> Fixed</span>',
-        'verified': '<span class="badge bg-success status-badge" title="Book identified and structure is correct"><i class="bi bi-patch-check"></i> OK</span>',
+        'fixed': '<span class="badge bg-success status-badge" title="Book was renamed/moved to the correct Author/Title location"><i class="bi bi-check"></i> Fixed</span>',
+        'verified': '<span class="badge bg-success status-badge" title="Book was already in the correct location - no changes needed"><i class="bi bi-patch-check"></i> OK</span>',
         'error': '<span class="badge bg-danger status-badge" title="Something went wrong - check the error message"><i class="bi bi-x"></i> Error</span>',
         'duplicate': '<span class="badge bg-warning text-dark status-badge" title="Multiple copies of the same book detected"><i class="bi bi-files"></i> Duplicate</span>',
         'corrupt_dest': '<span class="badge bg-danger status-badge" title="Destination path has issues - needs manual review"><i class="bi bi-exclamation"></i> Corrupt</span>',
@@ -772,7 +772,13 @@ function processQueue() {
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue';
             isProcessing = false;
-            addActivity(`Processed ${data.fixed} items`, 'success');
+            // Issue #57: Show clearer status message explaining fixed vs verified
+            if (data.message) {
+                addActivity(data.message, data.status === 'complete' ? 'success' : 'info');
+            } else {
+                // Fallback for older API response format
+                addActivity(`Processed ${data.fixed} items`, 'success');
+            }
             loadLibrary();
         })
         .catch(e => {

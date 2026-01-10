@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.83"
+APP_VERSION = "0.9.0-beta.84"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -6337,6 +6337,11 @@ def process_queue(config, limit=None):
         new_edition = (result.get('edition') or '').strip() or None  # Anniversary, Unabridged, etc.
         new_variant = (result.get('variant') or '').strip() or None  # Graphic Audio, Full Cast, BBC Radio
 
+        # Issue #57: Apply author initials standardization if enabled
+        # This ensures "Peter F Hamilton" becomes "Peter F. Hamilton" consistently
+        if config.get('standardize_author_initials', False) and new_author:
+            new_author = standardize_initials(new_author)
+
         # If AI didn't detect series, try to extract it from title patterns
         # First try the ORIGINAL title (has series info like "The Reckoners, Book 2 - Firefight")
         # Then try the new title as fallback
@@ -6385,6 +6390,7 @@ def process_queue(config, limit=None):
             # Find which configured library this book belongs to
             # (Don't assume 2-level structure - series_grouping uses 3 levels)
             lib_path = None
+            is_from_watch_folder = False
             for lp in config.get('library_paths', []):
                 lp_path = Path(lp)
                 try:
@@ -6393,6 +6399,24 @@ def process_queue(config, limit=None):
                     break
                 except ValueError:
                     continue
+
+            # Issue #57: Check if book is from watch folder and should go to watch_output_folder
+            watch_folder = config.get('watch_folder', '').strip()
+            watch_output_folder = config.get('watch_output_folder', '').strip()
+            if watch_folder and watch_output_folder:
+                try:
+                    watch_path = Path(watch_folder).resolve()
+                    old_path_resolved = old_path.resolve()
+                    try:
+                        old_path_resolved.relative_to(watch_path)
+                        # Book is in watch folder - use output folder as target
+                        lib_path = Path(watch_output_folder)
+                        is_from_watch_folder = True
+                        logger.info(f"Watch folder book: routing to output folder {lib_path}")
+                    except ValueError:
+                        pass  # Not in watch folder
+                except Exception as e:
+                    logger.debug(f"Watch folder path check failed: {e}")
 
             # Fallback if not found in configured libraries
             if lib_path is None:
@@ -7058,6 +7082,10 @@ def process_layer_3_audio(config, limit=None):
             new_narrator = audio_result.get('narrator', '')
             new_series = audio_result.get('series', '')
             new_series_num = audio_result.get('series_num')
+
+            # Issue #57: Apply author initials standardization if enabled
+            if config.get('standardize_author_initials', False) and new_author:
+                new_author = standardize_initials(new_author)
 
             logger.info(f"[LAYER 3] Audio extracted: {new_author}/{new_title} (narrator: {new_narrator})")
 
@@ -7754,6 +7782,10 @@ def process_watch_folder(config: dict) -> int:
                         logger.info(f"Watch folder: Identified as {author} - {title}")
             except Exception as e:
                 logger.debug(f"Watch folder: API lookup failed, using path analysis: {e}")
+
+            # Issue #57: Apply author initials standardization if enabled
+            if config.get('standardize_author_initials', False) and author:
+                author = standardize_initials(author)
 
             # Issue #40: Check if author is still unknown/placeholder after API lookup
             # If so, flag for user attention instead of auto-processing
@@ -8658,7 +8690,33 @@ def api_process():
 
         processed, fixed = total_processed, total_fixed
 
-    return jsonify({'success': True, 'processed': processed, 'fixed': fixed})
+    # Issue #57: Calculate verified count (processed items that didn't need fixing)
+    verified = processed - fixed
+
+    # Check remaining queue size for status message
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) FROM queue')
+    remaining = c.fetchone()[0]
+    conn.close()
+
+    # Build helpful status message
+    if remaining == 0:
+        status = 'complete'
+        message = f'Queue complete! {fixed} renamed, {verified} already correct'
+    else:
+        status = 'partial'
+        message = f'Processed batch: {fixed} renamed, {verified} already correct. {remaining} remaining in queue.'
+
+    return jsonify({
+        'success': True,
+        'processed': processed,
+        'fixed': fixed,
+        'verified': verified,
+        'remaining': remaining,
+        'status': status,
+        'message': message
+    })
 
 @app.route('/api/process_status')
 def api_process_status():
@@ -11613,15 +11671,39 @@ def api_manual_match():
 
         # Find which library this book belongs to
         config = load_config()
+
+        # Issue #57: Apply author initials standardization if enabled
+        if config.get('standardize_author_initials', False) and new_author:
+            new_author = standardize_initials(new_author)
         lib_path = None
-        for lp in config.get('library_paths', []):
-            lp_path = Path(lp)
+
+        # Issue #57: Check if book is from watch folder and should go to watch_output_folder
+        watch_folder = config.get('watch_folder', '').strip()
+        watch_output_folder = config.get('watch_output_folder', '').strip()
+        if watch_folder and watch_output_folder:
             try:
-                Path(old_path).relative_to(lp_path)
-                lib_path = lp_path
-                break
-            except ValueError:
-                continue
+                watch_path = Path(watch_folder).resolve()
+                old_path_resolved = Path(old_path).resolve()
+                try:
+                    old_path_resolved.relative_to(watch_path)
+                    # Book is in watch folder - use output folder as target
+                    lib_path = Path(watch_output_folder)
+                    logger.info(f"Manual match: routing watch folder book to output folder {lib_path}")
+                except ValueError:
+                    pass  # Not in watch folder
+            except Exception as e:
+                logger.debug(f"Watch folder path check failed: {e}")
+
+        # If not from watch folder, find which library it belongs to
+        if lib_path is None:
+            for lp in config.get('library_paths', []):
+                lp_path = Path(lp)
+                try:
+                    Path(old_path).relative_to(lp_path)
+                    lib_path = lp_path
+                    break
+                except ValueError:
+                    continue
 
         if lib_path is None:
             lib_path = Path(old_path).parent.parent
@@ -11744,6 +11826,11 @@ def api_edit_book():
 
         # Find which library this book belongs to (or should go to for watch folder items)
         config = load_config()
+
+        # Issue #57: Apply author initials standardization if enabled
+        if config.get('standardize_author_initials', False) and new_author:
+            new_author = standardize_initials(new_author)
+
         lib_path = None
         # Issue #51: sqlite3.Row doesn't have .get() - use bracket access with fallback
         source_type = item['source_type'] if item['source_type'] else 'library'

@@ -68,6 +68,14 @@ setup() {
 }
 EOF
 
+    # Copy secrets from project root if available (needed for AI processing tests)
+    if [[ -f "$TEST_DIR/../secrets.json" ]]; then
+        cp "$TEST_DIR/../secrets.json" "$TEST_DIR/fresh-deploy/data/secrets.json"
+        log_info "Copied API secrets for integration testing"
+    else
+        log_info "WARNING: No secrets.json found - AI processing tests will fail"
+    fi
+
     # Start container
     # Use slirp4netns networking (default) - container cannot access host localhost
     # This simulates a real user environment without access to local BookDB
