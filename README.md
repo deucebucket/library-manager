@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.77-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.84-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,37 +16,31 @@
 
 ## Recent Changes (develop)
 
-> **beta.77** - Rate Limiting Improvements
-> - **BookDB Rate Limits** - Client respects `Retry-After` headers, prevents API hammering
+> **beta.84** - Output Folder & Author Initials Fixes (Issue #57)
+> - **Output Folder Routing** - Watch folder books now go to configured output folder
+> - **Author Initials Fix** - Standardization now applies to all sources (AI, API, manual)
+> - **Queue Status Clarity** - Shows "X renamed, Y already correct" with tooltips
 
-> **beta.76** - Settings Save Fix (Issue #56)
-> - **Author Initials Toggle** - Setting now saves from web UI
+> **beta.83** - Orphan Organization Fix (Issue #57)
+> - **JavaScript Error Fix** - Orphan organization no longer crashes the page
+> - **Auto-Rescan** - Database auto-scans after organizing orphans
 
-> **beta.75** - Multi-Edit Queue Fix
-> - **Queue Page Restored** - `/queue` now renders properly with Multi-Edit button accessible
+> **beta.81-82** - Setup Wizard & Bug Fixes
+> - **First-Run Setup Wizard** - Guided configuration for new users
+> - **Duplicate Detection Fix** - Books no longer marked as duplicates of themselves
 
-> **beta.74** - BookDB Standalone Books Fix
-> - **BookDB Fix** - Now returns results for standalone books (not just series)
+> **beta.79-80** - Watch Folder & UI Improvements (Issue #57)
+> - **Watch Folder Output** - Proper routing to output folder
+> - **Media Type Filters** - Hidden when ebook management is disabled
 
-> **beta.73** - SQLite Locking Fix (Issue #55)
-> - **Database Locking Fix** - Added `busy_timeout` pragma for large libraries
+> **beta.78** - SQLite Locking (Proper Fix)
+> - **3-Phase Processing** - DB connections released during API calls, prevents locking
 
-> **beta.72** - Multi-Edit, Media Filters & Author Initials
-> - **Multi-Edit Queue** (Issue #37) - Edit all queue items at once in a single modal view
-> - **Media Type Filter** (Issue #53) - Filter library by format (Audio Only / Ebook Only / Both)
-> - **Standardize Author Initials** (Issue #54) - Normalize "J R R Tolkien" → "J. R. R. Tolkien"
-> - **ABS Integration Docs** (Issue #47) - Info banner explaining Audiobookshelf features
-
-> **beta.71** - Author & Title Sanity Checks (Issue #50)
-> - **Author Cleanup** - Strips "Bibliography", "Collection", Calibre IDs from author names
-> - **Title Cleanup** - Strips Calibre-style numeric IDs from book titles
-
-> **beta.69-70** - Reversed Structure & Path Fixes
-> - **Removed False Positives** - Simplified reversed structure detection
-> - **Author Prefix Fix** - "Author - Title" in book folder no longer duplicates author
-
-> **beta.65-68** - Watch Folder & Bug Fixes
-> - Watch folder retry loop fixed, encoding cleanup improved, SQLite errors fixed
+> **beta.72-77** - Multi-Edit, Media Filters & Bug Fixes
+> - **Multi-Edit Queue** (Issue #37) - Edit all queue items at once
+> - **Media Type Filter** (Issue #53) - Filter by Audio Only / Ebook Only / Both
+> - **Standardize Author Initials** (Issue #54) - "J R R Tolkien" → "J. R. R. Tolkien"
+> - Various bug fixes for settings, BookDB, and rate limiting
 
 [Full Changelog](CHANGELOG.md)
 
