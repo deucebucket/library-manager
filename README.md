@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.84-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.85-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,11 @@
 ---
 
 ## Recent Changes (develop)
+
+> **beta.85** - Watch Folder Flow Fixes (Issue #57)
+> - **Orphan Scan Exclusion** - Watch folder no longer scanned as "author" folder
+> - **API Lookup Fix** - Fixed swapped arguments causing wrong book identification
+> - **Full Filename Search** - Falls back to searching entire filename when parsing fails
 
 > **beta.84** - Output Folder & Author Initials Fixes (Issue #57)
 > - **Output Folder Routing** - Watch folder books now go to configured output folder

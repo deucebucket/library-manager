@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.84"
+APP_VERSION = "0.9.0-beta.85"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -3587,13 +3587,35 @@ def read_audio_metadata(file_path):
         return None
 
 
-def find_orphan_audio_files(lib_path):
+def find_orphan_audio_files(lib_path, config=None):
     """Find audio files sitting directly in author folders (not in book subfolders)."""
     orphans = []
+
+    # Issue #57: Get watch folder to exclude from orphan scanning
+    # Watch folder has its own processing flow and shouldn't be treated as an author folder
+    watch_folder = None
+    if config:
+        watch_folder = config.get('watch_folder', '').strip()
+    else:
+        # Fallback: load config if not provided
+        try:
+            cfg = load_config()
+            watch_folder = cfg.get('watch_folder', '').strip()
+        except:
+            pass
 
     for author_dir in Path(lib_path).iterdir():
         if not author_dir.is_dir():
             continue
+
+        # Issue #57: Skip watch folder - it has its own processing flow
+        if watch_folder:
+            try:
+                if author_dir.resolve() == Path(watch_folder).resolve():
+                    logger.debug(f"Skipping watch folder in orphan scan: {author_dir}")
+                    continue
+            except Exception:
+                pass
 
         author = author_dir.name
 
@@ -7770,9 +7792,22 @@ def process_watch_folder(config: dict) -> int:
             title = title_part if title_part else item.name
 
             # Try API lookups for better identification
+            # Issue #57: Fix argument order - gather_all_api_candidates(title, author, config)
+            # Also try searching with just the full filename if author-title parsing might be wrong
             try:
-                secrets = load_secrets()
-                candidates = gather_all_api_candidates(author, title, config, secrets)
+                # First try with parsed author/title
+                candidates = gather_all_api_candidates(title, author, config)
+
+                # If no good matches and author looks suspicious, try with full filename as title
+                if (not candidates or candidates[0].get('confidence', 0) < 60):
+                    # The filename might be "Title - Author" or just "Title", not "Author - Title"
+                    # Try searching with the full original name as the title
+                    full_name = item.stem if item.is_file() else item.name
+                    full_candidates = gather_all_api_candidates(full_name, None, config)
+                    if full_candidates and full_candidates[0].get('confidence', 0) > (candidates[0].get('confidence', 0) if candidates else 0):
+                        candidates = full_candidates
+                        logger.debug(f"Watch folder: Full filename search gave better results for '{full_name}'")
+
                 if candidates:
                     # Use best match
                     best = candidates[0]
@@ -9539,7 +9574,7 @@ def api_orphans():
     orphans = []
 
     for lib_path in config.get('library_paths', []):
-        lib_orphans = find_orphan_audio_files(lib_path)
+        lib_orphans = find_orphan_audio_files(lib_path, config)
         orphans.extend(lib_orphans)
 
     return jsonify({
@@ -9575,7 +9610,7 @@ def api_organize_all_orphans():
     results = {'organized': 0, 'errors': 0, 'details': []}
 
     for lib_path in config.get('library_paths', []):
-        orphans = find_orphan_audio_files(lib_path)
+        orphans = find_orphan_audio_files(lib_path, config)
 
         for orphan in orphans:
             if orphan['detected_title'] == 'Unknown Album':

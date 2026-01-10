@@ -2,6 +2,19 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.85] - 2026-01-10
+
+### Fixed
+- **Watch Folder Files Treated as Orphans** (Issue #57) - Watch folder excluded from orphan scanning
+  - Fixed: Files in watch folder (nested inside library) appeared as orphans with author "watch"
+  - `find_orphan_audio_files()` now skips the watch folder path
+  - Watch folder has its own processing flow and shouldn't mix with orphan organization
+
+- **Watch Folder API Lookup Bug** (Issue #57) - Fixed argument order in API search
+  - Fixed: `gather_all_api_candidates()` was called with swapped arguments (author, title instead of title, author)
+  - Now also tries full filename search if initial parsing gives poor results
+  - Files like "Extremity - Nicholas Binge.mp3" now correctly identified
+
 ## [0.9.0-beta.84] - 2026-01-09
 
 ### Fixed

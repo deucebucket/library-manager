@@ -675,6 +675,41 @@ def main():
         failed += 1
 
     # ==========================================
+    # Issue #57: Watch folder excluded from orphan scan
+    # ==========================================
+    print("\n--- Issue #57: Watch folder excluded from orphan scan ---")
+
+    import tempfile
+    from app import find_orphan_audio_files
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create structure: /library/watch/ and /library/Real Author/
+        library = os.path.join(tmpdir, 'library')
+        watch = os.path.join(library, 'watch')
+        real_author = os.path.join(library, 'Real Author')
+
+        os.makedirs(watch)
+        os.makedirs(real_author)
+
+        # Create test audio files
+        with open(os.path.join(watch, 'test.mp3'), 'w') as f:
+            f.write('fake')
+        with open(os.path.join(real_author, 'book.mp3'), 'w') as f:
+            f.write('fake')
+
+        # Test with watch folder configured
+        config = {'watch_folder': watch}
+        orphans = find_orphan_audio_files(library, config)
+        authors = [o['author'] for o in orphans]
+
+        if test_result("Watch folder excluded from orphans",
+                       'watch' not in authors and 'Real Author' in authors,
+                       f"Got authors: {authors}"):
+            passed += 1
+        else:
+            failed += 1
+
+    # ==========================================
     # Summary
     # ==========================================
     print("\n" + "=" * 60)
