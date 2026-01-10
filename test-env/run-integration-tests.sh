@@ -165,14 +165,9 @@ test_scan_detected_issues() {
     log_info "Test: Scanner detected expected issues"
     response=$(curl -s "http://localhost:$TEST_PORT/api/queue")
 
-    # Check for reversed structure detection (Metro 2033)
-    # Reversed structures are tracked in books table with status 'structure_reversed', not in queue
-    logs=$(podman logs "$CONTAINER_NAME" 2>&1)
-    if echo "$logs" | grep -q "Detected reversed structure.*Metro 2033"; then
-        log_pass "Detected reversed structure (Metro 2033)"
-    else
-        log_fail "Did not detect reversed structure"
-    fi
+    # NOTE: Reversed structure detection was removed in beta.69 (Issue #52 - false positives)
+    # Items like Metro 2033/Dmitry Glukhovsky now go through normal API lookup flow
+    # and end up in "needs_attention" if APIs can't identify them.
 
     # Check for missing author detection (The Expanse)
     if echo "$response" | grep -q "The Expanse"; then
@@ -241,30 +236,30 @@ test_process_empties_queue() {
         --max-time 180 >/dev/null 2>&1 &
 
     # Wait for processing with progress checks (realistic timing for rate-limited APIs)
-    # Each batch of 3 items takes ~30s due to rate limits, so wait up to 90s
-    for i in {1..6}; do
-        sleep 15
+    # Each batch of 3 items takes ~30-60s due to API rate limits, so wait up to 150s
+    for i in {1..15}; do
+        sleep 10
         status=$(curl -s "http://localhost:$TEST_PORT/api/process_status")
         processed=$(echo "$status" | python3 -c "import json,sys; print(json.load(sys.stdin).get('processed', 0))" 2>/dev/null || echo "0")
         if [[ "$processed" -gt 0 ]]; then
-            log_pass "Processing working: $processed items processed after $((i*15))s"
+            log_pass "Processing working: $processed items processed after $((i*10))s"
             return
         fi
         # Also check if queue reduced
         current=$(curl -s "http://localhost:$TEST_PORT/api/queue" | python3 -c "import json,sys; print(json.load(sys.stdin).get('count', 0))" 2>/dev/null || echo "$initial")
         if [[ "$current" -lt "$initial" ]]; then
-            log_pass "Queue reduced from $initial to $current after $((i*15))s"
+            log_pass "Queue reduced from $initial to $current after $((i*10))s"
             return
         fi
-        log_info "  ...waiting ($((i*15))s elapsed, queue: $current)"
+        log_info "  ...waiting ($((i*10))s elapsed, queue: $current)"
     done
 
-    # Final check after 90s
+    # Final check after 150s
     final=$(curl -s "http://localhost:$TEST_PORT/api/queue" | python3 -c "import json,sys; print(json.load(sys.stdin).get('count', 0))")
     if [[ "$final" -lt "$initial" ]]; then
         log_pass "Queue reduced from $initial to $final"
     else
-        log_fail "CRITICAL: Process returned 0 and queue unchanged ($initial items) after 90s - beta.45 bug!"
+        log_fail "CRITICAL: Process returned 0 and queue unchanged ($initial items) after 150s - processing bug!"
     fi
 }
 

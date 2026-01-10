@@ -50,9 +50,11 @@ EXPECTED_CORRECT_BOOKS = [
 
 # Expected problem detections
 # Format: (current_author, current_title, expected_status)
+# NOTE: structure_reversed detection was removed in beta.69 (Issue #52 - false positives)
+# Items with reversed structure now go through normal API lookup flow
 EXPECTED_PROBLEMS = [
-    # Reversed structure: Metro 2033/Dmitry Glukhovsky should detect author/title swap
-    ("Metro 2033", "Dmitry Glukhovsky", "structure_reversed"),
+    # Reversed structure items now go to queue for API lookup, not auto-detected
+    # ("Metro 2033", "Dmitry Glukhovsky", "structure_reversed"),  # Removed in beta.69
 ]
 
 # Expected queue detections (reason field)
