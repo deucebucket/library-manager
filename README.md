@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.85-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.87-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,14 @@
 ---
 
 ## Recent Changes (develop)
+
+> **beta.87** - Scan Locking & Password Visibility (Issues #59, #60, #61)
+> - **Concurrent Scan Fix** - Prevents SQLite errors when scan triggered multiple times
+> - **Password Field Toggles** - Show/hide buttons for all API key fields
+> - **Placeholder Author Gap** - "Unknown" author no longer marked verified when AI returns empty
+
+> **beta.86** - Unknown Author Status Fix (Issue #59)
+> - **Placeholder Detection** - "Unknown", "Various", etc. now flag as "Needs Attention" not "Verified"
 
 > **beta.85** - Watch Folder Flow Fixes (Issue #57)
 > - **Orphan Scan Exclusion** - Watch folder no longer scanned as "author" folder
