@@ -51,8 +51,13 @@ if (localStorage.getItem('abs_info_dismissed') === 'true') {
             <div class="col-md-6">
                 <div class="mb-3">
                     <label class="form-label">API Token</label>
-                    <input type="password" class="form-control bg-dark text-light" id="abs-token"
-                           placeholder="Your ABS API token">
+                    <div class="input-group">
+                        <input type="password" class="form-control bg-dark text-light" id="abs-token"
+                               placeholder="Your ABS API token">
+                        <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('abs-token')" title="Show/hide token">
+                            <i class="bi bi-eye"></i>
+                        </button>
+                    </div>
                     <small class="text-muted">Find in ABS: Settings → Users → Click your user → API Token</small>
                 </div>
             </div>
@@ -344,6 +349,22 @@ if (localStorage.getItem('abs_info_dismissed') === 'true') {
 let absUsers = [];
 let absLibraries = [];
 let currentLibraryId = null;
+
+// Issue #60: Toggle password visibility
+function togglePasswordVisibility(inputId) {
+    const input = document.getElementById(inputId);
+    const btn = input.nextElementSibling;
+    const icon = btn.querySelector('i');
+    if (input.type === 'password') {
+        input.type = 'text';
+        icon.classList.remove('bi-eye');
+        icon.classList.add('bi-eye-slash');
+    } else {
+        input.type = 'password';
+        icon.classList.remove('bi-eye-slash');
+        icon.classList.add('bi-eye');
+    }
+}
 
 {% if abs_connected %}
 // Load data on page load

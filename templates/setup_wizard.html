@@ -388,8 +388,13 @@
                 <!-- Gemini API Key Input -->
                 <div id="gemini-section" class="mb-4">
                     <label class="form-label">Gemini API Key</label>
-                    <input type="password" class="form-control bg-dark text-light" id="gemini-api-key-input"
-                           placeholder="Enter your Gemini API key">
+                    <div class="input-group">
+                        <input type="password" class="form-control bg-dark text-light" id="gemini-api-key-input"
+                               placeholder="Enter your Gemini API key">
+                        <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('gemini-api-key-input')" title="Show/hide key">
+                            <i class="bi bi-eye"></i>
+                        </button>
+                    </div>
                     <div class="form-text">
                         <i class="bi bi-info-circle"></i> Get a free key from <a href="https://aistudio.google.com/apikey" target="_blank" class="text-info">Google AI Studio</a>
                         <br><small class="text-muted">Sign in with Google, click "Create API Key", copy and paste here.</small>
@@ -399,8 +404,13 @@
                 <!-- OpenRouter API Key Input -->
                 <div id="openrouter-section" class="d-none mb-4">
                     <label class="form-label">OpenRouter API Key</label>
-                    <input type="password" class="form-control bg-dark text-light" id="openrouter-api-key-input"
-                           placeholder="Enter your OpenRouter API key">
+                    <div class="input-group">
+                        <input type="password" class="form-control bg-dark text-light" id="openrouter-api-key-input"
+                               placeholder="Enter your OpenRouter API key">
+                        <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('openrouter-api-key-input')" title="Show/hide key">
+                            <i class="bi bi-eye"></i>
+                        </button>
+                    </div>
                     <div class="form-text">
                         <i class="bi bi-info-circle"></i> Get a free key from <a href="https://openrouter.ai/keys" target="_blank" class="text-info">OpenRouter</a>
                         <br><small class="text-muted">Create account, go to Keys, click "Create Key", copy and paste here.</small>
@@ -566,6 +576,22 @@
         openrouter_api_key: '',
         ollama_url: 'http://localhost:11434'
     };
+
+    // Issue #60: Toggle password visibility
+    function togglePasswordVisibility(inputId) {
+        const input = document.getElementById(inputId);
+        const btn = input.nextElementSibling;
+        const icon = btn.querySelector('i');
+        if (input.type === 'password') {
+            input.type = 'text';
+            icon.classList.remove('bi-eye');
+            icon.classList.add('bi-eye-slash');
+        } else {
+            input.type = 'password';
+            icon.classList.remove('bi-eye-slash');
+            icon.classList.add('bi-eye');
+        }
+    }
 
     // Navigation
     function goToStep(step) {

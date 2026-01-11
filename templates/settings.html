@@ -402,8 +402,13 @@
                             <div id="gemini-settings">
                                 <div class="mb-3">
                                     <label class="form-label">Gemini API Key</label>
-                                    <input type="password" class="form-control bg-dark text-light" name="gemini_api_key"
-                                           value="{{ config.gemini_api_key or '' }}" placeholder="AIza...">
+                                    <div class="input-group">
+                                        <input type="password" class="form-control bg-dark text-light" name="gemini_api_key" id="gemini_api_key"
+                                               value="{{ config.gemini_api_key or '' }}" placeholder="AIza...">
+                                        <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('gemini_api_key')" title="Show/hide key">
+                                            <i class="bi bi-eye"></i>
+                                        </button>
+                                    </div>
                                     <small class="text-muted">Free at <a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a></small>
                                 </div>
                                 <div class="mb-0">
@@ -420,8 +425,13 @@
                             <div id="openrouter-settings" style="display: none;">
                                 <div class="mb-3">
                                     <label class="form-label">OpenRouter API Key</label>
-                                    <input type="password" class="form-control bg-dark text-light" name="openrouter_api_key"
-                                           value="{{ config.openrouter_api_key or '' }}" placeholder="sk-or-v1-...">
+                                    <div class="input-group">
+                                        <input type="password" class="form-control bg-dark text-light" name="openrouter_api_key" id="openrouter_api_key"
+                                               value="{{ config.openrouter_api_key or '' }}" placeholder="sk-or-v1-...">
+                                        <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('openrouter_api_key')" title="Show/hide key">
+                                            <i class="bi bi-eye"></i>
+                                        </button>
+                                    </div>
                                     <small class="text-muted">Get at <a href="https://openrouter.ai" target="_blank">openrouter.ai</a></small>
                                 </div>
                                 <div class="mb-0">
@@ -482,8 +492,13 @@
                             </ol>
                             <div class="mb-0">
                                 <label class="form-label small">Google Books API Key <span class="text-muted">(optional)</span></label>
-                                <input type="password" class="form-control form-control-sm bg-dark text-light" name="google_books_api_key"
-                                       value="{{ config.google_books_api_key or '' }}" placeholder="For higher rate limits">
+                                <div class="input-group input-group-sm">
+                                    <input type="password" class="form-control bg-dark text-light" name="google_books_api_key" id="google_books_api_key"
+                                           value="{{ config.google_books_api_key or '' }}" placeholder="For higher rate limits">
+                                    <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('google_books_api_key')" title="Show/hide key">
+                                        <i class="bi bi-eye"></i>
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -836,6 +851,22 @@ document.addEventListener('DOMContentLoaded', function() {
 
 function dismissHowItWorks() {
     localStorage.setItem('hideHowItWorks', 'true');
+}
+
+// Issue #60: Toggle password visibility
+function togglePasswordVisibility(inputId) {
+    const input = document.getElementById(inputId);
+    const btn = input.nextElementSibling;
+    const icon = btn.querySelector('i');
+    if (input.type === 'password') {
+        input.type = 'text';
+        icon.classList.remove('bi-eye');
+        icon.classList.add('bi-eye-slash');
+    } else {
+        input.type = 'password';
+        icon.classList.remove('bi-eye-slash');
+        icon.classList.add('bi-eye');
+    }
 }
 
 function toggleProviderFields() {

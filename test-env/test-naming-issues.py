@@ -742,6 +742,86 @@ def main():
             failed += 1
 
     # ==========================================
+    # Issue #61: Scan locking mechanism
+    # ==========================================
+    print("\n--- Issue #61: Scan locking mechanism exists ---")
+
+    from app import SCAN_LOCK, scan_in_progress, scan_library
+    import threading
+    import inspect
+
+    # Test that SCAN_LOCK is a threading Lock
+    if test_result("SCAN_LOCK is threading.Lock",
+                   isinstance(SCAN_LOCK, type(threading.Lock())),
+                   f"Got {type(SCAN_LOCK)}"):
+        passed += 1
+    else:
+        failed += 1
+
+    # Test that scan_in_progress variable exists
+    if test_result("scan_in_progress variable exists",
+                   'scan_in_progress' in dir(__import__('app')),
+                   "Variable not found"):
+        passed += 1
+    else:
+        failed += 1
+
+    # Test that scan_library accepts blocking parameter
+    sig = inspect.signature(scan_library)
+    has_blocking = 'blocking' in sig.parameters
+    if test_result("scan_library has blocking parameter",
+                   has_blocking,
+                   f"Parameters: {list(sig.parameters.keys())}"):
+        passed += 1
+    else:
+        failed += 1
+
+    # ==========================================
+    # Issue #60: Password field visibility (template check)
+    # ==========================================
+    print("\n--- Issue #60: Password visibility toggles in templates ---")
+
+    templates_to_check = [
+        ('templates/settings.html', 'togglePasswordVisibility'),
+        ('templates/abs_dashboard.html', 'togglePasswordVisibility'),
+        ('templates/setup_wizard.html', 'togglePasswordVisibility'),
+    ]
+
+    for template, function_name in templates_to_check:
+        template_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), template)
+        if os.path.exists(template_path):
+            with open(template_path) as f:
+                content = f.read()
+            has_toggle = function_name in content
+            if test_result(f"{template} has {function_name}",
+                           has_toggle,
+                           f"Function not found in template"):
+                passed += 1
+            else:
+                failed += 1
+        else:
+            if test_result(f"{template} exists",
+                           False,
+                           f"File not found: {template_path}"):
+                passed += 1
+            else:
+                failed += 1
+
+    # Check that password fields have show/hide buttons (at least one bi-eye icon per template)
+    for template, _ in templates_to_check:
+        template_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), template)
+        if os.path.exists(template_path):
+            with open(template_path) as f:
+                content = f.read()
+            has_eye_icon = 'bi-eye' in content
+            if test_result(f"{template} has bi-eye icon for toggle",
+                           has_eye_icon,
+                           "No bi-eye icon found"):
+                passed += 1
+            else:
+                failed += 1
+
+    # ==========================================
     # Summary
     # ==========================================
     print("\n" + "=" * 60)

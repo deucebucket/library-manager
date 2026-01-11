@@ -2,6 +2,32 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.87] - 2026-01-11
+
+### Fixed
+- **Concurrent Scan SQLite Errors** (Issue #61) - Prevent race conditions during library scans
+  - Added `SCAN_LOCK` mutex to prevent multiple scans running simultaneously
+  - Added `scan_in_progress` flag for quick status checks
+  - API endpoint now returns HTTP 409 if scan already in progress
+  - New `/api/scan/status` endpoint to check if scanning
+  - Prevents "UNIQUE constraint failed: books.path" and "database is locked" errors
+
+- **API Key Fields Not Pasteable** (Issue #60) - Added show/hide toggles to all password fields
+  - Settings page: Gemini, OpenRouter, Google Books API keys
+  - ABS Dashboard: API token field
+  - Setup Wizard: Gemini and OpenRouter API keys
+  - Toggle button with eye icon for each field
+
+- **"Unknown" Author Still Verified** (Issue #59 follow-up) - Fixed remaining gap
+  - When AI returns empty results AND current author is placeholder, now marks "needs_attention"
+  - Previously: empty AI result → always "verified" regardless of current author
+  - Now: empty AI result + placeholder author → "needs_attention" with helpful message
+
+### Tests
+- 9 new regression tests:
+  - 3 tests for Issue #61 (scan lock, scan_in_progress variable, blocking parameter)
+  - 6 tests for Issue #60 (togglePasswordVisibility function and bi-eye icons in 3 templates)
+
 ## [0.9.0-beta.86] - 2026-01-10
 
 ### Fixed

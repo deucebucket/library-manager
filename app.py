@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.86"
+APP_VERSION = "0.9.0-beta.87"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -1851,6 +1851,10 @@ API_RATE_LIMITS = {
     'hardcover': {'last_call': 0, 'min_delay': 2.5},     # 2.5 sec between calls (beta)
 }
 API_RATE_LOCK = threading.Lock()
+
+# Issue #61: Scan lock to prevent concurrent scans causing SQLite errors
+SCAN_LOCK = threading.Lock()
+scan_in_progress = False
 
 def rate_limit_wait(api_name):
     """Wait if needed to respect rate limits for the given API."""
@@ -6019,9 +6023,34 @@ def deep_scan_library(config):
     return checked, scanned, queued
 
 
-def scan_library(config):
-    """Wrapper that calls deep scan."""
-    return deep_scan_library(config)
+def scan_library(config, blocking=True):
+    """
+    Wrapper that calls deep scan with concurrency protection.
+
+    Issue #61: Prevents concurrent scans that cause SQLite UNIQUE constraint
+    and database locked errors.
+
+    Args:
+        config: Configuration dictionary
+        blocking: If True, wait for lock. If False, return immediately if busy.
+
+    Returns:
+        (checked, scanned, queued) tuple, or (0, 0, 0) if non-blocking and busy
+    """
+    global scan_in_progress
+
+    if not blocking:
+        # Non-blocking mode: return immediately if scan in progress
+        if scan_in_progress:
+            logger.info("Scan already in progress, skipping")
+            return (0, 0, 0)
+
+    with SCAN_LOCK:
+        scan_in_progress = True
+        try:
+            return deep_scan_library(config)
+        finally:
+            scan_in_progress = False
 
 def check_rate_limit(config):
     """Check if we're within API rate limits. Returns (allowed, calls_this_hour, limit)."""
@@ -6398,11 +6427,16 @@ def process_queue(config, limit=None):
                     logger.info(f"Extracted series from new title: '{extracted_series}' #{extracted_num} - '{extracted_title}'")
 
         if not new_author or not new_title:
-            # Remove from queue, mark as verified
+            # Issue #59: If current author is placeholder, don't mark as verified - needs attention
             c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-            c.execute('UPDATE books SET status = ? WHERE id = ?', ('verified', row['book_id']))
+            if is_placeholder_author(row['current_author']):
+                logger.info(f"Needs attention (AI empty, placeholder author '{row['current_author']}'): {row['current_title']}")
+                c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                         ('needs_attention', f"Could not identify author (currently '{row['current_author']}')", row['book_id']))
+            else:
+                c.execute('UPDATE books SET status = ? WHERE id = ?', ('verified', row['book_id']))
+                logger.info(f"Verified OK (empty result): {row['current_author']}/{row['current_title']}")
             processed += 1
-            logger.info(f"Verified OK (empty result): {row['current_author']}/{row['current_title']}")
             continue
 
         # Check if fix needed (also check narrator change)
@@ -8409,6 +8443,14 @@ def api_check_path():
 @app.route('/api/scan', methods=['POST'])
 def api_scan():
     """Trigger a library scan."""
+    # Issue #61: Check if scan already in progress
+    if scan_in_progress:
+        return jsonify({
+            'success': False,
+            'error': 'Scan already in progress',
+            'message': 'A scan is already running. Please wait for it to complete.'
+        }), 409  # HTTP 409 Conflict
+
     config = load_config()
     checked, scanned, queued = scan_library(config)
     return jsonify({
@@ -8416,6 +8458,14 @@ def api_scan():
         'checked': checked,      # Total book folders examined
         'scanned': scanned,      # New books added to tracking
         'queued': queued         # Books needing fixes
+    })
+
+
+@app.route('/api/scan/status', methods=['GET'])
+def api_scan_status():
+    """Check if a scan is currently in progress. Issue #61."""
+    return jsonify({
+        'scanning': scan_in_progress
     })
 
 @app.route('/api/chaos_scan', methods=['POST'])
