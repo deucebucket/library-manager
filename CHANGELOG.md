@@ -2,6 +2,15 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.86] - 2026-01-10
+
+### Fixed
+- **"Unknown" Author Marked as Fixed/Verified** (Issue #59) - Placeholder authors now flag for attention
+  - Fixed: Books with "Unknown" author were marked as "Fixed" or "Verified" instead of "Needs Attention"
+  - System now checks for placeholder authors (Unknown, Various, etc.) before setting success statuses
+  - Affected books now correctly show "Needs Attention" with message explaining the issue
+  - Applies to all status transitions: verified, fixed, pending_fix paths
+
 ## [0.9.0-beta.85] - 2026-01-10
 
 ### Fixed
@@ -14,6 +23,9 @@ All notable changes to Library Manager will be documented in this file.
   - Fixed: `gather_all_api_candidates()` was called with swapped arguments (author, title instead of title, author)
   - Now also tries full filename search if initial parsing gives poor results
   - Files like "Extremity - Nicholas Binge.mp3" now correctly identified
+
+### Code Quality
+- Fixed bare `except:` clause in `find_orphan_audio_files()` - now uses `except Exception:` (PEP 8 compliance)
 
 ## [0.9.0-beta.84] - 2026-01-09
 

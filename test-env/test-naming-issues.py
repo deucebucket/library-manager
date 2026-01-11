@@ -710,6 +710,38 @@ def main():
             failed += 1
 
     # ==========================================
+    # Issue #59: Placeholder authors should not be "verified"
+    # ==========================================
+    print("\n--- Issue #59: Placeholder author detection ---")
+
+    # Test is_placeholder_author function
+    placeholder_tests = [
+        ('Unknown', True),
+        ('Unknown Author', True),
+        ('Various', True),
+        ('Various Authors', True),
+        ('watch', True),
+        ('incoming', True),
+        ('import', True),
+        ('Brandon Sanderson', False),
+        ('Stephen King', False),
+        ('J.R.R. Tolkien', False),
+        ('Peter F. Hamilton', False),
+        ('', True),  # Empty should be placeholder
+        (None, True),  # None should be placeholder
+    ]
+
+    for author, expected in placeholder_tests:
+        result = is_placeholder_author(author)
+        display = repr(author) if author else str(author)
+        if test_result(f"is_placeholder_author({display}) = {expected}",
+                       result == expected,
+                       f"Got {result}, expected {expected}"):
+            passed += 1
+        else:
+            failed += 1
+
+    # ==========================================
     # Summary
     # ==========================================
     print("\n" + "=" * 60)

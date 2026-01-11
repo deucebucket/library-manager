@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.85"
+APP_VERSION = "0.9.0-beta.86"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -3601,7 +3601,7 @@ def find_orphan_audio_files(lib_path, config=None):
         try:
             cfg = load_config()
             watch_folder = cfg.get('watch_folder', '').strip()
-        except:
+        except Exception:
             pass
 
     for author_dir in Path(lib_path).iterdir():
@@ -6666,11 +6666,35 @@ def process_queue(config, limit=None):
             # Issue #57 fix: Check if book is already in correct location
             # Without this check, we'd compare the folder to itself and mark it as "duplicate"
             if old_path.resolve() == new_path.resolve():
-                logger.info(f"Already correct: {old_path.name}")
-                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                c.execute('UPDATE books SET status = ?, new_author = ?, new_title = ? WHERE id = ?',
-                         ('verified', new_author, new_title, row['book_id']))
+                # Issue #59: If author is placeholder (Unknown, etc.), this isn't "verified" - it needs attention
+                if is_placeholder_author(new_author):
+                    logger.info(f"Needs attention (placeholder author '{new_author}'): {old_path.name}")
+                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                    c.execute('UPDATE books SET status = ?, new_author = ?, new_title = ?, error_message = ? WHERE id = ?',
+                             ('needs_attention', new_author, new_title, f"Could not identify author (currently '{new_author}')", row['book_id']))
+                else:
+                    logger.info(f"Already correct: {old_path.name}")
+                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                    c.execute('UPDATE books SET status = ?, new_author = ?, new_title = ? WHERE id = ?',
+                             ('verified', new_author, new_title, row['book_id']))
                 conn.commit()
+                processed += 1
+                continue
+
+            # Issue #59: If author is placeholder (Unknown, etc.), don't auto-fix - needs manual attention
+            if is_placeholder_author(new_author):
+                logger.info(f"NEEDS ATTENTION (placeholder author '{new_author}'): {row['current_author']}/{row['current_title']}")
+                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                  new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?, ?, ?, ?, ?, ?)''',
+                         (row['book_id'], row['current_author'], row['current_title'],
+                          new_author, new_title, str(old_path), str(new_path),
+                          f"Could not identify author (got '{new_author}')",
+                          new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                          str(new_year) if new_year else None, new_edition, new_variant))
+                c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                         ('needs_attention', f"Could not identify author (got '{new_author}')", row['book_id']))
+                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                 processed += 1
                 continue
 
@@ -7007,9 +7031,14 @@ def process_queue(config, limit=None):
                 c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', row['book_id']))
                 fixed += 1
         else:
-            # No fix needed
-            c.execute('UPDATE books SET status = ? WHERE id = ?', ('verified', row['book_id']))
-            logger.info(f"Verified OK: {row['current_author']}/{row['current_title']}")
+            # No fix needed - but Issue #59: check if author is placeholder
+            if is_placeholder_author(row['current_author']):
+                c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                         ('needs_attention', f"Could not identify author (currently '{row['current_author']}')", row['book_id']))
+                logger.info(f"Needs attention (placeholder author): {row['current_author']}/{row['current_title']}")
+            else:
+                c.execute('UPDATE books SET status = ? WHERE id = ?', ('verified', row['book_id']))
+                logger.info(f"Verified OK: {row['current_author']}/{row['current_title']}")
 
         # Remove from queue
         c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
