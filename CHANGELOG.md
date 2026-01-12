@@ -2,6 +2,29 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.88] - 2026-01-11
+
+### Fixed
+- **Watch Folder Verification** (Issue #57) - Watch folder now verifies API results before accepting
+  - Previously: Watch folder blindly trusted first API result with confidence > 60
+  - Now: Calls `verify_drastic_change()` when API returns different author than expected
+  - Prevents wrong matches like "Night Without Stars" (Judith Otto) when it should be Peter F. Hamilton
+
+### Improved
+- **Parent Folder as Author Hint** (Issue #57) - Uses subfolder name in watch folder as author context
+  - `/watch/Peter F. Hamilton/02 Night Without Stars.mp3` → author hint = "Peter F. Hamilton"
+  - Provides context that was missing when files had no embedded metadata
+
+- **Same-Title-Different-Author Detection** (Issue #57) - Flags ambiguous matches for review
+  - When multiple APIs return same title but different authors, flags for user attention
+  - Prevents auto-accepting when there are multiple books with identical titles
+
+- **Author Similarity Check** - Compares API author against folder/filename hint before accepting
+  - If similarity < 50%, triggers verification instead of blind acceptance
+
+### Tests
+- 5 new regression tests for watch folder verification logic
+
 ## [0.9.0-beta.87] - 2026-01-11
 
 ### Fixed

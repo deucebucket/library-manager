@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.87-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.88-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,11 @@
 ---
 
 ## Recent Changes (develop)
+
+> **beta.88** - Watch Folder Verification (Issue #57)
+> - **Verification Before Accepting** - Watch folder now verifies API results, not blind trust
+> - **Parent Folder as Author Hint** - Uses subfolder name as context for identification
+> - **Same-Title-Different-Author Detection** - Flags ambiguous matches for review
 
 > **beta.87** - Scan Locking & Password Visibility (Issues #59, #60, #61)
 > - **Concurrent Scan Fix** - Prevents SQLite errors when scan triggered multiple times

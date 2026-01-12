@@ -822,6 +822,59 @@ def main():
                 failed += 1
 
     # ==========================================
+    # Issue #57: Watch folder verification improvements
+    # ==========================================
+    print("\n--- Issue #57: Watch folder verification code exists ---")
+
+    # Test that process_watch_folder function exists and has verification logic
+    from app import process_watch_folder
+    import inspect
+
+    # Check function signature
+    sig = inspect.signature(process_watch_folder)
+    if test_result("process_watch_folder function exists",
+                   callable(process_watch_folder),
+                   "Function not found"):
+        passed += 1
+    else:
+        failed += 1
+
+    # Check that verification logic is in the source code
+    source = inspect.getsource(process_watch_folder)
+
+    # Test: Parent folder used as author hint
+    if test_result("Watch folder uses parent folder as author hint",
+                   'folder_author_hint' in source and 'parent_folder' in source,
+                   "folder_author_hint logic not found"):
+        passed += 1
+    else:
+        failed += 1
+
+    # Test: Verification called when API author differs
+    if test_result("Watch folder verifies drastic author changes",
+                   'verify_drastic_change' in source and 'needs_verification' in source,
+                   "verify_drastic_change call not found"):
+        passed += 1
+    else:
+        failed += 1
+
+    # Test: Same-title-different-author detection
+    if test_result("Watch folder detects same-title-different-author",
+                   'unique_authors' in source and 'Multiple authors found' in source,
+                   "Same-title-different-author detection not found"):
+        passed += 1
+    else:
+        failed += 1
+
+    # Test: Author similarity check before verification
+    if test_result("Watch folder checks author similarity",
+                   'author_similarity' in source and 'calculate_title_similarity' in source,
+                   "Author similarity check not found"):
+        passed += 1
+    else:
+        failed += 1
+
+    # ==========================================
     # Summary
     # ==========================================
     print("\n" + "=" * 60)

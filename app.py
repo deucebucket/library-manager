@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.87"
+APP_VERSION = "0.9.0-beta.88"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -7849,14 +7849,32 @@ def process_watch_folder(config: dict) -> int:
             item = Path(item_path)
             logger.info(f"Watch folder: Processing {item.name}")
 
+            # Issue #57: Use parent folder as author hint if item is in a subfolder
+            # e.g., /watch/Peter F. Hamilton/02 Night Without Stars.mp3 -> author hint = "Peter F. Hamilton"
+            watch_path_obj = Path(watch_folder)
+            parent_folder = item.parent
+            folder_author_hint = None
+            if parent_folder != watch_path_obj and parent_folder.parent == watch_path_obj:
+                # Item is in a direct subfolder of watch folder - use folder name as author hint
+                folder_author_hint = parent_folder.name
+                if not is_placeholder_author(folder_author_hint):
+                    logger.info(f"Watch folder: Using parent folder as author hint: '{folder_author_hint}'")
+
             # Extract author/title from the folder/file name
             author_hint, title_part = extract_author_title(item.stem if item.is_file() else item.name)
-            author = author_hint if author_hint else 'Unknown'
+
+            # Prefer folder author hint over filename parsing
+            original_author = folder_author_hint if folder_author_hint else (author_hint if author_hint else 'Unknown')
+            author = original_author
             title = title_part if title_part else item.name
+            original_title = title
 
             # Try API lookups for better identification
             # Issue #57: Fix argument order - gather_all_api_candidates(title, author, config)
             # Also try searching with just the full filename if author-title parsing might be wrong
+            needs_verification = False
+            api_author = None
+            api_title = None
             try:
                 # First try with parsed author/title
                 candidates = gather_all_api_candidates(title, author, config)
@@ -7875,11 +7893,72 @@ def process_watch_folder(config: dict) -> int:
                     # Use best match
                     best = candidates[0]
                     if best.get('confidence', 0) > 60:
-                        author = best.get('author', author)
-                        title = best.get('title', title)
-                        logger.info(f"Watch folder: Identified as {author} - {title}")
+                        api_author = best.get('author', author)
+                        api_title = best.get('title', title)
+
+                        # Issue #57: Check if API author is drastically different from our hint
+                        # This catches cases like "Night Without Stars" matching wrong author
+                        if api_author and original_author and not is_placeholder_author(original_author):
+                            # We have a real author hint - verify if API disagrees
+                            author_similarity = calculate_title_similarity(original_author.lower(), api_author.lower())
+                            if author_similarity < 0.5:
+                                # API found different author - needs verification
+                                logger.info(f"Watch folder: API author '{api_author}' differs from hint '{original_author}' - verifying...")
+                                needs_verification = True
+
+                        # Issue #57: Same-title-different-author detection
+                        # If we have NO author hint and multiple APIs returned different authors
+                        # for similar titles, this could be a common title with multiple books
+                        if not needs_verification and is_placeholder_author(original_author) and len(candidates) > 1:
+                            # Check if different APIs found different authors for similar titles
+                            unique_authors = set()
+                            for c in candidates:
+                                c_title = c.get('title', '')
+                                c_author = c.get('author', '')
+                                # Only count if title is similar to what we searched
+                                if c_author and calculate_title_similarity(title.lower(), c_title.lower()) > 0.6:
+                                    unique_authors.add(c_author.lower())
+                            if len(unique_authors) > 1:
+                                # Multiple authors for same/similar title - ambiguous, needs verification
+                                logger.warning(f"Watch folder: Multiple authors found for '{title}': {unique_authors} - flagging for review")
+                                needs_verification = True
+
+                        if not needs_verification:
+                            author = api_author
+                            title = api_title
+                            logger.info(f"Watch folder: Identified as {author} - {title}")
+
             except Exception as e:
                 logger.debug(f"Watch folder: API lookup failed, using path analysis: {e}")
+
+            # Issue #57: Verify drastic author changes before accepting
+            if needs_verification and api_author and api_title:
+                try:
+                    verification = verify_drastic_change(
+                        item.name,  # original input
+                        original_author,  # original author (our hint)
+                        original_title,  # original title
+                        api_author,  # proposed author from API
+                        api_title,  # proposed title from API
+                        config
+                    )
+                    if verification and verification.get('verified'):
+                        # Verification passed - use the verified result
+                        author = verification.get('author', api_author)
+                        title = verification.get('title', api_title)
+                        logger.info(f"Watch folder: Verified change to {author} - {title}")
+                    else:
+                        # Verification failed - keep original hint, flag for attention
+                        reason = verification.get('reasoning', 'Verification failed') if verification else 'No verification result'
+                        logger.warning(f"Watch folder: Rejected API match '{api_author}' for '{item.name}' - {reason}")
+                        # Keep original author hint if we had one, otherwise use Unknown
+                        author = original_author if not is_placeholder_author(original_author) else 'Unknown'
+                        title = original_title
+                except Exception as e:
+                    logger.warning(f"Watch folder: Verification failed for '{item.name}': {e}")
+                    # On verification error, be conservative - use original hint
+                    author = original_author if not is_placeholder_author(original_author) else 'Unknown'
+                    title = original_title
 
             # Issue #57: Apply author initials standardization if enabled
             if config.get('standardize_author_initials', False) and author:
