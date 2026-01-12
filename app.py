@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.88"
+APP_VERSION = "0.9.0-beta.89"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -2084,8 +2084,9 @@ def clean_search_title(messy_name):
     # This function just cleans obvious junk for searching - title verification is separate
 
     # Strip leading track/chapter numbers like "06 - Title", "01. Title", "Track 05 - Title"
+    # Also handles "02 Night" (number + space, no separator) which is common in downloads
     # These are common in audiobook folders but mess up search
-    clean = re.sub(r'^(?:track\s*)?\d+\s*[-–—:.]\s*', '', clean, flags=re.IGNORECASE)
+    clean = re.sub(r'^(?:track\s*)?\d+\s*[-–—:.]?\s+', '', clean, flags=re.IGNORECASE)
 
     # Remove extra whitespace
     clean = re.sub(r'\s+', ' ', clean)
@@ -2099,7 +2100,7 @@ BOOKDB_API_URL = "https://bookdb.deucebucket.com"
 # Public API key for Library Manager users (no config needed)
 BOOKDB_PUBLIC_KEY = "lm-public-2024_85TbJ2lbrXGm38tBgliPAcAexLA_AeWxyqvHPbwRIrA"
 
-def search_bookdb(title, author=None, api_key=None, retry_count=0):
+def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=None):
     """
     Search our private BookDB metadata service.
     Uses fuzzy matching via Qdrant vectors - great for messy filenames.
@@ -2110,12 +2111,15 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0):
 
     rate_limit_wait('bookdb')
 
+    # Use configured URL or fall back to default cloud URL
+    base_url = bookdb_url or BOOKDB_API_URL
+
     try:
         # Build the filename to match - include author if we have it
         filename = f"{author} - {title}" if author else title
 
         resp = requests.post(
-            f"{BOOKDB_API_URL}/match",
+            f"{base_url}/match",
             json={"filename": filename},
             headers={"X-API-Key": api_key},
             timeout=10
@@ -2667,8 +2671,9 @@ def gather_all_api_candidates(title, author=None, config=None):
     audible_region = get_audible_region_for_language(preferred_lang)
 
     # Search each API and collect all results
+    bookdb_url = config.get('bookdb_url') if config else None
     apis = [
-        ('BookDB', lambda t, a: search_bookdb(t, a, (config.get('bookdb_api_key') if config else None) or BOOKDB_PUBLIC_KEY)),
+        ('BookDB', lambda t, a: search_bookdb(t, a, (config.get('bookdb_api_key') if config else None) or BOOKDB_PUBLIC_KEY, bookdb_url=bookdb_url)),
         ('Audnexus', lambda t, a: search_audnexus(t, a, region=audible_region)),
         ('OpenLibrary', lambda t, a: search_openlibrary(t, a, lang=preferred_lang)),
         ('GoogleBooks', lambda t, a: search_google_books(t, a, config.get('google_books_api_key') if config else None, lang=preferred_lang)),
@@ -6704,13 +6709,13 @@ def process_queue(config, limit=None):
                 if is_placeholder_author(new_author):
                     logger.info(f"Needs attention (placeholder author '{new_author}'): {old_path.name}")
                     c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                    c.execute('UPDATE books SET status = ?, new_author = ?, new_title = ?, error_message = ? WHERE id = ?',
-                             ('needs_attention', new_author, new_title, f"Could not identify author (currently '{new_author}')", row['book_id']))
+                    c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                             ('needs_attention', f"Could not identify author (currently '{new_author}')", row['book_id']))
                 else:
                     logger.info(f"Already correct: {old_path.name}")
                     c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                    c.execute('UPDATE books SET status = ?, new_author = ?, new_title = ? WHERE id = ?',
-                             ('verified', new_author, new_title, row['book_id']))
+                    c.execute('UPDATE books SET status = ? WHERE id = ?',
+                             ('verified', row['book_id']))
                 conn.commit()
                 processed += 1
                 continue
@@ -7880,19 +7885,26 @@ def process_watch_folder(config: dict) -> int:
                 candidates = gather_all_api_candidates(title, author, config)
 
                 # If no good matches and author looks suspicious, try with full filename as title
-                if (not candidates or candidates[0].get('confidence', 0) < 60):
+                # Normalize confidence to 0-100 scale for comparison
+                def norm_conf(c):
+                    raw = c.get('confidence', 0) if c else 0
+                    return raw * 100 if raw <= 1 else raw
+                if (not candidates or norm_conf(candidates[0]) < 60):
                     # The filename might be "Title - Author" or just "Title", not "Author - Title"
                     # Try searching with the full original name as the title
                     full_name = item.stem if item.is_file() else item.name
                     full_candidates = gather_all_api_candidates(full_name, None, config)
-                    if full_candidates and full_candidates[0].get('confidence', 0) > (candidates[0].get('confidence', 0) if candidates else 0):
+                    if full_candidates and norm_conf(full_candidates[0]) > norm_conf(candidates[0] if candidates else None):
                         candidates = full_candidates
                         logger.debug(f"Watch folder: Full filename search gave better results for '{full_name}'")
 
                 if candidates:
                     # Use best match
                     best = candidates[0]
-                    if best.get('confidence', 0) > 60:
+                    # Handle confidence as either 0-1 (fraction) or 0-100 (percentage)
+                    raw_confidence = best.get('confidence', 0)
+                    confidence = raw_confidence * 100 if raw_confidence <= 1 else raw_confidence
+                    if confidence >= 60:
                         api_author = best.get('author', author)
                         api_title = best.get('title', title)
 

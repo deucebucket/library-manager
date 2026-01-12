@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.88-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.89-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,12 @@
 ---
 
 ## Recent Changes (develop)
+
+> **beta.89** - Watch Folder Reliability Fixes (Issue #57)
+> - **Track Number Stripping** - "02 Night Without Stars" now correctly searches as "Night Without Stars"
+> - **Local BookDB Support** - Uses configured bookdb_url instead of hardcoded cloud URL
+> - **Confidence Threshold Fix** - 60% confidence now correctly passes threshold check
+> - **Database Column Fix** - Fixed SQL error when marking books as needs_attention
 
 > **beta.88** - Watch Folder Verification (Issue #57)
 > - **Verification Before Accepting** - Watch folder now verifies API results, not blind trust
