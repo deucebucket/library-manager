@@ -2,3 +2,8 @@ flask>=2.0.0
 requests>=2.25.0
 mutagen>=1.45.0
 langdetect>=1.0.9
+
+# Optional: Local speech-to-text for Layer 4 fallback (when Gemini unavailable)
+# Install with: pip install faster-whisper
+# Requires ~150MB download for 'base' model on first use
+# faster-whisper>=1.0.0

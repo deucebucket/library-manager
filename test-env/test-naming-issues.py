@@ -875,6 +875,136 @@ def main():
         failed += 1
 
     # ==========================================
+    # Issue #57: Series number handling (series_num)
+    # ==========================================
+    print("\n--- Issue #57: Series number properly stored and used ---")
+
+    from app import build_profile_from_sources, move_to_output_folder, BookProfile
+    import tempfile
+    import inspect
+
+    # Test 1: build_profile_from_sources stores series_num from API candidates
+    source = inspect.getsource(build_profile_from_sources)
+    if test_result("build_profile_from_sources stores series_num from API candidates",
+                   "candidate.get('series_num')" in source and "profile.series_num.add_source" in source,
+                   "series_num not stored from API candidates"):
+        passed += 1
+    else:
+        failed += 1
+
+    # Test 2: build_new_path uses series_num for path building
+    config = {
+        'naming_format': 'author/title',
+        'series_grouping': True
+    }
+    lib_path = Path("/audiobooks")
+
+    # With series and series_num - should create numbered folder
+    result = build_new_path(lib_path, "Charles Stross", "The Labyrinth Index",
+                           series="Laundry Files", series_num="9", config=config)
+    if result:
+        path_str = str(result)
+        if test_result("build_new_path with series_num creates '9 - Title'",
+                       "Laundry Files" in path_str and "9 - The Labyrinth Index" in path_str,
+                       f"Got path: {path_str}"):
+            passed += 1
+        else:
+            failed += 1
+    else:
+        failed += 1
+        print(f"[FAIL] build_new_path returned None")
+
+    # Without series_num - should not have number prefix
+    result = build_new_path(lib_path, "Charles Stross", "The Labyrinth Index",
+                           series="Laundry Files", series_num=None, config=config)
+    if result:
+        path_str = str(result)
+        # Should have series folder but NOT have number prefix
+        has_series = "Laundry Files" in path_str
+        has_no_num = "9 - " not in path_str and "/1 - " not in path_str
+        if test_result("build_new_path without series_num has no number prefix",
+                       has_series and has_no_num,
+                       f"Got path: {path_str}"):
+            passed += 1
+        else:
+            failed += 1
+    else:
+        failed += 1
+        print(f"[FAIL] build_new_path returned None")
+
+    # Test 3: move_to_output_folder accepts and uses series parameters
+    sig = inspect.signature(move_to_output_folder)
+    has_series = 'series' in sig.parameters
+    has_series_num = 'series_num' in sig.parameters
+    if test_result("move_to_output_folder accepts series and series_num params",
+                   has_series and has_series_num,
+                   f"Parameters: {list(sig.parameters.keys())}"):
+        passed += 1
+    else:
+        failed += 1
+
+    # Test 4: move_to_output_folder builds correct path with series
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create a fake source file
+        source_file = os.path.join(tmpdir, 'source', 'test.mp3')
+        os.makedirs(os.path.dirname(source_file))
+        with open(source_file, 'w') as f:
+            f.write('fake audio')
+
+        output_folder = os.path.join(tmpdir, 'output')
+        os.makedirs(output_folder)
+
+        # Call move_to_output_folder with series info
+        success, new_path, error = move_to_output_folder(
+            source_file, output_folder,
+            "Charles Stross", "The Labyrinth Index",
+            series="Laundry Files", series_num="9"
+        )
+
+        if success and new_path:
+            # Verify the path structure: output/Author/Series/# - Title/
+            path_parts = new_path.split(os.sep)
+            has_author = "Charles Stross" in path_parts
+            has_series = "Laundry Files" in path_parts
+            has_numbered_title = any("9 - The Labyrinth Index" in p for p in path_parts)
+
+            if test_result("move_to_output_folder creates Author/Series/# - Title path",
+                           has_author and has_series and has_numbered_title,
+                           f"Got path: {new_path}"):
+                passed += 1
+            else:
+                failed += 1
+        else:
+            failed += 1
+            print(f"[FAIL] move_to_output_folder failed: {error}")
+
+    # Test 5: Watch folder processing extracts series info from API
+    source = inspect.getsource(process_watch_folder)
+    if test_result("Watch folder extracts series from API results",
+                   'api_series = best.get' in source and "api_series_num = best.get" in source,
+                   "Watch folder doesn't extract series info from API"):
+        passed += 1
+    else:
+        failed += 1
+
+    if test_result("Watch folder passes series to move_to_output_folder",
+                   'series=series' in source and 'series_num=series_num' in source,
+                   "Watch folder doesn't pass series to move function"):
+        passed += 1
+    else:
+        failed += 1
+
+    # Test 6: AI prompt includes series info
+    from app import build_prompt
+    source = inspect.getsource(build_prompt)
+    if test_result("AI prompt includes series info from API results",
+                   "result.get('series')" in source and "series_num" in source,
+                   "AI prompt doesn't include series info"):
+        passed += 1
+    else:
+        failed += 1
+
+    # ==========================================
     # Summary
     # ==========================================
     print("\n" + "=" * 60)

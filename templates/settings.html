@@ -358,7 +358,7 @@
                                 </label>
                             </div>
 
-                            <div class="form-check form-switch mb-0">
+                            <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" name="enable_audio_analysis"
                                        id="enable_audio_analysis" {% if config.enable_audio_analysis %}checked{% endif %}
                                        {% if not config.gemini_api_key %}disabled title="Requires Gemini API key"{% endif %}>
@@ -368,6 +368,43 @@
                                     {% if not config.gemini_api_key %}<span class="badge bg-secondary">Needs Gemini</span>{% endif %}
                                     <br><small class="text-muted">Listen to first 90 seconds for narrator intro</small>
                                 </label>
+                            </div>
+
+                            <div class="form-check form-switch mb-0">
+                                <input class="form-check-input" type="checkbox" name="enable_content_analysis"
+                                       id="enable_content_analysis" {% if config.enable_content_analysis %}checked{% endif %}
+                                       onchange="toggleLayer4Settings()">
+                                <label class="form-check-label" for="enable_content_analysis">
+                                    <i class="bi bi-book text-info"></i> <strong>Layer 4: Content Analysis</strong>
+                                    <span class="badge bg-info text-dark">Final Resort</span>
+                                    <br><small class="text-muted">Transcribe story text to identify book (uses Whisper + AI)</small>
+                                </label>
+                            </div>
+
+                            <!-- Layer 4 Settings (shown when enabled) -->
+                            <div id="layer4-settings" class="ms-4 mt-2 p-2 border-start border-info" style="display: {% if config.enable_content_analysis %}block{% else %}none{% endif %};">
+                                <div class="mb-2">
+                                    <label class="form-label small mb-1">Speech-to-Text Model</label>
+                                    <select class="form-select form-select-sm bg-dark text-light" name="whisper_model" id="whisper_model">
+                                        <option value="tiny" {% if config.whisper_model == 'tiny' %}selected{% endif %}>Tiny (~75MB) - Fastest</option>
+                                        <option value="base" {% if config.whisper_model == 'base' or not config.whisper_model %}selected{% endif %}>Base (~150MB) - Recommended</option>
+                                        <option value="small" {% if config.whisper_model == 'small' %}selected{% endif %}>Small (~465MB) - Better accuracy</option>
+                                        <option value="medium" {% if config.whisper_model == 'medium' %}selected{% endif %}>Medium (~1.5GB) - High accuracy</option>
+                                    </select>
+                                    <small class="text-muted">Model downloads automatically on first use</small>
+                                </div>
+                                <div class="mb-0">
+                                    <label class="form-label small mb-1">Book ID Model (OpenRouter)</label>
+                                    <select class="form-select form-select-sm bg-dark text-light" name="layer4_openrouter_model" id="layer4_openrouter_model">
+                                        <option value="xiaomi/mimo-v2-flash:free" {% if config.layer4_openrouter_model == 'xiaomi/mimo-v2-flash:free' or not config.layer4_openrouter_model %}selected{% endif %}>Xiaomi MiMo Flash (Free, 262K ctx)</option>
+                                        <option value="mistralai/devstral-2512:free" {% if config.layer4_openrouter_model == 'mistralai/devstral-2512:free' %}selected{% endif %}>Mistral Devstral (Free)</option>
+                                        <option value="meta-llama/llama-3.1-8b-instruct:free" {% if config.layer4_openrouter_model == 'meta-llama/llama-3.1-8b-instruct:free' %}selected{% endif %}>Llama 3.1 8B (Free)</option>
+                                    </select>
+                                    <small class="text-muted">Requires OpenRouter API key</small>
+                                </div>
+                                <div class="mt-2">
+                                    <span id="whisper-status" class="badge bg-secondary">Checking whisper status...</span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -681,6 +718,28 @@
                         </div>
                     </div>
 
+                    <!-- Community Contributions -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-people"></i> Community Contributions
+                        </div>
+                        <div class="card-body">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="contribute_to_community" id="contribute_to_community"
+                                       {% if config.contribute_to_community %}checked{% endif %}>
+                                <label class="form-check-label" for="contribute_to_community">
+                                    <strong>Contribute to Community Database</strong>
+                                    <br><small class="text-muted">Help others identify audiobooks by sharing metadata extracted from audio</small>
+                                </label>
+                            </div>
+                            <small class="text-muted d-block mt-2">
+                                <strong>What's shared:</strong> Author, Title, Narrator (extracted from audio credits)<br>
+                                <strong>Never shared:</strong> File paths, audio files, personal data<br>
+                                <strong>How it works:</strong> When 2+ users agree on the same book's metadata, it becomes verified for everyone.
+                            </small>
+                        </div>
+                    </div>
+
                     <!-- Updates -->
                     <div class="card mb-3">
                         <div class="card-header py-2">
@@ -697,6 +756,46 @@
                                     <i class="bi bi-arrow-clockwise"></i> Check
                                 </button>
                                 <span id="update-status"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Deep Verification - Hail Mary Mode -->
+                    <div class="card mb-3 border-warning">
+                        <div class="card-header py-2 bg-warning bg-opacity-10">
+                            <a class="text-warning text-decoration-none d-flex justify-content-between align-items-center"
+                               data-bs-toggle="collapse" href="#deepVerifySection" role="button">
+                                <span><i class="bi bi-shield-exclamation"></i> Deep Verification Mode</span>
+                                <i class="bi bi-chevron-down"></i>
+                            </a>
+                        </div>
+                        <div class="collapse" id="deepVerifySection">
+                            <div class="card-body">
+                                <div class="alert alert-danger mb-3">
+                                    <h6 class="alert-heading"><i class="bi bi-exclamation-octagon"></i> Read Before Proceeding</h6>
+                                    <p class="mb-2">Deep Verification is a <strong>"Hail Mary"</strong> mode that re-verifies your <em>entire library</em> against APIs, even books that look correctly named.</p>
+                                    <hr class="my-2">
+                                    <p class="mb-2"><strong>Why use this?</strong></p>
+                                    <ul class="mb-2 small">
+                                        <li>You imported a sketchy collection with potentially wrong author attributions</li>
+                                        <li>Folder names look correct but might be misattributed (e.g., "Ashli St. Armant/The Burning White" when it's actually by Brent Weeks)</li>
+                                        <li>You want a complete audit of your library</li>
+                                    </ul>
+                                    <p class="mb-2"><strong>What it costs:</strong></p>
+                                    <ul class="mb-0 small">
+                                        <li><i class="bi bi-clock"></i> <strong>Time:</strong> ~30 seconds per book (500 books = ~4 hours)</li>
+                                        <li><i class="bi bi-cloud-arrow-up"></i> <strong>API Calls:</strong> 3-5 API calls per book (BookDB, OpenLibrary, Google Books, Audnexus)</li>
+                                        <li><i class="bi bi-cpu"></i> <strong>Processing:</strong> All books get re-queued and processed through Layer 1-3</li>
+                                    </ul>
+                                </div>
+                                <div id="deepVerifyStatus" class="mb-3 d-none">
+                                    <div class="alert alert-info py-2">
+                                        <i class="bi bi-hourglass-split"></i> <span id="deepVerifyMessage">Processing...</span>
+                                    </div>
+                                </div>
+                                <button type="button" class="btn btn-warning" onclick="startDeepVerification()">
+                                    <i class="bi bi-shield-check"></i> Start Deep Verification
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -845,6 +944,7 @@ document.addEventListener('DOMContentLoaded', function() {
     toggleCustomNaming();
     toggleEbookOptions();
     toggleWatchOptions();
+    toggleLayer4Settings();
     updateNamingPreview();
     refreshLogs();
 });
@@ -942,6 +1042,69 @@ function toggleWatchOptions() {
 
 function toggleErrorReportingOptions() {
     document.getElementById('error-reporting-options').style.display = document.getElementById('anonymous_error_reporting').checked ? 'block' : 'none';
+}
+
+// Layer 4 Content Analysis settings
+function toggleLayer4Settings() {
+    const settings = document.getElementById('layer4-settings');
+    const enabled = document.getElementById('enable_content_analysis').checked;
+    if (settings) {
+        settings.style.display = enabled ? 'block' : 'none';
+        if (enabled) {
+            checkWhisperStatus();
+        }
+    }
+}
+
+function checkWhisperStatus() {
+    const statusEl = document.getElementById('whisper-status');
+    if (!statusEl) return;
+
+    statusEl.className = 'badge bg-secondary';
+    statusEl.innerHTML = '<i class="bi bi-hourglass-split"></i> Checking...';
+
+    fetch('/api/whisper-status')
+        .then(r => r.json())
+        .then(data => {
+            if (data.installed) {
+                if (data.model_ready) {
+                    statusEl.className = 'badge bg-success';
+                    statusEl.innerHTML = '<i class="bi bi-check-circle"></i> Whisper ready (' + data.model + ')';
+                } else {
+                    statusEl.className = 'badge bg-warning text-dark';
+                    statusEl.innerHTML = '<i class="bi bi-download"></i> Model will download on first use';
+                }
+            } else {
+                statusEl.className = 'badge bg-danger';
+                statusEl.innerHTML = '<i class="bi bi-x-circle"></i> Whisper not installed - <a href="#" onclick="installWhisper(); return false;" class="text-white">Install now</a>';
+            }
+        })
+        .catch(err => {
+            statusEl.className = 'badge bg-danger';
+            statusEl.innerHTML = '<i class="bi bi-exclamation-triangle"></i> Error checking status';
+        });
+}
+
+function installWhisper() {
+    const statusEl = document.getElementById('whisper-status');
+    statusEl.className = 'badge bg-info';
+    statusEl.innerHTML = '<i class="bi bi-hourglass-split"></i> Installing faster-whisper...';
+
+    fetch('/api/install-whisper', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                statusEl.className = 'badge bg-success';
+                statusEl.innerHTML = '<i class="bi bi-check-circle"></i> Installed! Model downloads on first use.';
+            } else {
+                statusEl.className = 'badge bg-danger';
+                statusEl.innerHTML = '<i class="bi bi-x-circle"></i> Install failed: ' + (data.error || 'Unknown error');
+            }
+        })
+        .catch(err => {
+            statusEl.className = 'badge bg-danger';
+            statusEl.innerHTML = '<i class="bi bi-x-circle"></i> Install failed: ' + err;
+        });
 }
 
 // Custom Naming
@@ -1075,6 +1238,40 @@ function resetDatabase() {
     if (!confirm('Reset ENTIRE database? All data will be lost!')) return;
     if (!confirm('REALLY sure?')) return;
     fetch('/api/reset_database', {method: 'POST'}).then(() => location.reload());
+}
+
+function startDeepVerification() {
+    if (!confirm('Start Deep Verification?\n\nThis will re-queue ALL books for API verification. This is time-consuming and uses API quota.\n\nContinue?')) return;
+
+    const statusDiv = document.getElementById('deepVerifyStatus');
+    const msgSpan = document.getElementById('deepVerifyMessage');
+    const btn = event.target.closest('button');
+
+    statusDiv.classList.remove('d-none');
+    msgSpan.textContent = 'Starting deep verification...';
+    btn.disabled = true;
+
+    fetch('/api/deep_verify', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                statusDiv.querySelector('.alert').classList.remove('alert-info');
+                statusDiv.querySelector('.alert').classList.add('alert-success');
+                msgSpan.innerHTML = `<strong>Queued ${data.queued} books</strong> for deep verification.<br>` +
+                    `<small class="text-muted">Already verified: ${data.already_verified} | Estimated time: ${data.estimated_time}</small>`;
+            } else {
+                statusDiv.querySelector('.alert').classList.remove('alert-info');
+                statusDiv.querySelector('.alert').classList.add('alert-danger');
+                msgSpan.textContent = 'Error: ' + (data.error || 'Unknown error');
+            }
+            btn.disabled = false;
+        })
+        .catch(e => {
+            statusDiv.querySelector('.alert').classList.remove('alert-info');
+            statusDiv.querySelector('.alert').classList.add('alert-danger');
+            msgSpan.textContent = 'Error: ' + e.message;
+            btn.disabled = false;
+        });
 }
 
 function clearQueueFromSettings() {

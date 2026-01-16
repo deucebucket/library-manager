@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.89-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.90-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,55 +16,29 @@
 
 ## Recent Changes (develop)
 
-> **beta.89** - Watch Folder Reliability Fixes (Issue #57)
-> - **Track Number Stripping** - "02 Night Without Stars" now correctly searches as "Night Without Stars"
-> - **Local BookDB Support** - Uses configured bookdb_url instead of hardcoded cloud URL
-> - **Confidence Threshold Fix** - 60% confidence now correctly passes threshold check
-> - **Database Column Fix** - Fixed SQL error when marking books as needs_attention
+> **beta.90** - 🎯 **Layer 4 Content Analysis** (Major Feature)
+> - **The Final Layer** - Transcribes actual story content to identify books when all else fails
+> - **Whisper + OpenRouter Fallback** - Local transcription + free AI when Gemini unavailable
+> - **No GPU Required** - faster-whisper runs on CPU, model downloads automatically
+> - **Narrator Detection** - Integrates with BookDB to prevent narrator-as-author errors
+> - **Deep Verification Mode** - Nuclear option to re-verify your entire library
+> - **3-4x Faster Scans** - Tuned API rate limits to actual limits
+> - **One-Click Whisper Install** - Install speech-to-text directly from Settings
 
-> **beta.88** - Watch Folder Verification (Issue #57)
-> - **Verification Before Accepting** - Watch folder now verifies API results, not blind trust
-> - **Parent Folder as Author Hint** - Uses subfolder name as context for identification
-> - **Same-Title-Different-Author Detection** - Flags ambiguous matches for review
+> **beta.89** - Watch Folder Reliability (Issue #57)
+> - Track number stripping, local BookDB support, confidence threshold fix
 
-> **beta.87** - Scan Locking & Password Visibility (Issues #59, #60, #61)
-> - **Concurrent Scan Fix** - Prevents SQLite errors when scan triggered multiple times
-> - **Password Field Toggles** - Show/hide buttons for all API key fields
-> - **Placeholder Author Gap** - "Unknown" author no longer marked verified when AI returns empty
+> **beta.87-88** - Watch Folder Verification & Scan Locking (Issues #57, #59-61)
+> - API result verification, parent folder hints, concurrent scan fix, password toggles
 
-> **beta.86** - Unknown Author Status Fix (Issue #59)
-> - **Placeholder Detection** - "Unknown", "Various", etc. now flag as "Needs Attention" not "Verified"
+> **beta.84-86** - Status & Output Fixes (Issues #57, #59)
+> - Placeholder author detection, output folder routing, author initials standardization
 
-> **beta.85** - Watch Folder Flow Fixes (Issue #57)
-> - **Orphan Scan Exclusion** - Watch folder no longer scanned as "author" folder
-> - **API Lookup Fix** - Fixed swapped arguments causing wrong book identification
-> - **Full Filename Search** - Falls back to searching entire filename when parsing fails
+> **beta.78-83** - SQLite Locking, Setup Wizard, Orphan Organization
+> - 3-phase processing, first-run wizard, duplicate detection fix
 
-> **beta.84** - Output Folder & Author Initials Fixes (Issue #57)
-> - **Output Folder Routing** - Watch folder books now go to configured output folder
-> - **Author Initials Fix** - Standardization now applies to all sources (AI, API, manual)
-> - **Queue Status Clarity** - Shows "X renamed, Y already correct" with tooltips
-
-> **beta.83** - Orphan Organization Fix (Issue #57)
-> - **JavaScript Error Fix** - Orphan organization no longer crashes the page
-> - **Auto-Rescan** - Database auto-scans after organizing orphans
-
-> **beta.81-82** - Setup Wizard & Bug Fixes
-> - **First-Run Setup Wizard** - Guided configuration for new users
-> - **Duplicate Detection Fix** - Books no longer marked as duplicates of themselves
-
-> **beta.79-80** - Watch Folder & UI Improvements (Issue #57)
-> - **Watch Folder Output** - Proper routing to output folder
-> - **Media Type Filters** - Hidden when ebook management is disabled
-
-> **beta.78** - SQLite Locking (Proper Fix)
-> - **3-Phase Processing** - DB connections released during API calls, prevents locking
-
-> **beta.72-77** - Multi-Edit, Media Filters & Bug Fixes
-> - **Multi-Edit Queue** (Issue #37) - Edit all queue items at once
-> - **Media Type Filter** (Issue #53) - Filter by Audio Only / Ebook Only / Both
-> - **Standardize Author Initials** (Issue #54) - "J R R Tolkien" → "J. R. R. Tolkien"
-> - Various bug fixes for settings, BookDB, and rate limiting
+> **beta.72-77** - Multi-Edit, Media Filters, Author Initials
+> - Edit all queue items, media type filter, "J R R Tolkien" → "J. R. R. Tolkien"
 
 [Full Changelog](CHANGELOG.md)
 
@@ -111,14 +85,22 @@ Your Library (After):
 - AI fallback for ambiguous cases
 - **Safe fallback** - connection failures don't cause misclassification
 
-### Multi-Source Metadata
+### 4-Layer Identification Pipeline
 ```
-1. Audnexus     - Audible's audiobook data
-2. OpenLibrary  - 50M+ book database
-3. Google Books - Wide coverage
-4. Hardcover    - Modern/indie books
-5. AI Fallback  - Gemini/OpenRouter when APIs fail
+Layer 1: API Database Lookups (Fast, Free)
+         BookDB → Audnexus → OpenLibrary → Google Books → Hardcover
+
+Layer 2: AI Verification (When APIs fail or disagree)
+         Gemini / OpenRouter / Ollama - validates and fills gaps
+
+Layer 3: Audio Credits Analysis (Intro parsing)
+         Listens to first 90 seconds for "Read by [Narrator]" announcements
+
+Layer 4: Content Analysis (Final resort)
+         Transcribes story content from middle of book to identify it
+         Works even when file has zero metadata or intro credits
 ```
+Each layer only runs if the previous layer couldn't confidently identify the book.
 
 ### Safety First
 - **Drastic changes require approval** - author swaps need manual review

@@ -2,6 +2,96 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.90] - 2026-01-15
+
+### Major Feature: Layer 4 Content Analysis
+
+**The Final Layer** - When all else fails, Library Manager can now transcribe actual story content to identify books. This catches books that have:
+- No intro credits (e.g., Part 2 of multi-part files)
+- Music-only intros
+- Corrupted/cut credit sections
+- Files with zero metadata
+
+#### How It Works
+1. Extracts 60-second audio sample from the **middle** of the book (actual story content)
+2. **Primary Path**: Sends audio to Gemini Audio API for transcription + identification
+3. **Fallback Path**: If Gemini is rate-limited or unavailable:
+   - Uses **faster-whisper** for local transcription (no GPU required)
+   - Sends transcript to **OpenRouter** free models for book identification
+
+#### New Settings (Settings → Processing Layers)
+- **Enable Layer 4** toggle
+- **Speech-to-Text Model**: tiny (75MB) / base (150MB) / small (465MB) / medium (1.5GB)
+- **Book ID Model**: Choice of free OpenRouter models
+- **One-click Whisper Install**: Install faster-whisper directly from the UI
+
+### New Feature: Narrator Detection
+
+Integrates with BookDB to detect known audiobook narrators:
+- **Prevents narrator-as-author errors** - Scott Brick, RC Bray, Steven Pacey correctly identified
+- **AI prompt enhancement** - Warns AI when a name is a known narrator
+- **Auto-save narrators** - Discovered narrators automatically added to BookDB
+
+### New Feature: Deep Verification Mode
+
+New "nuclear option" for library cleanup (Settings → Library Management):
+- **Queue ALL books** for API verification regardless of current status
+- Catches cases where folder structure looks correct but author is actually wrong
+- Shows progress and estimated API usage before starting
+
+### Performance: Faster API Rate Limits
+
+Tuned rate limits to 80-90% of actual API limits:
+- BookDB: 0.2s delay (was 0.5s) - Our API, can burst
+- Audnexus: 0.8s delay (was 1.5s)
+- OpenLibrary: 1.0s delay (was 1.5s)
+- Google Books: 0.5s delay (was 2.5s)
+- Default batch size: 10 (was 3)
+- Default max requests/hour: 200 (was 30)
+
+**Result**: Library scans complete ~3-4x faster
+
+### New API Endpoints
+
+- `GET /api/whisper-status` - Check if faster-whisper is installed and model ready
+- `POST /api/install-whisper` - Install faster-whisper via pip from the UI
+- `POST /api/deep_verify` - Trigger deep verification of entire library
+
+### Improved: Layer 2→3→4 Advancement
+
+Fixed multiple code paths where books were marked "needs_attention" instead of advancing to the next layer:
+- AI returning placeholder authors now advances to Layer 3 (audio credits)
+- Layer 3 failures now advance to Layer 4 (content analysis) if enabled
+- Queue cleanup properly removes items with terminal statuses
+
+### Technical Details
+
+New functions added:
+- `extract_audio_sample_from_middle()` - Gets audio from middle of file (not intro)
+- `transcribe_with_whisper()` - Local transcription via faster-whisper
+- `identify_book_from_transcript()` - OpenRouter book identification
+- `_try_gemini_content_identification()` - Gemini Audio API handler
+- `check_if_narrator()` - BookDB narrator lookup
+- `auto_save_narrator()` - Auto-contribute discovered narrators
+
+### Tests
+
+- 184 tests passing (was 175)
+- New tests for watch folder verification
+- New tests for series number handling
+
+---
+
+## [0.9.0-beta.89] - 2026-01-12
+
+### Fixed
+- **Track Number Stripping** (Issue #57) - "02 Night Without Stars" now correctly searches as "Night Without Stars"
+- **Local BookDB Support** - Uses configured bookdb_url instead of hardcoded cloud URL
+- **Confidence Threshold Fix** - 60% confidence now correctly passes threshold check
+- **Database Column Fix** - Fixed SQL error when marking books as needs_attention
+
+---
+
 ## [0.9.0-beta.88] - 2026-01-11
 
 ### Fixed
