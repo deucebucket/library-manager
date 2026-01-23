@@ -1116,8 +1116,8 @@ SECRETS_PATH = DATA_DIR / 'secrets.json'
 DEFAULT_CONFIG = {
     "library_paths": [],  # Empty by default - user configures via Settings
     "ai_provider": "gemini",  # "gemini", "openrouter", or "ollama"
-    "openrouter_model": "google/gemma-3n-e4b-it:free",
-    "gemini_model": "gemini-2.0-flash",
+    "openrouter_model": "xiaomi/mimo-v2-flash:free",  # Best free model: 262K context
+    "gemini_model": "gemma-3-27b-it",  # Gemma 3 - unlimited free tier
     "ollama_url": "http://localhost:11434",  # Ollama server URL
     "ollama_model": "llama3.2:3b",  # Default model - good for 8-12GB VRAM
     "scan_interval_hours": 6,
@@ -1147,6 +1147,12 @@ DEFAULT_CONFIG = {
     "enable_api_lookups": True,           # Layer 2: API database lookups (BookDB, Audnexus, etc.)
     "enable_ai_verification": True,       # Layer 3: AI verification (uses configured provider)
     "enable_audio_analysis": False,       # Layer 4: Audio analysis (requires Gemini API key)
+    "use_bookdb_for_audio": True,          # Use BookDB GPU Whisper for audio identification (faster, no rate limits)
+    # Provider Chains - ordered lists of providers to try (first = primary, rest = fallbacks)
+    # Audio providers: "bookdb", "gemini", "openrouter", "ollama"
+    # Text providers: "gemini", "openrouter", "ollama"
+    "audio_provider_chain": ["bookdb", "gemini"],  # Order to try audio identification
+    "text_provider_chain": ["gemini", "openrouter"],  # Order to try text-based AI
     "deep_scan_mode": False,              # Always use all enabled layers regardless of confidence
     "profile_confidence_threshold": 85,   # Minimum confidence to skip remaining layers (0-100)
     "multibook_ai_fallback": True,         # Use AI for ambiguous chapter/multibook detection
@@ -1169,6 +1175,7 @@ DEFAULT_CONFIG = {
 DEFAULT_SECRETS = {
     "openrouter_api_key": "",
     "gemini_api_key": "",
+    "bookdb_api_key": "",  # Optional API key for BookDB (not required for public endpoints)
     "abs_api_token": ""
 }
 
@@ -1415,7 +1422,7 @@ def load_config():
 def save_config(config):
     """Save configuration to file (excludes secrets)."""
     # Separate secrets from config
-    secrets_keys = ['openrouter_api_key', 'gemini_api_key', 'abs_api_token']
+    secrets_keys = ['openrouter_api_key', 'gemini_api_key', 'google_books_api_key', 'abs_api_token']
     config_only = {k: v for k, v in config.items() if k not in secrets_keys}
 
     with open(CONFIG_PATH, 'w') as f:
@@ -1910,6 +1917,7 @@ If you're not certain, return: {{"localized_title": "{title}", "is_translation":
 
 def _call_openrouter_simple(prompt, config):
     """Simple OpenRouter call for localization queries."""
+    rate_limit_wait('openrouter')  # Respect free tier limits
     try:
         resp = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
@@ -1934,6 +1942,11 @@ def _call_openrouter_simple(prompt, config):
 
 def _call_gemini_simple(prompt, config):
     """Simple Gemini call for localization queries."""
+    # Check circuit breaker
+    if is_circuit_open('gemini'):
+        return None
+    rate_limit_wait('gemini')
+
     try:
         api_key = config.get('gemini_api_key')
         model = config.get('gemini_model', 'gemini-2.0-flash')
@@ -1987,13 +2000,24 @@ def _call_ollama_simple(prompt, config):
 # - Google Books: 1000/day with API key, no per-second limit
 # - Hardcover: Beta GraphQL API
 API_RATE_LIMITS = {
-    'bookdb': {'last_call': 0, 'min_delay': 0.2},        # Our API - 750/hr, can burst
-    'audnexus': {'last_call': 0, 'min_delay': 0.8},      # ~100/hr community API
-    'openlibrary': {'last_call': 0, 'min_delay': 1.0},   # They request max 1/sec
-    'googlebooks': {'last_call': 0, 'min_delay': 0.5},   # 1000/day, no per-sec limit
-    'hardcover': {'last_call': 0, 'min_delay': 1.0},     # Beta API
+    'bookdb': {'last_call': 0, 'min_delay': 1.0},        # Our API - 750/hr, increased to prevent self-banning
+    'audnexus': {'last_call': 0, 'min_delay': 2.0},      # ~100/hr community API - be nice
+    'openlibrary': {'last_call': 0, 'min_delay': 1.5},   # They request max 1/sec, add buffer
+    'googlebooks': {'last_call': 0, 'min_delay': 1.0},   # 1000/day, no per-sec limit but be safe
+    'hardcover': {'last_call': 0, 'min_delay': 1.5},     # Beta API - be cautious
+    'openrouter': {'last_call': 0, 'min_delay': 5.0},    # Free tier: 20 req/min + daily limits - be conservative
+    'gemini': {'last_call': 0, 'min_delay': 7.0},        # Free tier: 10 RPM (Jan 2026), 250 RPD for Flash
 }
 API_RATE_LOCK = threading.Lock()
+
+# Circuit breaker for APIs that are timing out/failing
+# After X consecutive failures, skip the API for a cooldown period
+API_CIRCUIT_BREAKER = {
+    'audnexus': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 3, 'cooldown': 300},  # 5 min cooldown after 3 failures
+    'bookdb': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 5, 'cooldown': 120},    # 2 min cooldown after 5 rate limits
+    'openrouter': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 2, 'cooldown': 3600},  # 1 hour after daily limit hit
+    'gemini': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 2, 'cooldown': 1800},   # 30 min cooldown after 2 quota errors
+}
 
 # Issue #61: Scan lock to prevent concurrent scans causing SQLite errors
 SCAN_LOCK = threading.Lock()
@@ -2015,6 +2039,33 @@ def rate_limit_wait(api_name):
             time.sleep(wait_time)
 
         API_RATE_LIMITS[api_name]['last_call'] = time.time()
+
+
+def is_circuit_open(api_name):
+    """Check if the circuit breaker is open for the given API."""
+    cb = API_CIRCUIT_BREAKER.get(api_name, {})
+    if cb.get('circuit_open_until', 0) > time.time():
+        remaining = int(cb['circuit_open_until'] - time.time())
+        logger.debug(f"[CIRCUIT BREAKER] {api_name} is open, {remaining}s remaining")
+        return True
+    return False
+
+
+def record_api_failure(api_name):
+    """Record an API failure and potentially trip the circuit breaker."""
+    if api_name not in API_CIRCUIT_BREAKER:
+        return
+    cb = API_CIRCUIT_BREAKER[api_name]
+    cb['failures'] = cb.get('failures', 0) + 1
+    if cb['failures'] >= cb.get('max_failures', 3):
+        cb['circuit_open_until'] = time.time() + cb.get('cooldown', 300)
+        logger.warning(f"[CIRCUIT BREAKER] {api_name} tripped - cooling down for {cb.get('cooldown', 300)}s")
+
+
+def record_api_success(api_name):
+    """Record an API success and reset the circuit breaker."""
+    if api_name in API_CIRCUIT_BREAKER:
+        API_CIRCUIT_BREAKER[api_name]['failures'] = 0
 
 
 def sanitize_path_component(name):
@@ -2082,8 +2133,20 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
     title_folder = safe_title
 
     # Add series number prefix if series grouping enabled and we have series info
+    # Merijeek: ABS compatibility - pad single-digit numbers for better sorting/detection
     if series_grouping and safe_series and series_num:
-        title_folder = f"{series_num} - {safe_title}"
+        # Normalize series_num to string and zero-pad if single digit
+        try:
+            num = float(str(series_num).replace(',', '.'))  # Handle "1,5" -> 1.5
+            if num == int(num):
+                # Whole number - pad to 2 digits (e.g., 1 -> "01", 10 -> "10")
+                formatted_num = f"{int(num):02d}"
+            else:
+                # Decimal number (e.g., 1.5) - keep as-is
+                formatted_num = str(series_num)
+        except (ValueError, TypeError):
+            formatted_num = str(series_num)
+        title_folder = f"{formatted_num} - {safe_title}"
 
     # Add edition/variant in brackets (e.g., [30th Anniversary Edition], [Graphic Audio])
     # These distinguish different versions of the same book
@@ -2120,7 +2183,18 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
         safe_year = str(year) if year else ''
         safe_edition = sanitize_path_component(edition) if edition else ''
         safe_variant = sanitize_path_component(variant) if variant else ''
-        safe_series_num = str(series_num) if series_num else ''
+        # Issue #57 (Merijeek): Zero-pad series numbers for ABS compatibility
+        if series_num:
+            try:
+                num = float(str(series_num).replace(',', '.'))
+                if num == int(num):
+                    safe_series_num = f"{int(num):02d}"  # 1 -> "01", 10 -> "10"
+                else:
+                    safe_series_num = str(series_num)  # Keep decimals as-is
+            except (ValueError, TypeError):
+                safe_series_num = str(series_num)
+        else:
+            safe_series_num = ''
 
         # Build the path from template
         path_str = custom_template
@@ -2252,6 +2326,13 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
     if not api_key:
         return None
 
+    # Check circuit breaker - skip if we've been rate limited too much
+    cb = API_CIRCUIT_BREAKER.get('bookdb', {})
+    if cb.get('circuit_open_until', 0) > time.time():
+        remaining = int(cb['circuit_open_until'] - time.time())
+        logger.debug(f"BookDB: Circuit open, skipping ({remaining}s remaining)")
+        return None
+
     rate_limit_wait('bookdb')
 
     # Use configured URL or fall back to default cloud URL
@@ -2269,19 +2350,36 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
         )
 
         # Handle rate limiting - respect Retry-After header from server
-        if resp.status_code == 429 and retry_count < 3:
-            retry_after = resp.headers.get('Retry-After', '60')
-            try:
-                wait_time = min(int(retry_after), 300)  # Cap at 5 minutes
-            except ValueError:
-                wait_time = 60 * (retry_count + 1)  # Fallback: 60s, 120s, 180s
-            logger.info(f"BookDB rate limited, waiting {wait_time}s (Retry-After: {retry_after})...")
-            time.sleep(wait_time)
-            return search_bookdb(title, author, api_key, retry_count + 1)
+        if resp.status_code == 429:
+            # Increment circuit breaker failures
+            if 'bookdb' in API_CIRCUIT_BREAKER:
+                cb = API_CIRCUIT_BREAKER['bookdb']
+                cb['failures'] = cb.get('failures', 0) + 1
+                if cb['failures'] >= cb.get('max_failures', 5):
+                    cb['circuit_open_until'] = time.time() + cb.get('cooldown', 120)
+                    logger.warning(f"BookDB: Circuit OPEN after {cb['failures']} rate limits, backing off for {cb['cooldown']}s")
+                    return None
+
+            if retry_count < 2:  # Reduced retries since we have circuit breaker now
+                retry_after = resp.headers.get('Retry-After', '60')
+                try:
+                    wait_time = min(int(retry_after), 120)  # Cap at 2 minutes
+                except ValueError:
+                    wait_time = 30 * (retry_count + 1)  # Fallback: 30s, 60s
+                logger.info(f"BookDB rate limited, waiting {wait_time}s (Retry-After: {retry_after})...")
+                time.sleep(wait_time)
+                return search_bookdb(title, author, api_key, retry_count + 1, bookdb_url)
+            else:
+                logger.warning("BookDB rate limited, max retries reached")
+                return None
 
         if resp.status_code != 200:
             logger.debug(f"BookDB returned status {resp.status_code}")
             return None
+
+        # Success - reset circuit breaker failures
+        if 'bookdb' in API_CIRCUIT_BREAKER:
+            API_CIRCUIT_BREAKER['bookdb']['failures'] = 0
 
         data = resp.json()
 
@@ -2333,6 +2431,191 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
 
     except Exception as e:
         logger.debug(f"BookDB search failed: {e}")
+        return None
+
+
+def identify_audio_with_bookdb(audio_file, extract_seconds=90):
+    """
+    Use BookDB's GPU-powered Whisper API to identify a book from audio.
+
+    This uses a fair round-robin queue system:
+    1. Submit audio, get ticket + queue position
+    2. Poll for result (shows queue progress to user)
+    3. Return result when complete
+
+    This is PREFERRED over local transcription + Gemini because:
+    1. BookDB has a GTX 1080 running Whisper (faster)
+    2. No Gemini rate limits
+    3. BookDB cross-references against its 50M+ book database
+    4. Fair multi-user access via round-robin queue
+
+    Args:
+        audio_file: Path to the audio file
+        extract_seconds: How many seconds to extract (default 90)
+
+    Returns:
+        dict with author, title, narrator, series, etc. or None
+    """
+    import subprocess
+    import tempfile
+
+    bookdb_url = os.environ.get('BOOKDB_URL', 'https://bookdb.deucebucket.com')
+    logger.info(f"[BOOKDB AUDIO] Starting identification for: {audio_file}")
+    logger.debug(f"[BOOKDB AUDIO] Using API URL: {bookdb_url}")
+
+    try:
+        audio_path = Path(audio_file)
+        if not audio_path.exists():
+            logger.warning(f"[BOOKDB AUDIO] File not found: {audio_file}")
+            return None
+
+        # Extract first N seconds to a temp file
+        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            # Use ffmpeg to extract the intro - use fast seek for large files
+            logger.debug(f"[BOOKDB AUDIO] Extracting {extract_seconds}s from {audio_path.name}")
+            cmd = [
+                'ffmpeg', '-y',
+                '-ss', '0',  # Fast input seek
+                '-i', str(audio_path),
+                '-t', str(extract_seconds),
+                '-vn',  # No video (faster)
+                '-acodec', 'libmp3lame', '-q:a', '5',
+                '-loglevel', 'error',
+                tmp_path
+            ]
+            result = subprocess.run(cmd, capture_output=True, timeout=60)
+
+            if result.returncode != 0:
+                logger.warning(f"[BOOKDB AUDIO] ffmpeg extraction failed: {result.stderr.decode()[:200]}")
+                return None
+
+            # Check file size to ensure it's valid
+            tmp_size = os.path.getsize(tmp_path)
+            logger.debug(f"[BOOKDB AUDIO] Extracted file size: {tmp_size} bytes")
+            if tmp_size < 1000:
+                logger.warning(f"[BOOKDB AUDIO] Extracted file too small ({tmp_size} bytes), likely invalid audio")
+                return None
+
+            # Submit to BookDB queue
+            logger.info(f"[BOOKDB AUDIO] Submitting to queue: {bookdb_url}/api/identify_audio")
+            with open(tmp_path, 'rb') as f:
+                response = requests.post(
+                    f"{bookdb_url}/api/identify_audio",
+                    files={'audio': (audio_path.name, f, 'audio/mpeg')},
+                    timeout=30  # Just submitting, should be fast
+                )
+
+            if response.status_code != 200:
+                logger.warning(f"[BOOKDB AUDIO] API returned {response.status_code}: {response.text[:200]}")
+                return None
+
+            submit_data = response.json()
+
+            # Check if it's the new queue system (has ticket_id) or old sync system
+            if 'ticket_id' in submit_data:
+                # New queue system - poll for result
+                ticket_id = submit_data['ticket_id']
+                queue_position = submit_data.get('queue_position', '?')
+                estimated_seconds = submit_data.get('estimated_seconds', '?')
+
+                logger.info(f"[BOOKDB AUDIO] Queued! Position: {queue_position}, ETA: ~{estimated_seconds}s (ticket: {ticket_id})")
+
+                # Poll for result
+                poll_url = f"{bookdb_url}/api/identify_audio/{ticket_id}"
+                max_wait = 300  # 5 minutes max
+                poll_interval = 2  # Poll every 2 seconds
+                waited = 0
+                last_position = queue_position
+
+                while waited < max_wait:
+                    time.sleep(poll_interval)
+                    waited += poll_interval
+
+                    try:
+                        poll_response = requests.get(poll_url, timeout=10)
+                        if poll_response.status_code != 200:
+                            continue
+
+                        status_data = poll_response.json()
+                        status = status_data.get('status')
+
+                        # Update user on queue position changes
+                        new_position = status_data.get('queue_position')
+                        if new_position and new_position != last_position:
+                            logger.info(f"[BOOKDB AUDIO] Queue position: {new_position}")
+                            last_position = new_position
+
+                        if status == 'processing':
+                            logger.info(f"[BOOKDB AUDIO] Processing audio...")
+
+                        elif status == 'complete':
+                            # Got result!
+                            data = status_data.get('result', {})
+                            logger.info(f"[BOOKDB AUDIO] Complete! Processing result...")
+                            break
+
+                        elif status == 'error':
+                            logger.warning(f"[BOOKDB AUDIO] Job failed: {status_data.get('error')}")
+                            return None
+
+                    except Exception as poll_err:
+                        logger.debug(f"[BOOKDB AUDIO] Poll error (will retry): {poll_err}")
+                        continue
+
+                else:
+                    logger.warning(f"[BOOKDB AUDIO] Timed out waiting for result after {max_wait}s")
+                    return None
+
+            else:
+                # Old sync system - response has result directly
+                data = submit_data
+
+            # Process result (same for both systems)
+            transcript = data.get('transcript') or ''
+            matched_books = data.get('matched_books') or []
+            logger.info(f"[BOOKDB AUDIO] Result received - transcript: {len(transcript)} chars, matches: {len(matched_books)}")
+
+            if data.get('error'):
+                logger.warning(f"[BOOKDB AUDIO] API error: {data['error']}")
+                return None
+
+            best_match = matched_books[0] if matched_books else None
+
+            result = {
+                'author': data.get('author') or (best_match.get('author_name') if best_match else None),
+                'title': data.get('title') or (best_match.get('title') if best_match else None),
+                'narrator': data.get('narrator'),
+                'series': best_match.get('series_name') if best_match else None,
+                'series_num': best_match.get('series_position') if best_match else None,
+                'source': 'bookdb_audio',
+                'confidence': 'high' if best_match else 'medium',
+                'transcript': transcript[:500],
+            }
+
+            if result['author'] and result['title']:
+                logger.info(f"[BOOKDB AUDIO] Identified: {result['author']} - {result['title']}" +
+                           (f" ({result['series']} #{result['series_num']})" if result.get('series') else ""))
+                return result
+
+            if transcript:
+                logger.info(f"[BOOKDB AUDIO] No match but got transcript ({len(transcript)} chars) - returning for AI fallback")
+                return {'transcript': transcript, 'source': 'bookdb_audio'}
+
+            logger.warning(f"[BOOKDB AUDIO] No identification and no transcript returned")
+            return None
+
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    except requests.exceptions.Timeout:
+        logger.warning("[BOOKDB AUDIO] Request timed out")
+        return None
+    except Exception as e:
+        logger.warning(f"[BOOKDB AUDIO] Error: {e}")
         return None
 
 
@@ -2461,11 +2744,23 @@ def search_google_books(title, author=None, api_key=None, lang=None):
 def search_audnexus(title, author=None, region=None):
     """Search Audnexus API for audiobook metadata. Pulls from Audible.
 
+    Audnexus is a community-maintained API that provides Audible metadata.
+    It's useful for narrator info and audiobook-specific details but can
+    be slow or unavailable at times. Circuit breaker skips it temporarily
+    after repeated timeouts.
+
     Args:
         title: Book title to search for
         author: Optional author name
         region: Optional Audible region code (us, de, fr, it, es, jp, etc.)
     """
+    # Circuit breaker: skip if API has been failing
+    cb = API_CIRCUIT_BREAKER.get('audnexus', {})
+    if cb.get('circuit_open_until', 0) > time.time():
+        remaining = int(cb['circuit_open_until'] - time.time())
+        logger.debug(f"Audnexus: Circuit open, skipping ({remaining}s remaining)")
+        return None
+
     rate_limit_wait('audnexus')
     try:
         import urllib.parse
@@ -2481,6 +2776,11 @@ def search_audnexus(title, author=None, region=None):
 
         logger.debug(f"Audnexus: Searching for '{query}'")
         resp = requests.get(url, timeout=10, headers={'Accept': 'application/json'})
+
+        # Success - reset circuit breaker
+        if 'audnexus' in API_CIRCUIT_BREAKER:
+            API_CIRCUIT_BREAKER['audnexus']['failures'] = 0
+
         if resp.status_code != 200:
             logger.debug(f"Audnexus: API returned status {resp.status_code}")
             return None
@@ -2523,6 +2823,16 @@ def search_audnexus(title, author=None, region=None):
             logger.info(f"Audnexus found: {result['author']} - {result['title']}")
             return result
         logger.debug(f"Audnexus: Result missing title or author for '{query}'")
+        return None
+    except requests.exceptions.Timeout:
+        # Timeout - increment circuit breaker
+        if 'audnexus' in API_CIRCUIT_BREAKER:
+            cb = API_CIRCUIT_BREAKER['audnexus']
+            cb['failures'] = cb.get('failures', 0) + 1
+            if cb['failures'] >= cb.get('max_failures', 3):
+                cb['circuit_open_until'] = time.time() + cb.get('cooldown', 300)
+                logger.warning(f"Audnexus: Circuit OPEN after {cb['failures']} timeouts, skipping for {cb['cooldown']}s")
+        logger.warning(f"Audnexus search timed out for '{title}'")
         return None
     except Exception as e:
         logger.warning(f"Audnexus search failed for '{title}': {e}")
@@ -2713,8 +3023,11 @@ def extract_author_title(messy_name):
             if len(parts) == 2:
                 author = parts[0].strip()
                 title = parts[1].strip()
-                # Basic validation - author shouldn't be too long or look like a title
-                if len(author) < 50 and not re.search(r'\d{4}|book|vol|part|\[', author, re.I):
+                # Basic validation - author shouldn't be too long or look like a title/series
+                # Merijeek: "The Gentleman Bastard Sequence #3" was treated as author
+                # Check for series indicators: #N, Book N, Series, Saga, Chronicles, etc.
+                series_patterns = r'\d{4}|book\s*\d|vol\s*\d|part\s*\d|\[|#\d+|series|saga|chronicles|trilogy|quartet'
+                if len(author) < 50 and not re.search(series_patterns, author, re.I):
                     # Issue #50: Clean author name (strip Bibliography, Collection, etc.)
                     author = clean_author_name(author)
                     return author, title
@@ -2907,14 +3220,22 @@ Analyze whether the proposed change is CORRECT or WRONG. Consider:
    - "Mr. Murder" and "Dean Koontz's Frankenstein" = WRONG (0% match!)
    - "Midnight Texas 3" and "Night Shift" = CORRECT if Night Shift is book 3 of Midnight Texas
 
-2. AUTHOR MATCHING: Does the original author name match or partially match any candidate?
+2. RECOGNIZE FAMOUS BOOKS: Some titles are so famous they have a KNOWN author:
+   - "Le Petit Prince" / "The Little Prince" = Antoine de Saint-Exupéry (ALWAYS)
+   - "Преступление и наказание" / "Crime and Punishment" = Fyodor Dostoevsky (ALWAYS)
+   - "الحب في زمن الكوليرا" / "Love in the Time of Cholera" = Gabriel García Márquez (ALWAYS)
+   - "1984" = George Orwell (ALWAYS)
+   - "Don Quixote" / "Don Quijote" = Miguel de Cervantes (ALWAYS)
+   - "War and Peace" / "Война и мир" = Leo Tolstoy (ALWAYS)
+   - If the input says "Stephen King - الحب في زمن الكوليرا", this is WRONG - return Gabriel García Márquez.
+   - Return the CORRECT author for famous works, ignoring the wrong input author.
+
+3. AUTHOR MATCHING for non-famous works: Does the original author name match or partially match any candidate?
    - "Boyett" matches "Steven Boyett" (same person, use full name)
    - "Boyett" does NOT match "John Dickson Carr" (different person!)
    - "A.C. Crispin" matches "A. C. Crispin" or "Ann C. Crispin" (same person)
 
-3. TRUST THE INPUT: If original has a real author name, KEEP that author unless clearly wrong.
-
-4. FIND THE BEST MATCH: Pick the candidate whose author MATCHES or EXTENDS the original.
+4. FIND THE BEST MATCH: Pick the candidate that is the CORRECT book with the CORRECT author.
 
 RESPOND WITH JSON ONLY:
 {{
@@ -2928,10 +3249,11 @@ RESPOND WITH JSON ONLY:
 DECISION RULES:
 - If titles are completely different books = WRONG (don't just keyword match!)
 - If original author matches a candidate (like Boyett -> Steven Boyett) = CORRECT
-- If proposed author is completely different person AND same title = WRONG
+- For FAMOUS books (Le Petit Prince, Crime and Punishment, etc.): Return the REAL author, even if original is different
+- If proposed author is completely different person AND title doesn't match = WRONG
 - If uncertain = UNCERTAIN
 
-When in doubt, say WRONG. It's better to leave a book unfixed than to rename it to the wrong thing."""
+IMPORTANT: For famous/classic works, CORRECT the author to the real author. "James Patterson - Le Petit Prince" should become "Antoine de Saint-Exupéry - Le Petit Prince"."""
 
 
 def verify_drastic_change(original_input, original_author, original_title, proposed_author, proposed_title, config):
@@ -2959,21 +3281,12 @@ def verify_drastic_change(original_input, original_author, original_title, propo
         proposed_author, proposed_title, candidates
     )
 
-    # Call AI for verification
-    provider = config.get('ai_provider', 'openrouter')
+    # Call AI for verification using the provider chain
     try:
-        if provider == 'gemini' and config.get('gemini_api_key'):
-            verification = call_gemini(prompt, config)  # Already returns parsed dict
-        elif config.get('openrouter_api_key'):
-            verification = call_openrouter(prompt, config)  # Already returns parsed dict
-        else:
-            logger.error("No API key for verification!")
-            return None
-
+        verification = call_text_provider_chain(prompt, config)
         if not verification:
+            logger.error("No AI providers available for verification!")
             return None
-
-        # Result is already parsed by call_gemini/call_openrouter
 
         decision = verification.get('decision', 'UNCERTAIN')
         confidence = verification.get('confidence', 'LOW')
@@ -3050,7 +3363,7 @@ DO NOT return a narrator as the author!
 
 {names_list}
 {narrator_section}
-IMPORTANT RULE - TRUST THE EXISTING AUTHOR (unless they're a narrator!):
+IMPORTANT RULE - TRUST THE EXISTING AUTHOR (with exceptions):
 If the input is already in "Author / Title" or "Author - Title" format with a human name as author:
 - KEEP THAT AUTHOR unless you're 100% certain it's wrong
 - Many books have the SAME TITLE by DIFFERENT AUTHORS
@@ -3063,6 +3376,12 @@ WHEN TO CHANGE THE AUTHOR:
 - If the "author" in input is clearly NOT an author name (e.g., "Bastards Series", "Unknown", "Various")
 - If the author/title are swapped (e.g., "Mistborn / Brandon Sanderson" -> swap them)
 - If it's clearly gibberish
+- **FOR FAMOUS/CLASSIC WORKS:** Return the CORRECT author even if input is wrong:
+  - "Le Petit Prince" / "The Little Prince" = Antoine de Saint-Exupéry (ALWAYS)
+  - "Преступление и наказание" / "Crime and Punishment" = Fyodor Dostoevsky (ALWAYS)
+  - "الحب في زمن الكوليرا" / "Love in the Time of Cholera" = Gabriel García Márquez (ALWAYS)
+  - "1984" = George Orwell, "Don Quixote" = Miguel de Cervantes, "War and Peace" = Leo Tolstoy
+  - If input says "Stephen King - الحب في زمن الكوليرا", output "Gabriel García Márquez - Love in the Time of Cholera"
 
 WHEN TO KEEP THE AUTHOR:
 - Input: "Boyett/The Hollow Man" -> Keep author "Boyett" (Steven Boyett wrote this book!)
@@ -3141,15 +3460,43 @@ Return JSON array. Each object MUST have "item" matching the ITEM_N label:
 Return ONLY the JSON array, nothing else."""
 
 def parse_json_response(text):
-    """Extract JSON from AI response."""
+    """Extract JSON from AI response - handles various AI response formats."""
     text = text.strip()
+
+    # Remove markdown code blocks
     if text.startswith("```json"):
         text = text[7:]
     if text.startswith("```"):
         text = text[3:]
     if text.endswith("```"):
         text = text[:-3]
-    return json.loads(text.strip())
+    text = text.strip()
+
+    # Try direct parse first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Extract first JSON object using regex (handles extra text before/after)
+    json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL)
+    if json_match:
+        try:
+            return json.loads(json_match.group())
+        except json.JSONDecodeError:
+            pass
+
+    # Try extracting JSON array
+    array_match = re.search(r'\[.*?\]', text, re.DOTALL)
+    if array_match:
+        try:
+            return json.loads(array_match.group())
+        except json.JSONDecodeError:
+            pass
+
+    # Log failure for debugging
+    logger.error(f"Failed to parse JSON from AI response: {text[:200]}...")
+    return None
 
 def call_ai(messy_names, config):
     """Call AI API to parse book names, with API lookups for context."""
@@ -3163,19 +3510,9 @@ def call_ai(messy_names, config):
 
     # Build prompt with API results included
     prompt = build_prompt(messy_names, api_results)
-    provider = config.get('ai_provider', 'openrouter')
 
-    # Use selected provider
-    if provider == 'ollama':
-        # Ollama doesn't need an API key - it's local
-        return call_ollama(prompt, config)
-    elif provider == 'gemini' and config.get('gemini_api_key'):
-        return call_gemini(prompt, config)
-    elif config.get('openrouter_api_key'):
-        return call_openrouter(prompt, config)
-    else:
-        logger.error("No API key configured!")
-        return None
+    # Use the provider chain for fallback support
+    return call_text_provider_chain(prompt, config)
 
 
 def explain_http_error(status_code, provider):
@@ -3194,7 +3531,15 @@ def explain_http_error(status_code, provider):
 
 
 def call_openrouter(prompt, config):
-    """Call OpenRouter API."""
+    """Call OpenRouter API with circuit breaker for daily limits."""
+    # Check circuit breaker - skip if we've hit daily limits
+    cb = API_CIRCUIT_BREAKER.get('openrouter', {})
+    if cb.get('circuit_open_until', 0) > time.time():
+        remaining = int(cb['circuit_open_until'] - time.time())
+        logger.debug(f"OpenRouter: Circuit OPEN, skipping (cooldown: {remaining}s remaining)")
+        return None
+
+    rate_limit_wait('openrouter')  # Respect free tier limits
     try:
         resp = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
@@ -3205,7 +3550,7 @@ def call_openrouter(prompt, config):
                 "X-Title": "Library Metadata Manager"
             },
             json={
-                "model": config.get('openrouter_model', 'google/gemma-3n-e4b-it:free'),
+                "model": config.get('openrouter_model', 'xiaomi/mimo-v2-flash:free'),
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1
             },
@@ -3213,10 +3558,36 @@ def call_openrouter(prompt, config):
         )
 
         if resp.status_code == 200:
+            # Reset circuit breaker on success
+            if 'openrouter' in API_CIRCUIT_BREAKER:
+                API_CIRCUIT_BREAKER['openrouter']['failures'] = 0
             result = resp.json()
             text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
             if text:
-                return parse_json_response(text)
+                # Issue #57: Log AI response for debugging hallucinations
+                logger.debug(f"OpenRouter raw response: {text[:500]}{'...' if len(text) > 500 else ''}")
+                parsed = parse_json_response(text)
+                if parsed:
+                    # Log the parsed author/title for traceability
+                    if isinstance(parsed, list):
+                        for item in parsed[:3]:  # Log first 3 items
+                            logger.info(f"OpenRouter parsed: {item.get('author', '?')} - {item.get('title', '?')}")
+                    elif isinstance(parsed, dict):
+                        logger.info(f"OpenRouter parsed: {parsed.get('author', parsed.get('recommended_author', '?'))} - {parsed.get('title', parsed.get('recommended_title', '?'))}")
+                return parsed
+        elif resp.status_code == 429:
+            # Rate limit - check if it's daily limit
+            try:
+                detail = resp.json().get('error', {}).get('message', '')
+                if 'free-models-per-day' in detail.lower() or 'daily' in detail.lower():
+                    # Daily limit hit - open circuit breaker for 1 hour
+                    logger.warning(f"OpenRouter: Daily limit reached, backing off for 1 hour")
+                    API_CIRCUIT_BREAKER['openrouter']['failures'] = cb.get('max_failures', 2)
+                    API_CIRCUIT_BREAKER['openrouter']['circuit_open_until'] = time.time() + cb.get('cooldown', 3600)
+                else:
+                    logger.warning(f"OpenRouter: Rate limited - {detail}")
+            except:
+                logger.warning("OpenRouter: Rate limited")
         else:
             error_msg = explain_http_error(resp.status_code, "OpenRouter")
             logger.warning(f"OpenRouter: {error_msg}")
@@ -3241,6 +3612,14 @@ def call_openrouter(prompt, config):
 
 def call_gemini(prompt, config, retry_count=0):
     """Call Google Gemini API directly with automatic retry on rate limit."""
+    # Check circuit breaker
+    if is_circuit_open('gemini'):
+        logger.debug("[GEMINI] Circuit breaker open, skipping")
+        return None
+
+    # Respect rate limits (10 RPM free tier as of Jan 2026)
+    rate_limit_wait('gemini')
+
     try:
         api_key = config.get('gemini_api_key')
         model = config.get('gemini_model', 'gemini-2.0-flash')
@@ -3259,7 +3638,17 @@ def call_gemini(prompt, config, retry_count=0):
             result = resp.json()
             text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
             if text:
-                return parse_json_response(text)
+                # Issue #57: Log AI response for debugging hallucinations
+                logger.debug(f"Gemini raw response: {text[:500]}{'...' if len(text) > 500 else ''}")
+                parsed = parse_json_response(text)
+                if parsed:
+                    # Log the parsed author/title for traceability
+                    if isinstance(parsed, list):
+                        for item in parsed[:3]:  # Log first 3 items
+                            logger.info(f"Gemini parsed: {item.get('author', '?')} - {item.get('title', '?')}")
+                    elif isinstance(parsed, dict):
+                        logger.info(f"Gemini parsed: {parsed.get('author', parsed.get('recommended_author', '?'))} - {parsed.get('title', parsed.get('recommended_title', '?'))}")
+                return parsed
         elif resp.status_code == 429 and retry_count < 3:
             # Rate limit - parse retry time and wait
             error_msg = explain_http_error(resp.status_code, "Gemini")
@@ -3268,6 +3657,12 @@ def call_gemini(prompt, config, retry_count=0):
                 detail = resp.json().get('error', {}).get('message', '')
                 if detail:
                     logger.warning(f"Gemini detail: {detail}")
+                    # Check if this is a daily quota exceeded (not just per-minute rate limit)
+                    if 'quota' in detail.lower() and ('limit: 0' in detail or 'exceeded' in detail.lower()):
+                        logger.warning("[GEMINI] Daily quota exhausted - tripping circuit breaker")
+                        record_api_failure('gemini')
+                        record_api_failure('gemini')  # Trip immediately
+                        return None
                     # Try to parse "Please retry in X.XXXs" from message
                     import re
                     match = re.search(r'retry in (\d+\.?\d*)s', detail)
@@ -3386,6 +3781,202 @@ def test_ollama_connection(config):
         return {'success': False, 'error': str(e)}
 
 
+# ============== PROVIDER CHAIN SYSTEM ==============
+# Configurable fallback chains for audio and text identification
+
+def call_text_provider_chain(prompt, config):
+    """
+    Call AI providers in configured order until one succeeds.
+
+    Uses config['text_provider_chain'] to determine order.
+    Default: ["gemini", "openrouter"]
+    Available: "gemini", "openrouter", "ollama"
+
+    Returns parsed response or None if all providers fail.
+    """
+    chain = config.get('text_provider_chain', ['gemini', 'openrouter'])
+    secrets = load_secrets()
+
+    # Merge secrets into config for provider calls
+    merged_config = {**config, **secrets}
+
+    for provider in chain:
+        provider = provider.lower().strip()
+        logger.debug(f"[PROVIDER CHAIN] Trying text provider: {provider}")
+
+        try:
+            if provider == 'gemini':
+                if not merged_config.get('gemini_api_key'):
+                    logger.debug("[PROVIDER CHAIN] Skipping gemini - no API key")
+                    continue
+                result = call_gemini(prompt, merged_config)
+                if result:
+                    logger.info(f"[PROVIDER CHAIN] Success with gemini")
+                    return result
+
+            elif provider == 'openrouter':
+                if not merged_config.get('openrouter_api_key'):
+                    logger.debug("[PROVIDER CHAIN] Skipping openrouter - no API key")
+                    continue
+                result = call_openrouter(prompt, merged_config)
+                if result:
+                    logger.info(f"[PROVIDER CHAIN] Success with openrouter")
+                    return result
+
+            elif provider == 'ollama':
+                result = call_ollama(prompt, merged_config)
+                if result:
+                    logger.info(f"[PROVIDER CHAIN] Success with ollama")
+                    return result
+
+            else:
+                logger.warning(f"[PROVIDER CHAIN] Unknown text provider: {provider}")
+
+        except Exception as e:
+            logger.warning(f"[PROVIDER CHAIN] {provider} failed with error: {e}")
+            continue
+
+    logger.warning("[PROVIDER CHAIN] All text providers failed")
+    return None
+
+
+def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
+    """
+    Call audio identification providers in configured order until one succeeds.
+
+    Uses config['audio_provider_chain'] to determine order.
+    Default: ["bookdb", "gemini"]
+    Available: "bookdb", "gemini", "openrouter", "ollama"
+
+    Note: openrouter and ollama require transcription first (slower).
+
+    Args:
+        audio_file: Path to audio file to analyze
+        config: App config
+        mode: 'credits' for opening credits, 'identify' for any chapter
+        duration: Seconds of audio to analyze
+
+    Returns dict with author, title, etc. or None if all providers fail.
+    """
+    chain = config.get('audio_provider_chain', ['bookdb', 'gemini'])
+    secrets = load_secrets()
+    merged_config = {**config, **secrets}
+
+    for provider in chain:
+        provider = provider.lower().strip()
+        logger.info(f"[AUDIO CHAIN] Trying audio provider: {provider}")
+
+        try:
+            if provider == 'bookdb':
+                # BookDB has GPU Whisper - best option
+                result = identify_audio_with_bookdb(audio_file)
+                if result and result.get('title'):
+                    logger.info(f"[AUDIO CHAIN] Success with bookdb: {result.get('author')} - {result.get('title')}")
+                    return result
+
+            elif provider == 'gemini':
+                if not merged_config.get('gemini_api_key'):
+                    logger.debug("[AUDIO CHAIN] Skipping gemini - no API key")
+                    continue
+                # Gemini can directly analyze audio
+                result = analyze_audio_with_gemini(audio_file, merged_config, duration=duration, mode=mode)
+                if result and (result.get('title') or result.get('author')):
+                    logger.info(f"[AUDIO CHAIN] Success with gemini: {result.get('author')} - {result.get('title')}")
+                    return result
+
+            elif provider == 'openrouter':
+                if not merged_config.get('openrouter_api_key'):
+                    logger.debug("[AUDIO CHAIN] Skipping openrouter - no API key")
+                    continue
+                # OpenRouter needs transcription first - try local whisper or skip
+                transcript = transcribe_audio_local(audio_file, duration)
+                if transcript:
+                    result = identify_book_from_transcript(transcript, merged_config)
+                    if result and result.get('title'):
+                        logger.info(f"[AUDIO CHAIN] Success with openrouter: {result.get('author')} - {result.get('title')}")
+                        return result
+                else:
+                    logger.debug("[AUDIO CHAIN] openrouter - no transcript available")
+
+            elif provider == 'ollama':
+                # Ollama needs transcription first
+                transcript = transcribe_audio_local(audio_file, duration)
+                if transcript:
+                    # Build prompt for book identification
+                    prompt = f"""Based on this audiobook transcript excerpt, identify the book.
+
+Transcript:
+{transcript[:2000]}
+
+Return JSON with: author, title, narrator (if mentioned), series (if mentioned), confidence (high/medium/low)"""
+                    result = call_ollama(prompt, merged_config)
+                    if result and result.get('title'):
+                        logger.info(f"[AUDIO CHAIN] Success with ollama: {result.get('author')} - {result.get('title')}")
+                        return result
+                else:
+                    logger.debug("[AUDIO CHAIN] ollama - no transcript available")
+
+            else:
+                logger.warning(f"[AUDIO CHAIN] Unknown audio provider: {provider}")
+
+        except Exception as e:
+            logger.warning(f"[AUDIO CHAIN] {provider} failed with error: {e}")
+            continue
+
+    logger.warning("[AUDIO CHAIN] All audio providers failed")
+    return None
+
+
+def transcribe_audio_local(audio_file, duration=90):
+    """
+    Attempt local audio transcription using whisper.cpp or whisper Python.
+    Returns transcript text or None.
+    """
+    import subprocess
+    import tempfile
+
+    try:
+        # First extract a sample
+        sample_path = extract_audio_sample(audio_file, duration_seconds=duration)
+        if not sample_path:
+            return None
+
+        try:
+            # Try whisper.cpp (faster if installed)
+            whisper_cpp = shutil.which('whisper.cpp') or shutil.which('whisper-cpp')
+            if whisper_cpp:
+                result = subprocess.run(
+                    [whisper_cpp, '-f', sample_path, '-otxt', '-np'],
+                    capture_output=True, text=True, timeout=120
+                )
+                if result.returncode == 0:
+                    # Read the output text file
+                    txt_path = sample_path + '.txt'
+                    if os.path.exists(txt_path):
+                        with open(txt_path, 'r') as f:
+                            transcript = f.read().strip()
+                        os.unlink(txt_path)
+                        return transcript
+
+            # Try Python whisper (slower, requires pip install openai-whisper)
+            try:
+                import whisper
+                model = whisper.load_model("base")  # Small model for speed
+                result = model.transcribe(sample_path, fp16=False)
+                return result.get('text', '')
+            except ImportError:
+                logger.debug("Local whisper not available - install with: pip install openai-whisper")
+                return None
+
+        finally:
+            if os.path.exists(sample_path):
+                os.unlink(sample_path)
+
+    except Exception as e:
+        logger.debug(f"Local transcription failed: {e}")
+        return None
+
+
 def get_first_audio_file(folder_path):
     """
     Get the audio file that sorts first in a folder (usually contains credits).
@@ -3420,6 +4011,7 @@ def analyze_audio_for_credits(folder_path, config):
     Audiobooks typically announce "Title by Author, read by Narrator"
     in the first 30-45 seconds of the first file.
 
+    Uses the configured audio_provider_chain for fallback support.
     This is optimized for organized audiobook folders.
     """
     first_file = get_first_audio_file(folder_path)
@@ -3429,8 +4021,8 @@ def analyze_audio_for_credits(folder_path, config):
 
     logger.info(f"[AUDIO] Analyzing first file for credits: {os.path.basename(first_file)}")
 
-    # Use shorter sample for credits detection (45 seconds is usually enough)
-    return analyze_audio_with_gemini(first_file, config, duration=45, mode='credits')
+    # Use the provider chain for audio identification with fallback support
+    return call_audio_provider_chain(first_file, config, mode='credits', duration=45)
 
 
 def analyze_orphan_audio_file(audio_file, config):
@@ -3440,9 +4032,11 @@ def analyze_orphan_audio_file(audio_file, config):
 
     Narrators often announce chapter numbers and sometimes book titles
     at the start of each chapter, not just the first one.
+
+    Uses the configured audio_provider_chain for fallback support.
     """
     logger.info(f"[AUDIO] Analyzing orphan file: {os.path.basename(audio_file)}")
-    return analyze_audio_with_gemini(audio_file, config, duration=45, mode='identify')
+    return call_audio_provider_chain(audio_file, config, mode='identify', duration=45)
 
 
 def extract_audio_sample_from_middle(audio_file, duration_seconds=60, output_format='mp3'):
@@ -3515,26 +4109,58 @@ _whisper_model = None
 _whisper_model_name = None
 
 
-def get_whisper_model(model_name='base'):
-    """Get or create cached faster-whisper model."""
+def get_whisper_model(model_name=None):
+    """Get or create cached faster-whisper model.
+
+    Model sizes and accuracy (WER = Word Error Rate, lower is better):
+    - tiny:    ~10% WER, 75MB,  fastest
+    - base:    ~7% WER,  150MB, fast
+    - small:   ~5% WER,  465MB, moderate
+    - medium:  ~4% WER,  1.5GB, slower
+    - large-v3: ~3% WER, 3GB,  slowest but most accurate
+
+    For audiobooks with studio quality audio, large-v3 is recommended.
+    """
     global _whisper_model, _whisper_model_name
+
+    # Default to large-v3 for best accuracy - audiobooks deserve it
+    if model_name is None:
+        config = load_config()
+        model_name = config.get('whisper_model', 'large-v3')
 
     if _whisper_model is not None and _whisper_model_name == model_name:
         return _whisper_model
 
     try:
         from faster_whisper import WhisperModel
-        logger.info(f"[LAYER 4] Loading faster-whisper model: {model_name}")
-        # Use CPU with int8 for efficiency, or CUDA if available
-        _whisper_model = WhisperModel(model_name, device="cpu", compute_type="int8")
+        logger.info(f"[WHISPER] Loading faster-whisper model: {model_name}")
+
+        # Check if CUDA is available for faster processing
+        # Use ctranslate2's built-in detection (faster-whisper's backend)
+        device = "cpu"
+        compute_type = "int8"  # Works on both CPU and GPU
+
+        try:
+            import ctranslate2
+            if ctranslate2.get_cuda_device_count() > 0:
+                device = "cuda"
+                # int8 works on all CUDA devices including GTX 1080 (compute 6.1)
+                # float16 only works on newer GPUs (compute 7.0+)
+                logger.info(f"[WHISPER] Using CUDA GPU acceleration (10x faster)")
+            else:
+                logger.info(f"[WHISPER] Using CPU (no CUDA GPU detected)")
+        except ImportError:
+            logger.info(f"[WHISPER] Using CPU (ctranslate2 not available)")
+
+        _whisper_model = WhisperModel(model_name, device=device, compute_type=compute_type)
         _whisper_model_name = model_name
-        logger.info(f"[LAYER 4] Whisper model loaded successfully")
+        logger.info(f"[WHISPER] Model loaded successfully: {model_name}")
         return _whisper_model
     except ImportError:
-        logger.debug("[LAYER 4] faster-whisper not installed")
+        logger.debug("[WHISPER] faster-whisper not installed")
         return None
     except Exception as e:
-        logger.warning(f"[LAYER 4] Failed to load whisper model: {e}")
+        logger.warning(f"[WHISPER] Failed to load whisper model: {e}")
         return None
 
 
@@ -3572,6 +4198,98 @@ def transcribe_with_whisper(audio_file, config):
         return None
 
 
+def identify_ebook_from_filename(filename, folder_path, config):
+    """
+    Identify an ebook using filename parsing + BookDB search.
+    No AI needed - just smart regex and database lookup.
+
+    Flow:
+    1. Parse filename with regex to extract author/title guess
+    2. Use BookDB search to verify and enrich metadata
+    """
+    # Clean the filename for parsing
+    clean_name = os.path.splitext(filename)[0]
+    folder_name = os.path.basename(os.path.dirname(folder_path)) if folder_path else ''
+
+    # Skip garbage filenames that can't be parsed
+    if re.match(r'^[a-f0-9]{8,}$', clean_name, re.I):  # Hash filename
+        logger.debug(f"[EBOOK] Skipping hash filename: {clean_name}")
+        return None
+    if re.match(r'^ebook[_\s]*\d+$', clean_name, re.I):  # ebook_1234
+        logger.debug(f"[EBOOK] Skipping generic ebook filename: {clean_name}")
+        return None
+
+    author = None
+    title = None
+
+    # Try common patterns
+    # Pattern 1: "Author - Title" or "Author_-_Title"
+    match = re.match(r'^(.+?)\s*[-_]+\s*(.+)$', clean_name)
+    if match:
+        part1, part2 = match.groups()
+        # Guess which is author vs title (authors usually shorter, titles have more words)
+        if len(part1.split()) <= 3 and not re.search(r'\d{4}', part1):
+            author, title = part1.strip(), part2.strip()
+        else:
+            title, author = part1.strip(), part2.strip()
+
+    # Pattern 2: Use folder name as author if it looks like a name
+    if not author and folder_name:
+        if re.match(r'^[A-Z][a-z]+(\s+[A-Z][a-z]+)+$', folder_name):  # "First Last" format
+            author = folder_name
+            title = clean_name
+
+    # Pattern 3: Just use the clean filename as title
+    if not title:
+        title = clean_name
+
+    if not title:
+        return None
+
+    # Search BookDB for verification
+    try:
+        search_query = f"{author} {title}" if author else title
+        logger.debug(f"[EBOOK] Searching BookDB for: {search_query}")
+
+        resp = requests.get(
+            f"{BOOKDB_API_URL}/search",
+            params={'q': search_query[:100]},  # Limit query length
+            timeout=10
+        )
+
+        if resp.status_code == 200:
+            results = resp.json()
+            if results and len(results) > 0:
+                best = results[0]
+                # Check if it's a reasonable match
+                result_title = best.get('name', '')
+                result_author = best.get('author_name', '')
+
+                if result_title:
+                    logger.info(f"[EBOOK] BookDB found: {result_author} - {result_title}")
+                    return {
+                        'author': result_author or author,
+                        'title': result_title,
+                        'series': best.get('series_name'),
+                        'series_num': best.get('series_position'),
+                        'confidence': 'high' if result_author else 'medium',
+                        'source': 'bookdb'
+                    }
+    except Exception as e:
+        logger.debug(f"[EBOOK] BookDB search error: {e}")
+
+    # Return our best guess without BookDB confirmation
+    if author and title:
+        return {
+            'author': author,
+            'title': title,
+            'confidence': 'low',
+            'source': 'filename'
+        }
+
+    return None
+
+
 def identify_book_from_transcript(transcript, config):
     """
     Use OpenRouter to identify a book from transcribed text.
@@ -3581,6 +4299,9 @@ def identify_book_from_transcript(transcript, config):
     if not api_key:
         logger.warning("[LAYER 4] No OpenRouter API key for transcript identification")
         return None
+
+    # Respect free tier rate limits (20 req/min + daily limits)
+    rate_limit_wait('openrouter')
 
     # Use a capable free model for book identification
     # Options: xiaomi/mimo-v2-flash:free (262K ctx), allenai/molmo-2-8b:free, mistralai/devstral-2512:free
@@ -3706,6 +4427,14 @@ def _try_gemini_content_identification(sample_path, api_key):
     """Try Gemini Audio API for content identification. Returns result or None."""
     import base64
 
+    # Check circuit breaker
+    if is_circuit_open('gemini'):
+        logger.debug("[LAYER 4] Gemini circuit breaker open, skipping")
+        return None
+
+    # Respect rate limits
+    rate_limit_wait('gemini')
+
     try:
         with open(sample_path, 'rb') as f:
             audio_data = base64.b64encode(f.read()).decode('utf-8')
@@ -3771,7 +4500,13 @@ Use character names, plot elements, and writing style as clues."""
         )
 
         if resp.status_code == 429:
-            logger.warning("[LAYER 4] Gemini rate limited (429), will try fallback")
+            detail = resp.text[:500]
+            logger.warning(f"[LAYER 4] Gemini rate limited (429): {detail}")
+            # Check if daily quota is exhausted
+            if 'quota' in detail.lower() and ('limit: 0' in detail or 'exceeded' in detail.lower()):
+                logger.warning("[LAYER 4] Gemini daily quota exhausted - tripping circuit breaker")
+                record_api_failure('gemini')
+                record_api_failure('gemini')
             return None
 
         if resp.status_code != 200:
@@ -3894,6 +4629,11 @@ def analyze_audio_with_gemini(audio_file, config, duration=90, mode='credits'):
     """
     import base64
 
+    # Check circuit breaker
+    if is_circuit_open('gemini'):
+        logger.debug("[GEMINI AUDIO] Circuit breaker open, skipping")
+        return None
+
     api_key = config.get('gemini_api_key')
     if not api_key:
         return None
@@ -3970,6 +4710,9 @@ For the language field:
 If information is not clearly stated in the audio, use null for that field.
 Only include information you actually heard - do not guess."""
 
+        # Respect rate limits before making the call
+        rate_limit_wait('gemini')
+
         resp = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
             headers={"Content-Type": "application/json"},
@@ -3997,7 +4740,16 @@ Only include information you actually heard - do not guess."""
                 parsed = parse_json_response(text)
                 if parsed:
                     logger.info(f"Audio analysis extracted: {parsed}")
+                    record_api_success('gemini')
                     return parsed
+        elif resp.status_code == 429:
+            # Rate limit or quota exceeded
+            detail = resp.text[:500]
+            logger.warning(f"Gemini audio API rate limited: {detail}")
+            if 'quota' in detail.lower() and ('limit: 0' in detail or 'exceeded' in detail.lower()):
+                logger.warning("[GEMINI AUDIO] Daily quota exhausted - tripping circuit breaker")
+                record_api_failure('gemini')
+                record_api_failure('gemini')
         else:
             logger.debug(f"Gemini audio API error {resp.status_code}: {resp.text[:200]}")
 
@@ -4836,57 +5588,195 @@ def search_book_searxng(query, duration_hours=None):
     return []
 
 
+def calculate_input_quality(folder_name, filenames, info):
+    """
+    Score the quality of input data for AI identification.
+    Returns a score 0-100 and list of usable clues found.
+
+    Low quality inputs (random numbers, 'unknown', no words) should not be
+    trusted to AI as it will hallucinate famous books.
+    """
+    score = 0
+    clues = []
+
+    # Check folder name for useful info
+    folder_clean = re.sub(r'[_\-\d\.\[\]\(\)]', ' ', folder_name or '').strip()
+    words = [w for w in folder_clean.split() if len(w) > 2 and w.lower() not in ('unknown', 'audiobook', 'audio', 'book', 'mp3', 'the', 'and', 'part')]
+
+    if words:
+        score += min(40, len(words) * 10)  # Up to 40 points for meaningful words
+        clues.append(f"folder_words: {words[:5]}")
+
+    # Check for author-title pattern (e.g., "Author - Title")
+    if ' - ' in (folder_name or ''):
+        score += 20
+        clues.append("has_author_title_separator")
+
+    # Check metadata tags
+    if info.get('title') and info.get('title') not in ('none', 'Unknown', ''):
+        score += 25
+        clues.append(f"has_title_tag: {info.get('title')[:30]}")
+    if info.get('author') and info.get('author') not in ('none', 'Unknown', ''):
+        score += 25
+        clues.append(f"has_author_tag: {info.get('author')[:30]}")
+
+    # Check filenames for book/chapter info
+    meaningful_files = [f for f in filenames[:5] if re.search(r'[a-zA-Z]{4,}', f)]
+    if meaningful_files:
+        score += 10
+        clues.append(f"meaningful_filenames: {len(meaningful_files)}")
+
+    # Penalize garbage inputs
+    if re.match(r'^(unknown|audiobook|audio|book)?[\s_\-]*\d+$', folder_name or '', re.IGNORECASE):
+        score = max(0, score - 50)  # Heavy penalty for "unknown_123" type names
+        clues.append("PENALTY: numeric_garbage_name")
+
+    return min(100, score), clues
+
+
+def validate_ai_result(ai_result, folder_name, info):
+    """
+    Validate AI result against input to detect hallucinations.
+    Returns (is_valid, adjusted_confidence, reason)
+
+    Key insight: AI correcting the AUTHOR is valid (folder may have wrong author).
+    Hallucination = AI invents a completely DIFFERENT BOOK (wrong title).
+    """
+    if not ai_result or not ai_result.get('title'):
+        return False, 'none', 'no_result'
+
+    ai_title = (ai_result.get('title') or '').lower()
+    ai_author = (ai_result.get('author') or '').lower()
+
+    from difflib import SequenceMatcher
+
+    # Extract potential title from folder (after author separator if present)
+    folder_title = folder_name
+    if ' - ' in folder_name:
+        parts = folder_name.split(' - ', 1)
+        folder_title = parts[1] if len(parts) > 1 else parts[0]
+    folder_title = re.sub(r'[\[\(].*?[\]\)]', '', folder_title).strip().lower()
+
+    # Title similarity - primary check
+    title_similarity = SequenceMatcher(None, ai_title, folder_title).ratio()
+
+    # Also check title words (handles translations like "Le Petit Prince" vs "The Little Prince")
+    ai_title_words = set(re.findall(r'\b[a-zA-Z]{3,}\b', ai_title))
+    folder_title_words = set(re.findall(r'\b[a-zA-Z]{3,}\b', folder_title))
+    title_word_overlap = len(ai_title_words & folder_title_words)
+
+    # Check if key title words match (excluding common words)
+    common_words = {'the', 'and', 'book', 'part', 'volume', 'novel'}
+    meaningful_ai_words = ai_title_words - common_words
+    meaningful_folder_words = folder_title_words - common_words
+    meaningful_overlap = len(meaningful_ai_words & meaningful_folder_words)
+
+    reported_confidence = ai_result.get('confidence', 'medium')
+
+    # Validation rules - focus on TITLE, not author (author correction is valid!)
+
+    # If title has good similarity OR meaningful words overlap, it's probably the same book
+    title_matches = (
+        title_similarity >= 0.4 or  # Direct similarity
+        title_word_overlap >= 2 or  # Multiple words match
+        meaningful_overlap >= 1      # At least one meaningful word matches
+    )
+
+    if title_matches:
+        # Title matches - AI may be correcting the author, which is valid
+        if title_similarity >= 0.7:
+            return True, reported_confidence, 'validated'
+        else:
+            # Lower title similarity but words match - likely translation or variant
+            logger.info(f"AI title variant accepted: '{folder_title}' -> '{ai_title}' (similarity={title_similarity:.2f}, word_overlap={title_word_overlap})")
+            return True, 'medium', 'title_variant_accepted'
+
+    # Title doesn't match - check for complete hallucination
+    # Also check against original folder name (might have title at start)
+    folder_name_lower = folder_name.lower()
+    any_ai_word_in_folder = any(word in folder_name_lower for word in meaningful_ai_words if len(word) > 3)
+
+    if title_similarity < 0.2 and not any_ai_word_in_folder:
+        # AI returned something completely different - likely hallucination
+        logger.warning(f"AI HALLUCINATION DETECTED: Input='{folder_name[:50]}' -> AI='{ai_author} - {ai_title}' (similarity={title_similarity:.2f})")
+        return False, 'none', f'hallucination_detected (similarity={title_similarity:.2f})'
+
+    # Borderline case - accept with low confidence
+    logger.info(f"AI result borderline: '{folder_title}' -> '{ai_title}' (similarity={title_similarity:.2f})")
+    return True, 'low', 'borderline_match'
+
+
 def identify_book_with_ai(file_group, config):
     """
     Use AI to identify a book from file information.
     Sends filenames, duration, and any metadata to AI for identification.
+
+    Includes hallucination prevention:
+    1. Input quality check - skip AI for garbage inputs
+    2. Strict prompt - emphasize returning null over guessing
+    3. Output validation - detect when AI invents unrelated books
     """
     if not config:
         return None
 
     files = file_group.get('files', [])
     info = file_group.get('detected_info', {})
+    folder_name = file_group.get('folder_name', '')
 
     # Build context for AI
     filenames = [Path(f).name if isinstance(f, str) else f.name for f in files[:20]]
 
-    prompt = f"""Identify this audiobook from the following information:
+    # === HALLUCINATION PREVENTION: Input quality check ===
+    input_quality, clues = calculate_input_quality(folder_name, filenames, info)
 
-Files ({len(files)} total): {', '.join(filenames[:10])}{'...' if len(filenames) > 10 else ''}
-Total duration: {info.get('duration_hours', 'unknown')} hours
-Detected album tag: {info.get('title', 'none')}
-Detected artist tag: {info.get('author', 'none')}
+    if input_quality < 25:
+        # Input is garbage - don't even try AI, it will hallucinate
+        logger.info(f"AI skipped due to low input quality ({input_quality}): {folder_name[:50]} - clues: {clues}")
+        return {'author': None, 'title': None, 'confidence': 'none', 'reason': f'insufficient_input_quality ({input_quality}/100)'}
 
-Based on this information, identify the audiobook. Return JSON:
-{{"author": "Author Name", "title": "Book Title", "series": "Series Name or null", "confidence": "high/medium/low"}}
+    # === PROMPT - Identify and CORRECT wrong metadata ===
+    prompt = f"""You are identifying an audiobook and CORRECTING wrong metadata.
 
-If you cannot identify it with reasonable confidence, return:
+IMPORTANT: The folder/artist metadata may be WRONG. Your job is to identify the REAL book and author.
+
+RULES:
+1. If you recognize the TITLE, provide the CORRECT author even if the folder says a different author
+2. Example: "James Patterson - Le Petit Prince" -> The title is "Le Petit Prince" which is by Antoine de Saint-Exupéry, NOT James Patterson. Return the correct author.
+3. Only return null if the input is truly gibberish with no recognizable book title
+4. DO NOT invent books - if input is just numbers or "unknown_123", return null
+
+Input information:
+- Folder name: {folder_name}
+- Files ({len(files)} total): {', '.join(filenames[:10])}{'...' if len(filenames) > 10 else ''}
+- Duration: {info.get('duration_hours', 'unknown')} hours
+- Album tag: {info.get('title', 'none')}
+- Artist tag: {info.get('author', 'none')}
+
+If you can identify the book (even if metadata is wrong), return:
+{{"author": "CORRECT Author Name", "title": "CORRECT Book Title", "series": "Series Name or null", "confidence": "high/medium/low"}}
+
+Only if the title is truly unrecognizable, return:
 {{"author": null, "title": null, "confidence": "none", "reason": "why"}}"""
 
     try:
-        # Use existing AI call function
-        gemini_key = None
-        secrets = load_secrets()
-        if secrets:
-            gemini_key = secrets.get('gemini_api_key')
+        # Use the provider chain for fallback support
+        ai_result = call_text_provider_chain(prompt, config)
 
-        if gemini_key:
-            response = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{config.get('gemini_model', 'gemini-2.0-flash')}:generateContent",
-                headers={'Content-Type': 'application/json'},
-                params={'key': gemini_key},
-                json={'contents': [{'parts': [{'text': prompt}]}]},
-                timeout=30
-            )
+        if ai_result and isinstance(ai_result, dict):
+            # === HALLUCINATION PREVENTION: Validate output ===
+            is_valid, adjusted_confidence, reason = validate_ai_result(ai_result, folder_name, info)
 
-            if response.status_code == 200:
-                data = response.json()
-                text = data.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+            if not is_valid:
+                logger.warning(f"AI result rejected: {reason} - Input: {folder_name[:50]}")
+                return {'author': None, 'title': None, 'confidence': 'none', 'reason': reason}
 
-                # Parse JSON from response
-                json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
-                if json_match:
-                    return json.loads(json_match.group())
+            # Apply adjusted confidence
+            ai_result['confidence'] = adjusted_confidence
+            if reason != 'validated':
+                ai_result['validation_note'] = reason
+
+            return ai_result
+
     except Exception as e:
         logger.debug(f"AI identification failed: {e}")
 
@@ -5098,14 +5988,30 @@ def handle_chaos_library(lib_path, config=None):
                 if api_result.get('series'):
                     result['series'] = api_result.get('series')
 
-            # Fall back to AI if API didn't find it
-            if not author:
+            # Fall back to AI if API didn't find it OR to verify folder metadata
+            # Bug fix: Previously only called AI when no author existed, but folder metadata
+            # can be WRONG (e.g., "James Patterson - Le Petit Prince"). AI should verify.
+            folder_author = info.get('author')  # Original author from folder name
+            needs_ai_verification = (
+                not author or  # No author found yet
+                (not api_result and folder_author)  # Have folder author but BookDB didn't confirm
+            )
+
+            if needs_ai_verification:
                 search_progress.set_status(f"BookDB no match, trying AI for '{title[:30]}...'")
                 ai_result = identify_book_with_ai(group, config)
                 if ai_result and ai_result.get('author'):
-                    author = ai_result.get('author')
-                    title = ai_result.get('title') or title
-                    confidence = ai_result.get('confidence', 'medium')
+                    ai_author = ai_result.get('author')
+                    ai_title = ai_result.get('title')
+                    ai_confidence = ai_result.get('confidence', 'medium')
+
+                    # If we had a folder author and AI disagrees, log it and use AI
+                    if folder_author and ai_author.lower() != folder_author.lower():
+                        logger.info(f"AI CORRECTED author: '{folder_author}' -> '{ai_author}' for '{title}'")
+
+                    author = ai_author
+                    title = ai_title or title
+                    confidence = ai_confidence
                     result['identification'] = 'ai'
                     search_progress.set_status(f"AI identified: {author}")
                     if ai_result.get('series'):
@@ -5565,10 +6471,8 @@ Return JSON only:
     "reasoning": "Brief explanation"
 }}"""
 
-    result = call_gemini(prompt, config)
-    if result:
-        return result
-    return None
+    # Use the provider chain for fallback support
+    return call_text_provider_chain(prompt, config)
 
 
 def smart_analyze_path(audio_file_or_folder, library_root, config):
@@ -5637,6 +6541,12 @@ def analyze_author(author):
     if author.lower() in system_folders:
         issues.append("system_folder_not_author")
         return issues  # Don't bother checking anything else
+
+    # Issue #59: Placeholder author names need identification, not verification
+    # "Unknown Author", "Various Authors", etc. should be queued for processing
+    if is_placeholder_author(author):
+        issues.append("placeholder_author")
+        return issues  # Needs identification, skip other checks
 
     # Year in author name
     if re.search(r'\b(19[0-9]{2}|20[0-2][0-9])\b', author):
@@ -6876,6 +7786,553 @@ def check_rate_limit(config):
     return allowed, calls_today, max_per_hour
 
 
+# ============================================================================
+# NEW AUDIO-FIRST IDENTIFICATION SYSTEM
+# ============================================================================
+# Philosophy: Audio content is the SOURCE OF TRUTH, not folder names.
+# The narrator literally says "This is [Book] by [Author]" in the intro.
+# We transcribe that and use AI to parse it - THEN confirm with APIs.
+# ============================================================================
+
+def transcribe_audio_intro(file_path, duration_seconds=45):
+    """
+    Transcribe the INTRO of an audiobook (first 45 seconds).
+    This is where narrators typically announce: title, author, narrator.
+    Using 45 seconds keeps file size small for Gemini API (<5MB).
+
+    Returns: transcribed text or None
+    """
+    import subprocess
+    import tempfile
+
+    logger.info(f"[LAYER 1/AUDIO] Transcribing intro: {os.path.basename(str(file_path))}")
+
+    try:
+        # Check for symlink - resolve to real file for reading
+        file_path = Path(file_path)
+        if file_path.is_symlink():
+            file_path = file_path.resolve()
+            logger.debug(f"[LAYER 1/AUDIO] Resolved symlink to: {file_path}")
+
+        # First, try faster-whisper (local, free)
+        whisper_model = get_whisper_model()
+        if whisper_model:
+            # Extract intro clip - keep high quality audio for accurate transcription
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
+                tmp_path = tmp.name
+
+            # Use -ss BEFORE -i for fast input seeking
+            # Keep 22050Hz stereo for better quality than 16kHz mono
+            result = subprocess.run([
+                'ffmpeg', '-y',
+                '-ss', '0',  # Fast seek to start
+                '-i', str(file_path),
+                '-t', str(duration_seconds),  # Extract only this duration
+                '-acodec', 'libmp3lame', '-ar', '22050', '-ab', '128k',
+                tmp_path
+            ], capture_output=True, timeout=120)  # 120s for large m4b files with moov at end
+
+            if result.returncode == 0:
+                # Build initial prompt from folder hints to help with proper noun spelling
+                # Per OpenAI: "Fictitious prompts can steer the model to use particular spellings"
+                initial_prompt = "This is an audiobook introduction. The narrator typically announces the book title, author name, and narrator."
+
+                # Add folder hints to the prompt if available
+                folder_path = Path(file_path).parent
+                folder_name = folder_path.name
+                parent_name = folder_path.parent.name if folder_path.parent else ""
+
+                # Extract potential author/title from folder structure for spelling hints
+                hints = []
+                if parent_name and parent_name not in ['audiobooks', 'Unknown', '']:
+                    hints.append(parent_name)
+                if folder_name and folder_name not in ['audiobooks', 'Unknown', '']:
+                    hints.append(folder_name)
+
+                if hints:
+                    initial_prompt += f" Possible names: {', '.join(hints)}."
+
+                # Transcribe with better settings for accuracy
+                segments, info = whisper_model.transcribe(
+                    tmp_path,
+                    beam_size=5,
+                    language="en",  # Assume English for audiobooks
+                    initial_prompt=initial_prompt,
+                    word_timestamps=False,  # Not needed, saves processing
+                    vad_filter=True,  # Filter out silence/music for cleaner transcript
+                    vad_parameters=dict(
+                        min_silence_duration_ms=2000,  # 2 seconds - narrator pauses are normal
+                        speech_pad_ms=500,              # Pad speech segments
+                        threshold=0.3                   # Lower = less aggressive filtering
+                    )
+                )
+                transcript = " ".join([seg.text for seg in segments]).strip()
+                os.unlink(tmp_path)
+
+                if transcript and len(transcript) > 20:
+                    logger.info(f"[LAYER 1/AUDIO] Transcribed {len(transcript)} chars via whisper")
+                    return transcript
+
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+
+        # Fallback: OpenAI Whisper API
+        secrets = load_secrets()
+        openai_key = secrets.get('openai_api_key') if secrets else None
+
+        if openai_key:
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
+                tmp_path = tmp.name
+
+            # Use -ss BEFORE -i for fast input seeking
+            subprocess.run([
+                'ffmpeg', '-y',
+                '-ss', '0',
+                '-i', str(file_path),
+                '-t', str(duration_seconds),
+                '-acodec', 'libmp3lame', '-ar', '16000', '-ac', '1',
+                tmp_path
+            ], capture_output=True, timeout=120)  # 120s for large m4b files
+
+            with open(tmp_path, 'rb') as audio_file:
+                response = requests.post(
+                    'https://api.openai.com/v1/audio/transcriptions',
+                    headers={'Authorization': f'Bearer {openai_key}'},
+                    files={'file': audio_file},
+                    data={'model': 'whisper-1'},
+                    timeout=90
+                )
+
+            os.unlink(tmp_path)
+
+            if response.status_code == 200:
+                transcript = response.json().get('text', '')
+                logger.info(f"[LAYER 1/AUDIO] Transcribed {len(transcript)} chars via OpenAI")
+                return transcript
+
+        # Fallback 3: Use Gemini audio understanding (not transcription, but can extract intro)
+        config = load_config()
+        gemini_key = config.get('gemini_api_key')
+        if gemini_key and not is_circuit_open('gemini'):
+            logger.info("[LAYER 1/AUDIO] Trying Gemini audio analysis as fallback")
+            rate_limit_wait('gemini')  # Respect rate limits
+            # Extract intro clip
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
+                tmp_path = tmp.name
+
+            # Use -ss BEFORE -i for fast input seeking
+            result = subprocess.run([
+                'ffmpeg', '-y',
+                '-ss', '0',
+                '-i', str(file_path),
+                '-t', str(duration_seconds),
+                '-acodec', 'libmp3lame', '-ar', '16000', '-ac', '1',
+                tmp_path
+            ], capture_output=True, timeout=120)  # 120s for large m4b files
+
+            if result.returncode == 0 and os.path.exists(tmp_path):
+                # Read audio file and encode as base64
+                import base64
+                with open(tmp_path, 'rb') as f:
+                    audio_data = base64.standard_b64encode(f.read()).decode('utf-8')
+                os.unlink(tmp_path)
+
+                # Send to Gemini with audio
+                prompt = """Listen to this audiobook intro. Write out exactly what the narrator says, word for word.
+Focus on:
+- The book title announcement
+- The author name (who WROTE the book)
+- The narrator name (who is READING the book)
+- Any series information
+
+Just write what you hear - no interpretation or formatting."""
+
+                # Force gemini-2.0-flash for audio - other models don't support audio input
+                gemini_model = 'gemini-2.0-flash'  # Audio requires this model
+                response = requests.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent",
+                    params={'key': gemini_key},
+                    json={
+                        'contents': [{
+                            'parts': [
+                                {'text': prompt},
+                                {'inline_data': {'mime_type': 'audio/mp3', 'data': audio_data}}
+                            ]
+                        }]
+                    },
+                    timeout=60
+                )
+
+                if response.status_code == 200:
+                    text = response.json().get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+                    if text and len(text) > 20:
+                        logger.info(f"[LAYER 1/AUDIO] Gemini extracted {len(text)} chars from audio")
+                        return text
+                elif response.status_code == 429:
+                    # Rate limit or quota exceeded - trip circuit breaker
+                    try:
+                        error_detail = response.json().get('error', {}).get('message', response.text[:500])
+                    except:
+                        error_detail = response.text[:500]
+                    logger.warning(f"[LAYER 1/AUDIO] Gemini audio analysis failed: {response.status_code} - {error_detail}")
+                    if 'quota' in error_detail.lower() and ('limit: 0' in error_detail or 'exceeded' in error_detail.lower()):
+                        logger.warning("[LAYER 1/AUDIO] Daily quota exhausted - tripping circuit breaker")
+                        record_api_failure('gemini')
+                        record_api_failure('gemini')  # Trip immediately
+                else:
+                    # Log full error for debugging
+                    try:
+                        error_detail = response.json().get('error', {}).get('message', response.text[:200])
+                    except:
+                        error_detail = response.text[:200]
+                    logger.warning(f"[LAYER 1/AUDIO] Gemini audio analysis failed: {response.status_code} - {error_detail}")
+            else:
+                try:
+                    os.unlink(tmp_path)
+                except:
+                    pass
+
+        logger.warning("[LAYER 1/AUDIO] No transcription method available (no whisper, no OpenAI key, Gemini failed)")
+
+    except Exception as e:
+        logger.warning(f"[LAYER 1/AUDIO] Transcription failed: {e}")
+
+    return None
+
+
+def parse_transcript_with_ai(transcript, folder_hint=None, config=None):
+    """
+    Use AI to extract structured metadata from a transcription.
+
+    The narrator typically says something like:
+    "This is The Drawing of the Three, book two of the Dark Tower series,
+     by Stephen King, narrated by Frank Muller"
+
+    Returns: dict with author, title, narrator, series, series_num, confidence
+    """
+    if not transcript or len(transcript) < 20:
+        return None
+
+    config = config or load_config()
+
+    prompt = f"""You are extracting audiobook metadata from a transcription of the book's intro.
+
+TRANSCRIPTION (first 90 seconds of audiobook):
+\"\"\"{transcript[:1500]}\"\"\"
+
+{f"FOLDER HINT (may be wrong, use only if transcript is unclear): {folder_hint}" if folder_hint else ""}
+
+The narrator usually announces the book at the start. Extract:
+1. TITLE - The book's title
+2. AUTHOR - Who WROTE the book (not the narrator!)
+3. NARRATOR - Who is READING/performing the book
+4. SERIES - Series name if mentioned (null if standalone)
+5. SERIES_NUM - Book number in series if mentioned (null if not)
+
+IMPORTANT:
+- The AUTHOR is the writer, NOT the narrator/reader
+- If narrator says "written by X" or "by X", X is the author
+- If narrator says "read by Y" or "narrated by Y", Y is the narrator
+- Many intros say "Title by Author, narrated by Narrator"
+
+Return ONLY valid JSON:
+{{"title": "Book Title", "author": "Author Name", "narrator": "Narrator Name", "series": "Series Name or null", "series_num": "1 or null", "confidence": "high/medium/low"}}
+
+If you cannot identify the book from the transcript, return:
+{{"title": null, "author": null, "narrator": null, "series": null, "series_num": null, "confidence": "none", "reason": "why"}}"""
+
+    try:
+        # Try Gemini first
+        if config.get('gemini_api_key'):
+            api_key = config.get('gemini_api_key')
+            model = config.get('gemini_model', 'gemini-2.0-flash')
+
+            response = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                params={'key': api_key},
+                json={'contents': [{'parts': [{'text': prompt}]}]},
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                text = response.json().get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+                result = parse_json_response(text)
+                if result:
+                    logger.info(f"[LAYER 1/AUDIO] AI parsed: {result.get('author', '?')} - {result.get('title', '?')}")
+                    return result
+
+        # Fallback to OpenRouter
+        if config.get('openrouter_api_key'):
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    'Authorization': f"Bearer {config['openrouter_api_key']}",
+                    'Content-Type': 'application/json'
+                },
+                json={
+                    'model': config.get('openrouter_model', 'google/gemini-flash-1.5'),
+                    'messages': [{'role': 'user', 'content': prompt}]
+                },
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                text = response.json().get('choices', [{}])[0].get('message', {}).get('content', '')
+                result = parse_json_response(text)
+                if result:
+                    logger.info(f"[LAYER 1/AUDIO] AI parsed: {result.get('author', '?')} - {result.get('title', '?')}")
+                    return result
+
+    except Exception as e:
+        logger.warning(f"[LAYER 1/AUDIO] AI parsing failed: {e}")
+
+    return None
+
+
+def process_layer_1_audio(config, limit=None):
+    """
+    NEW Layer 1: Audio Transcription + AI Parsing
+
+    Philosophy: Audio is the source of truth. Narrators announce the book.
+    1. Transcribe first 90 seconds (the intro)
+    2. AI extracts: author, title, narrator, series
+    3. High confidence → identified
+    4. Low confidence → advance to Layer 2 (audio clip analysis)
+
+    This replaces the old "trust folder names" approach.
+    """
+    batch_size = limit or config.get('batch_size', 3)
+
+    # Get items from queue
+    conn = get_db()
+    c = conn.cursor()
+
+    # Process items that haven't been through audio identification yet
+    # ALSO include 'needs_attention' items - they failed old system, might succeed with audio
+    c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
+                        b.path, b.current_author, b.current_title, b.verification_layer
+                 FROM queue q
+                 JOIN books b ON q.book_id = b.id
+                 WHERE b.verification_layer IN (0, 1)
+                   AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files')
+                   AND (b.user_locked IS NULL OR b.user_locked = 0)
+                 ORDER BY q.priority, q.added_at
+                 LIMIT ?''', (batch_size,))
+    batch = [dict(row) for row in c.fetchall()]
+    conn.close()
+
+    if not batch:
+        return 0, 0
+
+    logger.info(f"[LAYER 1/AUDIO] Processing {len(batch)} items via audio transcription")
+
+    processed = 0
+    resolved = 0
+
+    for row in batch:
+        book_path = row['path']
+        folder_hint = f"{row['current_author']} - {row['current_title']}"
+
+        # Find first audio file
+        audio_file = None
+        for ext in ['.m4b', '.mp3', '.m4a', '.flac', '.ogg']:
+            files = list(Path(book_path).glob(f'*{ext}'))
+            if files:
+                audio_file = files[0]
+                break
+
+        if not audio_file:
+            # No audio file - this is likely an ebook. Try to identify from filename + BookDB
+            filename = os.path.basename(book_path)
+            logger.debug(f"[EBOOK] No audio, trying filename + BookDB for: {filename}")
+            ebook_result = identify_ebook_from_filename(filename, book_path, config)
+
+            if ebook_result and ebook_result.get('author') and ebook_result.get('title'):
+                # Got identification from filename + BookDB!
+                author = ebook_result.get('author')
+                title = ebook_result.get('title')
+                confidence = ebook_result.get('confidence', 'medium')
+                source = ebook_result.get('source', 'bookdb')
+
+                logger.info(f"[EBOOK] Identified via {source}: {author} - {title} ({confidence})")
+
+                # Check if different from current
+                current_author = row['current_author'] or ''
+                current_title = row['current_title'] or ''
+                if author.lower() != current_author.lower() or title.lower() != current_title.lower():
+                    conn = get_db()
+                    c = conn.cursor()
+
+                    # Update book with ebook-identified info
+                    profile = {
+                        'author': {'value': author, 'source': source, 'confidence': 80 if confidence == 'high' else 50},
+                        'title': {'value': title, 'source': source, 'confidence': 80 if confidence == 'high' else 50},
+                    }
+                    if ebook_result.get('series'):
+                        profile['series'] = {'value': ebook_result['series'], 'source': source, 'confidence': 70}
+                    if ebook_result.get('series_num'):
+                        profile['series_num'] = {'value': ebook_result['series_num'], 'source': source, 'confidence': 70}
+
+                    c.execute('''UPDATE books SET status = 'pending',
+                                profile = ?, confidence = ?, verification_layer = 2
+                                WHERE id = ?''',
+                              (json.dumps(profile), 80 if confidence == 'high' else 50, row['book_id']))
+                    conn.commit()
+                    conn.close()
+
+                    # Create fix proposal
+                    create_fix_proposal(row['book_id'], author, title,
+                                      series=ebook_result.get('series'),
+                                      series_num=ebook_result.get('series_num'),
+                                      config=config)
+                    resolved += 1
+                else:
+                    # Already correct
+                    logger.info(f"[EBOOK] Already correct: {current_author}/{current_title}")
+                    conn = get_db()
+                    c = conn.cursor()
+                    c.execute('UPDATE books SET status = ?, verification_layer = 2 WHERE id = ?',
+                              ('verified', row['book_id']))
+                    conn.commit()
+                    conn.close()
+                    resolved += 1
+
+                processed += 1
+                continue
+
+            # Ebook identification failed - advance to Layer 2 for API lookups
+            logger.debug(f"[EBOOK] Filename parsing failed, advancing to Layer 2: {book_path}")
+            conn = get_db()
+            c = conn.cursor()
+            c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (row['book_id'],))
+            conn.commit()
+            conn.close()
+            processed += 1
+            continue
+
+        # === TRY BOOKDB API FIRST (GPU Whisper + 50M book database) ===
+        # This avoids Gemini rate limits and is faster
+        result = None
+        transcript = None
+
+        if config.get('use_bookdb_for_audio', True):
+            result = identify_audio_with_bookdb(audio_file)
+            if result and result.get('author') and result.get('title'):
+                # BookDB got a full identification - use it!
+                logger.info(f"[LAYER 1/AUDIO] BookDB identified: {result['author']} - {result['title']}")
+            else:
+                # BookDB didn't get a full match - might have a transcript though
+                transcript = result.get('transcript') if result else None
+                result = None  # Clear partial result to trigger AI fallback
+        else:
+            logger.info(f"[LAYER 1/AUDIO] BookDB audio disabled, using local transcription + AI")
+
+        # If no result yet, try local transcription + AI
+        if not result:
+            if not transcript:
+                # No transcript from BookDB (or BookDB disabled), do local transcription
+                transcript = transcribe_audio_intro(audio_file)
+
+            if not transcript:
+                logger.warning(f"[LAYER 1/AUDIO] Transcription failed, advancing to Layer 2: {book_path}")
+                conn = get_db()
+                c = conn.cursor()
+                # Reset status to pending if it was needs_attention - we still have more layers to try
+                c.execute('''UPDATE books SET verification_layer = 2,
+                            status = CASE WHEN status = 'needs_attention' THEN 'pending' ELSE status END
+                            WHERE id = ?''', (row['book_id'],))
+                conn.commit()
+                conn.close()
+                processed += 1
+                continue
+
+            # Parse with AI (fallback path - when BookDB disabled or didn't identify)
+            result = parse_transcript_with_ai(transcript, folder_hint, config)
+
+        if result and result.get('author') and result.get('title') and result.get('confidence') != 'none':
+            # Got identification from audio!
+            author = result.get('author')
+            title = result.get('title')
+            narrator = result.get('narrator')
+            series = result.get('series')
+            series_num = result.get('series_num')
+            confidence = result.get('confidence', 'medium')
+
+            logger.info(f"[LAYER 1/AUDIO] Identified from audio: {author} - {title} ({confidence})")
+
+            # Check if different from current (handle None values)
+            current_author = row['current_author'] or ''
+            current_title = row['current_title'] or ''
+            if author.lower() != current_author.lower() or title.lower() != current_title.lower():
+                # Needs fix - will be handled by existing fix mechanism
+                conn = get_db()
+                c = conn.cursor()
+
+                # Update book with audio-identified info
+                profile = {
+                    'author': {'value': author, 'source': 'audio_transcription', 'confidence': 85 if confidence == 'high' else 70},
+                    'title': {'value': title, 'source': 'audio_transcription', 'confidence': 85 if confidence == 'high' else 70},
+                }
+                if narrator:
+                    profile['narrator'] = {'value': narrator, 'source': 'audio_transcription', 'confidence': 80}
+                if series:
+                    profile['series'] = {'value': series, 'source': 'audio_transcription', 'confidence': 75}
+                if series_num:
+                    profile['series_num'] = {'value': str(series_num), 'source': 'audio_transcription', 'confidence': 75}
+
+                c.execute('''UPDATE books SET
+                            current_author = ?, current_title = ?,
+                            status = 'pending_fix', verification_layer = 3,
+                            profile = ?, confidence = ?
+                            WHERE id = ?''',
+                         (author, title, json.dumps(profile),
+                          85 if confidence == 'high' else 70, row['book_id']))
+
+                # Add to history
+                c.execute('''INSERT INTO history
+                            (book_id, old_author, old_title, new_author, new_title, new_narrator, new_series, new_series_num, status)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
+                         (row['book_id'], row['current_author'], row['current_title'],
+                          author, title, narrator, series, series_num))
+
+                # Remove from queue
+                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                conn.commit()
+                conn.close()
+
+                resolved += 1
+            else:
+                # Already correct!
+                conn = get_db()
+                c = conn.cursor()
+                c.execute('UPDATE books SET status = ?, verification_layer = 3 WHERE id = ?',
+                         ('verified', row['book_id']))
+                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                conn.commit()
+                conn.close()
+
+                logger.info(f"[LAYER 1/AUDIO] Already correct: {author}/{title}")
+                resolved += 1
+        else:
+            # Couldn't identify from transcript, advance to Layer 2
+            logger.info(f"[LAYER 1/AUDIO] Unclear transcript, advancing to Layer 2: {folder_hint}")
+            conn = get_db()
+            c = conn.cursor()
+            # Reset status to pending if it was needs_attention - we still have more layers to try
+            c.execute('''UPDATE books SET verification_layer = 2,
+                        status = CASE WHEN status = 'needs_attention' THEN 'pending' ELSE status END
+                        WHERE id = ?''', (row['book_id'],))
+            conn.commit()
+            conn.close()
+
+        processed += 1
+
+    logger.info(f"[LAYER 1/AUDIO] Processed {processed}, resolved {resolved} via audio transcription")
+    return processed, resolved
+
+
 def process_layer_1_api(config, limit=None):
     """
     Layer 1: API Database Lookups
@@ -6945,16 +8402,54 @@ def process_layer_1_api(config, limit=None):
         }
 
         if candidates:
-            # Sort by author match quality - prefer exact matches
-            best_match = None
+            # Issue #57 (Merijeek): Vote by author popularity across APIs
+            # If 6 APIs say "Charles Stross" and 1 says "China Mieville", Charles Stross should win
+            from collections import Counter
+
+            # Normalize author names for comparison (lowercase, strip whitespace)
+            def normalize_author(a):
+                return (a or '').lower().strip()
+
+            # Count votes for each author
+            author_votes = Counter()
+            author_to_candidate = {}  # Map normalized author -> best candidate with that author
+
             for candidate in candidates:
-                cand_author = (candidate.get('author') or '').lower()
-                if (current_author and current_author.lower() == cand_author) or is_placeholder_author(current_author):
-                    best_match = candidate
-                    break
+                norm_author = normalize_author(candidate.get('author'))
+                if norm_author and norm_author not in ['unknown', 'various', 'various authors', 'n/a', 'none']:
+                    author_votes[norm_author] += 1
+                    # Keep track of the candidate (prefer ones with series info)
+                    existing = author_to_candidate.get(norm_author)
+                    if not existing or (candidate.get('series') and not existing.get('series')):
+                        author_to_candidate[norm_author] = candidate
+
+            best_match = None
+
+            if author_votes:
+                # Get the most common author
+                most_common_author, vote_count = author_votes.most_common(1)[0]
+
+                # If current author matches the winner OR has more than 1 vote, use the winner
+                current_norm = normalize_author(current_author)
+
+                if vote_count > 1 or is_placeholder_author(current_author):
+                    # Multiple APIs agree OR current author is placeholder - trust the vote
+                    best_match = author_to_candidate.get(most_common_author)
+                    if vote_count > 1:
+                        logger.debug(f"[LAYER 1] Author vote: '{most_common_author}' won with {vote_count} votes")
+                elif current_norm == most_common_author:
+                    # Current author matches the winner - good!
+                    best_match = author_to_candidate.get(most_common_author)
+                elif current_norm in author_to_candidate:
+                    # Current author is in candidates but didn't win - still use it if only 1 vote each
+                    # This handles ties gracefully
+                    best_match = author_to_candidate.get(current_norm)
+                else:
+                    # Current author not in candidates at all - use the vote winner
+                    best_match = author_to_candidate.get(most_common_author)
 
             if not best_match:
-                best_match = candidates[0]  # Take first match as fallback
+                best_match = candidates[0]  # Ultimate fallback
 
             # Check if this is a good enough match
             match_title = best_match.get('title', '')
@@ -7055,9 +8550,14 @@ def process_layer_1_api(config, limit=None):
     return processed, resolved
 
 
-def process_queue(config, limit=None):
+def process_queue(config, limit=None, verification_layer=2):
     """
-    Process items in the queue using AI verification (Layer 2).
+    Process items in the queue using AI verification.
+
+    Args:
+        config: Configuration dict
+        limit: Max items to process
+        verification_layer: Which layer's items to process (2=AI, 4=folder fallback)
 
     NOTE: This function uses a 3-phase approach to avoid holding DB locks during
     external AI API calls (which can take 5-30+ seconds):
@@ -7084,24 +8584,24 @@ def process_queue(config, limit=None):
     if limit:
         batch_size = min(batch_size, limit)
 
-    logger.info(f"[LAYER 2/AI] process_queue called with batch_size={batch_size}, limit={limit} (API: {calls_made}/{max_calls})")
+    layer_name = "LAYER 2/AI" if verification_layer == 2 else f"LAYER {verification_layer}"
+    logger.info(f"[{layer_name}] process_queue called with batch_size={batch_size}, limit={limit}, layer={verification_layer} (API: {calls_made}/{max_calls})")
 
-    # Get batch from queue - LAYER 2 (AI): items at verification_layer=2 or legacy items (layer=0 when API is disabled)
-    # Also process layer=0 items if API lookups are disabled (fallback to AI directly)
+    # Get batch from queue - process items at specified verification_layer
     # Skip user-locked books - user has manually set metadata
     api_enabled = config.get('enable_api_lookups', True)
-    if api_enabled:
-        # Only process items that passed through Layer 1 (API)
+    if api_enabled or verification_layer == 4:
+        # Process items at specified layer (or layer 4 for folder fallback)
         c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
                             b.path, b.current_author, b.current_title,
                             b.confidence, b.profile
                      FROM queue q
                      JOIN books b ON q.book_id = b.id
-                     WHERE b.verification_layer = 2
+                     WHERE b.verification_layer = ?
                        AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
                        AND (b.user_locked IS NULL OR b.user_locked = 0)
                      ORDER BY q.priority, q.added_at
-                     LIMIT ?''', (batch_size,))
+                     LIMIT ?''', (verification_layer, batch_size))
     else:
         # API disabled - process all queue items directly with AI
         c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
@@ -7117,10 +8617,10 @@ def process_queue(config, limit=None):
     batch = [dict(row) for row in c.fetchall()]
     conn.close()  # Release DB lock BEFORE external AI call
 
-    logger.info(f"[LAYER 2/AI] Fetched {len(batch)} items from queue")
+    logger.info(f"[{layer_name}] Fetched {len(batch)} items from queue")
 
     if not batch:
-        logger.info("[DEBUG] No items in batch, returning 0")
+        logger.info(f"[{layer_name}] No items in batch, returning 0")
         return 0, 0  # (processed, fixed)
 
     # Build messy names for AI
@@ -7190,6 +8690,48 @@ def process_queue(config, limit=None):
         new_year = result.get('year')  # Publication year
         new_edition = (result.get('edition') or '').strip() or None  # Anniversary, Unabridged, etc.
         new_variant = (result.get('variant') or '').strip() or None  # Graphic Audio, Full Cast, BBC Radio
+
+        # CRITICAL: Catch AI returning literal "None" or "null" as strings
+        # This happens when AI misunderstands the JSON format or the book
+        null_strings = {'none', 'null', 'n/a', 'unknown', 'untitled', ''}
+        if new_title.lower() in null_strings:
+            logger.warning(f"AI returned invalid title '{new_title}' - treating as empty")
+            new_title = ''
+        if new_author.lower() in null_strings:
+            logger.warning(f"AI returned invalid author '{new_author}' - treating as empty")
+            new_author = ''
+
+        # CRITICAL: Detect when AI swaps author/title (common when folder has title first)
+        # If new_title looks like current_author and new_author looks like current_title, swap them
+        if new_author and new_title and row.get('current_author') and row.get('current_title'):
+            # Check if AI accidentally swapped them
+            current_author_clean = row['current_author'].lower().strip()
+            current_title_clean = row['current_title'].lower().strip()
+            new_author_clean = new_author.lower().strip()
+            new_title_clean = new_title.lower().strip()
+
+            # If new_author matches old_title and new_title matches old_author, AI swapped them
+            if (new_author_clean == current_title_clean and new_title_clean == current_author_clean):
+                logger.warning(f"AI appears to have swapped author/title, correcting: {new_author}/{new_title} -> {new_title}/{new_author}")
+                new_author, new_title = new_title, new_author
+
+        # CRITICAL: Known narrators that AI sometimes mistakes for authors
+        # These are famous audiobook narrators, NOT authors
+        known_narrators = {
+            'scott brick', 'ray porter', 'luke daniels', 'wil wheaton', 'steven pacey',
+            'tim gerard reynolds', 'r.c. bray', 'rc bray', 'nick podehl', 'simon vance',
+            'michael kramer', 'kate reading', 'january lavoy', 'rebecca soler',
+            'kirby heyborne', 'stephen fry', 'rob inglis', 'toby longworth',
+            'joe morton', 'bahni turpin', 'robin miles', 'dion graham'
+        }
+        if new_author.lower() in known_narrators:
+            # Narrator mistaken for author - flag for attention
+            logger.warning(f"AI returned narrator '{new_author}' as author - flagging for attention")
+            c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                     ('needs_attention', f"AI returned narrator '{new_author}' as author - needs manual review", row['book_id']))
+            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+            processed += 1
+            continue
 
         # Auto-save narrator to BookDB if we found one
         if new_narrator:
@@ -7261,6 +8803,7 @@ def process_queue(config, limit=None):
                 # No prior verification AND AI couldn't identify - needs attention, not blind trust
                 # The folder name might have typos or be completely wrong
                 logger.info(f"Needs attention (AI empty, no prior verification): {row['current_author']}/{row['current_title']}")
+                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))  # Fix: remove from queue
                 c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
                          ('needs_attention', f"AI could not verify - folder may have typos or incorrect metadata", row['book_id']))
             processed += 1
@@ -7932,13 +9475,16 @@ def process_queue(config, limit=None):
     return processed, fixed
 
 
-def process_layer_3_audio(config, limit=None):
+def process_layer_3_audio(config, limit=None, verification_layer=3):
     """
-    Layer 3: Audio Analysis
+    Layer 2/3: Audio Analysis
 
-    Processes items at verification_layer=3 using Gemini audio analysis.
-    This is the most expensive layer - extracts metadata from audiobook intros.
+    Processes items at specified verification_layer using Gemini audio analysis.
+    This is an expensive layer - extracts metadata from audiobook intros.
     Items that still can't be identified are marked as 'needs_attention'.
+
+    Args:
+        verification_layer: Which layer to process (2 for unclear L1 results, 3 for API failures)
 
     NOTE: This function uses a 3-phase approach to avoid holding DB locks during
     expensive Gemini audio analysis calls (which can take 10-30+ seconds per item):
@@ -7956,23 +9502,30 @@ def process_layer_3_audio(config, limit=None):
         logger.info("[LAYER 3] No Gemini API key for audio analysis, skipping")
         return 0, 0
 
+    # Check Gemini circuit breaker - don't process if Gemini is unavailable
+    if is_circuit_open('gemini'):
+        cb = API_CIRCUIT_BREAKER.get('gemini', {})
+        remaining = int(cb.get('circuit_open_until', 0) - time.time())
+        logger.info(f"[LAYER 3] Gemini circuit breaker open ({remaining}s remaining), pausing audio analysis")
+        return 0, 0  # Return 0,0 to signal caller to wait
+
     # === PHASE 1: Fetch batch (quick read, release connection immediately) ===
     conn = get_db()
     c = conn.cursor()
 
     batch_size = limit or config.get('batch_size', 3)
 
-    # Get items awaiting audio analysis (layer 3)
+    # Get items awaiting audio analysis at specified verification layer
     # Skip user-locked books - user has manually set metadata
     c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
                         b.path, b.current_author, b.current_title
                  FROM queue q
                  JOIN books b ON q.book_id = b.id
-                 WHERE b.verification_layer = 3
+                 WHERE b.verification_layer = ?
                    AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
                    AND (b.user_locked IS NULL OR b.user_locked = 0)
                  ORDER BY q.priority, q.added_at
-                 LIMIT ?''', (batch_size,))
+                 LIMIT ?''', (verification_layer, batch_size,))
     # Convert to dicts immediately - sqlite3.Row objects become invalid after conn.close()
     batch = [dict(row) for row in c.fetchall()]
     conn.close()  # Release DB lock BEFORE expensive audio analysis
@@ -8005,9 +9558,47 @@ def process_layer_3_audio(config, limit=None):
         audio_result = analyze_audio_for_credits(str(book_path), config)
 
         if audio_result and audio_result.get('author') and audio_result.get('title'):
-            # Audio analysis succeeded
+            # Audio analysis succeeded - but validate the response isn't garbage
             new_author = audio_result.get('author', '')
             new_title = audio_result.get('title', '')
+
+            # VALIDATION: Reject obviously bad AI responses
+            is_garbage = False
+            garbage_reason = None
+
+            # Check for garbage titles (too short, sentence fragments, etc.)
+            if len(new_title) < 3:
+                is_garbage = True
+                garbage_reason = f"Title too short: '{new_title}'"
+            elif new_title.lower().startswith(('the ', 'a ', 'an ')) and len(new_title) < 10:
+                is_garbage = True
+                garbage_reason = f"Title looks like fragment: '{new_title}'"
+            elif len(new_title.split()) > 15:
+                is_garbage = True
+                garbage_reason = f"Title too long (looks like AI rambling): '{new_title[:50]}...'"
+            elif any(phrase in new_title.lower() for phrase in ['presents', 'division of', 'recorded books', 'audio', 'penguin', 'random house', 'tantor']):
+                is_garbage = True
+                garbage_reason = f"Title contains publisher/format text: '{new_title[:50]}'"
+
+            # Check for garbage authors
+            if not is_garbage:
+                if len(new_author) < 2:
+                    is_garbage = True
+                    garbage_reason = f"Author too short: '{new_author}'"
+                elif len(new_author.split()) > 6:
+                    is_garbage = True
+                    garbage_reason = f"Author too long (looks like AI rambling): '{new_author[:50]}...'"
+                elif any(phrase in new_author.lower() for phrase in ['written and read', 'presents', 'narrated by', 'audio', 'publisher']):
+                    is_garbage = True
+                    garbage_reason = f"Author contains non-name text: '{new_author[:50]}'"
+
+            if is_garbage:
+                logger.warning(f"[LAYER 3] Rejecting garbage AI response: {garbage_reason}")
+                analysis_results.append((row, 'failed', {
+                    'log_message': f"[LAYER 3] AI returned garbage, marking needs attention: {path}"
+                }))
+                continue
+
             new_narrator = audio_result.get('narrator', '')
             new_series = audio_result.get('series', '')
             new_series_num = audio_result.get('series_num')
@@ -8533,12 +10124,15 @@ worker_running = False
 processing_status = {"active": False, "processed": 0, "total": 0, "current": "", "errors": []}
 
 def process_all_queue(config):
-    """Process ALL items in the queue in batches, respecting rate limits.
+    """Process ALL items in the queue using AUDIO-FIRST identification.
 
-    Uses layered processing:
-    - Layer 1: API database lookups (fast, free)
-    - Layer 2: AI verification (slower, rate-limited)
-    - Layer 3: Audio analysis (slowest, expensive)
+    NEW layered processing (audio is source of truth):
+    - Layer 1: Audio transcription + AI parsing (narrator announces the book)
+    - Layer 2: AI audio clip analysis (if transcription unclear)
+    - Layer 3: API enrichment (add series, year, etc. - NOT identification)
+    - Layer 4: Folder name fallback (last resort, low confidence)
+
+    Philosophy: The audio content IS the book. Folder names can be wrong.
     """
     global processing_status
 
@@ -8553,61 +10147,137 @@ def process_all_queue(config):
         return 0, 0  # (total_processed, total_fixed)
 
     # Calculate delay between batches based on rate limit
-    max_per_hour = config.get('max_requests_per_hour', 30)
-    # Spread requests across the hour: 3600 seconds / max_requests
-    min_delay = max(2, 3600 // max_per_hour)  # At least 2 seconds
+    user_max = config.get('max_requests_per_hour', 30)
+    max_per_hour = max(10, min(user_max, 500))
+    min_delay = max(2, 3600 // max_per_hour)
     logger.info(f"Rate limit: {max_per_hour}/hour, delay between batches: {min_delay}s")
 
     processing_status = {"active": True, "processed": 0, "total": total, "current": "", "errors": [], "layer": 1}
-    logger.info(f"=== STARTING LAYERED PROCESSING: {total} items in queue ===")
+    logger.info(f"=== STARTING AUDIO-FIRST PROCESSING: {total} items in queue ===")
 
-    # LAYER 1: API lookups (fast, no rate limit concerns)
-    if config.get('enable_api_lookups', True):
-        logger.info("=== LAYER 1: API Database Lookups ===")
-        processing_status["layer"] = 1
-        processing_status["current"] = "Layer 1: API lookups"
-        layer1_processed = 0
-        while True:
-            processed, resolved = process_layer_1_api(config)
-            if processed == 0:
-                break
-            layer1_processed += processed
-            processing_status["processed"] = layer1_processed
-            time.sleep(0.5)  # Small delay between batches
-        logger.info(f"Layer 1 complete: {layer1_processed} items processed via API")
-
-    # LAYER 2: AI Verification (rate-limited)
-    logger.info("=== LAYER 2: AI Verification ===")
-    processing_status["layer"] = 2
-    processing_status["current"] = "Layer 2: AI verification"
+    # Issue #62: Clean up stuck queue items (needs_attention or verified items shouldn't be in queue)
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''DELETE FROM queue WHERE book_id IN (
+                    SELECT b.id FROM books b WHERE b.status IN ('needs_attention', 'verified', 'fixed')
+                 )''')
+    cleaned = c.rowcount
+    if cleaned > 0:
+        logger.info(f"Cleaned {cleaned} stuck items from queue (already needs_attention/verified/fixed)")
+        total -= cleaned
+    conn.commit()
+    conn.close()
 
     total_processed = 0
     total_fixed = 0
+
+    # NEW LAYER 1: Audio Transcription (narrator announces the book)
+    # This is now the PRIMARY identification method
+    if config.get('enable_audio_identification', True):  # New setting, defaults to True
+        logger.info("=== LAYER 1: Audio Transcription + AI Parsing ===")
+        processing_status["layer"] = 1
+        processing_status["current"] = "Layer 1: Audio transcription"
+        layer1_processed = 0
+        layer1_resolved = 0
+        while True:
+            processed, resolved = process_layer_1_audio(config)
+            if processed == 0:
+                break
+            layer1_processed += processed
+            layer1_resolved += resolved
+            processing_status["processed"] = layer1_processed
+            time.sleep(2)  # Audio processing needs more time
+        logger.info(f"Layer 1 complete: {layer1_processed} items processed, {layer1_resolved} resolved via audio")
+        total_processed += layer1_processed
+        total_fixed += layer1_resolved
+
+    # LAYER 2: AI Audio Clip Analysis (if transcription was unclear)
+    # Sends a longer audio sample to AI for deeper analysis
+    if config.get('enable_audio_analysis', False):
+        logger.info("=== LAYER 2: AI Audio Clip Analysis (for unclear L1 results) ===")
+        processing_status["layer"] = 2
+        processing_status["current"] = "Layer 2: AI audio analysis"
+        layer2_processed = 0
+        layer2_resolved = 0
+        circuit_wait_count = 0
+        while True:
+            # Check if Gemini circuit breaker is open - wait instead of skipping
+            if is_circuit_open('gemini'):
+                cb = API_CIRCUIT_BREAKER.get('gemini', {})
+                remaining = int(cb.get('circuit_open_until', 0) - time.time())
+                if remaining > 0:
+                    circuit_wait_count += 1
+                    wait_time = min(remaining, 60)  # Wait max 60s at a time
+                    logger.info(f"[LAYER 2] Gemini circuit breaker open, waiting {wait_time}s ({remaining}s total remaining)")
+                    processing_status["current"] = f"Layer 2: Waiting for Gemini ({remaining}s)"
+                    time.sleep(wait_time)
+                    if circuit_wait_count > 30:  # Give up after ~30 minutes of waiting
+                        logger.warning("[LAYER 2] Gemini unavailable too long, moving to next layer")
+                        break
+                    continue
+
+            processed, resolved = process_layer_3_audio(config, verification_layer=2)  # Process Layer 2 items
+            if processed == 0:
+                break
+            circuit_wait_count = 0  # Reset wait count on successful processing
+            layer2_processed += processed
+            layer2_resolved += resolved
+            total_processed += processed
+            total_fixed += resolved
+            processing_status["processed"] = total_processed
+            time.sleep(2)  # Audio processing needs more time
+        logger.info(f"Layer 2 complete: {layer2_processed} items processed, {layer2_resolved} resolved via AI audio")
+
+    # LAYER 3: API Enrichment (NOT identification - add series, year, description, etc.)
+    # At this point we should know the book - now we enrich it with metadata
+    if config.get('enable_api_lookups', True):
+        logger.info("=== LAYER 3: API Enrichment (adding metadata to identified books) ===")
+        processing_status["layer"] = 3
+        processing_status["current"] = "Layer 3: API enrichment"
+        layer3_processed = 0
+        while True:
+            processed, resolved = process_layer_1_api(config)  # Existing API lookup
+            if processed == 0:
+                break
+            layer3_processed += processed
+            total_processed += processed
+            processing_status["processed"] = total_processed
+            time.sleep(0.5)  # APIs are fast
+        logger.info(f"Layer 3 complete: {layer3_processed} items enriched via API")
+
+    # LAYER 4: Folder Name Fallback (LAST RESORT - low confidence)
+    # Only used when audio-based identification completely failed
+    # Folder names CAN be wrong - this is why confidence is set LOW
+    logger.info("=== LAYER 4: Folder Name Fallback (last resort, low confidence) ===")
+    processing_status["layer"] = 4
+    processing_status["current"] = "Layer 4: Folder fallback"
+
     batch_num = 0
     rate_limit_hits = 0
-    empty_batch_count = 0  # Track consecutive empty batches to avoid infinite loop
+    empty_batch_count = 0
+    layer4_processed = 0
+    layer4_fixed = 0
 
     while True:
-        # Reload config each batch so settings changes take effect immediately
         config = load_config()
 
-        # Check rate limit before processing
         allowed, calls_made, max_calls = check_rate_limit(config)
         if not allowed:
             rate_limit_hits += 1
-            wait_time = min(300 * rate_limit_hits, 1800)  # 5 min, 10 min, 15 min... max 30 min
-            logger.info(f"Rate limit reached ({calls_made}/{max_calls}), waiting {wait_time//60} minutes... (hit #{rate_limit_hits})")
-            processing_status["current"] = f"Rate limited, waiting {wait_time//60}min... ({calls_made}/{max_calls})"
+            wait_time = min(300 * rate_limit_hits, 1800)
+            logger.info(f"Rate limit reached ({calls_made}/{max_calls}), waiting {wait_time//60} minutes...")
+            processing_status["current"] = f"Rate limited, waiting {wait_time//60}min..."
             time.sleep(wait_time)
             continue
 
         batch_num += 1
-        logger.info(f"--- Processing batch {batch_num} (API: {calls_made}/{max_calls}) ---")
+        logger.info(f"--- Layer 4 batch {batch_num} (API: {calls_made}/{max_calls}) ---")
 
-        processed, fixed = process_queue(config)
+        # process_queue uses AI to verify folder-based guesses
+        # At this point, we're trusting folder names as a last resort
+        processed, fixed = process_queue(config, verification_layer=4)
 
         if processed == 0:
-            # Check if queue is actually empty or if there was an error
             conn = get_db()
             c = conn.cursor()
             c.execute('SELECT COUNT(*) as count FROM queue')
@@ -8619,59 +10289,23 @@ def process_all_queue(config):
                 break
             else:
                 empty_batch_count += 1
-                # Could be rate limit, API error, or remaining items are at Layer 3
                 logger.warning(f"No items processed but {remaining} remain (attempt {empty_batch_count}/3)")
                 if empty_batch_count >= 3:
-                    # Items may be at Layer 3 or otherwise not processable by Layer 2
-                    logger.info(f"Layer 2 cannot process remaining {remaining} items, advancing to Layer 3")
+                    logger.info(f"Layer 4 cannot process remaining {remaining} items")
                     break
-                processing_status["errors"].append(f"Batch {batch_num}: No items processed, {remaining} remain")
-                # Wait and retry
                 time.sleep(10)
                 continue
 
-        empty_batch_count = 0  # Reset on successful processing
+        empty_batch_count = 0
+        layer4_processed += processed
+        layer4_fixed += fixed
         total_processed += processed
         total_fixed += fixed
         processing_status["processed"] = total_processed
-        processing_status["current"] = f"Layer 2 Batch {batch_num}: {processed} processed"
-        logger.info(f"Layer 2 Batch {batch_num} complete: {processed} processed, {fixed} fixed, {total_processed}/{total} total")
-
-        # Rate limiting delay between batches
-        logger.debug(f"Waiting {min_delay}s before next batch...")
+        logger.info(f"Layer 4 Batch {batch_num}: {processed} processed, {fixed} fixed")
         time.sleep(min_delay)
 
-    # LAYER 3: Audio analysis (expensive, for items that passed through AI without resolution)
-    if config.get('enable_audio_analysis', False):
-        logger.info("=== LAYER 3: Audio Analysis ===")
-        processing_status["layer"] = 3
-        processing_status["current"] = "Layer 3: Audio analysis"
-        layer3_processed = 0
-        while True:
-            processed, resolved = process_layer_3_audio(config)
-            if processed == 0:
-                break
-            layer3_processed += processed
-            total_processed += processed
-            processing_status["processed"] = total_processed
-            time.sleep(2)  # Longer delay for audio analysis (expensive)
-        logger.info(f"Layer 3 complete: {layer3_processed} items processed via audio")
-
-    # LAYER 4: Content analysis (final resort - analyzes story content to identify books)
-    if config.get('enable_audio_analysis', False):  # Uses same setting as Layer 3
-        logger.info("=== LAYER 4: Content Analysis ===")
-        processing_status["layer"] = 4
-        processing_status["current"] = "Layer 4: Content analysis"
-        layer4_processed = 0
-        while True:
-            processed, resolved = process_layer_4_content(config)
-            if processed == 0:
-                break
-            layer4_processed += processed
-            total_processed += processed
-            processing_status["processed"] = total_processed
-            time.sleep(3)  # Longer delay for content analysis (most expensive)
-        logger.info(f"Layer 4 complete: {layer4_processed} items processed via content analysis")
+    logger.info(f"Layer 4 complete: {layer4_processed} items processed, {layer4_fixed} fixed via folder fallback")
 
     processing_status["active"] = False
     processing_status["layer"] = 0
@@ -8777,10 +10411,17 @@ def move_to_output_folder(source_path: str, output_folder: str, author: str, tit
     safe_series = sanitize_path_component(series) if series else None
 
     # Build destination path with series support (Issue #57)
-    # Format: output/Author/Series/# - Title or output/Author/Title
+    # Format: output/Author/Series/## - Title or output/Author/Title
+    # Merijeek: ABS compatibility - pad single-digit numbers
     if safe_series:
         if series_num:
-            title_folder = f"{series_num} - {safe_title}"
+            # Zero-pad series numbers for ABS compatibility
+            try:
+                num = float(str(series_num).replace(',', '.'))
+                formatted_num = f"{int(num):02d}" if num == int(num) else str(series_num)
+            except (ValueError, TypeError):
+                formatted_num = str(series_num)
+            title_folder = f"{formatted_num} - {safe_title}"
         else:
             title_folder = safe_title
         dest_folder = output / safe_author / safe_series / title_folder
@@ -9471,7 +11112,9 @@ def settings_page():
         config['ollama_model'] = request.form.get('ollama_model', 'llama3.2:3b').strip()
         config['scan_interval_hours'] = int(request.form.get('scan_interval_hours', 6))
         config['batch_size'] = int(request.form.get('batch_size', 3))
-        config['max_requests_per_hour'] = int(request.form.get('max_requests_per_hour', 30))
+        # Clamp rate limit to safe range (10-500) to prevent API bans
+        user_rate = int(request.form.get('max_requests_per_hour', 30))
+        config['max_requests_per_hour'] = max(10, min(user_rate, 500))
         config['auto_fix'] = 'auto_fix' in request.form
         config['trust_the_process'] = 'trust_the_process' in request.form
         config['protect_author_changes'] = 'protect_author_changes' in request.form
@@ -9483,6 +11126,7 @@ def settings_page():
         config['enable_api_lookups'] = 'enable_api_lookups' in request.form
         config['enable_ai_verification'] = 'enable_ai_verification' in request.form
         config['enable_audio_analysis'] = 'enable_audio_analysis' in request.form
+        config['use_bookdb_for_audio'] = 'use_bookdb_for_audio' in request.form
         config['deep_scan_mode'] = 'deep_scan_mode' in request.form
         config['profile_confidence_threshold'] = int(request.form.get('profile_confidence_threshold', 85))
         config['skip_confirmations'] = 'skip_confirmations' in request.form
@@ -9495,7 +11139,7 @@ def settings_page():
         config['preferred_language'] = request.form.get('preferred_language', 'en')
         config['preserve_original_titles'] = 'preserve_original_titles' in request.form
         config['detect_language_from_audio'] = 'detect_language_from_audio' in request.form
-        config['google_books_api_key'] = request.form.get('google_books_api_key', '').strip() or None
+        # google_books_api_key is now stored in secrets only (security fix)
         config['update_channel'] = request.form.get('update_channel', 'stable')
         config['naming_format'] = request.form.get('naming_format', 'author/title')
         config['custom_naming_template'] = request.form.get('custom_naming_template', '{author}/{title}').strip()
@@ -9510,18 +11154,40 @@ def settings_page():
         # Author initials setting (Issue #54)
         config['standardize_author_initials'] = 'standardize_author_initials' in request.form
 
+        # Provider chain settings - parse comma-separated values into lists
+        audio_chain_str = request.form.get('audio_provider_chain', 'bookdb,gemini').strip()
+        config['audio_provider_chain'] = [p.strip() for p in audio_chain_str.split(',') if p.strip()]
+        text_chain_str = request.form.get('text_provider_chain', 'gemini,openrouter').strip()
+        config['text_provider_chain'] = [p.strip() for p in text_chain_str.split(',') if p.strip()]
+
         # Save config (without secrets)
         save_config(config)
 
         # Save secrets separately (preserving existing secrets like abs_api_token)
+        # Only update API keys if user provided a new value (security: keys are no longer in HTML)
         secrets = load_secrets()
-        secrets['openrouter_api_key'] = request.form.get('openrouter_api_key', '')
-        secrets['gemini_api_key'] = request.form.get('gemini_api_key', '')
+        new_openrouter_key = request.form.get('openrouter_api_key', '').strip()
+        new_gemini_key = request.form.get('gemini_api_key', '').strip()
+        new_google_books_key = request.form.get('google_books_api_key', '').strip()
+
+        # Only overwrite existing keys if user entered a new value
+        if new_openrouter_key:
+            secrets['openrouter_api_key'] = new_openrouter_key
+        if new_gemini_key:
+            secrets['gemini_api_key'] = new_gemini_key
+        if new_google_books_key:
+            secrets['google_books_api_key'] = new_google_books_key
         save_secrets(secrets)
 
         return redirect(url_for('settings_page'))
 
     config = load_config()
+    secrets = load_secrets()
+    # Pass key existence flags (not actual values) to template for UI indicators
+    # SECURITY: Never pass actual API keys to templates - only boolean existence flags
+    config['gemini_api_key'] = bool(secrets.get('gemini_api_key', ''))
+    config['openrouter_api_key'] = bool(secrets.get('openrouter_api_key', ''))
+    config['google_books_api_key'] = bool(secrets.get('google_books_api_key', ''))
     return render_template('settings.html', config=config, version=APP_VERSION)
 
 
@@ -9682,23 +11348,44 @@ def api_install_whisper():
     import sys
 
     try:
-        # Install faster-whisper
+        # Ensure pip cache and user install directories exist and are writable
+        # This handles Docker containers where /app/.local may not exist
+        pip_cache = os.path.join(os.path.dirname(__file__), '.cache', 'pip')
+        pip_local = os.path.join(os.path.dirname(__file__), '.local')
+        os.makedirs(pip_cache, exist_ok=True)
+        os.makedirs(pip_local, exist_ok=True)
+
+        # Set up environment for pip to use our directories
+        env = os.environ.copy()
+        env['HOME'] = os.path.dirname(__file__)  # /app
+        env['PIP_CACHE_DIR'] = pip_cache
+        env['PYTHONUSERBASE'] = pip_local
+
+        # Install faster-whisper with --user flag to install to PYTHONUSERBASE
         result = subprocess.run(
-            [sys.executable, '-m', 'pip', 'install', 'faster-whisper'],
+            [sys.executable, '-m', 'pip', 'install', '--user', 'faster-whisper'],
             capture_output=True,
             text=True,
-            timeout=300  # 5 minute timeout
+            timeout=300,  # 5 minute timeout
+            env=env
         )
 
         if result.returncode == 0:
+            # Add user site-packages to path if not already there
+            user_site = os.path.join(pip_local, 'lib', f'python{sys.version_info.major}.{sys.version_info.minor}', 'site-packages')
+            if user_site not in sys.path:
+                sys.path.insert(0, user_site)
+
             return jsonify({
                 'success': True,
-                'message': 'faster-whisper installed successfully'
+                'message': 'faster-whisper installed successfully. Refresh the page to use it.'
             })
         else:
+            error_msg = result.stderr[:500] if result.stderr else 'Unknown error'
+            logger.error(f"[WHISPER] Install failed: {error_msg}")
             return jsonify({
                 'success': False,
-                'error': result.stderr[:500] if result.stderr else 'Unknown error'
+                'error': f'Install failed: {error_msg}'
             })
 
     except subprocess.TimeoutExpired:
@@ -9707,6 +11394,7 @@ def api_install_whisper():
             'error': 'Installation timed out after 5 minutes'
         })
     except Exception as e:
+        logger.error(f"[WHISPER] Install error: {e}")
         return jsonify({
             'success': False,
             'error': str(e)
@@ -12062,6 +13750,44 @@ def api_test_bookdb():
         })
 
 
+@app.route('/api/clear_api_key', methods=['POST'])
+def api_clear_api_key():
+    """Clear a specific API key from secrets."""
+    data = request.get_json() or {}
+    key_name = data.get('key_name', '')
+
+    # Whitelist of allowed keys to clear
+    allowed_keys = ['gemini_api_key', 'openrouter_api_key', 'google_books_api_key']
+
+    if key_name not in allowed_keys:
+        return jsonify({
+            'success': False,
+            'error': f'Invalid key name: {key_name}'
+        })
+
+    try:
+        secrets = load_secrets()
+        if key_name in secrets:
+            del secrets[key_name]
+            save_secrets(secrets)
+            logger.info(f"Cleared API key: {key_name}")
+            return jsonify({
+                'success': True,
+                'message': f'{key_name} has been removed'
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'message': f'{key_name} was not configured'
+            })
+    except Exception as e:
+        logger.error(f"Error clearing API key {key_name}: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+
+
 @app.route('/api/test_gemini', methods=['POST'])
 def api_test_gemini():
     """Test Gemini API connection."""
@@ -13122,8 +14848,10 @@ def api_manual_match():
             conn.close()
             return jsonify({'success': False, 'error': 'Could not build valid path for this metadata'})
 
-        # Delete any existing pending entries for this book
-        c.execute("DELETE FROM history WHERE book_id = ? AND status = 'pending_fix'", (book_id,))
+        # Issue #57: Delete any existing pending/error/needs_attention entries for this book
+        # When user manually matches, the old entries are superseded by the new fix
+        # Also clear duplicate/corrupt_dest errors (Merijeek: manual fix should clear ALL error states)
+        c.execute("DELETE FROM history WHERE book_id = ? AND status IN ('pending_fix', 'error', 'needs_attention', 'duplicate', 'corrupt_dest')", (book_id,))
 
         # Insert as pending fix in history (like process_queue does)
         c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
@@ -13274,8 +15002,10 @@ def api_edit_book():
             conn.close()
             return jsonify({'success': False, 'error': 'Could not build valid path for this metadata'})
 
-        # Delete any existing pending entries for this book
-        c.execute("DELETE FROM history WHERE book_id = ? AND status = 'pending_fix'", (book_id,))
+        # Issue #57: Delete any existing pending/error/needs_attention entries for this book
+        # When user manually edits, the old entries are superseded by the new fix
+        # Also clear duplicate/corrupt_dest errors (Merijeek: manual fix should clear ALL error states)
+        c.execute("DELETE FROM history WHERE book_id = ? AND status IN ('pending_fix', 'error', 'needs_attention', 'duplicate', 'corrupt_dest')", (book_id,))
 
         # Insert/update as pending fix
         c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
@@ -13474,7 +15204,18 @@ def api_backup_info():
 
 # ============== MAIN ==============
 
+def _setup_user_packages():
+    """Add user site-packages to path for runtime-installed packages (like Whisper)."""
+    # This allows packages installed via /api/install-whisper to be found
+    pip_local = os.path.join(os.path.dirname(__file__), '.local')
+    user_site = os.path.join(pip_local, 'lib', f'python{sys.version_info.major}.{sys.version_info.minor}', 'site-packages')
+    if os.path.isdir(user_site) and user_site not in sys.path:
+        sys.path.insert(0, user_site)
+        logger.debug(f"Added user site-packages to path: {user_site}")
+
+
 if __name__ == '__main__':
+    _setup_user_packages()  # Allow runtime-installed packages (Issue #63)
     migrate_legacy_config()  # Migrate from old location if needed (Issue #23)
     init_config()  # Create config files if they don't exist
     init_db()

@@ -83,11 +83,11 @@
                         <small class="text-muted">{{ h.old_title }}</small>
                     </td>
                     <td><i class="bi bi-arrow-right text-info"></i></td>
-                    <td title="{{ h.new_path }}">
-                        {% set path_parts = h.new_path.split('/') %}
+                    <td title="{{ h.new_path or '' }}">
+                        {% set path_parts = (h.new_path or '').split('/') %}
                         {% set rel_path = '/'.join(path_parts[-3:]) if path_parts|length >= 7 else '/'.join(path_parts[-2:]) %}
-                        <strong class="text-success">{{ h.new_author }}</strong><br>
-                        <small class="text-info">{{ rel_path }}</small>
+                        <strong class="text-success">{{ h.new_author or h.old_author }}</strong><br>
+                        <small class="text-info">{{ rel_path or h.new_title or 'N/A' }}</small>
                     </td>
                     <td>
                         {% if h.user_locked %}

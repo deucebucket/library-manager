@@ -32,6 +32,15 @@ if [ "$PUID" != "0" ] && [ "$PGID" != "0" ]; then
     touch /app/app.log 2>/dev/null || true
     chown "$PUID:$PGID" /app/app.log 2>/dev/null || true
 
+    # Create pip user install directory (for runtime package installs like Whisper)
+    mkdir -p /app/.local /app/.cache/pip
+    chown -R "$PUID:$PGID" /app/.local /app/.cache 2>/dev/null || true
+
+    # Set umask for proper folder permissions (Merijeek: Unraid compatibility)
+    # 002 = owner and group can read/write, others can read only
+    # This ensures created folders/files are accessible to the group
+    umask 002
+
     # Run as the specified user
     exec gosu appuser python app.py
 else

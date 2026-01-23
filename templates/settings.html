@@ -169,7 +169,6 @@
                     <div class="card mb-3">
                         <div class="card-header py-2">
                             <i class="bi bi-eye"></i> Watch Folder
-                            <span class="badge bg-info float-end">NEW</span>
                         </div>
                         <div class="card-body">
                             <div class="form-check form-switch mb-2">
@@ -295,7 +294,8 @@
                             <div class="mb-0">
                                 <label class="form-label small">Max API Calls/Hour</label>
                                 <input type="number" class="form-control form-control-sm bg-dark text-light" name="max_requests_per_hour"
-                                       value="{{ config.max_requests_per_hour }}" min="1" max="500" style="max-width: 120px;">
+                                       value="{{ config.max_requests_per_hour }}" min="10" max="500" style="max-width: 120px;">
+                                <small class="text-muted">Range: 10-500 (prevents API rate limiting)</small>
                             </div>
                         </div>
                     </div>
@@ -370,6 +370,17 @@
                                 </label>
                             </div>
 
+                            <!-- BookDB Audio sub-option -->
+                            <div class="form-check form-switch mb-2 ms-4">
+                                <input class="form-check-input" type="checkbox" name="use_bookdb_for_audio"
+                                       id="use_bookdb_for_audio" {% if config.use_bookdb_for_audio is not defined or config.use_bookdb_for_audio %}checked{% endif %}>
+                                <label class="form-check-label" for="use_bookdb_for_audio">
+                                    <i class="bi bi-cloud-arrow-up text-primary"></i> Use BookDB for Audio ID
+                                    <span class="badge bg-success">Recommended</span>
+                                    <br><small class="text-muted">GPU Whisper + 50M book database (faster, no rate limits). Disable to use your own AI/Whisper.</small>
+                                </label>
+                            </div>
+
                             <div class="form-check form-switch mb-0">
                                 <input class="form-check-input" type="checkbox" name="enable_content_analysis"
                                        id="enable_content_analysis" {% if config.enable_content_analysis %}checked{% endif %}
@@ -441,10 +452,17 @@
                                     <label class="form-label">Gemini API Key</label>
                                     <div class="input-group">
                                         <input type="password" class="form-control bg-dark text-light" name="gemini_api_key" id="gemini_api_key"
-                                               value="{{ config.gemini_api_key or '' }}" placeholder="AIza...">
+                                               value="" placeholder="{% if config.gemini_api_key %}Key configured (enter new to replace){% else %}AIza...{% endif %}"
+                                               data-has-key="{{ 'true' if config.gemini_api_key else 'false' }}">
                                         <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('gemini_api_key')" title="Show/hide key">
                                             <i class="bi bi-eye"></i>
                                         </button>
+                                        {% if config.gemini_api_key %}
+                                        <span class="input-group-text bg-success text-white" id="gemini-key-check"><i class="bi bi-check"></i></span>
+                                        <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('gemini_api_key')" title="Remove key">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                        {% endif %}
                                     </div>
                                     <small class="text-muted">Free at <a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a></small>
                                 </div>
@@ -464,10 +482,17 @@
                                     <label class="form-label">OpenRouter API Key</label>
                                     <div class="input-group">
                                         <input type="password" class="form-control bg-dark text-light" name="openrouter_api_key" id="openrouter_api_key"
-                                               value="{{ config.openrouter_api_key or '' }}" placeholder="sk-or-v1-...">
+                                               value="" placeholder="{% if config.openrouter_api_key %}Key configured (enter new to replace){% else %}sk-or-v1-...{% endif %}"
+                                               data-has-key="{{ 'true' if config.openrouter_api_key else 'false' }}">
                                         <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('openrouter_api_key')" title="Show/hide key">
                                             <i class="bi bi-eye"></i>
                                         </button>
+                                        {% if config.openrouter_api_key %}
+                                        <span class="input-group-text bg-success text-white" id="openrouter-key-check"><i class="bi bi-check"></i></span>
+                                        <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('openrouter_api_key')" title="Remove key">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                        {% endif %}
                                     </div>
                                     <small class="text-muted">Get at <a href="https://openrouter.ai" target="_blank">openrouter.ai</a></small>
                                 </div>
@@ -531,11 +556,121 @@
                                 <label class="form-label small">Google Books API Key <span class="text-muted">(optional)</span></label>
                                 <div class="input-group input-group-sm">
                                     <input type="password" class="form-control bg-dark text-light" name="google_books_api_key" id="google_books_api_key"
-                                           value="{{ config.google_books_api_key or '' }}" placeholder="For higher rate limits">
+                                           value="" placeholder="{% if config.google_books_api_key %}Key configured{% else %}For higher rate limits{% endif %}"
+                                           data-has-key="{{ 'true' if config.google_books_api_key else 'false' }}">
                                     <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('google_books_api_key')" title="Show/hide key">
                                         <i class="bi bi-eye"></i>
                                     </button>
+                                    {% if config.google_books_api_key %}
+                                    <span class="input-group-text bg-success text-white" id="google-books-key-check"><i class="bi bi-check"></i></span>
+                                    <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('google_books_api_key')" title="Remove key">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                    {% endif %}
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Provider Fallback Chains -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-diagram-3"></i> Provider Fallback Chains
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-3">
+                                Configure the order providers are tried. If one fails, the next is used.
+                                Drag to reorder, uncheck to disable.
+                            </p>
+
+                            <!-- Audio Provider Chain -->
+                            <div class="mb-3">
+                                <label class="form-label d-flex align-items-center">
+                                    <i class="bi bi-volume-up me-2"></i> Audio Identification
+                                    <small class="text-muted ms-2">(transcription + ID)</small>
+                                </label>
+                                <div id="audio-provider-chain" class="provider-chain">
+                                    {% set audio_chain = config.audio_provider_chain or ['bookdb', 'gemini'] %}
+                                    {% set all_audio_providers = ['bookdb', 'gemini', 'openrouter', 'ollama'] %}
+                                    {% for provider in audio_chain %}
+                                    <div class="provider-item d-flex align-items-center mb-1 p-2 bg-dark rounded" data-provider="{{ provider }}">
+                                        <i class="bi bi-grip-vertical me-2 text-muted drag-handle" style="cursor: grab;"></i>
+                                        <input type="checkbox" class="form-check-input me-2" checked data-chain="audio" value="{{ provider }}">
+                                        <span class="me-auto">
+                                            {% if provider == 'bookdb' %}
+                                            <strong>BookDB</strong> <small class="text-success">(GPU Whisper - Best)</small>
+                                            {% elif provider == 'gemini' %}
+                                            <strong>Gemini</strong> <small class="text-info">(Native audio)</small>
+                                            {% elif provider == 'openrouter' %}
+                                            <strong>OpenRouter</strong> <small class="text-warning">(Needs local Whisper)</small>
+                                            {% elif provider == 'ollama' %}
+                                            <strong>Ollama</strong> <small class="text-warning">(Needs local Whisper)</small>
+                                            {% endif %}
+                                        </span>
+                                    </div>
+                                    {% endfor %}
+                                    {% for provider in all_audio_providers if provider not in audio_chain %}
+                                    <div class="provider-item d-flex align-items-center mb-1 p-2 bg-dark rounded opacity-50" data-provider="{{ provider }}">
+                                        <i class="bi bi-grip-vertical me-2 text-muted drag-handle" style="cursor: grab;"></i>
+                                        <input type="checkbox" class="form-check-input me-2" data-chain="audio" value="{{ provider }}">
+                                        <span class="me-auto">
+                                            {% if provider == 'bookdb' %}
+                                            <strong>BookDB</strong> <small class="text-success">(GPU Whisper - Best)</small>
+                                            {% elif provider == 'gemini' %}
+                                            <strong>Gemini</strong> <small class="text-info">(Native audio)</small>
+                                            {% elif provider == 'openrouter' %}
+                                            <strong>OpenRouter</strong> <small class="text-warning">(Needs local Whisper)</small>
+                                            {% elif provider == 'ollama' %}
+                                            <strong>Ollama</strong> <small class="text-warning">(Needs local Whisper)</small>
+                                            {% endif %}
+                                        </span>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                                <input type="hidden" name="audio_provider_chain" id="audio_provider_chain" value="{{ audio_chain | join(',') }}">
+                            </div>
+
+                            <!-- Text Provider Chain -->
+                            <div class="mb-0">
+                                <label class="form-label d-flex align-items-center">
+                                    <i class="bi bi-chat-text me-2"></i> Text Identification
+                                    <small class="text-muted ms-2">(AI verification)</small>
+                                </label>
+                                <div id="text-provider-chain" class="provider-chain">
+                                    {% set text_chain = config.text_provider_chain or ['gemini', 'openrouter'] %}
+                                    {% set all_text_providers = ['gemini', 'openrouter', 'ollama'] %}
+                                    {% for provider in text_chain %}
+                                    <div class="provider-item d-flex align-items-center mb-1 p-2 bg-dark rounded" data-provider="{{ provider }}">
+                                        <i class="bi bi-grip-vertical me-2 text-muted drag-handle" style="cursor: grab;"></i>
+                                        <input type="checkbox" class="form-check-input me-2" checked data-chain="text" value="{{ provider }}">
+                                        <span class="me-auto">
+                                            {% if provider == 'gemini' %}
+                                            <strong>Gemini/Gemma</strong> <small class="text-success">(Free tier)</small>
+                                            {% elif provider == 'openrouter' %}
+                                            <strong>OpenRouter</strong> <small class="text-info">(Free models)</small>
+                                            {% elif provider == 'ollama' %}
+                                            <strong>Ollama</strong> <small class="text-warning">(Self-hosted)</small>
+                                            {% endif %}
+                                        </span>
+                                    </div>
+                                    {% endfor %}
+                                    {% for provider in all_text_providers if provider not in text_chain %}
+                                    <div class="provider-item d-flex align-items-center mb-1 p-2 bg-dark rounded opacity-50" data-provider="{{ provider }}">
+                                        <i class="bi bi-grip-vertical me-2 text-muted drag-handle" style="cursor: grab;"></i>
+                                        <input type="checkbox" class="form-check-input me-2" data-chain="text" value="{{ provider }}">
+                                        <span class="me-auto">
+                                            {% if provider == 'gemini' %}
+                                            <strong>Gemini/Gemma</strong> <small class="text-success">(Free tier)</small>
+                                            {% elif provider == 'openrouter' %}
+                                            <strong>OpenRouter</strong> <small class="text-info">(Free models)</small>
+                                            {% elif provider == 'ollama' %}
+                                            <strong>Ollama</strong> <small class="text-warning">(Self-hosted)</small>
+                                            {% endif %}
+                                        </span>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                                <input type="hidden" name="text_provider_chain" id="text_provider_chain" value="{{ text_chain | join(',') }}">
                             </div>
                         </div>
                     </div>
@@ -573,13 +708,23 @@
                                 </label>
                             </div>
 
+                        </div>
+                    </div>
+
+                    <!-- Trust the Process - DANGER ZONE -->
+                    <div class="card mb-3 border-danger">
+                        <div class="card-header py-2 bg-danger bg-opacity-25 text-danger">
+                            <i class="bi bi-exclamation-octagon"></i> <strong>Experimental Mode</strong>
+                        </div>
+                        <div class="card-body">
                             <div class="form-check form-switch mb-0">
                                 <input class="form-check-input" type="checkbox" name="trust_the_process" id="trust_the_process"
                                        {% if config.trust_the_process %}checked{% endif %} onchange="warnTrustTheProcess(this)">
                                 <label class="form-check-label" for="trust_the_process">
-                                    <strong>Trust the Process</strong>
-                                    <span class="badge bg-danger">EXPERIMENTAL</span>
-                                    <br><small class="text-muted">Auto-apply drastic changes if AI + audio analysis agree</small>
+                                    <strong class="text-danger">Trust the Process</strong>
+                                    <span class="badge bg-danger">YOLO MODE</span>
+                                    <br><small class="text-muted">Auto-apply <strong>ALL</strong> changes when AI + audio analysis agree. No safety net.</small>
+                                    <br><small class="text-danger"><i class="bi bi-exclamation-triangle"></i> Can rename entire library automatically. BACKUP FIRST!</small>
                                 </label>
                             </div>
                         </div>
@@ -814,7 +959,13 @@
                                 <button type="button" class="btn btn-sm btn-outline-danger" onclick="resetDatabase()">
                                     <i class="bi bi-arrow-counterclockwise"></i> Reset Database
                                 </button>
+                                <button type="button" class="btn btn-sm btn-danger" onclick="wipeEverything()">
+                                    <i class="bi bi-nuclear"></i> Wipe All
+                                </button>
                             </div>
+                            <small class="text-muted d-block mt-2">
+                                <strong>Wipe All</strong> clears both database AND history in one click.
+                            </small>
                         </div>
                     </div>
                 </div>
@@ -1240,6 +1391,16 @@ function resetDatabase() {
     fetch('/api/reset_database', {method: 'POST'}).then(() => location.reload());
 }
 
+function wipeEverything() {
+    if (!confirm('WIPE EVERYTHING?\n\nThis will clear both the database AND all history.\nAll books will need to be rescanned.')) return;
+    if (!confirm('This is DESTRUCTIVE and cannot be undone. Proceed?')) return;
+    // Clear history first, then reset database
+    fetch('/api/clear_history', {method: 'POST'})
+        .then(() => fetch('/api/reset_database', {method: 'POST'}))
+        .then(() => location.reload())
+        .catch(e => alert('Wipe failed: ' + e));
+}
+
 function startDeepVerification() {
     if (!confirm('Start Deep Verification?\n\nThis will re-queue ALL books for API verification. This is time-consuming and uses API quota.\n\nContinue?')) return;
 
@@ -1361,5 +1522,98 @@ function testLibraryPaths() {
 }
 
 setInterval(refreshLogs, 10000);
+
+// Clear API key
+function clearApiKey(keyName) {
+    if (!confirm('Remove this API key? You will need to re-enter it to use this service.')) return;
+
+    fetch('/api/clear_api_key', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({key_name: keyName})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            // Reload to show updated state
+            location.reload();
+        } else {
+            alert('Error: ' + (data.error || 'Failed to clear key'));
+        }
+    })
+    .catch(e => alert('Error: ' + e));
+}
+
+// Provider Chain Management
+function updateProviderChain(chainType) {
+    const container = document.getElementById(chainType + '-provider-chain');
+    const hiddenInput = document.getElementById(chainType + '_provider_chain');
+    const items = container.querySelectorAll('.provider-item');
+
+    const enabledProviders = [];
+    items.forEach(item => {
+        const checkbox = item.querySelector('input[type="checkbox"]');
+        if (checkbox.checked) {
+            enabledProviders.push(item.dataset.provider);
+            item.classList.remove('opacity-50');
+        } else {
+            item.classList.add('opacity-50');
+        }
+    });
+
+    hiddenInput.value = enabledProviders.join(',');
+}
+
+// Initialize provider chain checkboxes
+document.querySelectorAll('.provider-chain input[type="checkbox"]').forEach(checkbox => {
+    checkbox.addEventListener('change', function() {
+        const chain = this.dataset.chain;
+        updateProviderChain(chain);
+    });
+});
+
+// Simple drag and drop for provider chains
+let draggedItem = null;
+
+document.querySelectorAll('.provider-chain .provider-item').forEach(item => {
+    const handle = item.querySelector('.drag-handle');
+
+    handle.addEventListener('mousedown', function(e) {
+        draggedItem = item;
+        item.style.opacity = '0.5';
+    });
+});
+
+document.querySelectorAll('.provider-chain').forEach(container => {
+    container.addEventListener('mousemove', function(e) {
+        if (!draggedItem) return;
+
+        const items = [...container.querySelectorAll('.provider-item')];
+        const afterElement = items.reduce((closest, child) => {
+            const box = child.getBoundingClientRect();
+            const offset = e.clientY - box.top - box.height / 2;
+            if (offset < 0 && offset > closest.offset) {
+                return { offset: offset, element: child };
+            } else {
+                return closest;
+            }
+        }, { offset: Number.NEGATIVE_INFINITY }).element;
+
+        if (afterElement) {
+            container.insertBefore(draggedItem, afterElement);
+        } else {
+            container.appendChild(draggedItem);
+        }
+    });
+});
+
+document.addEventListener('mouseup', function() {
+    if (draggedItem) {
+        draggedItem.style.opacity = '';
+        const chain = draggedItem.querySelector('input[type="checkbox"]').dataset.chain;
+        updateProviderChain(chain);
+        draggedItem = null;
+    }
+});
 </script>
 {% endblock %}

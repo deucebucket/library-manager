@@ -389,17 +389,24 @@ def embed_tags(file_path: Path, metadata: Dict[str, Any], overwrite: bool = True
     """
     Embed metadata tags into an audio file.
     Dispatches to format-specific handler based on file extension.
-    
+
     Args:
         file_path: Path to the audio file
-        metadata: Dict with keys: title, album, artist, albumartist, year, 
+        metadata: Dict with keys: title, album, artist, albumartist, year,
                   series, series_num, narrator, edition, variant
         overwrite: If True, overwrite existing managed fields. If False, only fill missing.
-    
+
     Returns:
         True if successful, False otherwise.
     """
     file_path = Path(file_path)
+
+    # CRITICAL: Never modify symlinked files - they point to source libraries!
+    # This prevents corrupting original audiobook files when processing test/staging libraries.
+    if file_path.is_symlink():
+        logger.warning(f"Skipping tag embed for symlink (protects source): {file_path}")
+        return False
+
     ext = file_path.suffix.lower()
 
     if ext == '.mp3':

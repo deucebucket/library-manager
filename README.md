@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.90-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.91-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,14 +16,23 @@
 
 ## Recent Changes (develop)
 
+> **Unreleased** - 🔒 **Security & Stability**
+> - **API Keys Hidden** - Keys no longer exposed in HTML source, shows "Key configured" instead
+> - **Issue #59 Complete Fix** - Placeholder authors ("Unknown Author") now detected during scan
+> - **Issue #63 Fix** - Docker Whisper install permission error resolved
+> - **BookDB Stability** - Circuit breaker for rate limiting, improved multi-user fairness
+
+> **beta.91** - 🎧 **Audio-First Identification** (Major Feature)
+> - **Revolutionary Approach** - Now identifies books from narrator introductions FIRST
+> - **52% Identification Rate** - Half of books identified from audio alone in Layer 1
+> - **4-Layer Pipeline** - Audio transcription → AI parsing → API enrichment → Folder fallback
+> - **faster-whisper Integration** - Local, free speech-to-text via Python venv
+> - **Known Narrator Detection** - Prevents AI from confusing narrators with authors
+
 > **beta.90** - 🎯 **Layer 4 Content Analysis** (Major Feature)
 > - **The Final Layer** - Transcribes actual story content to identify books when all else fails
 > - **Whisper + OpenRouter Fallback** - Local transcription + free AI when Gemini unavailable
 > - **No GPU Required** - faster-whisper runs on CPU, model downloads automatically
-> - **Narrator Detection** - Integrates with BookDB to prevent narrator-as-author errors
-> - **Deep Verification Mode** - Nuclear option to re-verify your entire library
-> - **3-4x Faster Scans** - Tuned API rate limits to actual limits
-> - **One-Click Whisper Install** - Install speech-to-text directly from Settings
 
 > **beta.89** - Watch Folder Reliability (Issue #57)
 > - Track number stripping, local BookDB support, confidence threshold fix
@@ -85,19 +94,20 @@ Your Library (After):
 - AI fallback for ambiguous cases
 - **Safe fallback** - connection failures don't cause misclassification
 
-### 4-Layer Identification Pipeline
+### 4-Layer Identification Pipeline (Audio-First)
 ```
-Layer 1: API Database Lookups (Fast, Free)
+Layer 1: Audio Transcription + AI Parsing (Most Reliable)
+         Transcribes 45-second intro → AI extracts author/title/narrator
+         ✓ 52% of books identified from audio alone
+
+Layer 2: AI Audio Analysis (Deeper Analysis)
+         Sends audio directly to Gemini for unclear transcripts
+
+Layer 3: API Enrichment (Add Metadata)
          BookDB → Audnexus → OpenLibrary → Google Books → Hardcover
 
-Layer 2: AI Verification (When APIs fail or disagree)
-         Gemini / OpenRouter / Ollama - validates and fills gaps
-
-Layer 3: Audio Credits Analysis (Intro parsing)
-         Listens to first 90 seconds for "Read by [Narrator]" announcements
-
-Layer 4: Content Analysis (Final resort)
-         Transcribes story content from middle of book to identify it
+Layer 4: Folder Name Fallback (Last Resort)
+         Uses folder structure when audio identification fails
          Works even when file has zero metadata or intro credits
 ```
 Each layer only runs if the previous layer couldn't confidently identify the book.
@@ -305,6 +315,65 @@ See [docs/DOCKER.md](docs/DOCKER.md) for detailed setup guides.
 ```bash
 python app.py  # Runs on http://localhost:5757
 ```
+
+---
+
+## Testing
+
+We take testing seriously. Every release is validated against real-world chaos scenarios.
+
+### Chaos Library Testing
+
+Before every release, we test against a **500-book "chaos library"** - a nightmare collection designed to break the app:
+
+| Chaos Type | Example | What We're Testing |
+|------------|---------|-------------------|
+| **Wrong Author** | `Stephen King - The Martian` | Can we detect misattribution? |
+| **Narrator as Author** | `Ray Porter - Project Hail Mary` | Common audiobook mistake |
+| **Swapped Fields** | `The Final Empire - Brandon Sanderson` | Structure reversal detection |
+| **Foreign Characters** | `Nick Offerman - 罪と罰` | Unicode handling |
+| **Heavy Typos** | `Nil Gaiman - Annsi Boys` | Fuzzy matching resilience |
+| **Torrent Prefixes** | `[MAM] Dean Koontz - Watchers (2021)` | Junk stripping |
+| **Missing Info** | `Audiobook_574` | Identification from nothing |
+| **Wrong Series Number** | `Mistborn Book 15 - The Final Empire` | Series validation |
+| **Mixed Languages** | `Харуки Мураками - Dune` | Cross-language chaos |
+
+The chaos library uses **symlinks to real audiobook files** (166GB represented, ~0 disk usage), so we're testing with actual audio content - not just filename patterns.
+
+### Regression Testing
+
+**Every GitHub issue becomes a test case.** When users report bugs, we:
+
+1. **Reproduce** the exact scenario
+2. **Fix** the underlying issue
+3. **Add a test** that catches this specific case
+4. **Run tests before every commit** to ensure we never revert fixes
+
+Our test suite (`test-env/test-naming-issues.py`) currently validates **184+ edge cases** derived from real user issues:
+
+```bash
+# Run naming/path edge case tests
+python test-env/test-naming-issues.py
+
+# Example output:
+# --- Issue #57: Watch folder verification ---
+# [PASS] Watch folder verifies drastic author changes
+# [PASS] Watch folder detects same-title-different-author
+# --- Issue #60: Password visibility toggles ---
+# [PASS] templates/settings.html has togglePasswordVisibility
+# ...
+# RESULTS: 184 passed, 0 failed
+```
+
+### Pre-Push Verification
+
+Before pushing any changes, we run:
+
+1. **Syntax check** - `python -m py_compile app.py`
+2. **Regression tests** - All 184+ edge cases
+3. **Code review** - Adversarial review of changes
+4. **Security audit** - Check for common vulnerabilities
+5. **Chaos library scan** - Full 500-book identification test
 
 ---
 

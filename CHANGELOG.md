@@ -2,6 +2,82 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [Unreleased]
+
+### Security
+
+- **API Keys No Longer Exposed in HTML** - API keys are never rendered in page source
+  - Input fields show "Key configured" placeholder instead of actual value
+  - Green checkmark indicates key is set without exposing it
+  - New "Clear" button to remove configured keys
+  - New `/api/clear_api_key` endpoint with whitelist validation
+
+### Changed
+
+- **"Trust the Process" Danger Visibility** - Moved to its own danger-styled card
+  - Red border and header with warning icon
+  - Renamed badge from "EXPERIMENTAL" to "YOLO MODE"
+  - Added explicit warning: "Can rename entire library automatically. BACKUP FIRST!"
+
+- **Removed Outdated "NEW" Badge** from Watch Folder (it's been in the app for several versions)
+
+### Fixed
+
+- **Placeholder Authors Not Queued During Scan** (Issue #59 complete fix)
+  - Books with "Unknown Author" or "Various Authors" in proper folder structure were marked "Already correct"
+  - Now correctly detected during scan phase and queued for identification
+  - Uses existing `is_placeholder_author()` check in `analyze_author()` function
+
+- **Docker Whisper Install Permission Error** (Issue #63)
+  - Creates `/app/.local` and `/app/.cache/pip` directories with proper ownership
+  - Fixes "Permission denied: '/app/.local'" when installing Whisper from UI
+
+- **BookDB Stability Improvements** (Issue #62)
+  - Added circuit breaker for rate limiting (backs off after repeated 429s)
+  - Increased base rate limits to prevent self-banning
+  - Added round-robin queue system for multi-user fairness
+
+---
+
+## [0.9.0-beta.91] - 2026-01-17
+
+### Major Feature: Audio-First Book Identification
+
+**Revolutionary Approach** - Library Manager now identifies audiobooks by transcribing narrator introductions first, before falling back to APIs or folder names. This leverages the fact that most audiobooks begin with the narrator announcing the book title and author.
+
+#### How It Works
+1. **Layer 1: Audio Transcription** - Extracts 45-second intro, transcribes with faster-whisper
+2. **AI Parsing** - Sends transcript to AI to extract author, title, narrator, series
+3. **Layer 2: AI Audio Analysis** - For unclear transcripts, sends audio directly to Gemini
+4. **Layer 3: API Enrichment** - Adds metadata to already-identified books
+5. **Layer 4: Folder Fallback** - Last resort, uses folder structure
+
+#### Test Results
+- **52% of books identified from audio alone** in Layer 1
+- Combined with Layer 2, audio-based identification resolves majority of books
+- Correctly identified books like:
+  - Jack London - White Fang
+  - James S. A. Corey - The Vital Abyss
+  - Brandon Sanderson - The Frugal Wizard's Handbook
+  - James Patterson - Cross the Line
+
+### Technical Improvements
+
+- **faster-whisper Integration** - Local, free speech-to-text via venv
+- **Increased ffmpeg Timeout** - 120 seconds for large m4b files
+- **Known Narrator Detection** - Prevents AI from confusing narrators with authors
+- **Null String Validation** - Rejects AI responses like "None", "null", "N/A"
+- **Layer Advancement Fix** - Items properly flow between layers
+
+### Bug Fixes
+
+- Fixed crash when `current_author` was None
+- Fixed Layer 2 not finding items (wrong verification_layer in query)
+- Fixed items stuck as `needs_attention` not being reprocessed
+- Fixed Gemini model selection (forced `gemini-2.0-flash` for audio support)
+
+---
+
 ## [0.9.0-beta.90] - 2026-01-15
 
 ### Major Feature: Layer 4 Content Analysis
