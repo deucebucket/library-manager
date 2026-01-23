@@ -8179,14 +8179,18 @@ def process_layer_1_audio(config, limit=None):
                                 profile = ?, confidence = ?, verification_layer = 2
                                 WHERE id = ?''',
                               (json.dumps(profile), 80 if confidence == 'high' else 50, row['book_id']))
+
+                    # Add to history as pending fix
+                    c.execute('''INSERT INTO history
+                                (book_id, old_author, old_title, new_author, new_title, new_series, new_series_num, status)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
+                             (row['book_id'], row['current_author'], row['current_title'],
+                              author, title, ebook_result.get('series'), ebook_result.get('series_num')))
+
+                    # Remove from queue
+                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                     conn.commit()
                     conn.close()
-
-                    # Create fix proposal
-                    create_fix_proposal(row['book_id'], author, title,
-                                      series=ebook_result.get('series'),
-                                      series_num=ebook_result.get('series_num'),
-                                      config=config)
                     resolved += 1
                 else:
                     # Already correct
