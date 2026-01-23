@@ -8193,15 +8193,21 @@ def process_layer_1_audio(config, limit=None):
                     conn.close()
                     resolved += 1
                 else:
-                    # Already correct
-                    logger.info(f"[EBOOK] Already correct: {current_author}/{current_title}")
+                    # Only mark as verified if we have confidence in the identification
+                    book_confidence = row.get('confidence', 0) or 0
                     conn = get_db()
                     c = conn.cursor()
-                    c.execute('UPDATE books SET status = ?, verification_layer = 2 WHERE id = ?',
-                              ('verified', row['book_id']))
+                    if book_confidence >= 40:
+                        logger.info(f"[EBOOK] Already correct (conf={book_confidence}): {current_author}/{current_title}")
+                        c.execute('UPDATE books SET status = ?, verification_layer = 2 WHERE id = ?',
+                                  ('verified', row['book_id']))
+                        resolved += 1
+                    else:
+                        logger.info(f"[EBOOK] Needs attention (low conf={book_confidence}): {current_author}/{current_title}")
+                        c.execute('UPDATE books SET status = ?, verification_layer = 2, error_message = ? WHERE id = ?',
+                                  ('needs_attention', f'Low confidence ({book_confidence}) - ebook needs manual verification', row['book_id']))
                     conn.commit()
                     conn.close()
-                    resolved += 1
 
                 processed += 1
                 continue
@@ -8308,16 +8314,17 @@ def process_layer_1_audio(config, limit=None):
 
                 resolved += 1
             else:
-                # Already correct!
+                # Already correct - but update confidence since we did identify via audio
+                audio_confidence = 85 if confidence == 'high' else 70
                 conn = get_db()
                 c = conn.cursor()
-                c.execute('UPDATE books SET status = ?, verification_layer = 3 WHERE id = ?',
-                         ('verified', row['book_id']))
+                c.execute('UPDATE books SET status = ?, verification_layer = 3, confidence = ? WHERE id = ?',
+                         ('verified', audio_confidence, row['book_id']))
                 c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                 conn.commit()
                 conn.close()
 
-                logger.info(f"[LAYER 1/AUDIO] Already correct: {author}/{title}")
+                logger.info(f"[LAYER 1/AUDIO] Already correct (conf={audio_confidence}): {author}/{title}")
                 resolved += 1
         else:
             # Couldn't identify from transcript, advance to Layer 2
@@ -9073,10 +9080,20 @@ def process_queue(config, limit=None, verification_layer=2):
                         c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
                                  ('needs_attention', f"Could not identify author (currently '{new_author}')", row['book_id']))
                 else:
-                    logger.info(f"Already correct: {old_path.name}")
-                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                    c.execute('UPDATE books SET status = ? WHERE id = ?',
-                             ('verified', row['book_id']))
+                    # Only mark as verified if we have actual confidence in the identification
+                    # Otherwise the AI is just echoing back the folder name without verification
+                    book_confidence = row.get('confidence', 0) or 0
+                    if book_confidence >= 40:
+                        logger.info(f"Already correct (conf={book_confidence}): {old_path.name}")
+                        c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                        c.execute('UPDATE books SET status = ? WHERE id = ?',
+                                 ('verified', row['book_id']))
+                    else:
+                        # Low/no confidence - needs manual verification
+                        logger.info(f"Needs attention (low confidence={book_confidence}): {old_path.name}")
+                        c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                        c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                                 ('needs_attention', f'Low confidence ({book_confidence}) - could not verify identification', row['book_id']))
                 conn.commit()
                 processed += 1
                 continue
@@ -10172,6 +10189,25 @@ def process_all_queue(config):
     conn.commit()
     conn.close()
 
+    # Advance any items stuck at Layer 2 from previous runs (Layer 2 disabled by default)
+    if not config.get('enable_audio_analysis', False):
+        conn = get_db()
+        c = conn.cursor()
+        # Get book IDs first so we can ensure they're in the queue
+        c.execute('SELECT id FROM books WHERE verification_layer = 2 AND status = "pending"')
+        stuck_books = [row['id'] for row in c.fetchall()]
+        if stuck_books:
+            c.execute('UPDATE books SET verification_layer = 4 WHERE verification_layer = 2 AND status = "pending"')
+            # Ensure all are in the queue for processing
+            for book_id in stuck_books:
+                c.execute('SELECT id FROM queue WHERE book_id = ?', (book_id,))
+                if not c.fetchone():
+                    c.execute('INSERT INTO queue (book_id, reason, priority) VALUES (?, ?, ?)',
+                             (book_id, 'startup_layer2_recovery', 5))
+            conn.commit()
+            logger.info(f"Advanced {len(stuck_books)} stuck items from Layer 2 to Layer 4")
+        conn.close()
+
     total_processed = 0
     total_fixed = 0
 
@@ -10236,12 +10272,21 @@ def process_all_queue(config):
         # This ensures they get processed by the folder fallback instead of being orphaned
         conn = get_db()
         c = conn.cursor()
-        c.execute('UPDATE books SET verification_layer = 4 WHERE verification_layer = 2 AND status = "pending"')
-        advanced = c.rowcount
-        conn.commit()
+        # Get the book IDs first so we can add them to the queue
+        c.execute('SELECT id FROM books WHERE verification_layer = 2 AND status = "pending"')
+        layer2_books = [row['id'] for row in c.fetchall()]
+        if layer2_books:
+            # Update verification_layer
+            c.execute('UPDATE books SET verification_layer = 4 WHERE verification_layer = 2 AND status = "pending"')
+            # Ensure all advanced items are in the queue
+            for book_id in layer2_books:
+                c.execute('SELECT id FROM queue WHERE book_id = ?', (book_id,))
+                if not c.fetchone():
+                    c.execute('INSERT INTO queue (book_id, reason, priority) VALUES (?, ?, ?)',
+                             (book_id, 'layer2_fallback', 5))
+            conn.commit()
+            logger.info(f"Layer 2 disabled - advanced {len(layer2_books)} items to Layer 4 (folder fallback)")
         conn.close()
-        if advanced > 0:
-            logger.info(f"Layer 2 disabled - advanced {advanced} items to Layer 4 (folder fallback)")
 
     # LAYER 3: API Enrichment (NOT identification - add series, year, description, etc.)
     # At this point we should know the book - now we enrich it with metadata
