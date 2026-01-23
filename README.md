@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.91-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.92-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,7 +16,7 @@
 
 ## Recent Changes (develop)
 
-> **Unreleased** - 🔒 **Security & Stability**
+> **beta.92** - 🔒 **Security & Stability**
 > - **Confidence Threshold** - Books only marked "verified" when confidence ≥40%, prevents false positives
 > - **API Keys Hidden** - Keys no longer exposed in HTML source, shows "Key configured" instead
 > - **Issue #59 Complete Fix** - Placeholder authors ("Unknown Author") now detected during scan
