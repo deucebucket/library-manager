@@ -24,6 +24,7 @@ ENV/
 # IDE
 .idea/
 .vscode/
+.cursor/
 *.swp
 *.swo
 *~
@@ -55,3 +56,6 @@ static/reddit-replies.html
 test-env/test-audiobooks/
 test-env/fresh-deploy/
 test-env/chaos-test-library/
+test-env/test-secrets.json
+.TODO.md
+CLAUDE.md

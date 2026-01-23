@@ -1,6 +1,27 @@
 # Contributing to Library Manager
 
-Thanks for your interest in contributing! Here's how to get started.
+Thanks for your interest in contributing! We're building this together.
+
+## Looking for Something to Work On?
+
+Check our [open PRs](https://github.com/deucebucket/library-manager/pulls) - these have design docs ready for implementation:
+
+| PR | Feature | What's Needed |
+|----|---------|---------------|
+| [#24](https://github.com/deucebucket/library-manager/pull/24) | Language Preference | Python implementation, UI settings |
+| [#25](https://github.com/deucebucket/library-manager/pull/25) | Ollama Support | AI provider integration |
+
+To help with an existing feature:
+```bash
+git checkout feature/language-preference  # or feature/ollama-support
+# Read the design doc in docs/FEATURE-*.md
+# Implement and push to your fork
+# Open PR against the feature branch
+```
+
+---
+
+## Starting Fresh? Here's how to get started.
 
 ## Branch Strategy
 
@@ -112,3 +133,14 @@ This isn't about distrust - it's about protecting users' libraries. Open source 
 ## Questions?
 
 Open an issue or start a discussion on GitHub.
+
+---
+
+## License
+
+By contributing, you agree that your contributions will be licensed under the **AGPL-3.0 License**.
+
+This means:
+- Your contributions remain open source forever
+- Anyone using/modifying the code must also open source their changes
+- Commercial entities wanting to keep modifications private can contact us for commercial licensing

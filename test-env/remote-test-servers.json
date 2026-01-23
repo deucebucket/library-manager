@@ -1,0 +1,52 @@
+{
+  "description": "Remote test servers for Library Manager integration testing",
+  "servers": {
+    "dennis_rpi4": {
+      "name": "Dennis's Raspberry Pi 4",
+      "description": "Real-world test environment on RPi4 with David Baldacci audiobooks",
+      "library_manager": {
+        "url": "https://rpi4b8libmgr.lunarphoton.us",
+        "endpoints": {
+          "dashboard": "/",
+          "library": "/library",
+          "settings": "/settings",
+          "history": "/history"
+        }
+      },
+      "dockge": {
+        "url": "https://rpi4b8dockge.lunarphoton.us",
+        "stack_name": "abs_lib_mgr",
+        "compose_url": "/compose/abs_lib_mgr"
+      },
+      "credentials": {
+        "note": "Stored in secrets.json under 'dennis_test_server'",
+        "username_key": "dennis_dockge_user",
+        "password_key": "dennis_dockge_pass"
+      },
+      "environment": {
+        "platform": "Raspberry Pi 4 (8GB)",
+        "os": "Raspberry Pi OS",
+        "docker": true,
+        "cloudflare_tunnel": true
+      },
+      "test_data": {
+        "known_authors": ["David Baldacci"],
+        "known_issues": [
+          "Author prefix in folder names (Issue #53)",
+          "Series folder structure"
+        ],
+        "book_count": 33
+      },
+      "notes": [
+        "Non-critical test environment - OK to break things",
+        "Container can be updated via Dockge Update button",
+        "Uses ghcr.io/deucebucket/library-manager:develop image"
+      ]
+    }
+  },
+  "local_dev": {
+    "name": "Local Development Server",
+    "url": "http://192.168.1.101:5757",
+    "description": "Main development machine"
+  }
+}

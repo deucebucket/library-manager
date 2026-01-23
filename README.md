@@ -4,9 +4,9 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.27-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.92-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
-[![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
 *Automatically fix messy audiobook folders using real book databases + AI intelligence*
 
@@ -16,20 +16,42 @@
 
 ## Recent Changes (stable)
 
-> **beta.27** - Custom template cleanup fix (Issue #16)
-> - Fixed "dangling dash" in naming templates when series is empty
+> **beta.92** - 🔒 **Security & Stability**
+> - **Confidence Threshold** - Books only marked "verified" when confidence ≥40%, prevents false positives
+> - **API Keys Hidden** - Keys no longer exposed in HTML source, shows "Key configured" instead
+> - **Issue #59 Complete Fix** - Placeholder authors ("Unknown Author") now detected during scan
+> - **Issue #63 Fix** - Docker Whisper install permission error resolved
+> - **BookDB Stability** - Circuit breaker for rate limiting, improved multi-user fairness
+> - **Layer 2 Recovery** - Stuck items now properly advanced when Layer 2 disabled
 
-> **beta.26** - Path Diagnostic Tool
-> - **Test Paths button** - Debug Docker volume mount issues
-> - Shows what container can see, suggests fixes for mount problems
+> **beta.92** - 🎧 **Audio-First Identification** (Major Feature)
+> - **Revolutionary Approach** - Now identifies books from narrator introductions FIRST
+> - **52% Identification Rate** - Half of books identified from audio alone in Layer 1
+> - **4-Layer Pipeline** - Audio transcription → AI parsing → API enrichment → Folder fallback
+> - **faster-whisper Integration** - Local, free speech-to-text via Python venv
+> - **Known Narrator Detection** - Prevents AI from confusing narrators with authors
 
-> **beta.25** - Critical fixes
-> - **Issue #15** - Search results display fixed
-> - **Config persistence** - `user_groups.json` now properly stored in `/data/`
+> **beta.90** - 🎯 **Layer 4 Content Analysis** (Major Feature)
+> - **The Final Layer** - Transcribes actual story content to identify books when all else fails
+> - **Whisper + OpenRouter Fallback** - Local transcription + free AI when Gemini unavailable
+> - **No GPU Required** - faster-whisper runs on CPU, model downloads automatically
 
-> **beta.24** - Trust existing authors, don't blindly accept API suggestions
+> **beta.89** - Watch Folder Reliability (Issue #57)
+> - Track number stripping, local BookDB support, confidence threshold fix
 
-[Full Changelog](CHANGELOG.md) | [Development branch](https://github.com/deucebucket/library-manager/tree/develop) has newer features
+> **beta.87-88** - Watch Folder Verification & Scan Locking (Issues #57, #59-61)
+> - API result verification, parent folder hints, concurrent scan fix, password toggles
+
+> **beta.84-86** - Status & Output Fixes (Issues #57, #59)
+> - Placeholder author detection, output folder routing, author initials standardization
+
+> **beta.78-83** - SQLite Locking, Setup Wizard, Orphan Organization
+> - 3-phase processing, first-run wizard, duplicate detection fix
+
+> **beta.72-77** - Multi-Edit, Media Filters, Author Initials
+> - Edit all queue items, media type filter, "J R R Tolkien" → "J. R. R. Tolkien"
+
+[Full Changelog](CHANGELOG.md)
 
 ---
 
@@ -74,14 +96,23 @@ Your Library (After):
 - AI fallback for ambiguous cases
 - **Safe fallback** - connection failures don't cause misclassification
 
-### Multi-Source Metadata
+### 4-Layer Identification Pipeline (Audio-First)
 ```
-1. Audnexus     - Audible's audiobook data
-2. OpenLibrary  - 50M+ book database
-3. Google Books - Wide coverage
-4. Hardcover    - Modern/indie books
-5. AI Fallback  - Gemini/OpenRouter when APIs fail
+Layer 1: Audio Transcription + AI Parsing (Most Reliable)
+         Transcribes 45-second intro → AI extracts author/title/narrator
+         ✓ 52% of books identified from audio alone
+
+Layer 2: AI Audio Analysis (Deeper Analysis)
+         Sends audio directly to Gemini for unclear transcripts
+
+Layer 3: API Enrichment (Add Metadata)
+         BookDB → Audnexus → OpenLibrary → Google Books → Hardcover
+
+Layer 4: Folder Name Fallback (Last Resort)
+         Uses folder structure when audio identification fails
+         Works even when file has zero metadata or intro credits
 ```
+Each layer only runs if the previous layer couldn't confidently identify the book.
 
 ### Safety First
 - **Drastic changes require approval** - author swaps need manual review
@@ -105,9 +136,18 @@ Build your own folder structure:
 {author} - {title} ({narrator})           → Brandon Sanderson - The Final Empire (Kramer)/
 ```
 
+### Language Support
+- **28 languages** - German, French, Spanish, Italian, Portuguese, Dutch, Swedish, Norwegian, Danish, Finnish, Polish, Russian, Japanese, Chinese, Korean, Arabic, Hebrew, Hindi, Turkish, Czech, Hungarian, Greek, Thai, Vietnamese, Ukrainian, Romanian, Indonesian
+- **Preserve original titles** - keeps "Der Bücherdrache" instead of translating to English
+- **Regional Audible search** - queries audible.de, audible.fr, etc. for localized results
+- **Audio language detection** - use Gemini to detect spoken language in audiobooks
+
 ### Additional Features
 - **Web dashboard** with dark theme
+- **Watch folder mode** - monitor downloads folder, auto-organize new audiobooks
 - **Manual book matching** - search 50M+ database directly
+- **Edit & lock metadata** - correct wrong matches, lock to prevent overwriting
+- **Library search** - find any book by author or title
 - **Loose file detection** - auto-creates folders for dumped files
 - **Ebook management (Beta)** - organize ebooks alongside audiobooks
 - **Health scan** - detect corrupt/incomplete audio files
@@ -230,10 +270,13 @@ See [docs/DOCKER.md](docs/DOCKER.md) for detailed setup guides.
 | `/api/deep_rescan` | POST | Re-verify all books |
 | `/api/process` | POST | Process queue items |
 | `/api/queue` | GET | Get queue |
+| `/api/library` | GET | Get library with filters |
 | `/api/stats` | GET | Dashboard stats |
 | `/api/apply_fix/{id}` | POST | Apply pending fix |
 | `/api/reject_fix/{id}` | POST | Reject suggestion |
 | `/api/undo/{id}` | POST | Revert applied fix |
+| `/api/edit_book` | POST | Edit & lock book metadata |
+| `/api/unlock_book/{id}` | POST | Unlock book for reprocessing |
 | `/api/analyze_path` | POST | Test path analysis |
 
 ---
@@ -259,10 +302,13 @@ See [docs/DOCKER.md](docs/DOCKER.md) for detailed setup guides.
 ### Run Tests
 
 ```bash
-# Full integration test suite
+# Full integration test suite (pulls from ghcr.io)
 ./test-env/run-integration-tests.sh
 
-# Rebuild test library first
+# Build from local source instead
+./test-env/run-integration-tests.sh --local
+
+# Rebuild 2GB test library first
 ./test-env/run-integration-tests.sh --rebuild
 ```
 
@@ -274,12 +320,71 @@ python app.py  # Runs on http://localhost:5757
 
 ---
 
+## Testing
+
+We take testing seriously. Every release is validated against real-world chaos scenarios.
+
+### Chaos Library Testing
+
+Before every release, we test against a **500-book "chaos library"** - a nightmare collection designed to break the app:
+
+| Chaos Type | Example | What We're Testing |
+|------------|---------|-------------------|
+| **Wrong Author** | `Stephen King - The Martian` | Can we detect misattribution? |
+| **Narrator as Author** | `Ray Porter - Project Hail Mary` | Common audiobook mistake |
+| **Swapped Fields** | `The Final Empire - Brandon Sanderson` | Structure reversal detection |
+| **Foreign Characters** | `Nick Offerman - 罪と罰` | Unicode handling |
+| **Heavy Typos** | `Nil Gaiman - Annsi Boys` | Fuzzy matching resilience |
+| **Torrent Prefixes** | `[MAM] Dean Koontz - Watchers (2021)` | Junk stripping |
+| **Missing Info** | `Audiobook_574` | Identification from nothing |
+| **Wrong Series Number** | `Mistborn Book 15 - The Final Empire` | Series validation |
+| **Mixed Languages** | `Харуки Мураками - Dune` | Cross-language chaos |
+
+The chaos library uses **symlinks to real audiobook files** (166GB represented, ~0 disk usage), so we're testing with actual audio content - not just filename patterns.
+
+### Regression Testing
+
+**Every GitHub issue becomes a test case.** When users report bugs, we:
+
+1. **Reproduce** the exact scenario
+2. **Fix** the underlying issue
+3. **Add a test** that catches this specific case
+4. **Run tests before every commit** to ensure we never revert fixes
+
+Our test suite (`test-env/test-naming-issues.py`) currently validates **184+ edge cases** derived from real user issues:
+
+```bash
+# Run naming/path edge case tests
+python test-env/test-naming-issues.py
+
+# Example output:
+# --- Issue #57: Watch folder verification ---
+# [PASS] Watch folder verifies drastic author changes
+# [PASS] Watch folder detects same-title-different-author
+# --- Issue #60: Password visibility toggles ---
+# [PASS] templates/settings.html has togglePasswordVisibility
+# ...
+# RESULTS: 184 passed, 0 failed
+```
+
+### Pre-Push Verification
+
+Before pushing any changes, we run:
+
+1. **Syntax check** - `python -m py_compile app.py`
+2. **Regression tests** - All 184+ edge cases
+3. **Code review** - Adversarial review of changes
+4. **Security audit** - Check for common vulnerabilities
+5. **Chaos library scan** - Full 500-book identification test
+
+---
+
 ## Contributing
 
 Pull requests welcome! Ideas:
 - [ ] Ollama/local LLM support
 - [ ] Cover art fetching
-- [ ] Metadata embedding
+- [x] Metadata embedding (added in v0.9.0-beta.20)
 - [ ] Movie/music library support
 
 ---
@@ -293,4 +398,9 @@ Pull requests welcome! Ideas:
 
 ## License
 
-MIT License
+AGPL-3.0 License - See [LICENSE](LICENSE) for details.
+
+**What this means:**
+- Free to use, modify, and distribute
+- If you modify and run this as a service, you must release your source code
+- Commercial use requires either open-sourcing your changes OR obtaining a commercial license

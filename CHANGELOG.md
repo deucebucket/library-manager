@@ -2,6 +2,1256 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [Unreleased]
+
+### Security
+
+- **API Keys No Longer Exposed in HTML** - API keys are never rendered in page source
+  - Input fields show "Key configured" placeholder instead of actual value
+  - Green checkmark indicates key is set without exposing it
+  - New "Clear" button to remove configured keys
+  - New `/api/clear_api_key` endpoint with whitelist validation
+
+### Changed
+
+- **"Trust the Process" Danger Visibility** - Moved to its own danger-styled card
+  - Red border and header with warning icon
+  - Renamed badge from "EXPERIMENTAL" to "YOLO MODE"
+  - Added explicit warning: "Can rename entire library automatically. BACKUP FIRST!"
+
+- **Removed Outdated "NEW" Badge** from Watch Folder (it's been in the app for several versions)
+
+### Fixed
+
+- **Placeholder Authors Not Queued During Scan** (Issue #59 complete fix)
+  - Books with "Unknown Author" or "Various Authors" in proper folder structure were marked "Already correct"
+  - Now correctly detected during scan phase and queued for identification
+  - Uses existing `is_placeholder_author()` check in `analyze_author()` function
+
+- **Docker Whisper Install Permission Error** (Issue #63)
+  - Creates `/app/.local` and `/app/.cache/pip` directories with proper ownership
+  - Fixes "Permission denied: '/app/.local'" when installing Whisper from UI
+
+- **BookDB Stability Improvements** (Issue #62)
+  - Added circuit breaker for rate limiting (backs off after repeated 429s)
+  - Increased base rate limits to prevent self-banning
+  - Added round-robin queue system for multi-user fairness
+
+---
+
+## [0.9.0-beta.91] - 2026-01-17
+
+### Major Feature: Audio-First Book Identification
+
+**Revolutionary Approach** - Library Manager now identifies audiobooks by transcribing narrator introductions first, before falling back to APIs or folder names. This leverages the fact that most audiobooks begin with the narrator announcing the book title and author.
+
+#### How It Works
+1. **Layer 1: Audio Transcription** - Extracts 45-second intro, transcribes with faster-whisper
+2. **AI Parsing** - Sends transcript to AI to extract author, title, narrator, series
+3. **Layer 2: AI Audio Analysis** - For unclear transcripts, sends audio directly to Gemini
+4. **Layer 3: API Enrichment** - Adds metadata to already-identified books
+5. **Layer 4: Folder Fallback** - Last resort, uses folder structure
+
+#### Test Results
+- **52% of books identified from audio alone** in Layer 1
+- Combined with Layer 2, audio-based identification resolves majority of books
+- Correctly identified books like:
+  - Jack London - White Fang
+  - James S. A. Corey - The Vital Abyss
+  - Brandon Sanderson - The Frugal Wizard's Handbook
+  - James Patterson - Cross the Line
+
+### Technical Improvements
+
+- **faster-whisper Integration** - Local, free speech-to-text via venv
+- **Increased ffmpeg Timeout** - 120 seconds for large m4b files
+- **Known Narrator Detection** - Prevents AI from confusing narrators with authors
+- **Null String Validation** - Rejects AI responses like "None", "null", "N/A"
+- **Layer Advancement Fix** - Items properly flow between layers
+
+### Bug Fixes
+
+- Fixed crash when `current_author` was None
+- Fixed Layer 2 not finding items (wrong verification_layer in query)
+- Fixed items stuck as `needs_attention` not being reprocessed
+- Fixed Gemini model selection (forced `gemini-2.0-flash` for audio support)
+
+---
+
+## [0.9.0-beta.90] - 2026-01-15
+
+### Major Feature: Layer 4 Content Analysis
+
+**The Final Layer** - When all else fails, Library Manager can now transcribe actual story content to identify books. This catches books that have:
+- No intro credits (e.g., Part 2 of multi-part files)
+- Music-only intros
+- Corrupted/cut credit sections
+- Files with zero metadata
+
+#### How It Works
+1. Extracts 60-second audio sample from the **middle** of the book (actual story content)
+2. **Primary Path**: Sends audio to Gemini Audio API for transcription + identification
+3. **Fallback Path**: If Gemini is rate-limited or unavailable:
+   - Uses **faster-whisper** for local transcription (no GPU required)
+   - Sends transcript to **OpenRouter** free models for book identification
+
+#### New Settings (Settings → Processing Layers)
+- **Enable Layer 4** toggle
+- **Speech-to-Text Model**: tiny (75MB) / base (150MB) / small (465MB) / medium (1.5GB)
+- **Book ID Model**: Choice of free OpenRouter models
+- **One-click Whisper Install**: Install faster-whisper directly from the UI
+
+### New Feature: Narrator Detection
+
+Integrates with BookDB to detect known audiobook narrators:
+- **Prevents narrator-as-author errors** - Scott Brick, RC Bray, Steven Pacey correctly identified
+- **AI prompt enhancement** - Warns AI when a name is a known narrator
+- **Auto-save narrators** - Discovered narrators automatically added to BookDB
+
+### New Feature: Deep Verification Mode
+
+New "nuclear option" for library cleanup (Settings → Library Management):
+- **Queue ALL books** for API verification regardless of current status
+- Catches cases where folder structure looks correct but author is actually wrong
+- Shows progress and estimated API usage before starting
+
+### Performance: Faster API Rate Limits
+
+Tuned rate limits to 80-90% of actual API limits:
+- BookDB: 0.2s delay (was 0.5s) - Our API, can burst
+- Audnexus: 0.8s delay (was 1.5s)
+- OpenLibrary: 1.0s delay (was 1.5s)
+- Google Books: 0.5s delay (was 2.5s)
+- Default batch size: 10 (was 3)
+- Default max requests/hour: 200 (was 30)
+
+**Result**: Library scans complete ~3-4x faster
+
+### New API Endpoints
+
+- `GET /api/whisper-status` - Check if faster-whisper is installed and model ready
+- `POST /api/install-whisper` - Install faster-whisper via pip from the UI
+- `POST /api/deep_verify` - Trigger deep verification of entire library
+
+### Improved: Layer 2→3→4 Advancement
+
+Fixed multiple code paths where books were marked "needs_attention" instead of advancing to the next layer:
+- AI returning placeholder authors now advances to Layer 3 (audio credits)
+- Layer 3 failures now advance to Layer 4 (content analysis) if enabled
+- Queue cleanup properly removes items with terminal statuses
+
+### Technical Details
+
+New functions added:
+- `extract_audio_sample_from_middle()` - Gets audio from middle of file (not intro)
+- `transcribe_with_whisper()` - Local transcription via faster-whisper
+- `identify_book_from_transcript()` - OpenRouter book identification
+- `_try_gemini_content_identification()` - Gemini Audio API handler
+- `check_if_narrator()` - BookDB narrator lookup
+- `auto_save_narrator()` - Auto-contribute discovered narrators
+
+### Tests
+
+- 184 tests passing (was 175)
+- New tests for watch folder verification
+- New tests for series number handling
+
+---
+
+## [0.9.0-beta.89] - 2026-01-12
+
+### Fixed
+- **Track Number Stripping** (Issue #57) - "02 Night Without Stars" now correctly searches as "Night Without Stars"
+- **Local BookDB Support** - Uses configured bookdb_url instead of hardcoded cloud URL
+- **Confidence Threshold Fix** - 60% confidence now correctly passes threshold check
+- **Database Column Fix** - Fixed SQL error when marking books as needs_attention
+
+---
+
+## [0.9.0-beta.88] - 2026-01-11
+
+### Fixed
+- **Watch Folder Verification** (Issue #57) - Watch folder now verifies API results before accepting
+  - Previously: Watch folder blindly trusted first API result with confidence > 60
+  - Now: Calls `verify_drastic_change()` when API returns different author than expected
+  - Prevents wrong matches like "Night Without Stars" (Judith Otto) when it should be Peter F. Hamilton
+
+### Improved
+- **Parent Folder as Author Hint** (Issue #57) - Uses subfolder name in watch folder as author context
+  - `/watch/Peter F. Hamilton/02 Night Without Stars.mp3` → author hint = "Peter F. Hamilton"
+  - Provides context that was missing when files had no embedded metadata
+
+- **Same-Title-Different-Author Detection** (Issue #57) - Flags ambiguous matches for review
+  - When multiple APIs return same title but different authors, flags for user attention
+  - Prevents auto-accepting when there are multiple books with identical titles
+
+- **Author Similarity Check** - Compares API author against folder/filename hint before accepting
+  - If similarity < 50%, triggers verification instead of blind acceptance
+
+### Tests
+- 5 new regression tests for watch folder verification logic
+
+## [0.9.0-beta.87] - 2026-01-11
+
+### Fixed
+- **Concurrent Scan SQLite Errors** (Issue #61) - Prevent race conditions during library scans
+  - Added `SCAN_LOCK` mutex to prevent multiple scans running simultaneously
+  - Added `scan_in_progress` flag for quick status checks
+  - API endpoint now returns HTTP 409 if scan already in progress
+  - New `/api/scan/status` endpoint to check if scanning
+  - Prevents "UNIQUE constraint failed: books.path" and "database is locked" errors
+
+- **API Key Fields Not Pasteable** (Issue #60) - Added show/hide toggles to all password fields
+  - Settings page: Gemini, OpenRouter, Google Books API keys
+  - ABS Dashboard: API token field
+  - Setup Wizard: Gemini and OpenRouter API keys
+  - Toggle button with eye icon for each field
+
+- **"Unknown" Author Still Verified** (Issue #59 follow-up) - Fixed remaining gap
+  - When AI returns empty results AND current author is placeholder, now marks "needs_attention"
+  - Previously: empty AI result → always "verified" regardless of current author
+  - Now: empty AI result + placeholder author → "needs_attention" with helpful message
+
+### Tests
+- 9 new regression tests:
+  - 3 tests for Issue #61 (scan lock, scan_in_progress variable, blocking parameter)
+  - 6 tests for Issue #60 (togglePasswordVisibility function and bi-eye icons in 3 templates)
+
+## [0.9.0-beta.86] - 2026-01-10
+
+### Fixed
+- **"Unknown" Author Marked as Fixed/Verified** (Issue #59) - Placeholder authors now flag for attention
+  - Fixed: Books with "Unknown" author were marked as "Fixed" or "Verified" instead of "Needs Attention"
+  - System now checks for placeholder authors (Unknown, Various, etc.) before setting success statuses
+  - Affected books now correctly show "Needs Attention" with message explaining the issue
+  - Applies to all status transitions: verified, fixed, pending_fix paths
+
+## [0.9.0-beta.85] - 2026-01-10
+
+### Fixed
+- **Watch Folder Files Treated as Orphans** (Issue #57) - Watch folder excluded from orphan scanning
+  - Fixed: Files in watch folder (nested inside library) appeared as orphans with author "watch"
+  - `find_orphan_audio_files()` now skips the watch folder path
+  - Watch folder has its own processing flow and shouldn't mix with orphan organization
+
+- **Watch Folder API Lookup Bug** (Issue #57) - Fixed argument order in API search
+  - Fixed: `gather_all_api_candidates()` was called with swapped arguments (author, title instead of title, author)
+  - Now also tries full filename search if initial parsing gives poor results
+  - Files like "Extremity - Nicholas Binge.mp3" now correctly identified
+
+### Code Quality
+- Fixed bare `except:` clause in `find_orphan_audio_files()` - now uses `except Exception:` (PEP 8 compliance)
+
+## [0.9.0-beta.84] - 2026-01-09
+
+### Fixed
+- **Output Folder Routing** (Issue #57 follow-up) - Books from watch folder now go to configured output folder
+  - Fixed: When `watch_output_folder` was set, books from watch folder were still being sorted in-place
+  - Now correctly routes to the configured output folder during queue processing and manual matching
+  - Affected areas: `process_queue()`, `api_manual_match()`, watch folder processing
+
+- **Author Initials Not Applied to AI Results** (Issue #57 follow-up) - Standardization now works everywhere
+  - Fixed: "Peter F Hamilton" and "Peter F. Hamilton" folders created as separate authors
+  - `standardize_author_initials` setting now applies to all author sources:
+    - AI/API identification results
+    - Audio analysis (Layer 3) results
+    - Manual matches and edits
+    - Watch folder processing
+  - Previously only applied during path extraction, not when authors came from APIs
+
+### Improved
+- **Clearer Queue Processing Status** (Issue #57 feedback) - Better feedback on what happened
+  - Processing now shows "X renamed, Y already correct" instead of just "Processed X items"
+  - Shows remaining queue count when not complete: "3 remaining in queue"
+  - Added tooltips to Fixed/Verified filter chips explaining the difference:
+    - **Fixed**: "Books that were renamed/moved to new locations"
+    - **Verified**: "Books already in correct location - no changes needed"
+  - Status badges now have more descriptive tooltips
+
+## [0.9.0-beta.79] - 2026-01-06
+
+### Improved
+- **Hide Media Type Filters When Irrelevant** (Issue #57 feedback) - UI cleanup for audio-only users
+  - "Audio Only", "Ebook Only", and "Both" filter chips now hidden when Ebook Management is disabled
+  - Reduces UI clutter for users who only manage audiobooks
+  - URL parameters for these filters are also ignored when ebook management is off
+
+## [0.9.0-beta.78] - 2026-01-04
+
+### Fixed
+- **SQLite Database Locking (Proper Fix)** - Complete architectural fix for database locking during processing
+  - Previous fix (beta.73) only added `busy_timeout` which was a band-aid
+  - Root cause: Worker functions held DB connections open during external API calls (10-30+ seconds)
+  - Refactored `process_layer_1_api()`, `process_queue()`, and `process_layer_3_audio()` to use 3-phase approach:
+    - Phase 1: Quick fetch, release connection immediately
+    - Phase 2: External work (API/AI/audio calls) with NO database lock held
+    - Phase 3: Quick write, release connection
+  - Eliminates "database is locked" errors when triggering deep rescan during processing
+  - Connection now held for milliseconds instead of 20-30+ seconds
+
+## [0.9.0-beta.77] - 2026-01-03
+
+### Improved
+- **BookDB Rate Limiting** - Better handling of API rate limits
+  - Server now returns proper `Retry-After` headers on all 429 responses
+  - Client respects `Retry-After` instead of hardcoded backoff times
+  - Prevents hammering the API when rate limited
+
+## [0.9.0-beta.76] - 2026-01-03
+
+### Fixed
+- **Standardize Author Initials Setting Not Saving** (Issue #56) - Toggle now saves from web UI
+  - Setting was missing from the form submission handler
+  - Manually editing config.json was the only workaround
+
+## [0.9.0-beta.75] - 2026-01-03
+
+### Fixed
+- **Multi-Edit Queue Accessible** (Issue #37) - Queue page now renders properly with Multi-Edit
+  - `/queue` route was incorrectly redirecting to library view
+  - Multi-Edit button and functionality now accessible at `/queue`
+
+## [0.9.0-beta.74] - 2026-01-03
+
+### Fixed
+- **BookDB Rejecting Standalone Books** - BookDB was only returning results for series books
+  - Standalone books (no series) were being discarded even when found
+  - Now properly returns author/title for books not in a series
+  - Fixes David Baldacci and other prolific authors with many standalone titles
+
+## [0.9.0-beta.73] - 2026-01-02
+
+### Fixed
+- **SQLite Database Locking** (Issue #55) - Added `busy_timeout` pragma to handle large libraries
+  - Prevents "database is locked" errors during concurrent operations
+  - Added timeout to `init_db()` function as well
+
+## [0.9.0-beta.72] - 2026-01-02
+
+### Added
+- **Multi-Edit Queue** (Issue #37) - Edit multiple queue items at once in a single view
+  - "Multi-Edit" button opens modal showing all queue items in editable table
+  - Edit author/title inline for each item
+  - Search button per item to auto-fill from BookDB
+  - Mark items as OK directly from the modal
+  - "Save All Changes" applies all edits as pending fixes
+  - Modified items highlighted, count shown in footer
+
+- **Media Type Filter** (Issue #53) - Filter library by format: Audio Only, Ebook Only, or Both
+  - New filter chips on Library page to find books missing a format
+  - Helps identify audiobooks that don't have ebooks and vice versa
+  - `media_type` column tracks format for each book
+  - Works with existing filters (combine with Verified, Attention, etc.)
+
+- **Standardize Author Initials** (Issue #54) - Option to normalize author initials to consistent format
+  - "James S A Corey" → "James S. A. Corey"
+  - "JRR Tolkien" → "J. R. R. Tolkien"
+  - "C.S. Lewis" → "C. S. Lewis"
+  - Preserves Mc/Mac/O' prefixes (McFadden, MacLeod, O'Brien)
+  - Toggle in Settings → Library → "Standardize Author Initials"
+
+- **ABS Integration Explanation** (Issue #47) - Info banner explaining what the Audiobookshelf integration does
+  - Explains Progress Grid, Archive Candidates, Untouched, and User Groups features
+  - Describes how Library Manager and ABS work together
+  - Tips for enabling ABS-compatible folder structure
+  - Dismissible banner (remembers preference)
+
+- **BookDB Rate Limiting** - Added rate limiting and backoff for BookDB API calls
+  - 0.5 second delay between calls (prevents hammering)
+  - Exponential backoff on 429 responses (30s, 60s, 90s)
+  - Prevents users with large libraries from getting rate-limited
+
+### Added (Tests)
+- 17 new tests for Issue #54 (author initials standardization)
+- 7 new tests for Issue #53 (media type filter + detect_media_type function)
+- 6 new tests for Issue #37 (multi-edit queue modal)
+- New UI feature test suite (`test-env/test-ui-features.py`) - 22 tests total
+  - Tests for Issue #47 (ABS explanation banner)
+  - Tests for Issue #43 (tooltips on badges)
+  - Tests for Issue #42 (edit warning during processing)
+  - Tests for Issue #53 (media type filters)
+  - Tests for Issue #37 (multi-edit queue)
+
+---
+
+## [0.9.0-beta.71] - 2026-01-01
+
+### Fixed
+- **Author Sanity Check** (Issue #50) - Strip junk suffixes from author folder names
+  - "Peter F. Hamilton Bibliography" → "Peter F. Hamilton"
+  - "Stephen King Collection" → "Stephen King"
+  - Handles: Bibliography, Collection, Anthology, Complete Works, Selected Works, Best of, Works of, Omnibus
+  - Also strips Calibre-style IDs from author names: "Author Name (123)" → "Author Name"
+
+- **Title Sanity Check** (Issue #50) - Strip Calibre-style IDs from book titles
+  - "The Great Gatsby (123)" → "The Great Gatsby" (Calibre internal book ID)
+  - "Foundation (4567)" → "Foundation"
+  - Preserves valid series info: "(Book 1)", "(Part 2)", "(Volume 3)" are NOT stripped
+  - Only strips bare numeric IDs in parentheses at the end
+
+### Added
+- 27 new regression tests for Issue #50 (author sanity + title sanity + integration)
+
+---
+
+## [0.9.0-beta.70] - 2026-01-01
+
+### Fixed
+- **Author Prefix in Book Folder Names** (Issue #53 - Dennis's Log) - Fixed incorrect title extraction from folders
+  - When a book folder is named "David Baldacci - Dream Town" under "David Baldacci/", the title was being stored as "David Baldacci - Dream Town" instead of just "Dream Town"
+  - This caused 1% API confidence (comparing "David Baldacci - Dream Town" vs "Dream Town") and unnecessary AI processing
+  - Also caused useless pending approvals: "PENDING APPROVAL: David Baldacci -> David Baldacci"
+  - Now strips author prefix from book folder names when it matches the parent folder author
+  - Added 7 new regression tests for Issue #53
+
+---
+
+## [0.9.0-beta.69] - 2026-01-01
+
+### Removed
+- **Reversed Structure Detection** - Completely removed the pattern-based "reversed detection" system
+  - Was causing false positives (Issue #52) by guessing author/title based on regex patterns
+  - Now trusts API lookups instead: if structure is wrong, APIs won't find matches → item goes to "Needs Attention"
+  - Simpler approach: scan → API lookup → done (or manual review if no match)
+  - Removed ~100 lines of pattern matching code and 2 API endpoints
+  - Philosophy: trust the APIs, don't guess with scripts
+
+---
+
+## [0.9.0-beta.68] - 2026-01-01
+
+### Fixed
+- **False Positive Reversed Structure Detection** (Issue #52) - Books incorrectly flagged as title/author reversed
+  - "James S A Corey" was wrongly flagged because multiple single initials without periods weren't recognized
+  - "Freida McFadden" and similar Mc/Mac/O' names weren't recognized as valid author patterns
+  - Titles like "Leviathan Wakes" were falsely matching as person names (any "Word Word" pattern)
+  - Added new author name patterns: multiple single initials, Irish/Scottish prefixes (Mc, Mac, O')
+  - Made title-as-name detection smarter: now requires first word to be a common first name
+  - Added 15 new regression tests for Issue #52
+
+---
+
+## [0.9.0-beta.67] - 2026-01-01
+
+### Fixed
+- **Watch Folder Creating Duplicates** - Fixed bug where hard link fallback created duplicates
+  - When `watch_use_hard_links` is enabled but source/dest are on different filesystems
+  - Hard link would fail, system would copy file, but **never delete the original**
+  - Now properly deletes source files after successful copy fallback
+  - This was causing duplicate audiobooks when watch folder was on a different drive
+
+---
+
+## [0.9.0-beta.66] - 2026-01-01
+
+### Fixed
+- **Edit Book SQLite Error** (Issue #51) - Fixed crash when editing books in Attention tab
+  - Error was: `'sqlite3.Row' object has no attribute 'get'`
+  - Row objects use bracket access `row['column']`, not `.get()` method
+  - Edit & Lock now works correctly for all book types
+
+---
+
+## [0.9.0-beta.65] - 2026-01-01
+
+### Fixed
+- **Watch Folder Retry Loop** (Issue #49) - Failed watch folder items no longer retry forever
+  - Items that fail to move (e.g., "Too many versions exist") are now tracked in the database
+  - Failed items show up in "Needs Attention" with the error message
+  - User can edit the author/title and apply the fix to retry with corrected metadata
+  - Successfully applied fixes move the item from watch folder to library
+  - Prevents infinite retry loops that spam logs with the same error
+
+- **Watch Folder Treated as Author** (Issue #46) - Watch folder inside library no longer parsed as author
+  - If watch folder is inside a library path (e.g., `/library/watch`), it's now skipped during library scans
+  - Prevents the watch folder name from appearing as an author in the library
+
+### Improved
+- **Encoding Info Cleanup** (Issue #48) - More aggressive cleanup of encoding artifacts from titles
+  - Now strips standalone bitrates (128k, 64kbps, etc.) even outside brackets
+  - Removes file sizes (463mb, 1.2gb) with or without curly braces
+  - Strips audio channel info (mono, stereo, multi)
+  - Removes codec info (vbr, cbr, aac, lame, opus)
+
+- **Audnexus Logging** (Issue #45) - Better logging to debug API issues
+  - Errors now logged at WARNING level instead of DEBUG
+  - Each API's results logged at INFO level showing what was matched
+  - Garbage match rejections logged at INFO level for visibility
+
+---
+
+## [0.9.0-beta.64] - 2025-12-31
+
+### Fixed
+- **Queue Not Auto-Processing** (Issue #44) - Queue now processes automatically regardless of Auto-Fix setting
+  - Previously, queue processing was tied to the Auto-Fix toggle - queue would never process unless Auto-Fix was enabled
+  - Now queue always processes on schedule (scans library, runs Layer 1/2/3 identification)
+  - Auto-Fix toggle now only controls whether fixes are applied automatically or sent to Pending for manual review
+  - This is how it always should have worked - Auto-Fix should control renaming, not identification
+
+---
+
+## [0.9.0-beta.63] - 2025-12-31
+
+### Fixed
+- **BookDB Integration** (Issue #45) - BookDB metadata lookups now work without configuration
+  - Hardcoded public API key so users don't need to configure `bookdb_api_key`
+  - Layer 1 API lookups now properly use BookDB as the first source
+  - Edit dialog "Search Book Database" now returns results from BookDB instead of falling back to Google Books
+  - Fixed slow queries that were causing timeouts (was doing full table scans on 50M books)
+
+### Improved
+- **BookDB Search Performance** - Searches now complete in ~2.5 seconds instead of timing out
+  - Optimized FTS (Full-Text Search) queries to avoid slow OR LIKE clauses
+  - Better author-filtered matching for accurate results
+
+---
+
+## [0.9.0-beta.62] - 2025-12-26
+
+### Improved
+- **Settings Page Reorganization** - Cleaner 5-tab layout for better discoverability
+  - **Library** - Paths, naming format, watch folder, ebook management
+  - **Processing** - Background processing, confidence settings, identification layers
+  - **AI Setup** - Provider selection (Gemini/OpenRouter/Ollama), metadata sources
+  - **Safety** - Auto-apply, author approval, trust the process, metadata embedding
+  - **Advanced** - Language, error reporting, updates, danger zone, backup, debug/logs
+  - "How It Works" banner now remembers dismissal via localStorage
+
+### Added
+- **UI Tooltips** (Issue #43) - Hover over status badges to see what they mean
+  - Library page: Tooltips on all status badges (OK, Needs Fix, Processing, etc.)
+  - Dashboard page: Tooltips on status counts
+  - History page: Tooltips on Fixed/Pending/Undone badges
+
+- **Edit Warning During Processing** (Issue #42) - Warning when editing during queue processing
+  - If you click Edit while processing is active, you get a warning that the item may change
+  - "Don't show again" option suppresses warning for the rest of the session
+  - Prevents confusion when items change mid-edit
+
+---
+
+## [0.9.0-beta.61] - 2025-12-24
+
+### Improved
+- **Watch Folder Unknown Author Handling** (Issue #40) - Unknown authors now flagged for review
+  - When watch folder can't determine author (shows as "Unknown"), item is flagged for user attention
+  - File is still moved to library (so watch folder doesn't fill up)
+  - But status is set to `needs_attention` instead of `pending`
+  - Shows up in the "Attention" tab with message explaining the issue
+  - User can edit to correct author/title before processing continues
+  - Uses existing `is_placeholder_author()` to catch all placeholder names (Unknown, Various, N/A, etc.)
+
+---
+
+## [0.9.0-beta.60] - 2025-12-24
+
+### Fixed
+- **Series Folders Showing in Queue** (Issue #36) - Series folders no longer appear as items needing fixes
+  - When a folder is detected as a series folder, it's now removed from the processing queue
+  - Same fix applied for multi-book collection folders
+  - Queue view now filters out series_folder and multi_book_files status items
+  - Queue count now accurately excludes these non-processable items
+
+---
+
+## [0.9.0-beta.59] - 2025-12-24
+
+### Fixed
+- **Ollama Model Dropdown** (Issue #41) - Model names now display correctly instead of "undefined"
+  - Fixed JavaScript that was treating model name strings as objects
+  - Dropdown now properly shows available models from Ollama server
+
+---
+
+## [0.9.0-beta.58] - 2025-12-24
+
+### Fixed
+- **PUID/PGID Improvements** (Issue #39) - Fixed startup errors with common GIDs
+  - Handles existing GIDs (e.g., GID 100 = "users" group in Debian)
+  - Uses `-o` flag for useradd to allow duplicate UIDs
+  - Log file moved to `/data/app.log` (persistent, accessible to non-root user)
+  - Properly sets ownership of data directories before starting app
+
+---
+
+## [0.9.0-beta.57] - 2025-12-23
+
+### Added
+- **PUID/PGID Support** (Issue #39) - Docker container now respects user permissions
+  - Set `PUID` and `PGID` environment variables to control file ownership
+  - UnRaid users: use `PUID=99` and `PGID=100` for "nobody" user
+  - Defaults to root (0/0) for backwards compatibility
+  - Files created by the container will have correct ownership
+
+---
+
+## [0.9.0-beta.56] - 2025-12-23
+
+### Fixed
+- **Watch Folder Settings Not Saving** (Issue #32) - Toggle and settings now save properly from UI
+  - Previously required manual editing of config.json
+  - All watch folder settings (mode, paths, intervals, hard links) now save correctly
+
+- **Watch Folder `analyze_path` Error** (Issue #32) - Fixed `name 'analyze_path' is not defined` error
+  - Watch folder processing now uses `extract_author_title` for path analysis
+  - Books are properly identified before moving to output folder
+
+- **False Positive Series Folder Detection** (Issue #36) - Series folders with 1 book no longer flagged as needing fixes
+  - Previously required 2+ books in series folder to be detected as series
+  - Now detects series folders even with just 1 numbered book subfolder
+  - Also detects series structure when folder has no direct audio but subfolders do
+  - Properly scans book folders inside series folders (3-level structure: Author/Series/Book)
+
+- **Book Numbers Polluting Search** (Issue #38) - Leading book numbers no longer break BookDB searches
+  - Searches like "5 - The Rhesus Chart" now find the correct book
+  - Extracts series number from query before cleaning (preserves book position)
+  - Cleans query to remove leading numbers before sending to BookDB
+  - Titles like "1984" are preserved (only strips numbers followed by separators)
+
+---
+
+## [0.9.0-beta.55] - 2025-12-22
+
+### Added
+- **Watch Folder Mode** (Issue #32) - Monitor a folder for new audiobooks and organize automatically
+  - Enable in Settings → Behavior → Watch Folder Mode
+  - Set Watch Folder (input path to monitor for new downloads)
+  - Set Output Folder (where to move organized books - defaults to library)
+  - Configurable check interval (default 60 seconds)
+  - Min file age setting (wait for downloads to complete)
+  - **Hard link support** - save disk space by hard linking instead of moving (same filesystem only)
+  - Delete empty folders option after moving
+  - Runs as separate worker thread for fast response
+  - Uses API lookups to identify books before moving
+
+- **Library Search** - Find books in your library by author or title
+  - New search box on Library page
+  - Real-time search across your entire collection
+  - Quick way to find specific books to edit or lock
+
+- **Locked Books Filter** - View all user-locked books
+  - New "Locked" filter chip on Library page
+  - See which books have been manually edited and locked
+  - Quick access to unlock if needed
+
+- **Edit from Library** - Edit any book directly from Library view
+  - Edit button on all library items (not just History)
+  - Same BookDB search and manual entry as History page
+  - Locks book after editing to protect your changes
+
+### Changed
+- **Library API** - Now returns `locked` count and `user_locked` field for each item
+- **Library filters** - Added `locked` and `search` filter options
+
+---
+
+## [0.9.0-beta.54] - 2025-12-22
+
+### Added
+- **User Edit & Lock System** - Manually edit any book's metadata and lock it from future changes
+  - Edit button on all History items (pending, fixed, verified)
+  - Search BookDB to find the correct match
+  - Manually set author, title, series name, and series number
+  - **Changes are "cemented"** - system will never overwrite user-set metadata
+  - Lock icon shows which books have user-locked settings
+  - Unlock button available to allow re-processing if desired
+
+### Changed
+- **Locked Books Skip Processing** - User-locked books are completely skipped during:
+  - Library scanning (won't be re-queued)
+  - Layer 1 API processing
+  - Layer 2 AI processing
+  - Layer 3 Audio analysis
+  - Protects your manual corrections from being overwritten
+
+### Fixed
+- **Issue #36 Continuation** - Users can now correct wrong AI identifications before applying fixes
+  - Previously could only Apply or Reject - no way to fix wrong matches
+  - Now has Edit button to search and select the correct book
+
+---
+
+## [0.9.0-beta.53] - 2025-12-20
+
+### Fixed
+- **Critical: Process Button Skipped Layer 1** - Clicking "Process" went straight to Layer 2 (AI)
+  - Items queued at Layer 1 were never picked up because Layer 2 only looks for `verification_layer=2`
+  - Now properly runs Layer 1 (API) -> Layer 2 (AI) -> Layer 3 (Audio) even for single-click processing
+  - This was why users saw "Fetched 0 items from queue" despite having queued items
+
+---
+
+## [0.9.0-beta.52] - 2025-12-20
+
+### Fixed
+- **Verification Now Saves Profile Data** - When Layer 1 (API) verifies a book, it now saves the verification source
+  - Shows which API confirmed the book (BookDB, OpenLibrary, Google Books, etc.)
+  - Displays confidence percentage in the Library view
+
+### Added
+- **Legacy Badge for Old Verifications** - Books verified before profile system show "Legacy" badge
+  - Hovering shows "Verified before profile system - run Deep Scan to re-verify"
+  - Clear indication of which books need re-verification
+
+- **Deep Scan Re-verifies Legacy Books** - Running a Deep Scan now re-queues legacy verified books
+  - Books with no profile data get re-processed through proper verification
+  - Populates profile with source and confidence data
+
+---
+
+## [0.9.0-beta.51] - 2025-12-20
+
+### Fixed
+- **Critical: Placeholder Authors Incorrectly Verified** - Books with "Unknown" author were auto-verified
+  - Layer 1 API verification gave placeholder authors (Unknown, Various, etc.) 100% match score
+  - Now properly advances placeholder authors to Layer 2 (AI) for actual identification
+  - "Unknown / Trailer Park Elves" no longer shows as verified without knowing the real author
+
+- **Clear Queue Marked Books as Verified** - Clearing the queue falsely marked unverified books as verified
+  - Now resets books to `pending` status with `verification_layer=0`
+  - Books can be properly re-scanned and processed
+
+- **Reject All Pending Marked Books as Verified** - Rejecting proposed fixes falsely verified books
+  - Now resets books to `pending` status instead
+  - Rejecting a fix ≠ verifying the book is correct
+
+---
+
+## [0.9.0-beta.50] - 2025-12-20
+
+### Added
+- **Anonymous Error Reporting** - Opt-in system to help improve Library Manager
+  - Toggle in Settings → Debug Menu → "Anonymous Error Reporting"
+  - "Send to Developer" button sends error reports with optional message
+  - Reports include error context and traceback (no personal data)
+  - Helps identify bugs users encounter in real usage
+
+- **API Connection Tests** - Debug menu now has "Test Connections" button
+  - Tests BookDB, Gemini, OpenRouter, Ollama, Google Books, Hardcover
+  - Shows connection status and response times
+  - Helps troubleshoot configuration issues
+
+- **Clear All Buttons** - Debug menu improvements
+  - "Clear All" buttons for error reports, activity log, and queue log
+  - Easier cleanup during troubleshooting
+
+### Improved
+- **Activity Panel** - Better tracking of background operations
+  - Fixed issues with activity display
+  - Cleaner formatting
+
+- **Settings UI** - More polished debug tools section
+  - Grouped related functions together
+  - Better button layouts
+
+---
+
+## [0.9.0-beta.49] - 2025-12-20
+
+### Fixed
+- **Critical: Queue Processing Not Working** - Items stuck in queue, "processed 0" returned
+  - Layer 1 (API) had incomplete code that marked items as layer=4 but never removed them from queue
+  - Layer 3 (Audio) had same issue - extracted metadata but never created fixes
+  - Items got stuck at verification_layer=4 with no handler processing them
+  - Now properly: verifies items and removes from queue, or advances to next layer
+
+### Improved
+- **Layered Processing Reliability** - All three processing layers now complete their work properly
+  - Layer 1: Verifies correct items (90%+ match), advances others to Layer 2
+  - Layer 3: Creates pending fixes from audio analysis, or marks verified
+
+### Added
+- **Real User Workflow Tests** - New integration tests that catch processing bugs
+  - `test_process_empties_queue` - Catches "processed 0 but queue full" bugs
+  - `test_queue_items_not_stuck` - Catches items stuck at invalid layers
+  - `test-env/test-user-workflow.py` - Full end-to-end workflow testing
+
+---
+
+## [0.9.0-beta.48] - 2025-12-19
+
+### Added
+- **Series Number Extraction from Search** (Issue #34) - Manual match search now extracts series info from query
+  - "Horus Heresy Book 36" → auto-fills series="Horus Heresy", position=36
+  - "Mistborn #3" → extracts position=3
+  - "No. 5" format also supported
+  - Results without series data get enriched with extracted info
+
+- **Manual Series Override UI** - New editable fields when selecting a search result
+  - Series Name and Book # fields appear after selecting a result
+  - Pre-populated with data from database or extracted from query
+  - Shows hint "(from database)" or "(extracted from your search)"
+  - User can edit/correct before saving
+
+### Fixed
+- **Bug Report Privacy** (Issue #35) - Sensitive info no longer exposed in bug reports
+  - API keys replaced with connection status: `Gemini: connected`, `Google Books: not configured`
+  - Library paths hidden - shows `library_paths_count: 2` instead of actual paths
+  - Error log paths sanitized: `/home/user/books/file.mp3` → `[path]/file.mp3`
+  - Only safe config settings included (no secrets, no personal info)
+
+---
+
+## [0.9.0-beta.47] - 2025-12-19
+
+### Fixed
+- **Verification Layer Settings Not Saving** - `enable_audio_analysis`, `deep_scan_mode`, `enable_api_lookups`, `enable_ai_verification`, and `profile_confidence_threshold` now persist
+  - Form field names were mismatched between template and save handler
+  - All toggles and the confidence slider now properly save and load
+
+- **Search Strips Leading Track Numbers** (Issue #33) - Manual match search now strips leading numbers
+  - `06 - Dragon Teeth` → searches for `Dragon Teeth`
+  - `01. The Martian` → searches for `The Martian`
+  - `Track 05 - Something` → searches for `Something`
+  - Safe patterns preserved: `1984`, `11/22/63` stay unchanged
+
+- **Orphan Organize Moves Companion Files** (Issue #31) - Covers, NFO, and metadata files now move with audio
+  - Covers: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`
+  - Metadata: `.nfo`, `.txt`, `.json`, `.xml`, `.cue`
+  - Companion ebooks: `.pdf`, `.epub`, `.mobi`
+  - Empty source folders cleaned up automatically
+
+- **Missing Default Config** - `series_grouping` was used but missing from DEFAULT_CONFIG
+
+- **Duplicate Setting Removed** - Removed `audio_analysis` toggle from Behavior section (was duplicate of `enable_audio_analysis` in Identification Sources)
+
+### Changed
+- **Unified Navigation** - Removed separate Queue and Orphans pages from navbar
+  - Both now redirect to Library page with appropriate filter pre-selected
+  - `/queue` → `/library?filter=queue`
+  - `/orphans` → `/library?filter=orphan`
+  - Cleaner navigation: Dashboard → Library → History → ABS → Settings
+
+- **Settings Descriptions Improved** - All settings now have clear, plain-language descriptions
+  - "Smart Verification" renamed to "Require Approval for Author Changes"
+  - "Enable Background Processing" now explains what it does
+  - "Verification Layers" section renamed to "Identification Sources" with Layer 1/2/3 labels
+  - Confidence threshold slider explanation improved
+
+### Added
+- **Skip Confirmations in Settings** - New toggle in Settings > Behavior
+  - Previously only available in Library view quick action bar
+  - Now accessible from main Settings page
+  - Disables "Are you sure?" popups for apply/reject/undo actions
+
+---
+
+## [0.9.0-beta.46] - 2025-12-19
+
+### Fixed
+- **UnRaid Config Persistence** - App now auto-detects `/config` mount point (UnRaid default)
+  - Previously hardcoded `DATA_DIR=/data` in Dockerfile, ignoring UnRaid's `/config`
+  - Now uses `os.path.ismount()` to detect which directory is actually mounted
+  - UnRaid users no longer need to manually add `/data` path
+  - Existing configs are NEVER lost - always checks for existing files first
+
+- **Search Title Cleanup Improvements**
+  - Underscores now converted to spaces (`audiobook_Title` → `audiobook Title`)
+  - Curly brace junk removed (`{465mb}`, `{narrator}`)
+  - Titles like "1984" and "11/22/63" no longer incorrectly stripped
+  - Added "Unknown Author" to placeholder detection
+
+### Changed
+- Dockerfile no longer sets `DATA_DIR` env var - app auto-detects
+- Both `/data` and `/config` directories created in container for compatibility
+- Migration checks both locations for legacy config files
+- `clean_search_title()` is now minimal - doesn't strip dates/timestamps
+  - Layered verification (API + AI + Audio) determines the real title
+  - Multiple agreeing sources = high confidence (Book Profile system)
+
+### Technical
+- `_detect_data_dir()` priority:
+  1. Explicit `DATA_DIR` env var (user override)
+  2. Directory with existing config files (never lose settings)
+  3. Actually mounted volume via `os.path.ismount()` (fresh install detection)
+  4. `/data` fallback (our documented default)
+  5. `/config` fallback (UnRaid)
+  6. App directory (local development)
+- Added comprehensive naming issue test suite (39 tests covering all GitHub issues)
+
+---
+
+## [0.9.0-beta.45] - 2025-12-18
+
+### Added
+- **Layered Processing Architecture** - Queue processing now uses independent verification layers
+  - **Layer 1 (API)**: Fast database lookups via BookDB, Audnexus, OpenLibrary, etc.
+  - **Layer 2 (AI)**: AI verification for items that failed API lookup
+  - **Layer 3 (Audio)**: Gemini audio analysis as final fallback
+  - Each layer processes independently and hands off failures to the next
+  - Respects existing settings: `enable_api_lookups`, `enable_ai_verification`, `enable_audio_analysis`
+
+- **New Database Column** - `verification_layer` tracks which layer each book is at
+  - 0 = Not processed, 1 = Awaiting API, 2 = Awaiting AI, 3 = Awaiting Audio, 4 = Complete
+
+- **Layer Functions** - New processing functions for cleaner code separation
+  - `process_layer_1_api()`: Handles API database lookups
+  - `process_layer_3_audio()`: Handles Gemini audio analysis
+  - `process_queue()` now only handles Layer 2 (AI verification)
+
+### Changed
+- `process_all_queue()` now processes layers in sequence: API → AI → Audio
+- Processing status now shows which layer is active
+- Queue items only advance through enabled layers
+- When API lookups are disabled, items go directly to AI layer
+
+### Technical
+- All existing features preserved: multibook detection, series sorting, naming templates, etc.
+- All bug fixes remain intact: config persistence, template cleanup, version handling
+- Integration tests pass: 9/9
+
+---
+
+## [0.9.0-beta.44] - 2025-12-18
+
+### Added
+- **Unified Library View** - New `/library` page consolidates all views into one (Issue #31 feedback)
+  - Filter chips at top: All, Pending, Orphans, Queue, Fixed, Verified, Errors, Attention
+  - Single table showing all items with contextual actions
+  - Quick action bar: Scan, Process Queue, Apply All Pending, Organize Orphans
+  - Real-time activity stream showing operations as they happen
+  - Auto-refresh every 10 seconds
+  - Orphans now integrated into main view (no more separate dead-end page)
+
+- **Skip Confirmations Toggle** - New setting for faster batch workflows
+  - Toggle in Library view quick action bar
+  - When enabled, skips "Are you sure?" dialogs for apply/reject/undo/organize
+  - Persists to config, survives page refresh
+  - Also available in Settings page
+
+- **New API Endpoint** - `/api/library` returns unified data
+  - All items (books, orphans, pending fixes, queue, errors) in one response
+  - Filter counts for each category
+  - Pagination support
+  - Powers the new Library view
+
+### Changed
+- Navigation now includes "Library" link between Dashboard and Queue
+- Removed separate "Pending" nav link (now a filter chip in Library view)
+
+---
+
+## [0.9.0-beta.43] - 2025-12-18
+
+### Fixed
+- **Issue #29: Multibook False Positive** - Chapter files no longer flagged as multi-book collections
+  - Files named `00 - Chapter.mp3`, `01 - Prologue.mp3`, `02 - Part Two.mp3` were incorrectly skipped
+  - Root cause: Regex pattern `^(\d+)\s*[-–—:.]` matched leading numbers as "book numbers"
+  - Now uses smart detection: chapter indicators (prologue, epilogue, chapter, disc, track) = NOT multibook
+  - Sequential numbering from 0/1 = chapters, not books
+  - Only explicit patterns like `Book 1`, `Volume 2` trigger multibook detection
+
+### Added
+- **Book Profile System (Foundation)** - Infrastructure for confidence-scored metadata
+  - New `BookProfile` and `FieldValue` dataclasses for per-field confidence tracking
+  - Source weights: audio (85), id3 (80), json (75), nfo (70), bookdb (65), ai (60), path (40)
+  - Field weights: author/title (30% each), narrator (15%), series (10%), etc.
+  - Consensus-based confidence calculation with agreement bonuses and conflict penalties
+  - Database columns added: `books.profile` (JSON), `books.confidence` (integer)
+
+- **New Settings for Verification Control**
+  - `enable_api_lookups`: Toggle API database lookups (default: on)
+  - `enable_ai_verification`: Toggle AI verification (default: on)
+  - `enable_audio_analysis`: Toggle Gemini audio analysis (default: off)
+  - `deep_scan_mode`: Always use all enabled layers regardless of confidence
+  - `profile_confidence_threshold`: Skip expensive layers when confidence is high enough (default: 85%)
+  - `multibook_ai_fallback`: Use AI for ambiguous chapter/multibook cases (default: on)
+
+---
+
+## [0.9.0-beta.42] - 2025-12-18
+
+### Fixed
+- **Corrupt Dest Now Moves Valid Source** - When destination has corrupt files, source still gets moved
+  - Previously: If existing copy was corrupt, valid source just sat there with "corrupt_dest" status
+  - Now: Valid source moves to `Author/Title [Valid Copy]/` path
+  - User still needs to manually remove the corrupt copy
+
+---
+
+## [0.9.0-beta.41] - 2025-12-18
+
+### Fixed
+- **Different Versions No Longer Error** - Multiple versions of same book now get unique paths
+  - Previously: If `Bernard Cornwell/Excalibur/` existed and another copy tried to move there, it errored
+  - Now: System creates unique paths like `Bernard Cornwell/Excalibur {Version B}/` automatically
+  - Tries to extract narrator from audio files first for better naming
+  - Falls back to "Version B", "Version C" etc. when no metadata available
+  - Different narrators/recordings are NOT duplicates - they're valid variants
+
+### Added
+- **Narrator Extraction** - New `extract_narrator_from_folder()` function
+  - Checks audio file ID3/MP4 tags for narrator metadata
+  - Parses NFO files for "Narrated by" / "Read by" patterns
+  - Checks metadata.json for narrator fields
+  - Used to distinguish between different recordings of same book
+
+---
+
+## [0.9.0-beta.40] - 2025-12-18
+
+### Fixed
+- **Dashboard Showing "Fixed" for Errors** - Critical bug where dashboard displayed all entries as "Fixed"
+  - Root cause: UI showed "Fixed" badge based on path change, not actual status
+  - Entries with status "error", "duplicate", "conflict", "corrupt_dest" were all displayed as "Fixed"
+  - Users couldn't tell if renames actually succeeded or failed
+  - Dashboard now shows actual status: Fixed (green), Error (red), Duplicate, Conflict, Corrupt, Pending, etc.
+  - Hover over Error badge to see the error message
+
+### Improved
+- **Status Badges** - More informative status display on dashboard
+  - Fixed: green, Error: red with tooltip, Duplicate/Conflict: yellow, Pending: gray
+  - Helps identify books that need manual attention vs successful renames
+
+---
+
+## [0.9.0-beta.39] - 2025-12-17
+
+### Fixed
+- **Update Channel Now Works** - Beta/Stable selection in Settings actually switches branches
+  - Selecting "Beta" now pulls from `develop` branch
+  - Selecting "Stable" now pulls from `main` branch
+  - Previously, update always pulled from current branch regardless of setting
+
+---
+
+## [0.9.0-beta.38] - 2025-12-17
+
+### Fixed
+- **ABS Connection Lost on Restart** (Issue #27) - Audiobookshelf API token not persisting
+  - Root cause: Token was filtered from config.json (for security) but never saved to secrets.json
+  - ABS connection now survives container restarts and settings page saves
+  - Token properly stored in secrets.json alongside other API keys
+
+- **Settings Page Wiping ABS Token** - Saving settings no longer overwrites ABS connection
+  - Settings page now preserves existing secrets when saving
+  - Previously, saving any setting would wipe the ABS token
+
+### Improved
+- **Bug Report Security** - Additional API keys now redacted in bug reports
+  - `abs_api_token`, `bookdb_api_key`, and `google_books_api_key` now redacted
+  - Prevents accidental exposure when sharing bug reports
+
+---
+
+## [0.9.0-beta.37] - 2025-12-16
+
+### Added
+- **"Trust the Process" Mode** - Fully automatic verification chain (EXPERIMENTAL)
+  - New toggle in Settings > General > Behavior
+  - When enabled: drastic author changes verified via AI + audio snippets
+  - If AI is uncertain, uses Gemini audio analysis as tie-breaker
+  - Only truly unidentifiable items flagged as "Needs Attention" (no pending queue)
+  - Verified drastic changes are auto-applied (everything logged in history for undo)
+  - Requires: Gemini API key for audio analysis
+
+- **"Needs Attention" Status** - New category for unidentifiable books
+  - Items that couldn't be verified by any method appear in History with red "Needs Attention" badge
+  - Filter history by `/history?status=attention`
+  - Includes detailed error message explaining why verification failed
+  - These items are NOT moved - just flagged for manual review
+
+### Changed
+- Auto-fix now allows verified drastic changes in Trust the Process mode
+- History page shows "Needs Attention" count and filter button
+
+---
+
+## [0.9.0-beta.36] - 2025-12-16
+
+### Added
+- **Preferred Metadata Language** (Issue #17) - Localized metadata support for non-English libraries
+  - New "Preferred Metadata Language" dropdown in Settings > General > Language
+  - Supports 28 languages: German, French, Spanish, Italian, Portuguese, Dutch, Swedish, Norwegian, Danish, Finnish, Polish, Russian, Japanese, Chinese, Korean, Arabic, Hebrew, Hindi, Turkish, Czech, Hungarian, Greek, Thai, Vietnamese, Ukrainian, Romanian, Indonesian
+  - Google Books API now uses `langRestrict` parameter to filter results by language
+  - OpenLibrary search now includes `language` parameter
+  - Audnexus/Audible searches use regional endpoints (audible.de, audible.fr, etc.)
+
+- **Preserve Original Titles** - Prevents translating foreign titles to English
+  - New toggle in Settings > General > Language (enabled by default)
+  - Detects title language using `langdetect` library
+  - Example: German "Der Bücherdrache" stays German instead of becoming "The Book Dragon"
+  - Useful for users with localized libraries who want to keep original language titles
+
+- **AI-Assisted Localization** - Get official translated titles via AI
+  - New `get_localized_title_via_ai()` function asks AI for official translated book titles
+  - Works with all AI providers (Gemini, OpenRouter, Ollama)
+  - Only returns real published translations, not machine translations
+
+- **Audio Language Detection** - Detect spoken language from audiobook samples
+  - New "Detect Language from Audio" toggle in Settings (requires Gemini API key)
+  - Uses Gemini audio analysis to identify narrator's spoken language
+  - Returns ISO 639-1 code with confidence level
+  - Extended existing audio analysis to also return language field
+
+### Changed
+- `search_google_books()` now accepts optional `lang` parameter
+- `search_audnexus()` now accepts optional `region` parameter for regional Audible stores
+- `search_openlibrary()` now accepts optional `lang` parameter
+- `gather_all_api_candidates()` now uses language preferences for all API calls
+
+### Dependencies
+- Added `langdetect>=1.0.9` for title language detection
+
+---
+
+## [0.9.0-beta.35] - 2025-12-15
+
+### Added
+- **Audio Fingerprinting for Duplicate Detection** - Smart comparison of audiobook folders
+  - Uses Chromaprint/fpcalc to create audio fingerprints (same tech as Shazam)
+  - Detects if two folders contain the same recording even in different formats/bitrates
+  - 70% fingerprint similarity threshold ensures different narrators are NOT confused as duplicates
+  - Different editions (e.g., "Warbreaker" vs "Warbreaker Tenth Anniversary") correctly identified as separate
+
+- **Corrupt File Detection** - Identifies unreadable/broken audio files
+  - Scans audio files with fpcalc to verify they're actually playable
+  - When destination has corrupt files but source is valid, recommends replacing
+  - New `corrupt_dest` status in history with "Replace" button
+  - Prevents keeping broken downloads over valid copies
+
+- **Deep Audiobook Comparison** - Intelligent version analysis
+  - Compares total duration, file count, and audio content
+  - Detects partial copies (one version is subset of another)
+  - Identifies which version is more complete
+  - Provides clear recommendations: keep_source, keep_dest, or keep_both
+
+- **Duplicate Management UI** - Easy removal of confirmed duplicates
+  - New "Duplicate" status in history with "Remove" button
+  - Filter history by duplicates with `/history?status=duplicate`
+  - "Remove All Duplicates" button for bulk cleanup
+  - Shows match percentage and file counts for informed decisions
+
+- **Replace Corrupt Destination** - One-click fix for corrupt files
+  - New `/api/replace_corrupt/<id>` endpoint
+  - Deletes corrupt destination, moves valid source to correct location
+  - Cleans up empty parent folders automatically
+
+### Changed
+- **Conflict Detection Improved** - Now distinguishes between:
+  - True duplicates (same files or same recording) → can be safely removed
+  - Different editions/narrators (different audio) → marked as conflict for review
+  - Corrupt destinations (unreadable files) → can be replaced with valid source
+- **Error Messages Enhanced** - Conflicts now show:
+  - Recording similarity percentage
+  - File counts and sizes for both versions
+  - Clear reason why it's a conflict vs duplicate
+
+### Technical
+- New functions: `get_audio_fingerprint()`, `compare_fingerprints()`, `analyze_audiobook_completeness()`, `compare_audiobooks_deep()`
+- `compare_book_folders()` now includes optional deep analysis with audio fingerprinting
+- Requires `libchromaprint-tools` package (fpcalc) - auto-installed in Docker
+
+---
+
+## [0.9.0-beta.34] - 2025-12-15
+
+### Fixed
+- **Issue #23: Config vanishing on updates** - Added migration for legacy config locations
+  - Users updating from versions before beta.23 had config stored in `/app/` (non-persistent)
+  - The app now checks for config files in the old location on startup
+  - Automatically migrates `config.json`, `secrets.json`, `library.db`, and `user_groups.json` to `/data/`
+  - Prevents config loss when updating Docker containers
+
+---
+
+## [0.9.0-beta.33] - 2025-12-15
+
+### Fixed
+- **Issue #22: Empty series hyphen regression** - Fixed leading hyphen appearing when series is empty
+  - Custom templates with `{series_num} - {title}` now properly clean up to just `{title}` when series_num is empty
+  - Improved regex to handle both `/- ` and `/ - ` patterns after path separator
+
+---
+
+## [0.9.0-beta.32] - 2025-12-15
+
+### Fixed
+- **Issue #21: Manual match fallback search** - Added Google Books fallback when BookDB is unavailable
+  - Manual match search now tries BookDB first, falls back to Google Books on failure
+  - Works when BookDB is down for maintenance, times out, or returns no results
+  - Google Books results include series extraction from subtitles
+  - Response includes `source` field ('bookdb' or 'googlebooks') and `fallback_reason` when applicable
+
+---
+
+## [0.9.0-beta.31] - 2025-12-15
+
+### Added
+- **Tag restoration on undo** - Undo now restores original audio file tags
+  - Reads original tags from `.library-manager.tags.json` sidecar backup
+  - Writes original tags back to audio files before moving
+  - Deletes sidecar backup after successful restoration
+  - Supports all tagged formats: MP3, M4B/M4A, FLAC, Ogg/Opus, WMA
+  - New `restore_tags_from_sidecar()` function in `audio_tagging.py`
+
+### Fixed
+- **Undo for single file moves** - Fixed undo creating folder instead of restoring file
+  - History now stores the actual file path for single-file moves
+  - Undo correctly extracts and restores just the file, not the containing folder
+  - Cleans up empty parent folders after file undo
+
+- **Database connection leak** - Fixed connection leak in `/api/manual_match` error handler
+  - Exception handler now properly closes database connection
+  - Prevents "database is locked" errors under repeated failures
+
+---
+
+## [0.9.0-beta.30] - 2025-12-15
+
+### Fixed
+- **Manual match save error** - Fixed JSON parsing error when saving manual book matches
+  - Root cause: `/api/manual_match` tried to update non-existent columns (`suggested_author`, etc.)
+  - Rewrote to properly create pending fixes in the history table (matching the rest of the codebase)
+  - Manual "Save as Pending Fix" now works correctly
+
+- **Single file moves losing extension** - Fixed audiobook files being saved without extension
+  - When applying fixes to single M4B files, the file was being renamed to the folder name
+  - Now properly creates folder structure and moves file inside with original filename
+  - Example: `Book.m4b` → `Author/Title/Book.m4b` (preserves extension)
+  - Metadata embedding now finds files correctly (was showing "0 files")
+
+---
+
+## [0.9.0-beta.29] - 2025-12-15
+
+### Added
+- **Metadata Embedding (Beta)** - Write verified metadata directly into audio file tags
+  - New "Metadata Embedding" toggle in Settings > Behavior
+  - Supported formats: MP3 (ID3v2), M4B/M4A/AAC (MP4 atoms), FLAC/Ogg/Opus (Vorbis comments), WMA (ASF)
+  - Tags written: title, album (book title), artist/albumartist (author), year
+  - Custom tags: SERIES, SERIESNUMBER, NARRATOR, EDITION, VARIANT
+  - Optional sidecar backup: `.library-manager.tags.json` stores original tags before modification
+  - Runs automatically when fixes are applied (auto-fix or manual Apply Fix)
+  - New `audio_tagging.py` module with format-specific tagging functions
+  - Test suite: `test-env/test-audio-tagging.py`
+
+### Changed
+- **History table expanded** - Now stores series/narrator/year/edition/variant metadata
+  - Enables metadata embedding when applying pending fixes
+  - Tracks embedding status (ok/error) and error messages
+
+---
+
+## [0.9.0-beta.28] - 2025-12-14
+
+### Fixed
+- **Issue #18: Manual match JSON error** - Fixed "unexpected character" crash on save
+  - Root cause: `/api/manual_match` called non-existent `get_local_db()` function
+  - Also queried wrong table (`processing_queue` instead of `queue`)
+  - Rewrote endpoint to use correct database and table structure
+  - Manual book matching now works properly
+
+### Improved
+- **Scan feedback** - Users now see what was actually scanned
+  - Before: "Found 0 new books, 0 added to queue" (confusing)
+  - After: "Checked: 2 books, Already correct: 2, Need fixing: 0" (clear)
+  - Helps users like Dennis understand the scan DID work on their library
+  - Logs now show full scan stats: checked, tracked, queued
+
+---
+
 ## [0.9.0-beta.27] - 2025-12-13
 
 ### Fixed

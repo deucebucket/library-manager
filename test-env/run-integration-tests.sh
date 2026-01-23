@@ -2,8 +2,9 @@
 # Library Manager Integration Test Suite
 # Tests Docker deployment and core functionality
 #
-# Usage: ./run-integration-tests.sh [--rebuild]
+# Usage: ./run-integration-tests.sh [--rebuild] [--local]
 #   --rebuild: Regenerate test library before testing
+#   --local:   Build from local source instead of pulling ghcr.io image
 
 # Don't exit on error - we want to run all tests
 # set -e
@@ -44,9 +45,16 @@ setup() {
     podman stop "$CONTAINER_NAME" 2>/dev/null || true
     podman rm "$CONTAINER_NAME" 2>/dev/null || true
 
-    # Pull latest image
-    log_info "Pulling latest image from ghcr.io..."
-    podman pull ghcr.io/deucebucket/library-manager:latest
+    # Build from local source or pull image
+    if [[ "$1" == "--local" ]] || [[ "$2" == "--local" ]]; then
+        log_info "Building from local source..."
+        podman build -t library-manager:local-test "$TEST_DIR/.." >/dev/null 2>&1
+        IMAGE="library-manager:local-test"
+    else
+        log_info "Pulling latest image from ghcr.io..."
+        podman pull ghcr.io/deucebucket/library-manager:latest
+        IMAGE="ghcr.io/deucebucket/library-manager:latest"
+    fi
 
     # Create config with library path
     cat > "$TEST_DIR/fresh-deploy/data/config.json" << 'EOF'
@@ -60,21 +68,43 @@ setup() {
 }
 EOF
 
+    # Copy secrets from project root if available (needed for AI processing tests)
+    if [[ -f "$TEST_DIR/../secrets.json" ]]; then
+        cp "$TEST_DIR/../secrets.json" "$TEST_DIR/fresh-deploy/data/secrets.json"
+        log_info "Copied API secrets for integration testing"
+    else
+        log_info "WARNING: No secrets.json found - AI processing tests will fail"
+    fi
+
     # Start container
-    log_info "Starting Library Manager container..."
+    # Use slirp4netns networking (default) - container cannot access host localhost
+    # This simulates a real user environment without access to local BookDB
+    log_info "Starting Library Manager container (isolated network)..."
     podman run -d --name "$CONTAINER_NAME" \
         -p "$TEST_PORT:5757" \
         -v "$TEST_DIR/test-audiobooks:/audiobooks:rw" \
         -v "$TEST_DIR/fresh-deploy/data:/data" \
-        ghcr.io/deucebucket/library-manager:latest
+        --add-host=localhost:127.0.0.1 \
+        "$IMAGE"
 
     # Wait for startup
     log_info "Waiting for container to start..."
     sleep 5
 
-    # Wait for scan to complete
+    # Wait for API to be ready
     for i in {1..30}; do
         if curl -s "http://localhost:$TEST_PORT/api/stats" | grep -q '"total_books"'; then
+            break
+        fi
+        sleep 1
+    done
+
+    # Wait for scan to actually complete (queue should have items)
+    log_info "Waiting for scan to complete..."
+    for i in {1..60}; do
+        queue_count=$(curl -s "http://localhost:$TEST_PORT/api/queue" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['count'])" 2>/dev/null || echo "0")
+        if [[ "$queue_count" -gt 3 ]]; then
+            log_info "Scan populated queue with $queue_count items"
             break
         fi
         sleep 1
@@ -135,12 +165,9 @@ test_scan_detected_issues() {
     log_info "Test: Scanner detected expected issues"
     response=$(curl -s "http://localhost:$TEST_PORT/api/queue")
 
-    # Check for reversed structure detection (Metro 2033)
-    if echo "$response" | grep -q "Metro 2033"; then
-        log_pass "Detected reversed structure (Metro 2033)"
-    else
-        log_fail "Did not detect reversed structure"
-    fi
+    # NOTE: Reversed structure detection was removed in beta.69 (Issue #52 - false positives)
+    # Items like Metro 2033/Dmitry Glukhovsky now go through normal API lookup flow
+    # and end up in "needs_attention" if APIs can't identify them.
 
     # Check for missing author detection (The Expanse)
     if echo "$response" | grep -q "The Expanse"; then
@@ -187,6 +214,99 @@ test_no_local_db_dependency() {
     fi
 }
 
+test_process_empties_queue() {
+    log_info "Test: Processing actually processes queue items"
+    # CRITICAL TEST: This catches the beta.45 bug where process returned 0 but queue stayed full
+    # NOTE: Processing is rate-limited (~30s per batch of 3), so we need realistic wait times
+
+    # Get initial queue count
+    initial=$(curl -s "http://localhost:$TEST_PORT/api/queue" | python3 -c "import json,sys; print(json.load(sys.stdin).get('count', 0))")
+
+    if [[ "$initial" -eq 0 ]]; then
+        log_pass "Queue already empty (nothing to process)"
+        return
+    fi
+
+    log_info "Queue has $initial items, triggering process..."
+
+    # Trigger processing (with timeout)
+    curl -s -X POST "http://localhost:$TEST_PORT/api/process" \
+        -H "Content-Type: application/json" \
+        -d '{"all": true}' \
+        --max-time 180 >/dev/null 2>&1 &
+
+    # Wait for processing with progress checks (realistic timing for rate-limited APIs)
+    # Each batch of 3 items takes ~30-60s due to API rate limits, so wait up to 150s
+    for i in {1..15}; do
+        sleep 10
+        status=$(curl -s "http://localhost:$TEST_PORT/api/process_status")
+        processed=$(echo "$status" | python3 -c "import json,sys; print(json.load(sys.stdin).get('processed', 0))" 2>/dev/null || echo "0")
+        if [[ "$processed" -gt 0 ]]; then
+            log_pass "Processing working: $processed items processed after $((i*10))s"
+            return
+        fi
+        # Also check if queue reduced
+        current=$(curl -s "http://localhost:$TEST_PORT/api/queue" | python3 -c "import json,sys; print(json.load(sys.stdin).get('count', 0))" 2>/dev/null || echo "$initial")
+        if [[ "$current" -lt "$initial" ]]; then
+            log_pass "Queue reduced from $initial to $current after $((i*10))s"
+            return
+        fi
+        log_info "  ...waiting ($((i*10))s elapsed, queue: $current)"
+    done
+
+    # Final check after 150s
+    final=$(curl -s "http://localhost:$TEST_PORT/api/queue" | python3 -c "import json,sys; print(json.load(sys.stdin).get('count', 0))")
+    if [[ "$final" -lt "$initial" ]]; then
+        log_pass "Queue reduced from $initial to $final"
+    else
+        log_fail "CRITICAL: Process returned 0 and queue unchanged ($initial items) after 150s - processing bug!"
+    fi
+}
+
+test_queue_items_not_stuck() {
+    log_info "Test: Queue items are not stuck at invalid verification layers"
+    # Items should not be stuck at layer 4 in the queue (that's the bug this test catches)
+
+    # This requires DB access - skip if we can't access it
+    if ! command -v sqlite3 &> /dev/null; then
+        log_info "sqlite3 not available, skipping DB check"
+        return
+    fi
+
+    # Check for stuck items (in queue but at layer 4 with no handler)
+    stuck=$(podman exec "$CONTAINER_NAME" sqlite3 /data/library.db \
+        "SELECT COUNT(*) FROM queue q JOIN books b ON q.book_id = b.id WHERE b.verification_layer = 4" 2>/dev/null || echo "0")
+
+    if [[ "$stuck" -eq 0 ]]; then
+        log_pass "No items stuck at layer 4"
+    else
+        log_fail "CRITICAL: $stuck items stuck at layer 4 in queue - processing bug!"
+    fi
+}
+
+test_book_verification() {
+    log_info "Test: Book identification verification"
+    # Runs the Python verification test that checks:
+    # - Real books are correctly identified
+    # - Problem patterns are detected (reversed structure, missing author)
+    # - Series folders are detected
+    # - Queue reasons are correct
+
+    if ! command -v python3 &> /dev/null; then
+        log_info "python3 not available, skipping verification test"
+        return
+    fi
+
+    # Run the verification test against the test database
+    if python3 "$TEST_DIR/test-book-verification.py" "$TEST_DIR/fresh-deploy/data/library.db" >/dev/null 2>&1; then
+        log_pass "Book identification verification passed"
+    else
+        log_fail "Book identification verification failed"
+        # Run again to show output
+        python3 "$TEST_DIR/test-book-verification.py" "$TEST_DIR/fresh-deploy/data/library.db" 2>&1 | tail -20
+    fi
+}
+
 # ==========================================
 # CLEANUP
 # ==========================================
@@ -223,6 +343,9 @@ main() {
     test_history_endpoint
     test_scan_trigger
     test_no_local_db_dependency
+    test_process_empties_queue
+    test_queue_items_not_stuck
+    test_book_verification
 
     # Cleanup
     echo ""

@@ -7,17 +7,52 @@
         <i class="bi bi-clock-history"></i>
         {% if status_filter == 'pending' %}
         Pending Fixes
+        {% elif status_filter == 'duplicate' %}
+        Duplicates
         {% else %}
         Fix History
         {% endif %}
     </h2>
-    <div>
+    <div class="d-flex align-items-center gap-2">
         {% if status_filter %}
-        <a href="/history" class="btn btn-sm btn-outline-secondary me-2">
+        <a href="/history" class="btn btn-sm btn-outline-secondary">
             <i class="bi bi-x"></i> Clear Filter
         </a>
         {% endif %}
-        <span class="text-muted">{{ total }} {% if status_filter == 'pending' %}pending{% else %}total{% endif %}</span>
+        {% if status_filter == 'pending' and total > 0 %}
+        <button class="btn btn-sm btn-success" onclick="applyAllPending()">
+            <i class="bi bi-check-all"></i> Apply All
+        </button>
+        <button class="btn btn-sm btn-danger" onclick="rejectAllPending()">
+            <i class="bi bi-x-circle"></i> Reject All
+        </button>
+        {% endif %}
+        {% if duplicate_count > 0 %}
+        <a href="/history?status=duplicate" class="btn btn-sm btn-warning {% if status_filter == 'duplicate' %}active{% endif %}">
+            <i class="bi bi-files"></i> {{ duplicate_count }} Duplicate{{ 's' if duplicate_count != 1 else '' }}
+        </a>
+        {% if status_filter == 'duplicate' %}
+        <button class="btn btn-sm btn-danger" onclick="removeAllDuplicates()">
+            <i class="bi bi-trash-fill"></i> Remove All
+        </button>
+        {% endif %}
+        {% endif %}
+        {% if needs_attention_count is defined and needs_attention_count > 0 %}
+        <a href="/history?status=attention" class="btn btn-sm btn-danger {% if status_filter == 'attention' %}active{% endif %}">
+            <i class="bi bi-exclamation-triangle-fill"></i> {{ needs_attention_count }} Needs Attention
+        </a>
+        {% endif %}
+        {% if error_count is defined and error_count > 0 %}
+        <a href="/history?status=error" class="btn btn-sm btn-outline-danger {% if status_filter == 'error' %}active{% endif %}">
+            <i class="bi bi-x-circle-fill"></i> {{ error_count }} Error{{ 's' if error_count != 1 else '' }}
+        </a>
+        {% if status_filter == 'error' %}
+        <button class="btn btn-sm btn-danger" onclick="clearAllErrors()">
+            <i class="bi bi-trash-fill"></i> Clear All
+        </button>
+        {% endif %}
+        {% endif %}
+        <span class="text-muted">{{ total }} {% if status_filter == 'pending' %}pending{% elif status_filter == 'duplicate' %}duplicates{% elif status_filter == 'attention' %}unidentifiable{% elif status_filter == 'error' %}errors{% else %}total{% endif %}</span>
     </div>
 </div>
 
@@ -48,23 +83,46 @@
                         <small class="text-muted">{{ h.old_title }}</small>
                     </td>
                     <td><i class="bi bi-arrow-right text-info"></i></td>
-                    <td title="{{ h.new_path }}">
-                        {% set path_parts = h.new_path.split('/') %}
+                    <td title="{{ h.new_path or '' }}">
+                        {% set path_parts = (h.new_path or '').split('/') %}
                         {% set rel_path = '/'.join(path_parts[-3:]) if path_parts|length >= 7 else '/'.join(path_parts[-2:]) %}
-                        <strong class="text-success">{{ h.new_author }}</strong><br>
-                        <small class="text-info">{{ rel_path }}</small>
+                        <strong class="text-success">{{ h.new_author or h.old_author }}</strong><br>
+                        <small class="text-info">{{ rel_path or h.new_title or 'N/A' }}</small>
                     </td>
                     <td>
+                        {% if h.user_locked %}
+                        <span class="badge bg-info" title="User-locked - system will not change this book">
+                            <i class="bi bi-lock-fill"></i> Locked
+                        </span>
+                        {% endif %}
                         {% if h.is_drastic %}
                         <span class="badge bg-danger" title="Author changed completely - review carefully!">
                             <i class="bi bi-exclamation-triangle"></i> Review
                         </span>
                         {% elif h.status == 'fixed' %}
-                        <span class="badge bg-success">Applied</span>
+                        <span class="badge bg-success" title="Rename was applied successfully">Applied</span>
                         {% elif h.status == 'pending_fix' %}
-                        <span class="badge bg-warning text-dark">Pending</span>
+                        <span class="badge bg-warning text-dark" title="Rename pending - click Apply to execute">Pending</span>
                         {% elif h.status == 'undone' %}
-                        <span class="badge bg-info">Undone</span>
+                        <span class="badge bg-info" title="Rename was reverted to original">Undone</span>
+                        {% elif h.status == 'duplicate' %}
+                        <span class="badge bg-warning text-dark" title="{{ h.error_message or 'Duplicate detected' }}" style="cursor: help;">
+                            <i class="bi bi-files"></i> Duplicate
+                        </span>
+                        {% if h.error_message %}
+                        <br><small class="text-warning">{{ h.error_message[:60] }}{% if h.error_message|length > 60 %}...{% endif %}</small>
+                        {% endif %}
+                        {% elif h.status == 'corrupt_dest' %}
+                        <span class="badge bg-danger" title="{{ h.error_message or 'Destination is corrupt' }}" style="cursor: help;">
+                            <i class="bi bi-exclamation-octagon"></i> Corrupt Dest
+                        </span>
+                        {% if h.error_message %}
+                        <br><small class="text-danger">{{ h.error_message[:60] }}{% if h.error_message|length > 60 %}...{% endif %}</small>
+                        {% endif %}
+                        {% elif h.status == 'duplicate_removed' %}
+                        <span class="badge bg-success" title="Duplicate removed">
+                            <i class="bi bi-trash-fill"></i> Removed
+                        </span>
                         {% elif h.status == 'error' %}
                         <span class="badge bg-danger" title="{{ h.error_message or 'Unknown error' }}" style="cursor: help;">
                             Error <i class="bi bi-info-circle"></i>
@@ -77,11 +135,34 @@
                         {% endif %}
                     </td>
                     <td>
+                        <!-- Edit button - always available -->
+                        <button class="btn btn-sm btn-outline-primary me-1" onclick="editItem({{ h.id }}, {{ h.book_id }}, '{{ (h.new_author or h.old_author) | e }}', '{{ (h.new_title or h.old_title) | e }}')" title="Edit metadata">
+                            <i class="bi bi-pencil"></i>
+                        </button>
+                        {% if h.user_locked %}
+                        <button class="btn btn-sm btn-outline-warning me-1" onclick="unlockBook({{ h.book_id }})" title="Unlock - allow system to re-process this book">
+                            <i class="bi bi-unlock"></i>
+                        </button>
+                        {% endif %}
                         {% if h.status == 'pending_fix' %}
                         <button class="btn btn-sm btn-success" onclick="applyFix({{ h.id }})" title="Apply fix">
                             <i class="bi bi-check"></i>
                         </button>
                         <button class="btn btn-sm btn-danger" onclick="rejectFix({{ h.id }})" title="Reject - wrong fix">
+                            <i class="bi bi-x"></i>
+                        </button>
+                        {% elif h.status == 'duplicate' %}
+                        <button class="btn btn-sm btn-danger" onclick="removeDuplicate({{ h.id }})" title="Remove duplicate - delete the misnamed copy">
+                            <i class="bi bi-trash-fill"></i> Remove
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="dismissError({{ h.id }})" title="Dismiss - keep both copies">
+                            <i class="bi bi-x"></i>
+                        </button>
+                        {% elif h.status == 'corrupt_dest' %}
+                        <button class="btn btn-sm btn-success" onclick="replaceCorrupt({{ h.id }})" title="Replace corrupt destination with valid source">
+                            <i class="bi bi-arrow-repeat"></i> Replace
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="dismissError({{ h.id }})" title="Dismiss - keep both">
                             <i class="bi bi-x"></i>
                         </button>
                         {% elif h.status == 'error' %}
@@ -92,8 +173,6 @@
                         <button class="btn btn-sm btn-outline-warning" onclick="undoFix({{ h.id }})" title="Undo - revert to original">
                             <i class="bi bi-arrow-counterclockwise"></i>
                         </button>
-                        {% else %}
-                        <span class="text-muted">-</span>
                         {% endif %}
                     </td>
                 </tr>
@@ -143,10 +222,284 @@
     </div>
 </div>
 {% endif %}
+
+<!-- Edit Modal -->
+<div class="modal fade" id="editModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-pencil"></i> Edit Book Metadata</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="edit-history-id">
+                <input type="hidden" id="edit-book-id">
+
+                <div class="alert alert-info">
+                    <i class="bi bi-lock-fill"></i> <strong>Your changes will be locked.</strong>
+                    Once you save, this book will be protected from automatic changes. The system will never overwrite your settings unless you unlock it.
+                </div>
+
+                <!-- Manual Entry -->
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Author</label>
+                        <input type="text" class="form-control bg-dark text-light" id="edit-author" placeholder="Author Name">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Title</label>
+                        <input type="text" class="form-control bg-dark text-light" id="edit-title" placeholder="Book Title">
+                    </div>
+                </div>
+
+                <hr class="text-muted">
+
+                <!-- Search BookDB -->
+                <div class="mb-3">
+                    <label class="form-label"><i class="bi bi-search"></i> Search Book Database</label>
+                    <div class="input-group">
+                        <input type="text" class="form-control bg-dark text-light" id="search-query" placeholder="Search by title or author...">
+                        <button class="btn btn-outline-info" type="button" onclick="searchBookDB()">
+                            <i class="bi bi-search"></i> Search
+                        </button>
+                    </div>
+                    <small class="text-muted">Search across our database to find the correct match</small>
+                </div>
+
+                <!-- Search Results -->
+                <div id="search-results" class="mb-3" style="max-height: 300px; overflow-y: auto; display: none;">
+                    <div class="list-group" id="search-results-list">
+                        <!-- Results inserted here -->
+                    </div>
+                </div>
+
+                <!-- Selected Match -->
+                <div id="selected-match" class="alert alert-success d-none">
+                    <strong>Selected:</strong> <span id="selected-match-text"></span>
+                    <button type="button" class="btn-close float-end" onclick="clearSelection()"></button>
+                </div>
+
+                <!-- Series Override -->
+                <div id="series-override" class="d-none">
+                    <div class="row mb-2">
+                        <div class="col-md-8">
+                            <label class="form-label small text-muted">Series Name</label>
+                            <input type="text" class="form-control form-control-sm bg-dark text-light" id="override-series-name" placeholder="e.g., The Laundry Files">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small text-muted">Book # in Series</label>
+                            <input type="number" class="form-control form-control-sm bg-dark text-light" id="override-series-num" placeholder="e.g., 5" min="0" max="999">
+                        </div>
+                    </div>
+                    <small class="text-muted">Edit series info if it's missing or incorrect. Leave blank if not part of a series.</small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveEdit()">
+                    <i class="bi bi-lock-fill"></i> Save & Lock
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+// ===== EDIT FUNCTIONS =====
+let selectedBookDBResult = null;
+let editModal = null;
+
+function editItem(historyId, bookId, author, title) {
+    document.getElementById('edit-history-id').value = historyId;
+    document.getElementById('edit-book-id').value = bookId;
+    document.getElementById('edit-author').value = author;
+    document.getElementById('edit-title').value = title;
+    document.getElementById('search-query').value = title;  // Pre-fill search with title
+    document.getElementById('search-results').style.display = 'none';
+    document.getElementById('selected-match').classList.add('d-none');
+    document.getElementById('series-override').classList.add('d-none');
+    document.getElementById('override-series-name').value = '';
+    document.getElementById('override-series-num').value = '';
+    selectedBookDBResult = null;
+
+    if (!editModal) {
+        editModal = new bootstrap.Modal(document.getElementById('editModal'));
+    }
+    editModal.show();
+}
+
+function searchBookDB() {
+    const query = document.getElementById('search-query').value.trim();
+    if (query.length < 2) {
+        alert('Search query must be at least 2 characters');
+        return;
+    }
+
+    const resultsDiv = document.getElementById('search-results');
+    const resultsList = document.getElementById('search-results-list');
+    resultsList.innerHTML = '<div class="list-group-item bg-dark text-muted">Searching...</div>';
+    resultsDiv.style.display = 'block';
+
+    fetch(`/api/search_bookdb?q=${encodeURIComponent(query)}&limit=20`)
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                resultsList.innerHTML = `<div class="list-group-item bg-dark text-danger">${data.error}</div>`;
+                return;
+            }
+
+            if (!data.results || data.results.length === 0) {
+                resultsList.innerHTML = '<div class="list-group-item bg-dark text-muted">No results found</div>';
+                return;
+            }
+
+            resultsList.innerHTML = data.results.map((book, idx) => {
+                const author = book.author_name || 'Unknown Author';
+                const title = book.name || book.title || 'Unknown Title';
+                const series = book.series_name ? `${book.series_name}${book.series_position ? ' #' + book.series_position : ''}` : '';
+                const year = book.year_published ? book.year_published : '';
+
+                return `
+                    <a href="#" class="list-group-item list-group-item-action bg-dark text-light"
+                       onclick="selectResult(${idx}); return false;">
+                        <div class="fw-bold">${escapeHtml(title)}</div>
+                        <div class="text-info small">${escapeHtml(author)}</div>
+                        ${series ? `<div class="text-warning small">${escapeHtml(series)}</div>` : ''}
+                        ${year ? `<div class="text-muted small">${year}</div>` : ''}
+                    </a>
+                `;
+            }).join('');
+
+            // Store results for selection
+            window._searchResults = data.results;
+        })
+        .catch(e => {
+            resultsList.innerHTML = `<div class="list-group-item bg-dark text-danger">Error: ${e}</div>`;
+        });
+}
+
+function selectResult(idx) {
+    const book = window._searchResults[idx];
+    if (!book) return;
+
+    selectedBookDBResult = book;
+
+    // Fill in the form fields
+    if (book.author_name) {
+        document.getElementById('edit-author').value = book.author_name;
+    }
+    if (book.name || book.title) {
+        document.getElementById('edit-title').value = book.name || book.title;
+    }
+
+    // Show selected match
+    const matchDiv = document.getElementById('selected-match');
+    const matchText = document.getElementById('selected-match-text');
+    const series = book.series_name ? ` (${book.series_name}${book.series_position ? ' #' + book.series_position : ''})` : '';
+    matchText.textContent = `${book.author_name || 'Unknown'} - ${book.name || book.title || 'Unknown'}${series}`;
+    matchDiv.classList.remove('d-none');
+
+    // Show and populate series override fields
+    const seriesOverride = document.getElementById('series-override');
+    seriesOverride.classList.remove('d-none');
+    document.getElementById('override-series-name').value = book.series_name || '';
+    document.getElementById('override-series-num').value = book.series_position || '';
+
+    // Hide search results
+    document.getElementById('search-results').style.display = 'none';
+}
+
+function clearSelection() {
+    selectedBookDBResult = null;
+    document.getElementById('selected-match').classList.add('d-none');
+    document.getElementById('series-override').classList.add('d-none');
+    document.getElementById('override-series-name').value = '';
+    document.getElementById('override-series-num').value = '';
+}
+
+function saveEdit() {
+    const historyId = document.getElementById('edit-history-id').value;
+    const bookId = document.getElementById('edit-book-id').value;
+    const author = document.getElementById('edit-author').value.trim();
+    const title = document.getElementById('edit-title').value.trim();
+
+    if (!author || !title) {
+        alert('Author and title are required');
+        return;
+    }
+
+    // Get series override values
+    const overrideSeriesName = document.getElementById('override-series-name').value.trim();
+    const overrideSeriesNum = document.getElementById('override-series-num').value.trim();
+
+    const payload = {
+        history_id: parseInt(historyId),
+        book_id: parseInt(bookId),
+        author: author,
+        title: title
+    };
+
+    // Include BookDB result if one was selected
+    if (selectedBookDBResult) {
+        const resultWithOverrides = {...selectedBookDBResult};
+        if (overrideSeriesName) {
+            resultWithOverrides.series_name = overrideSeriesName;
+        }
+        if (overrideSeriesNum) {
+            resultWithOverrides.series_position = parseInt(overrideSeriesNum);
+        }
+        payload.bookdb_result = resultWithOverrides;
+    } else if (overrideSeriesName || overrideSeriesNum) {
+        payload.series_name = overrideSeriesName || null;
+        payload.series_position = overrideSeriesNum ? parseInt(overrideSeriesNum) : null;
+    }
+
+    fetch('/api/edit_book', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            editModal.hide();
+            alert('Saved and locked! This book is now protected from automatic changes.');
+            location.reload();
+        } else {
+            alert('Error: ' + (data.error || 'Unknown error'));
+        }
+    })
+    .catch(e => {
+        alert('Error: ' + e);
+    });
+}
+
+function unlockBook(bookId) {
+    if (!confirm('Unlock this book?\n\nThis will allow the system to re-process it on future scans. Your current settings will remain until the system finds a different match.')) return;
+
+    fetch(`/api/unlock_book/${bookId}`, {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(data.message);
+                location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// ===== EXISTING FUNCTIONS =====
 function applyFix(historyId) {
     if (!confirm('Apply this fix? The folder will be renamed.')) return;
 
@@ -201,6 +554,109 @@ function dismissError(historyId) {
         .then(r => r.json())
         .then(data => {
             if (data.success) {
+                location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
+
+function removeDuplicate(historyId) {
+    if (!confirm('Remove this duplicate?\n\nThis will DELETE the misnamed copy and keep the properly-named version.\n\nThis cannot be undone!')) return;
+
+    fetch(`/api/remove_duplicate/${historyId}`, {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(data.message);
+                location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
+
+function removeAllDuplicates() {
+    if (!confirm('Remove ALL confirmed duplicates?\n\nThis will DELETE all misnamed copies and keep the properly-named versions.\n\nThis cannot be undone!')) return;
+
+    fetch('/api/remove_all_duplicates', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                let msg = `Removed ${data.removed} duplicate(s), freed ${data.freed_mb}MB`;
+                if (data.skipped > 0) {
+                    msg += `\n\nSkipped ${data.skipped} (see errors)`;
+                }
+                if (data.errors && data.errors.length > 0) {
+                    msg += '\n\nErrors:\n' + data.errors.join('\n');
+                }
+                alert(msg);
+                location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
+
+function replaceCorrupt(historyId) {
+    if (!confirm('Replace corrupt destination with valid source?\n\nThis will:\n1. Delete the corrupt destination folder\n2. Move the valid source to the correct location\n\nThis cannot be undone!')) return;
+
+    fetch(`/api/replace_corrupt/${historyId}`, {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(data.message);
+                location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
+
+function clearAllErrors() {
+    if (!confirm('Clear all error entries from history?\n\nThis will remove all error records. The actual files are not affected.')) return;
+
+    fetch('/api/clear_all_errors', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(data.message);
+                location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
+
+function applyAllPending() {
+    if (!confirm('Apply ALL pending fixes?\n\nThis will rename all folders according to the AI suggestions.\nMake sure you have reviewed them first!')) return;
+
+    fetch('/api/apply_all_pending', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(`Applied ${data.applied} fixes (${data.failed} failed)`);
+                location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
+
+function rejectAllPending() {
+    if (!confirm('Reject ALL pending fixes?\n\nThis will mark all pending items as OK without making any changes.')) return;
+
+    fetch('/api/reject_all_pending', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(data.message);
                 location.reload();
             } else {
                 alert('Error: ' + (data.error || 'Unknown error'));

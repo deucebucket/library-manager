@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.27"
+APP_VERSION = "0.9.0-beta.90"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -28,6 +28,7 @@ import os
 import sys
 import json
 import time
+import shutil
 import sqlite3
 import threading
 import logging
@@ -35,7 +36,608 @@ import requests
 import re
 from pathlib import Path
 from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
+from audio_tagging import embed_tags_for_path, build_metadata_for_embedding
+
+# Try to import narrator detection from BookDB
+try:
+    from metadata_scraper.database import (
+        is_known_narrator as _is_known_narrator,
+        add_narrator as _add_narrator,
+        add_community_contribution as _add_contribution,
+        get_consensus as _get_consensus
+    )
+    BOOKDB_AVAILABLE = True
+except ImportError:
+    BOOKDB_AVAILABLE = False
+    _is_known_narrator = None
+    _add_narrator = None
+    _add_contribution = None
+    _get_consensus = None
+
+def check_if_narrator(name):
+    """
+    Check if a name is a known audiobook narrator (not an author).
+    Returns dict with 'is_narrator' and 'name' if found.
+    """
+    if not BOOKDB_AVAILABLE or not name:
+        return {'is_narrator': False}
+    try:
+        return _is_known_narrator(name)
+    except Exception:
+        return {'is_narrator': False}
+
+def auto_save_narrator(name, source='auto_extract'):
+    """
+    Automatically save a narrator to BookDB if not already known.
+    Called whenever we encounter a narrator name during processing.
+    Returns True if narrator was added, False if already existed or error.
+    """
+    if not BOOKDB_AVAILABLE or not _add_narrator or not name:
+        return False
+
+    # Clean up the name
+    name = name.strip()
+    if not name or len(name) < 2:
+        return False
+
+    # Skip obvious non-narrator values
+    skip_patterns = ['unknown', 'various', 'narrator', 'reader', 'n/a', 'none',
+                     'unabridged', 'abridged', 'audiobook', 'audio']
+    if name.lower() in skip_patterns:
+        return False
+
+    # Check if already known
+    if check_if_narrator(name).get('is_narrator'):
+        return False  # Already in database
+
+    # Looks like a valid narrator name - add to BookDB
+    try:
+        _add_narrator(name, source=source)
+        logging.info(f"[BOOKDB] Auto-added narrator: {name}")
+        return True
+    except Exception as e:
+        logging.debug(f"Could not auto-add narrator {name}: {e}")
+        return False
+
+def contribute_audio_extraction(title, author=None, narrator=None, series=None,
+                                  series_position=None, language=None, confidence='medium'):
+    """
+    Contribute audio-extracted metadata to the community database.
+    Requires opt-in via 'contribute_to_community' config setting.
+
+    This builds a crowdsourced database where:
+    - 1 user = suggestion (weight 1)
+    - 2 users agreeing = likely correct (weight 3)
+    - 3+ users agreeing = verified (weight 5+)
+
+    Returns True if contributed, False otherwise.
+    """
+    if not BOOKDB_AVAILABLE or not _add_contribution:
+        return False
+
+    if not title:
+        return False
+
+    # Get config to check opt-in
+    config = load_config()
+    if not config.get('contribute_to_community', False):
+        return False
+
+    # Generate a machine ID for deduplication (privacy-safe hash)
+    import hashlib
+    import uuid
+    try:
+        # Use machine-id if available (Linux)
+        with open('/etc/machine-id', 'r') as f:
+            machine_id = f.read().strip()
+    except Exception:
+        # Fallback to a generated ID stored in config
+        machine_id = config.get('instance_id') or str(uuid.uuid4())
+
+    contributor_id = hashlib.sha256(machine_id.encode()).hexdigest()[:16]
+
+    try:
+        result = _add_contribution(
+            title=title,
+            author=author,
+            narrator=narrator,
+            series=series,
+            series_position=series_position,
+            language=language,
+            contributor_id=contributor_id,
+            source='audio_credits',
+            confidence=confidence
+        )
+        if result:
+            logger.info(f"[COMMUNITY] Contributed: {author}/{title} (narrator: {narrator})")
+            return True
+        return False
+    except Exception as e:
+        logger.debug(f"Could not contribute to community: {e}")
+        return False
+
+def lookup_community_consensus(title, author=None):
+    """
+    Look up community consensus for a book.
+    Returns metadata if found with sufficient confidence.
+    """
+    if not BOOKDB_AVAILABLE or not _get_consensus:
+        return None
+
+    try:
+        # Require at least 2 contributors (weight >= 3) for narrator data
+        consensus = _get_consensus(title, author, min_weight=3)
+        if consensus:
+            logger.debug(f"[COMMUNITY] Found consensus for {title}: {consensus.get('narrator')} ({consensus.get('confidence')})")
+        return consensus
+    except Exception as e:
+        logger.debug(f"Could not lookup community consensus: {e}")
+        return None
+
+
+# ============== BOOK PROFILE SYSTEM ==============
+# Confidence-scored metadata profiles for comprehensive book identification
+
+# Source weights for confidence calculation (higher = more trusted)
+SOURCE_WEIGHTS = {
+    'user': 100,        # Manual override - always wins
+    'audio': 85,        # Heard directly from audiobook intro
+    'id3': 80,          # Embedded by producer/publisher
+    'json': 75,         # Explicit metadata file
+    'nfo': 70,          # Release info files
+    'bookdb': 65,       # Verified database match
+    'ai': 60,           # AI verification
+    'audnexus': 55,     # Audible data
+    'googlebooks': 50,  # Google Books API
+    'openlibrary': 45,  # OpenLibrary API
+    'hardcover': 45,    # Hardcover API
+    'path': 40          # Folder structure inference
+}
+
+# Field weights for overall confidence (must sum to 100)
+FIELD_WEIGHTS = {
+    'author': 30,
+    'title': 30,
+    'narrator': 15,
+    'series': 10,
+    'series_num': 5,
+    'language': 5,
+    'year': 3,
+    'edition': 1,
+    'variant': 1
+}
+
+
+@dataclass
+class FieldValue:
+    """A single metadata field with confidence and source tracking."""
+    value: Any = None
+    confidence: int = 0
+    sources: List[str] = field(default_factory=list)
+    raw_values: Dict[str, Any] = field(default_factory=dict)  # source -> raw value
+
+    def add_source(self, source: str, value: Any, weight: int = None):
+        """Add evidence from a source."""
+        if value is None:
+            return
+        if weight is None:
+            weight = SOURCE_WEIGHTS.get(source, 30)
+        self.raw_values[source] = value
+        if source not in self.sources:
+            self.sources.append(source)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to JSON-serializable dictionary."""
+        return {
+            'value': self.value,
+            'confidence': self.confidence,
+            'sources': self.sources
+        }
+
+
+@dataclass
+class BookProfile:
+    """Complete metadata profile for a book with per-field confidence."""
+    # Core identification
+    author: FieldValue = field(default_factory=FieldValue)
+    title: FieldValue = field(default_factory=FieldValue)
+
+    # Extended metadata
+    narrator: FieldValue = field(default_factory=FieldValue)
+    series: FieldValue = field(default_factory=FieldValue)
+    series_num: FieldValue = field(default_factory=FieldValue)
+    language: FieldValue = field(default_factory=FieldValue)
+    year: FieldValue = field(default_factory=FieldValue)
+    edition: FieldValue = field(default_factory=FieldValue)
+    variant: FieldValue = field(default_factory=FieldValue)
+
+    # Profile metadata
+    overall_confidence: int = 0
+    verification_layers_used: List[str] = field(default_factory=list)
+    needs_attention: bool = False
+    issues: List[str] = field(default_factory=list)
+    last_updated: Optional[str] = None
+
+    def calculate_field_confidence(self, fv: FieldValue) -> tuple:
+        """Calculate confidence for a field based on source agreement."""
+        if not fv.raw_values:
+            return None, 0
+
+        # Normalize values for comparison
+        def normalize(val):
+            if val is None:
+                return None
+            return str(val).lower().strip()
+
+        # Group by normalized value
+        value_groups = {}
+        for source, value in fv.raw_values.items():
+            if value is None:
+                continue
+            normalized = normalize(value)
+            if normalized not in value_groups:
+                value_groups[normalized] = []
+            weight = SOURCE_WEIGHTS.get(source, 30)
+            value_groups[normalized].append((source, value, weight))
+
+        if not value_groups:
+            return None, 0
+
+        # Find consensus value (highest total weight)
+        best_value = None
+        best_weight = 0
+        best_normalized = None
+        for normalized, sources in value_groups.items():
+            total_weight = sum(w for _, _, w in sources)
+            if total_weight > best_weight:
+                best_weight = total_weight
+                best_normalized = normalized
+                # Use original value from highest-weighted source
+                best_source = max(sources, key=lambda x: x[2])
+                best_value = best_source[1]
+
+        # Calculate confidence
+        agreeing_sources = len(value_groups.get(best_normalized, []))
+        conflicting_values = len(value_groups) - 1
+
+        base_confidence = min(best_weight, 100)
+
+        # Agreement bonus
+        if agreeing_sources >= 4:
+            base_confidence = min(base_confidence + 25, 100)
+        elif agreeing_sources >= 3:
+            base_confidence = min(base_confidence + 20, 100)
+        elif agreeing_sources >= 2:
+            base_confidence = min(base_confidence + 10, 100)
+
+        # Conflict penalty
+        base_confidence = max(base_confidence - (conflicting_values * 15), 0)
+
+        return best_value, round(base_confidence)
+
+    def finalize(self):
+        """Calculate final values and confidence for all fields."""
+        for field_name in FIELD_WEIGHTS.keys():
+            fv = getattr(self, field_name)
+            if fv.raw_values:
+                value, confidence = self.calculate_field_confidence(fv)
+                fv.value = value
+                fv.confidence = confidence
+
+        self.calculate_overall_confidence()
+        self.last_updated = datetime.now().isoformat()
+
+    def calculate_overall_confidence(self) -> int:
+        """Calculate weighted overall confidence from field confidences."""
+        total_weight = 0
+        weighted_sum = 0
+
+        for field_name, weight in FIELD_WEIGHTS.items():
+            fv = getattr(self, field_name)
+            if fv.value is not None:
+                weighted_sum += fv.confidence * weight
+                total_weight += weight
+
+        if total_weight == 0:
+            self.overall_confidence = 0
+        else:
+            self.overall_confidence = round(weighted_sum / total_weight)
+
+        return self.overall_confidence
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to JSON-serializable dictionary."""
+        result = {}
+        for field_name in FIELD_WEIGHTS.keys():
+            fv = getattr(self, field_name)
+            result[field_name] = fv.to_dict()
+        result['overall_confidence'] = self.overall_confidence
+        result['verification_layers_used'] = self.verification_layers_used
+        result['needs_attention'] = self.needs_attention
+        result['issues'] = self.issues
+        result['last_updated'] = self.last_updated
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'BookProfile':
+        """Reconstruct from JSON dictionary."""
+        profile = cls()
+        for field_name in FIELD_WEIGHTS.keys():
+            if field_name in data:
+                fd = data[field_name]
+                fv = FieldValue(
+                    value=fd.get('value'),
+                    confidence=fd.get('confidence', 0),
+                    sources=fd.get('sources', [])
+                )
+                setattr(profile, field_name, fv)
+        profile.overall_confidence = data.get('overall_confidence', 0)
+        profile.verification_layers_used = data.get('verification_layers_used', [])
+        profile.needs_attention = data.get('needs_attention', False)
+        profile.issues = data.get('issues', [])
+        profile.last_updated = data.get('last_updated')
+        return profile
+
+
+def detect_multibook_vs_chapters(audio_files: List[Path], config: dict = None) -> dict:
+    """
+    Determine if numbered audio files are multiple books or chapter files.
+
+    Fix for Issue #29: Files like "00 - Chapter.mp3", "01 - Prologue.mp3" were
+    incorrectly flagged as multibook collections because the regex matched
+    leading numbers. Chapter files are NOT multiple books.
+
+    Returns:
+        {
+            'is_multibook': bool,
+            'confidence': 'high'|'medium'|'low',
+            'reason': str,
+            'book_numbers': set (if multibook)
+        }
+    """
+    if not audio_files or len(audio_files) < 2:
+        return {'is_multibook': False, 'confidence': 'high', 'reason': 'Less than 2 files'}
+
+    # Chapter indicators - files with these are NEVER part of a multibook collection
+    chapter_indicators = [
+        r'chapter\s*\d*',
+        r'ch\.?\s*\d+',
+        r'part\s*\d+',
+        r'prologue',
+        r'epilogue',
+        r'intro(duction)?',
+        r'outro',
+        r'disc\s*\d+',
+        r'cd\s*\d+',
+        r'track\s*\d+',
+        r'section\s*\d+',
+    ]
+
+    # Explicit book patterns - these DO indicate multiple books
+    book_patterns = [
+        (r'book\s*(\d+)', 'book'),           # "Book 1", "Book 2"
+        (r'volume\s*(\d+)', 'volume'),       # "Volume 1"
+        (r'vol\.?\s*(\d+)', 'vol'),          # "Vol 1", "Vol. 1"
+        (r'#(\d+)\s*[-–—:]', 'hashtag'),     # "#1 - Title" (with separator)
+    ]
+
+    files_with_chapter_indicator = 0
+    book_numbers_found = set()
+    leading_numbers = []
+
+    for f in audio_files:
+        stem = f.stem.lower()
+
+        # Check for chapter indicators
+        has_chapter = any(re.search(p, stem, re.IGNORECASE) for p in chapter_indicators)
+        if has_chapter:
+            files_with_chapter_indicator += 1
+            continue  # Don't check book patterns for chapter files
+
+        # Check for explicit book patterns
+        for pattern, pattern_type in book_patterns:
+            m = re.search(pattern, stem, re.IGNORECASE)
+            if m:
+                book_numbers_found.add(m.group(1))
+                break
+
+        # Track leading numbers for sequential analysis
+        leading_match = re.match(r'^(\d+)', stem)
+        if leading_match:
+            leading_numbers.append(int(leading_match.group(1)))
+
+    # Decision logic
+
+    # If majority have chapter indicators, definitely chapters
+    if files_with_chapter_indicator > len(audio_files) * 0.3:
+        return {
+            'is_multibook': False,
+            'confidence': 'high',
+            'reason': f'{files_with_chapter_indicator}/{len(audio_files)} files have chapter indicators'
+        }
+
+    # If explicit book patterns found multiple books
+    if len(book_numbers_found) >= 2:
+        return {
+            'is_multibook': True,
+            'confidence': 'high',
+            'reason': f'Found explicit book numbers: {sorted(book_numbers_found)}',
+            'book_numbers': book_numbers_found
+        }
+
+    # Check if leading numbers are sequential (suggests chapters, not books)
+    if leading_numbers:
+        leading_numbers.sort()
+        # Check if starts from 0 or 1 and is mostly sequential
+        if leading_numbers[0] in [0, 1]:
+            # Check for reasonable sequential pattern (allow small gaps)
+            is_sequential = True
+            for i in range(1, len(leading_numbers)):
+                gap = leading_numbers[i] - leading_numbers[i-1]
+                if gap > 2:  # Allow gaps up to 2 (missing chapter)
+                    is_sequential = False
+                    break
+
+            if is_sequential:
+                return {
+                    'is_multibook': False,
+                    'confidence': 'medium',
+                    'reason': f'Sequential numbering from {leading_numbers[0]} suggests chapters'
+                }
+
+    # Default: if no explicit book patterns found, assume chapters
+    return {
+        'is_multibook': False,
+        'confidence': 'medium',
+        'reason': 'No explicit book patterns found, defaulting to chapters'
+    }
+
+
+def save_book_profile(book_id: int, profile: BookProfile):
+    """Save a book profile to the database."""
+    conn = get_db()
+    c = conn.cursor()
+    try:
+        profile_json = json.dumps(profile.to_dict())
+        c.execute('''UPDATE books
+                     SET profile = ?, confidence = ?, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = ?''',
+                  (profile_json, profile.overall_confidence, book_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_book_profile(book_id: int) -> Optional[BookProfile]:
+    """Load a book profile from the database."""
+    conn = get_db()
+    c = conn.cursor()
+    try:
+        c.execute('SELECT profile FROM books WHERE id = ?', (book_id,))
+        row = c.fetchone()
+        if row and row['profile']:
+            try:
+                data = json.loads(row['profile'])
+                return BookProfile.from_dict(data)
+            except:
+                return None
+        return None
+    finally:
+        conn.close()
+
+
+def build_profile_from_sources(
+    path_info: dict = None,
+    folder_meta: dict = None,
+    api_candidates: list = None,
+    ai_result: dict = None,
+    audio_result: dict = None
+) -> BookProfile:
+    """
+    Build a BookProfile by combining data from multiple sources.
+    Each source adds evidence to the profile's fields.
+    """
+    profile = BookProfile()
+
+    # Layer 1: Path analysis
+    if path_info:
+        profile.verification_layers_used.append('local')
+        if path_info.get('detected_author'):
+            profile.author.add_source('path', path_info['detected_author'])
+        if path_info.get('detected_title'):
+            profile.title.add_source('path', path_info['detected_title'])
+        if path_info.get('detected_series'):
+            profile.series.add_source('path', path_info['detected_series'])
+        if path_info.get('issues'):
+            profile.issues.extend(path_info['issues'])
+
+    # Layer 1: Folder metadata (ID3, NFO, JSON)
+    if folder_meta:
+        if folder_meta.get('audio_author'):
+            profile.author.add_source('id3', folder_meta['audio_author'])
+        if folder_meta.get('audio_title'):
+            profile.title.add_source('id3', folder_meta['audio_title'])
+        if folder_meta.get('nfo_author'):
+            profile.author.add_source('nfo', folder_meta['nfo_author'])
+        if folder_meta.get('nfo_title'):
+            profile.title.add_source('nfo', folder_meta['nfo_title'])
+        if folder_meta.get('nfo_narrator'):
+            profile.narrator.add_source('nfo', folder_meta['nfo_narrator'])
+            auto_save_narrator(folder_meta['nfo_narrator'], source='nfo_extract')
+        if folder_meta.get('meta_author'):
+            profile.author.add_source('json', folder_meta['meta_author'])
+        if folder_meta.get('meta_title'):
+            profile.title.add_source('json', folder_meta['meta_title'])
+        if folder_meta.get('meta_narrator'):
+            profile.narrator.add_source('json', folder_meta['meta_narrator'])
+            auto_save_narrator(folder_meta['meta_narrator'], source='json_extract')
+
+    # Layer 2: API candidates
+    if api_candidates:
+        if 'api' not in profile.verification_layers_used:
+            profile.verification_layers_used.append('api')
+        for candidate in api_candidates:
+            source = candidate.get('source', 'api')
+            if candidate.get('author'):
+                profile.author.add_source(source, candidate['author'])
+            if candidate.get('title'):
+                profile.title.add_source(source, candidate['title'])
+            if candidate.get('series'):
+                profile.series.add_source(source, candidate['series'])
+            if candidate.get('series_num'):
+                profile.series_num.add_source(source, candidate['series_num'])
+            if candidate.get('year'):
+                profile.year.add_source(source, candidate['year'])
+
+    # Layer 3: AI result
+    if ai_result:
+        if 'ai' not in profile.verification_layers_used:
+            profile.verification_layers_used.append('ai')
+        if ai_result.get('author'):
+            profile.author.add_source('ai', ai_result['author'])
+        if ai_result.get('title'):
+            profile.title.add_source('ai', ai_result['title'])
+        if ai_result.get('narrator'):
+            profile.narrator.add_source('ai', ai_result['narrator'])
+        if ai_result.get('series'):
+            profile.series.add_source('ai', ai_result['series'])
+        if ai_result.get('series_num'):
+            profile.series_num.add_source('ai', ai_result['series_num'])
+        if ai_result.get('year'):
+            profile.year.add_source('ai', ai_result['year'])
+        if ai_result.get('edition'):
+            profile.edition.add_source('ai', ai_result['edition'])
+        if ai_result.get('variant'):
+            profile.variant.add_source('ai', ai_result['variant'])
+
+    # Layer 4: Audio analysis
+    if audio_result:
+        if 'audio' not in profile.verification_layers_used:
+            profile.verification_layers_used.append('audio')
+        if audio_result.get('author'):
+            profile.author.add_source('audio', audio_result['author'])
+        if audio_result.get('title'):
+            profile.title.add_source('audio', audio_result['title'])
+        if audio_result.get('narrator'):
+            profile.narrator.add_source('audio', audio_result['narrator'])
+        if audio_result.get('series'):
+            profile.series.add_source('audio', audio_result['series'])
+        if audio_result.get('language'):
+            profile.language.add_source('audio', audio_result['language'])
+
+    # Finalize - calculate consensus values and confidence
+    profile.finalize()
+
+    # Flag low confidence for attention
+    if profile.overall_confidence < 50:
+        profile.needs_attention = True
+        if 'low_confidence' not in profile.issues:
+            profile.issues.append('low_confidence')
+
+    return profile
 
 
 # ============== SEARCH QUEUE / PROGRESS TRACKING ==============
@@ -114,7 +716,7 @@ search_progress = SearchProgress()
 # ============== LOCAL BOOKDB CONNECTION ==============
 # Direct SQLite connection to local metadata database for fast lookups
 
-BOOKDB_LOCAL_PATH = "/mnt/rag_data/bookdb/metadata.db"
+BOOKDB_LOCAL_PATH = "/mnt/bookdb-ssd/metadata.db"
 
 def get_bookdb_connection():
     """Get a connection to the local BookDB SQLite database."""
@@ -344,15 +946,99 @@ def extract_folder_metadata(folder_path):
 
     return hints
 
-# Configure logging - use script directory for log file
+
+def extract_narrator_from_folder(folder_path):
+    """
+    Try to extract narrator information from audio files in a folder.
+    Checks multiple sources: ID3 tags, NFO files, metadata files.
+    Returns narrator name string or None if not found.
+    """
+    folder = Path(folder_path)
+    if not folder.exists():
+        return None
+
+    # First, try audio file tags
+    audio_extensions = ['.m4b', '.mp3', '.m4a', '.flac', '.ogg', '.opus']
+    audio_files = []
+    for ext in audio_extensions:
+        audio_files.extend(folder.glob(f'*{ext}'))
+        audio_files.extend(folder.glob(f'*{ext.upper()}'))
+
+    if audio_files:
+        try:
+            from mutagen import File
+            from mutagen.mp3 import MP3
+            from mutagen.mp4 import MP4
+
+            audio = File(audio_files[0])
+            if audio:
+                # MP4/M4B - check for narrator in various fields
+                if hasattr(audio, 'tags') and audio.tags:
+                    # M4B/M4A often have narrator in '----:com.apple.iTunes:NARRATOR' or similar
+                    for key in audio.tags.keys():
+                        key_lower = str(key).lower()
+                        if 'narrator' in key_lower or 'read by' in key_lower:
+                            val = audio.tags[key]
+                            if hasattr(val, 'text'):
+                                return str(val.text[0]) if val.text else None
+                            elif isinstance(val, list) and val:
+                                return str(val[0])
+                            else:
+                                return str(val)
+
+                # Check 'composer' field - sometimes used for narrator
+                if 'composer' in audio:
+                    return audio['composer'][0]
+                if '\xa9wrt' in audio:  # MP4 composer
+                    return audio['\xa9wrt'][0]
+
+        except Exception as e:
+            logging.debug(f"Could not extract narrator from audio: {e}")
+
+    # Try NFO files - often have narrator info
+    nfo_files = list(folder.glob('*.nfo')) + list(folder.glob('*.NFO'))
+    for nfo in nfo_files:
+        try:
+            content = nfo.read_text(errors='ignore')
+            # Look for narrator patterns
+            narrator_match = re.search(
+                r'(?:narrator|narrated by|read by|performed by|reader)[:\s]+([^\n\r]+)',
+                content, re.IGNORECASE
+            )
+            if narrator_match:
+                narrator = narrator_match.group(1).strip()
+                # Clean up common suffixes
+                narrator = re.sub(r'\s*\(.*\)$', '', narrator)
+                if narrator and len(narrator) > 2:
+                    return narrator
+        except Exception:
+            pass
+
+    # Try metadata files
+    for meta_file in ['metadata.json', 'info.json', 'audiobook.json', 'book.json']:
+        meta_path = folder / meta_file
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text())
+                for key in ['narrator', 'narrators', 'read_by', 'reader', 'performed_by']:
+                    if key in meta:
+                        val = meta[key]
+                        if isinstance(val, list):
+                            return val[0] if val else None
+                        return val
+            except Exception:
+                pass
+
+    return None
+
+
+# Configure logging - start with console only, add file handler after DATA_DIR is detected
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_FILE = os.path.join(APP_DIR, 'app.log')
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(LOG_FILE),
         logging.StreamHandler()
     ]
 )
@@ -367,9 +1053,61 @@ app.secret_key = 'library-manager-secret-key-2024'
 # ============== CONFIGURATION ==============
 
 BASE_DIR = Path(__file__).parent
-# Support DATA_DIR env var for Docker persistence, default to app directory
-DATA_DIR = Path(os.environ.get('DATA_DIR', BASE_DIR))
+
+# Support DATA_DIR env var for Docker persistence
+# Auto-detect common Docker mount points if not explicitly set
+# UnRaid uses /config, our default is /data
+def _detect_data_dir():
+    """Auto-detect the data directory for Docker persistence.
+
+    Priority:
+    1. Explicit DATA_DIR env var (user override)
+    2. Directory with existing config files (preserves user settings)
+    3. Mounted volume (detects actual Docker mounts vs container dirs)
+    4. /data for fresh installs (our documented default)
+    5. /config if /data doesn't exist (UnRaid fallback)
+    6. App directory (local development)
+    """
+    # If explicitly set via env var, use that
+    if 'DATA_DIR' in os.environ:
+        return Path(os.environ['DATA_DIR'])
+
+    # Check for existing config files - NEVER lose user settings
+    # Check both locations, prefer whichever has config
+    for mount_point in ['/data', '/config']:
+        mount_path = Path(mount_point)
+        if mount_path.exists() and mount_path.is_dir():
+            if (mount_path / 'config.json').exists() or (mount_path / 'library.db').exists():
+                return mount_path
+
+    # Fresh install: detect which is actually mounted (persistent storage)
+    # os.path.ismount() returns True for Docker volume mounts
+    if os.path.ismount('/data'):
+        return Path('/data')
+    if os.path.ismount('/config'):
+        return Path('/config')
+
+    # Fallback: prefer /data (our documented default), then /config
+    if Path('/data').exists():
+        return Path('/data')
+    if Path('/config').exists():
+        return Path('/config')
+
+    # Fall back to app directory (local development)
+    return BASE_DIR
+
+DATA_DIR = _detect_data_dir()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# Add file handler now that we know DATA_DIR (log to persistent storage)
+LOG_FILE = DATA_DIR / 'app.log'
+_file_handler = logging.FileHandler(LOG_FILE)
+_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logging.getLogger().addHandler(_file_handler)
+
+# Log where we're storing data (helps debug mount issues)
+_startup_logger = logging.getLogger(__name__)
+_startup_logger.info(f"Data directory: {DATA_DIR} (config persistence location)")
 
 DB_PATH = DATA_DIR / 'library.db'
 CONFIG_PATH = DATA_DIR / 'config.json'
@@ -377,27 +1115,113 @@ SECRETS_PATH = DATA_DIR / 'secrets.json'
 
 DEFAULT_CONFIG = {
     "library_paths": [],  # Empty by default - user configures via Settings
-    "ai_provider": "openrouter",  # "openrouter" or "gemini"
-    "openrouter_model": "google/gemma-3n-e4b-it:free",
-    "gemini_model": "gemini-2.0-flash",
+    "ai_provider": "gemini",  # "gemini", "openrouter", or "ollama"
+    "openrouter_model": "xiaomi/mimo-v2-flash:free",  # Best free model: 262K context
+    "gemini_model": "gemma-3-27b-it",  # Gemma 3 - unlimited free tier
+    "ollama_url": "http://localhost:11434",  # Ollama server URL
+    "ollama_model": "llama3.2:3b",  # Default model - good for 8-12GB VRAM
     "scan_interval_hours": 6,
-    "batch_size": 3,
-    "max_requests_per_hour": 30,
+    "batch_size": 10,
+    "max_requests_per_hour": 200,
     "auto_fix": False,
-    "protect_author_changes": True,  # Require approval if author changes completely
+    "protect_author_changes": True,  # Require manual approval when author changes completely
     "enabled": True,
+    "series_grouping": False,  # Group series: Author/Series/1 - Title (Audiobookshelf compatible)
     "ebook_management": False,  # Enable ebook organization (Beta)
     "ebook_library_mode": "merge",  # "merge" = same folder as audiobooks, "separate" = own library
-    "audio_analysis": False,  # Enable Gemini audio analysis for verification (Beta)
     "update_channel": "beta",  # "stable", "beta", or "nightly"
     "naming_format": "author/title",  # "author/title", "author - title", "custom"
-    "custom_naming_template": "{author}/{title}"  # Custom template with {author}, {title}, {series}, etc.
+    "custom_naming_template": "{author}/{title}",  # Custom template with {author}, {title}, {series}, etc.
+    "standardize_author_initials": False,  # Normalize initials: "James S A Corey" → "James S. A. Corey" (Issue #54)
+    # Metadata embedding settings
+    "metadata_embedding_enabled": False,  # Embed tags into audio files when fixes are applied
+    "metadata_embedding_overwrite_managed": True,  # Overwrite managed fields (title/author/series/etc)
+    "metadata_embedding_backup_sidecar": True,  # Create .library-manager.tags.json backup before modifying
+    # Language preference settings (Issue #17)
+    "preferred_language": "en",  # ISO 639-1 code for metadata lookups
+    "preserve_original_titles": True,  # Don't replace foreign language titles with English translations
+    "detect_language_from_audio": False,  # Use Gemini audio analysis to detect spoken language
+    # Trust the Process mode - fully automatic verification chain
+    "trust_the_process": False,  # Auto-verify drastic changes, use audio analysis as tie-breaker, only flag truly unidentifiable
+    # Book Profile System settings - progressive verification with confidence scoring
+    "enable_api_lookups": True,           # Layer 2: API database lookups (BookDB, Audnexus, etc.)
+    "enable_ai_verification": True,       # Layer 3: AI verification (uses configured provider)
+    "enable_audio_analysis": False,       # Layer 4: Audio analysis (requires Gemini API key)
+    "use_bookdb_for_audio": True,          # Use BookDB GPU Whisper for audio identification (faster, no rate limits)
+    # Provider Chains - ordered lists of providers to try (first = primary, rest = fallbacks)
+    # Audio providers: "bookdb", "gemini", "openrouter", "ollama"
+    # Text providers: "gemini", "openrouter", "ollama"
+    "audio_provider_chain": ["bookdb", "gemini"],  # Order to try audio identification
+    "text_provider_chain": ["gemini", "openrouter"],  # Order to try text-based AI
+    "deep_scan_mode": False,              # Always use all enabled layers regardless of confidence
+    "profile_confidence_threshold": 85,   # Minimum confidence to skip remaining layers (0-100)
+    "multibook_ai_fallback": True,         # Use AI for ambiguous chapter/multibook detection
+    "skip_confirmations": False,           # Skip confirmation dialogs in Library view for faster workflow
+    # Anonymous error reporting - helps improve the app
+    "anonymous_error_reporting": False,    # Opt-in: send anonymous error reports to help fix bugs
+    "error_reporting_include_titles": True, # Include book title/author ONLY when they caused the error
+    # Community contribution - crowdsourced audiobook metadata
+    "contribute_to_community": False,      # Opt-in: share audio-extracted metadata (author/title/narrator) to help others
+    # Watch Folder settings - monitor a folder for new audiobooks and organize them
+    "watch_mode": False,                   # Enable folder watching
+    "watch_folder": "",                    # Path to monitor for new audiobooks
+    "watch_output_folder": "",             # Where to move organized books (empty = same as library_paths[0])
+    "watch_use_hard_links": False,         # Hard link instead of move (saves space, same filesystem only)
+    "watch_interval_seconds": 60,          # How often to check for new files
+    "watch_delete_empty_folders": True,    # Remove empty source folders after moving
+    "watch_min_file_age_seconds": 30       # Minimum file age before processing (wait for downloads to complete)
 }
 
 DEFAULT_SECRETS = {
     "openrouter_api_key": "",
-    "gemini_api_key": ""
+    "gemini_api_key": "",
+    "bookdb_api_key": "",  # Optional API key for BookDB (not required for public endpoints)
+    "abs_api_token": ""
 }
+
+
+def migrate_legacy_config():
+    """Migrate config files from old locations to DATA_DIR.
+
+    Issue #23: In beta.23 we fixed config paths to use DATA_DIR instead of BASE_DIR,
+    but didn't migrate existing configs. Users updating from older versions would
+    lose their config because the app looked in the new location.
+
+    Also checks /config and /data for UnRaid vs standard Docker setups.
+    """
+    if DATA_DIR == BASE_DIR:
+        return  # Not running with separate data dir, nothing to migrate
+
+    import shutil
+    migrate_files = ['config.json', 'secrets.json', 'library.db', 'user_groups.json']
+
+    # Check multiple possible legacy locations
+    # - BASE_DIR: old versions stored in app directory
+    # - /data: our default Docker mount (user might have switched to /config)
+    # - /config: UnRaid default (user might have switched to /data)
+    legacy_locations = [BASE_DIR]
+    if DATA_DIR != Path('/data') and Path('/data').exists():
+        legacy_locations.append(Path('/data'))
+    if DATA_DIR != Path('/config') and Path('/config').exists():
+        legacy_locations.append(Path('/config'))
+
+    for filename in migrate_files:
+        new_path = DATA_DIR / filename
+
+        # Skip if already exists in target location
+        if new_path.exists():
+            continue
+
+        # Try to find file in legacy locations
+        for legacy_dir in legacy_locations:
+            old_path = legacy_dir / filename
+            if old_path.exists():
+                try:
+                    shutil.copy2(old_path, new_path)
+                    logger.info(f"Migrated {filename} from {old_path} to {new_path}")
+                    break  # Found and migrated, stop looking
+                except Exception as e:
+                    logger.warning(f"Failed to migrate {filename} from {old_path}: {e}")
 
 
 def init_config():
@@ -412,11 +1236,36 @@ def init_config():
             json.dump(DEFAULT_SECRETS, f, indent=2)
         logger.info(f"Created default secrets at {SECRETS_PATH}")
 
+
+def needs_setup(config):
+    """Check if app needs initial setup wizard.
+
+    Returns True only for fresh installs that haven't been configured.
+    Existing users who update will NOT see the wizard.
+
+    Logic:
+    - If user already has library_paths configured -> skip wizard
+    - If setup_completed flag is set -> skip wizard
+    - Otherwise (fresh install with no paths) -> show wizard
+    """
+    # Existing users already have library_paths - don't show wizard
+    paths = config.get('library_paths', [])
+    if paths and len(paths) > 0:
+        return False  # Already configured = skip wizard
+
+    # New flag for explicit wizard completion
+    if config.get('setup_completed', False):
+        return False
+
+    # Fresh install with no paths = show wizard
+    return True
+
+
 # ============== DATABASE ==============
 
 def init_db():
     """Initialize SQLite database."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     c = conn.cursor()
 
     # Books table - tracks all scanned books
@@ -434,6 +1283,26 @@ def init_db():
     # Add error_message column if it doesn't exist (migration)
     try:
         c.execute('ALTER TABLE books ADD COLUMN error_message TEXT')
+    except:
+        pass  # Column already exists
+
+    # Add user_locked column - when True, user has manually set metadata and it should not be changed
+    try:
+        c.execute('ALTER TABLE books ADD COLUMN user_locked INTEGER DEFAULT 0')
+    except:
+        pass  # Column already exists
+
+    # Add source_type column - tracks where the book came from ('library' or 'watch_folder')
+    # Used to handle watch folder items that failed to move and need special processing
+    try:
+        c.execute("ALTER TABLE books ADD COLUMN source_type TEXT DEFAULT 'library'")
+    except:
+        pass  # Column already exists
+
+    # Add media_type column - tracks what formats exist ('audiobook', 'ebook', 'both')
+    # Issue #53: Used for filtering library by format
+    try:
+        c.execute("ALTER TABLE books ADD COLUMN media_type TEXT DEFAULT 'audiobook'")
     except:
         pass  # Column already exists
 
@@ -473,6 +1342,35 @@ def init_db():
     except:
         pass
 
+    # Add metadata columns for embedding (migration)
+    metadata_columns = [
+        'new_narrator TEXT',
+        'new_series TEXT',
+        'new_series_num TEXT',
+        'new_year TEXT',
+        'new_edition TEXT',
+        'new_variant TEXT',
+        'embed_status TEXT',
+        'embed_error TEXT'
+    ]
+    for col_def in metadata_columns:
+        try:
+            c.execute(f'ALTER TABLE history ADD COLUMN {col_def}')
+        except:
+            pass  # Column already exists
+
+    # Add profile columns for Book Profile system (migration)
+    profile_columns = [
+        ('books', 'profile TEXT'),          # Full JSON profile
+        ('books', 'confidence INTEGER DEFAULT 0'),  # Overall confidence score
+        ('books', 'verification_layer INTEGER DEFAULT 0')  # 0=pending, 1=API, 2=AI, 3=audio, 4=complete
+    ]
+    for table, col_def in profile_columns:
+        try:
+            c.execute(f'ALTER TABLE {table} ADD COLUMN {col_def}')
+        except:
+            pass  # Column already exists
+
     # Stats table - daily stats
     c.execute('''CREATE TABLE IF NOT EXISTS stats (
         id INTEGER PRIMARY KEY,
@@ -492,6 +1390,7 @@ def get_db():
     conn = sqlite3.connect(DB_PATH, timeout=30)  # Wait up to 30 seconds for lock
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA journal_mode=WAL')  # Better concurrent access
+    conn.execute('PRAGMA busy_timeout=30000')  # 30s SQLite-level busy wait
     return conn
 
 # ============== CONFIG ==============
@@ -523,7 +1422,7 @@ def load_config():
 def save_config(config):
     """Save configuration to file (excludes secrets)."""
     # Separate secrets from config
-    secrets_keys = ['openrouter_api_key', 'gemini_api_key', 'abs_api_token']
+    secrets_keys = ['openrouter_api_key', 'gemini_api_key', 'google_books_api_key', 'abs_api_token']
     config_only = {k: v for k, v in config.items() if k not in secrets_keys}
 
     with open(CONFIG_PATH, 'w') as f:
@@ -544,6 +1443,231 @@ def load_secrets():
         except Exception as e:
             logger.warning(f"Error loading secrets: {e}")
     return {}
+
+# ============== ANONYMOUS ERROR REPORTING ==============
+
+ERROR_REPORTS_PATH = DATA_DIR / "error_reports.json"
+
+def sanitize_error_data(error_msg: str, traceback_str: str = None, book_info: dict = None) -> dict:
+    """
+    Sanitize error data to remove any personal/sensitive information.
+
+    Removes:
+    - File system paths (except relative library structure)
+    - API keys and tokens
+    - Usernames and home directories
+    - IP addresses
+    - Any config values that might contain secrets
+
+    Keeps:
+    - Error type and message (sanitized)
+    - App version
+    - Book title/author (only if enabled and relevant to error)
+    """
+    import re
+
+    # Patterns to remove
+    path_pattern = r'(/home/[^/\s]+|/Users/[^/\s]+|/data|/audiobooks|[A-Z]:\\[^\s]+)'
+    ip_pattern = r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b'
+    api_key_pattern = r'(sk-[a-zA-Z0-9]+|AIza[a-zA-Z0-9_-]+|[a-zA-Z0-9]{32,})'
+
+    def sanitize_string(s: str) -> str:
+        if not s:
+            return s
+        # Replace paths with [PATH]
+        s = re.sub(path_pattern, '[PATH]', s)
+        # Replace IPs with [IP]
+        s = re.sub(ip_pattern, '[IP]', s)
+        # Replace potential API keys with [KEY]
+        s = re.sub(api_key_pattern, '[KEY]', s)
+        return s
+
+    sanitized = {
+        "version": APP_VERSION,
+        "timestamp": datetime.now().isoformat(),
+        "error": sanitize_string(str(error_msg)[:500]),  # Limit length
+    }
+
+    if traceback_str:
+        # Only keep last 10 lines of traceback, sanitized
+        tb_lines = traceback_str.strip().split('\n')[-10:]
+        sanitized["traceback"] = [sanitize_string(line) for line in tb_lines]
+
+    # Only include book info if error reporting settings allow it
+    config = load_config()
+    if book_info and config.get('error_reporting_include_titles', True):
+        # Only include title/author, nothing else
+        sanitized["book"] = {
+            "title": book_info.get("title", "")[:100] if book_info.get("title") else None,
+            "author": book_info.get("author", "")[:100] if book_info.get("author") else None,
+        }
+
+    return sanitized
+
+
+def report_anonymous_error(error_msg: str, traceback_str: str = None, book_info: dict = None, context: str = None):
+    """
+    Report an error anonymously if the user has opted in.
+
+    This stores error reports locally. In a future version, these could be
+    sent to a central server to help identify common issues.
+
+    Args:
+        error_msg: The error message
+        traceback_str: Optional traceback string
+        book_info: Optional dict with 'title' and 'author' keys (only used if error is book-related)
+        context: Optional context string (e.g., "layer_1_processing", "scan", "api_call")
+    """
+    try:
+        config = load_config()
+        if not config.get('anonymous_error_reporting', False):
+            return  # User has not opted in
+
+        # Sanitize the error data
+        report = sanitize_error_data(error_msg, traceback_str, book_info)
+        if context:
+            report["context"] = context[:50]  # Limit context length
+
+        # Load existing reports
+        reports = []
+        if ERROR_REPORTS_PATH.exists():
+            try:
+                with open(ERROR_REPORTS_PATH, 'r') as f:
+                    reports = json.load(f)
+            except:
+                reports = []
+
+        # Add new report (keep last 100 reports to avoid file bloat)
+        reports.append(report)
+        reports = reports[-100:]
+
+        # Save reports
+        with open(ERROR_REPORTS_PATH, 'w') as f:
+            json.dump(reports, f, indent=2)
+
+        logger.debug(f"Anonymous error report saved (context: {context})")
+
+    except Exception as e:
+        # Never let error reporting cause additional errors
+        logger.debug(f"Failed to save error report: {e}")
+
+
+def get_error_reports() -> list:
+    """Get all stored error reports for the debug menu."""
+    if ERROR_REPORTS_PATH.exists():
+        try:
+            with open(ERROR_REPORTS_PATH, 'r') as f:
+                return json.load(f)
+        except:
+            return []
+    return []
+
+
+def clear_error_reports():
+    """Clear all stored error reports."""
+    if ERROR_REPORTS_PATH.exists():
+        ERROR_REPORTS_PATH.unlink()
+
+
+# Directory for permanent report storage (for developer review)
+REPORTS_DIR = Path("/home/deucebucket/library-manager-reports")
+
+
+def send_error_report_email(reports: list, user_message: str = None) -> dict:
+    """
+    Send error reports via email to the developer.
+    Always saves locally first, then attempts email.
+
+    Local storage is the primary method - email is best-effort.
+    Returns success if local save works, even if email fails.
+    """
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+    from datetime import datetime
+
+    # Create report content
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    report_id = f"report_{timestamp}"
+
+    # Build report body
+    body_parts = []
+    body_parts.append(f"Error Report from Library Manager v{APP_VERSION}")
+    body_parts.append(f"Submitted: {datetime.now().isoformat()}")
+    body_parts.append(f"Report ID: {report_id}")
+    body_parts.append("")
+
+    if user_message:
+        body_parts.append("=== User Message ===")
+        body_parts.append(user_message)
+        body_parts.append("")
+
+    body_parts.append(f"=== {len(reports)} Error(s) ===")
+    for i, report in enumerate(reports, 1):
+        body_parts.append(f"\n--- Error {i} ---")
+        body_parts.append(f"Time: {report.get('timestamp', 'Unknown')}")
+        body_parts.append(f"Context: {report.get('context', 'Unknown')}")
+        body_parts.append(f"Error: {report.get('error', 'No error message')}")
+        if report.get('traceback'):
+            body_parts.append(f"Traceback:\n{report['traceback']}")
+        if report.get('book_info'):
+            body_parts.append(f"Book: {report['book_info']}")
+
+    report_body = "\n".join(body_parts)
+
+    # Step 1: Save locally (required)
+    try:
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        local_file = REPORTS_DIR / f"{report_id}.txt"
+        with open(local_file, 'w') as f:
+            f.write(report_body)
+        logger.info(f"Error report saved locally: {local_file}")
+    except Exception as e:
+        logger.error(f"Failed to save error report locally: {e}")
+        return {
+            'success': False,
+            'error': f'Failed to save report: {e}'
+        }
+
+    # Step 2: Try to send email (best-effort)
+    email_sent = False
+    email_error = None
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = 'library-manager@localhost'
+        msg['To'] = 'lib-man-reports@deucebucket.com'
+        msg['Subject'] = f'[Library Manager] Error Report - {len(reports)} error(s)'
+        msg.attach(MIMEText(report_body, 'plain'))
+
+        with smtplib.SMTP('localhost', 25) as server:
+            server.send_message(msg)
+
+        email_sent = True
+        logger.info(f"Error report emailed: {report_id}")
+    except Exception as e:
+        email_error = str(e)
+        logger.warning(f"Email send failed (report still saved locally): {e}")
+
+    # Clear local error reports after successful save
+    clear_error_reports()
+
+    # Return success - local save is what matters
+    if email_sent:
+        return {
+            'success': True,
+            'message': f'Report saved and emailed (ID: {report_id})',
+            'report_id': report_id,
+            'email_sent': True
+        }
+    else:
+        return {
+            'success': True,
+            'message': f'Report saved locally (ID: {report_id}). Email failed: {email_error}',
+            'report_id': report_id,
+            'email_sent': False,
+            'email_error': email_error
+        }
+
 
 # ============== DRASTIC CHANGE DETECTION ==============
 
@@ -613,27 +1737,291 @@ def is_placeholder_author(name):
     if not name:
         return True
     name_lower = name.lower().strip()
-    placeholder_authors = {'unknown', 'various', 'various authors', 'va', 'n/a', 'none',
+    placeholder_authors = {'unknown', 'unknown author', 'various', 'various authors', 'va', 'n/a', 'none',
                            'audiobook', 'audiobooks', 'ebook', 'ebooks', 'book', 'books',
                            'author', 'authors', 'narrator', 'untitled', 'no author',
-                           'metadata', 'tmp', 'temp', 'streams', 'cache', 'data', 'log', 'logs'}
+                           'metadata', 'tmp', 'temp', 'streams', 'cache', 'data', 'log', 'logs',
+                           'audio', 'media', 'files', 'downloads', 'torrents',
+                           # Issue #46: Common watch/import folder names
+                           'watch', 'incoming', 'new', 'import', 'imports', 'inbox', 'input', 'drop'}
     return name_lower in placeholder_authors
+
+# ============== LANGUAGE DETECTION ==============
+
+def detect_title_language(text):
+    """
+    Detect the language of a title/text using langdetect.
+    Returns ISO 639-1 language code or 'en' as fallback.
+    """
+    if not text or len(text.strip()) < 3:
+        return 'en'  # Too short to detect
+
+    try:
+        from langdetect import detect, DetectorFactory
+        # Make detection deterministic
+        DetectorFactory.seed = 0
+        detected = detect(text)
+        logger.debug(f"Detected language '{detected}' for text: {text}")
+        return detected
+    except Exception as e:
+        logger.debug(f"Language detection failed for '{text}': {e}")
+        return 'en'  # Default to English on failure
+
+
+def should_preserve_original_title(original_title, suggested_title, config):
+    """
+    Check if we should keep the original title instead of replacing it.
+
+    This prevents replacing foreign language titles with English translations,
+    e.g., "Der Bücherdrache" should NOT become "The Book Dragon" for German users.
+
+    Returns True if original title should be preserved.
+    """
+    if not config.get('preserve_original_titles', True):
+        return False
+
+    if not original_title or not suggested_title:
+        return False
+
+    # If titles are the same, no preservation needed
+    if original_title.strip().lower() == suggested_title.strip().lower():
+        return False
+
+    # Detect language of original title
+    original_lang = detect_title_language(original_title)
+    suggested_lang = detect_title_language(suggested_title)
+
+    # Get user's preferred language
+    preferred_lang = config.get('preferred_language', 'en')
+
+    # If original is in user's preferred language but suggestion is in English,
+    # preserve the original (user wants German, original is German, don't replace with English)
+    if original_lang == preferred_lang and suggested_lang == 'en' and preferred_lang != 'en':
+        logger.info(f"Preserving original title '{original_title}' ({original_lang}) - user prefers {preferred_lang}")
+        return True
+
+    # If original is in a non-English language and suggestion is English,
+    # preserve original if "preserve_original_titles" is enabled
+    if original_lang != 'en' and suggested_lang == 'en':
+        logger.info(f"Preserving foreign title '{original_title}' ({original_lang}) instead of English '{suggested_title}'")
+        return True
+
+    return False
+
+
+# Audible marketplace mappings for language preference
+AUDIBLE_LANGUAGE_ENDPOINTS = {
+    'en': 'audible.com',      # US/English
+    'de': 'audible.de',       # German
+    'fr': 'audible.fr',       # French
+    'it': 'audible.it',       # Italian
+    'es': 'audible.es',       # Spanish
+    'jp': 'audible.co.jp',    # Japanese (ISO code is 'ja' but Audible uses 'jp')
+    'ja': 'audible.co.jp',    # Japanese
+    'au': 'audible.com.au',   # Australia (English)
+    'uk': 'audible.co.uk',    # UK (English)
+    'in': 'audible.in',       # India (English)
+    'ca': 'audible.ca',       # Canada (English/French)
+}
+
+
+def get_audible_region_for_language(lang_code):
+    """
+    Get the appropriate Audible region code for a language.
+    Audnexus uses these region codes in its API.
+    """
+    # Map language codes to Audnexus region codes
+    region_map = {
+        'en': 'us',   # Default English to US
+        'de': 'de',   # German
+        'fr': 'fr',   # French
+        'it': 'it',   # Italian
+        'es': 'es',   # Spanish
+        'ja': 'jp',   # Japanese
+        'pt': 'us',   # Portuguese -> US (no dedicated Audible)
+        'nl': 'de',   # Dutch -> Germany (no dedicated Audible)
+    }
+    return region_map.get(lang_code, 'us')
+
+
+# ISO 639-1 language code to full name mapping
+LANGUAGE_NAMES = {
+    'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish',
+    'it': 'Italian', 'pt': 'Portuguese', 'nl': 'Dutch', 'sv': 'Swedish',
+    'no': 'Norwegian', 'da': 'Danish', 'fi': 'Finnish', 'pl': 'Polish',
+    'ru': 'Russian', 'ja': 'Japanese', 'zh': 'Chinese', 'ko': 'Korean',
+    'ar': 'Arabic', 'he': 'Hebrew', 'hi': 'Hindi', 'tr': 'Turkish',
+    'cs': 'Czech', 'hu': 'Hungarian', 'el': 'Greek', 'th': 'Thai',
+    'vi': 'Vietnamese', 'uk': 'Ukrainian', 'ro': 'Romanian', 'id': 'Indonesian'
+}
+
+
+def get_localized_title_via_ai(title, author, target_language, config):
+    """
+    Ask AI to find the official localized title of a book.
+    This helps when APIs don't have results in the user's preferred language.
+
+    Args:
+        title: The book title (usually in English)
+        author: The author name
+        target_language: ISO 639-1 code (e.g., 'de' for German)
+        config: App config with AI credentials
+
+    Returns:
+        dict with localized_title and is_translation, or None on failure
+    """
+    if not target_language or target_language == 'en':
+        return None  # No translation needed
+
+    lang_name = LANGUAGE_NAMES.get(target_language, target_language)
+
+    prompt = f"""You are a book metadata expert with knowledge of international book translations.
+
+Given this book:
+- Title: {title}
+- Author: {author}
+
+What is the official {lang_name} ({target_language}) published title of this book?
+
+RULES:
+1. If this book has an official {lang_name} translation, return that title
+2. If the book was originally written in {lang_name}, return the original title
+3. If no official translation exists, return the original title
+4. DO NOT invent translations - only use real published titles
+
+Return JSON only:
+{{"localized_title": "the {lang_name} title", "is_translation": true/false, "notes": "brief explanation"}}
+
+If you're not certain, return: {{"localized_title": "{title}", "is_translation": false, "notes": "no official translation found"}}"""
+
+    provider = config.get('ai_provider', 'openrouter')
+
+    try:
+        if provider == 'ollama':
+            result = _call_ollama_simple(prompt, config)
+        elif provider == 'gemini' and config.get('gemini_api_key'):
+            result = _call_gemini_simple(prompt, config)
+        elif config.get('openrouter_api_key'):
+            result = _call_openrouter_simple(prompt, config)
+        else:
+            return None
+
+        if result and result.get('localized_title'):
+            logger.info(f"AI localization: '{title}' -> '{result['localized_title']}' ({lang_name})")
+            return result
+    except Exception as e:
+        logger.debug(f"AI localization failed: {e}")
+
+    return None
+
+
+def _call_openrouter_simple(prompt, config):
+    """Simple OpenRouter call for localization queries."""
+    rate_limit_wait('openrouter')  # Respect free tier limits
+    try:
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {config['openrouter_api_key']}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": config.get('openrouter_model', 'google/gemma-3n-e4b-it:free'),
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1
+            },
+            timeout=30
+        )
+        if resp.status_code == 200:
+            text = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            return parse_json_response(text) if text else None
+    except Exception as e:
+        logger.debug(f"OpenRouter localization error: {e}")
+    return None
+
+
+def _call_gemini_simple(prompt, config):
+    """Simple Gemini call for localization queries."""
+    # Check circuit breaker
+    if is_circuit_open('gemini'):
+        return None
+    rate_limit_wait('gemini')
+
+    try:
+        api_key = config.get('gemini_api_key')
+        model = config.get('gemini_model', 'gemini-2.0-flash')
+        resp = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
+            headers={"Content-Type": "application/json"},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.1}
+            },
+            timeout=30
+        )
+        if resp.status_code == 200:
+            text = resp.json().get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+            return parse_json_response(text) if text else None
+    except Exception as e:
+        logger.debug(f"Gemini localization error: {e}")
+    return None
+
+
+def _call_ollama_simple(prompt, config):
+    """Simple Ollama call for localization queries."""
+    try:
+        ollama_url = config.get('ollama_url', 'http://localhost:11434')
+        model = config.get('ollama_model', 'llama3.2:3b')
+        resp = requests.post(
+            f"{ollama_url}/api/generate",
+            json={
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"temperature": 0.1}
+            },
+            timeout=60
+        )
+        if resp.status_code == 200:
+            text = resp.json().get("response", "")
+            return parse_json_response(text) if text else None
+    except Exception as e:
+        logger.debug(f"Ollama localization error: {e}")
+    return None
+
 
 # ============== BOOK METADATA APIs ==============
 
 # Rate limiting for each API (last call timestamp)
-# Based on research:
-# - Audnexus: No docs, small project - 1 req/sec max
-# - OpenLibrary: Had issues with high traffic - 1 req/sec
-# - Google Books: ~1000/day free = ~40/hour - 1 req/2sec
-# - Hardcover: Beta API, be conservative - 1 req/2sec
+# Tuned to 80-90% of actual limits for maximum throughput:
+# - BookDB: Our API, 750/hr with key - can burst heavily
+# - Audnexus: Community API ~100/hr, be reasonable
+# - OpenLibrary: Docs say max 1 req/sec
+# - Google Books: 1000/day with API key, no per-second limit
+# - Hardcover: Beta GraphQL API
 API_RATE_LIMITS = {
-    'audnexus': {'last_call': 0, 'min_delay': 1.5},      # 1.5 sec between calls
-    'openlibrary': {'last_call': 0, 'min_delay': 1.5},   # 1.5 sec between calls
-    'googlebooks': {'last_call': 0, 'min_delay': 2.5},   # 2.5 sec between calls (stricter)
-    'hardcover': {'last_call': 0, 'min_delay': 2.5},     # 2.5 sec between calls (beta)
+    'bookdb': {'last_call': 0, 'min_delay': 1.0},        # Our API - 750/hr, increased to prevent self-banning
+    'audnexus': {'last_call': 0, 'min_delay': 2.0},      # ~100/hr community API - be nice
+    'openlibrary': {'last_call': 0, 'min_delay': 1.5},   # They request max 1/sec, add buffer
+    'googlebooks': {'last_call': 0, 'min_delay': 1.0},   # 1000/day, no per-sec limit but be safe
+    'hardcover': {'last_call': 0, 'min_delay': 1.5},     # Beta API - be cautious
+    'openrouter': {'last_call': 0, 'min_delay': 5.0},    # Free tier: 20 req/min + daily limits - be conservative
+    'gemini': {'last_call': 0, 'min_delay': 7.0},        # Free tier: 10 RPM (Jan 2026), 250 RPD for Flash
 }
 API_RATE_LOCK = threading.Lock()
+
+# Circuit breaker for APIs that are timing out/failing
+# After X consecutive failures, skip the API for a cooldown period
+API_CIRCUIT_BREAKER = {
+    'audnexus': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 3, 'cooldown': 300},  # 5 min cooldown after 3 failures
+    'bookdb': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 5, 'cooldown': 120},    # 2 min cooldown after 5 rate limits
+    'openrouter': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 2, 'cooldown': 3600},  # 1 hour after daily limit hit
+    'gemini': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 2, 'cooldown': 1800},   # 30 min cooldown after 2 quota errors
+}
+
+# Issue #61: Scan lock to prevent concurrent scans causing SQLite errors
+SCAN_LOCK = threading.Lock()
+scan_in_progress = False
 
 def rate_limit_wait(api_name):
     """Wait if needed to respect rate limits for the given API."""
@@ -651,6 +2039,33 @@ def rate_limit_wait(api_name):
             time.sleep(wait_time)
 
         API_RATE_LIMITS[api_name]['last_call'] = time.time()
+
+
+def is_circuit_open(api_name):
+    """Check if the circuit breaker is open for the given API."""
+    cb = API_CIRCUIT_BREAKER.get(api_name, {})
+    if cb.get('circuit_open_until', 0) > time.time():
+        remaining = int(cb['circuit_open_until'] - time.time())
+        logger.debug(f"[CIRCUIT BREAKER] {api_name} is open, {remaining}s remaining")
+        return True
+    return False
+
+
+def record_api_failure(api_name):
+    """Record an API failure and potentially trip the circuit breaker."""
+    if api_name not in API_CIRCUIT_BREAKER:
+        return
+    cb = API_CIRCUIT_BREAKER[api_name]
+    cb['failures'] = cb.get('failures', 0) + 1
+    if cb['failures'] >= cb.get('max_failures', 3):
+        cb['circuit_open_until'] = time.time() + cb.get('cooldown', 300)
+        logger.warning(f"[CIRCUIT BREAKER] {api_name} tripped - cooling down for {cb.get('cooldown', 300)}s")
+
+
+def record_api_success(api_name):
+    """Record an API success and reset the circuit breaker."""
+    if api_name in API_CIRCUIT_BREAKER:
+        API_CIRCUIT_BREAKER[api_name]['failures'] = 0
 
 
 def sanitize_path_component(name):
@@ -718,8 +2133,20 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
     title_folder = safe_title
 
     # Add series number prefix if series grouping enabled and we have series info
+    # Merijeek: ABS compatibility - pad single-digit numbers for better sorting/detection
     if series_grouping and safe_series and series_num:
-        title_folder = f"{series_num} - {safe_title}"
+        # Normalize series_num to string and zero-pad if single digit
+        try:
+            num = float(str(series_num).replace(',', '.'))  # Handle "1,5" -> 1.5
+            if num == int(num):
+                # Whole number - pad to 2 digits (e.g., 1 -> "01", 10 -> "10")
+                formatted_num = f"{int(num):02d}"
+            else:
+                # Decimal number (e.g., 1.5) - keep as-is
+                formatted_num = str(series_num)
+        except (ValueError, TypeError):
+            formatted_num = str(series_num)
+        title_folder = f"{formatted_num} - {safe_title}"
 
     # Add edition/variant in brackets (e.g., [30th Anniversary Edition], [Graphic Audio])
     # These distinguish different versions of the same book
@@ -756,7 +2183,18 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
         safe_year = str(year) if year else ''
         safe_edition = sanitize_path_component(edition) if edition else ''
         safe_variant = sanitize_path_component(variant) if variant else ''
-        safe_series_num = str(series_num) if series_num else ''
+        # Issue #57 (Merijeek): Zero-pad series numbers for ABS compatibility
+        if series_num:
+            try:
+                num = float(str(series_num).replace(',', '.'))
+                if num == int(num):
+                    safe_series_num = f"{int(num):02d}"  # 1 -> "01", 10 -> "10"
+                else:
+                    safe_series_num = str(series_num)  # Keep decimals as-is
+            except (ValueError, TypeError):
+                safe_series_num = str(series_num)
+        else:
+            safe_series_num = ''
 
         # Build the path from template
         path_str = custom_template
@@ -775,8 +2213,9 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
         path_str = re.sub(r'\[\s*\]', '', path_str)  # Empty []
         path_str = re.sub(r'\{\s*\}', '', path_str)  # Empty {} (literal, not tags)
         path_str = re.sub(r'\s+-\s+(?=-|/|$)', '', path_str)  # Dangling " - " before separator
-        path_str = re.sub(r'/-\s+', '/', path_str)  # Leading "- " after slash (Issue #16)
+        path_str = re.sub(r'/\s*-\s+', '/', path_str)  # Leading "- " or " - " after slash (Issue #16, #22)
         path_str = re.sub(r'^-\s+', '', path_str)  # Leading "- " at start
+        path_str = re.sub(r'^\s*-\s+', '', path_str)  # Leading " - " at start (with space)
         path_str = re.sub(r'\s+-$', '', path_str)  # Trailing " -" at end
         path_str = re.sub(r'/+', '/', path_str)  # Multiple slashes
         path_str = re.sub(r'\s{2,}', ' ', path_str)  # Multiple spaces
@@ -829,10 +2268,24 @@ def clean_search_title(messy_name):
     import re
     # Remove common junk patterns
     clean = messy_name
+
+    # Convert underscores to spaces first (common in filenames)
+    clean = clean.replace('_', ' ')
+
     # Remove bracketed content like [bitsearch.to], [64k], [r1.1]
     clean = re.sub(r'\[.*?\]', '', clean)
-    # Remove parenthetical junk like (Unabridged), (2019)
-    clean = re.sub(r'\((?:Unabridged|Abridged|\d{4}|MP3|M4B|EPUB|PDF|64k|128k|r\d+\.\d+).*?\)', '', clean, flags=re.IGNORECASE)
+    # Remove parenthetical junk like (Unabridged), (2019) - but keep series info like (Book 1)
+    clean = re.sub(r'\((?:Unabridged|Abridged|MP3|M4B|EPUB|PDF|64k|128k|192k|256k|320k|VBR|r\d+\.\d+|multi|mono|stereo).*?\)', '', clean, flags=re.IGNORECASE)
+    # Issue #50: Remove Calibre-style IDs - just bare numbers in parens at end like "(123)"
+    # These are Calibre's internal book IDs, not series info. Must NOT match "(Book 1)" etc.
+    clean = re.sub(r'\s*\(\d+\)$', '', clean)
+    # Remove curly brace junk like {465mb}, {narrator}, {128k}
+    clean = re.sub(r'\{[^}]*\}', '', clean)
+    # Issue #48: Remove standalone encoding info (bitrates, file sizes, channel info)
+    clean = re.sub(r'\b\d+k(?:bps)?\b', '', clean, flags=re.IGNORECASE)  # 128k, 64kbps
+    clean = re.sub(r'\b\d+(?:\.\d+)?(?:mb|gb|kb)\b', '', clean, flags=re.IGNORECASE)  # 463mb, 1.2gb
+    clean = re.sub(r'\b(?:mono|stereo|multi)\b', '', clean, flags=re.IGNORECASE)  # audio channels
+    clean = re.sub(r'\b(?:vbr|cbr|aac|lame|opus)\b', '', clean, flags=re.IGNORECASE)  # codec info
     # Remove file extensions
     clean = re.sub(r'\.(mp3|m4b|m4a|epub|pdf|mobi|webm|opus)$', '', clean, flags=re.IGNORECASE)
     # Remove "by Author" at the end temporarily for searching
@@ -842,8 +2295,16 @@ def clean_search_title(messy_name):
     clean = re.sub(r'\b(complete|unabridged|abridged)\b', '', clean, flags=re.IGNORECASE)
     clean = re.sub(r'\b(audio\s*book|audio)\b', '', clean, flags=re.IGNORECASE)
     clean = re.sub(r'\b(free|download|hd|hq)\b', '', clean, flags=re.IGNORECASE)
-    # Remove years at the end like "2020" or "2019"
-    clean = re.sub(r'\b(19|20)\d{2}\b\s*$', '', clean)
+    # NOTE: We intentionally DON'T strip date/timestamp patterns here
+    # Books like "11/22/63" by Stephen King have dates AS titles
+    # The layered verification system (API + AI + Audio) will determine the real title
+    # This function just cleans obvious junk for searching - title verification is separate
+
+    # Strip leading track/chapter numbers like "06 - Title", "01. Title", "Track 05 - Title"
+    # Also handles "02 Night" (number + space, no separator) which is common in downloads
+    # These are common in audiobook folders but mess up search
+    clean = re.sub(r'^(?:track\s*)?\d+\s*[-–—:.]?\s+', '', clean, flags=re.IGNORECASE)
+
     # Remove extra whitespace
     clean = re.sub(r'\s+', ' ', clean)
     # Remove leading/trailing junk
@@ -853,8 +2314,10 @@ def clean_search_title(messy_name):
 
 # BookDB API endpoint (our private metadata service)
 BOOKDB_API_URL = "https://bookdb.deucebucket.com"
+# Public API key for Library Manager users (no config needed)
+BOOKDB_PUBLIC_KEY = "lm-public-2024_85TbJ2lbrXGm38tBgliPAcAexLA_AeWxyqvHPbwRIrA"
 
-def search_bookdb(title, author=None, api_key=None):
+def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=None):
     """
     Search our private BookDB metadata service.
     Uses fuzzy matching via Qdrant vectors - great for messy filenames.
@@ -863,20 +2326,60 @@ def search_bookdb(title, author=None, api_key=None):
     if not api_key:
         return None
 
+    # Check circuit breaker - skip if we've been rate limited too much
+    cb = API_CIRCUIT_BREAKER.get('bookdb', {})
+    if cb.get('circuit_open_until', 0) > time.time():
+        remaining = int(cb['circuit_open_until'] - time.time())
+        logger.debug(f"BookDB: Circuit open, skipping ({remaining}s remaining)")
+        return None
+
+    rate_limit_wait('bookdb')
+
+    # Use configured URL or fall back to default cloud URL
+    base_url = bookdb_url or BOOKDB_API_URL
+
     try:
         # Build the filename to match - include author if we have it
         filename = f"{author} - {title}" if author else title
 
         resp = requests.post(
-            f"{BOOKDB_API_URL}/match",
+            f"{base_url}/match",
             json={"filename": filename},
             headers={"X-API-Key": api_key},
             timeout=10
         )
 
+        # Handle rate limiting - respect Retry-After header from server
+        if resp.status_code == 429:
+            # Increment circuit breaker failures
+            if 'bookdb' in API_CIRCUIT_BREAKER:
+                cb = API_CIRCUIT_BREAKER['bookdb']
+                cb['failures'] = cb.get('failures', 0) + 1
+                if cb['failures'] >= cb.get('max_failures', 5):
+                    cb['circuit_open_until'] = time.time() + cb.get('cooldown', 120)
+                    logger.warning(f"BookDB: Circuit OPEN after {cb['failures']} rate limits, backing off for {cb['cooldown']}s")
+                    return None
+
+            if retry_count < 2:  # Reduced retries since we have circuit breaker now
+                retry_after = resp.headers.get('Retry-After', '60')
+                try:
+                    wait_time = min(int(retry_after), 120)  # Cap at 2 minutes
+                except ValueError:
+                    wait_time = 30 * (retry_count + 1)  # Fallback: 30s, 60s
+                logger.info(f"BookDB rate limited, waiting {wait_time}s (Retry-After: {retry_after})...")
+                time.sleep(wait_time)
+                return search_bookdb(title, author, api_key, retry_count + 1, bookdb_url)
+            else:
+                logger.warning("BookDB rate limited, max retries reached")
+                return None
+
         if resp.status_code != 200:
             logger.debug(f"BookDB returned status {resp.status_code}")
             return None
+
+        # Success - reset circuit breaker failures
+        if 'bookdb' in API_CIRCUIT_BREAKER:
+            API_CIRCUIT_BREAKER['bookdb']['failures'] = 0
 
         data = resp.json()
 
@@ -888,13 +2391,14 @@ def search_bookdb(title, author=None, api_key=None):
         series = data.get('series')
         books = data.get('books', [])
 
-        if not series:
+        # Need either series or books to return a result
+        if not series and not books:
             return None
 
-        # Find the best matching book in the series
+        # Find the best matching book
         best_book = None
         if books:
-            # Try to match title to a specific book in series
+            # Try to match title to a specific book
             title_lower = title.lower()
             for book in books:
                 book_title = book.get('title', '').lower()
@@ -905,13 +2409,14 @@ def search_bookdb(title, author=None, api_key=None):
             if not best_book:
                 best_book = books[0]
 
+        # Build result - handle standalone books (no series) and series books
         result = {
-            'title': best_book.get('title') if best_book else series.get('name'),
-            'author': series.get('author_name', ''),
+            'title': best_book.get('title') if best_book else (series.get('name') if series else None),
+            'author': best_book.get('author_name') if best_book else (series.get('author_name', '') if series else ''),
             'year': best_book.get('year_published') if best_book else None,
-            'series': series.get('name'),
+            'series': series.get('name') if series else None,
             'series_num': best_book.get('series_position') if best_book else None,
-            'variant': series.get('variant'),  # Graphic Audio, BBC Radio, etc.
+            'variant': series.get('variant') if series else None,
             'edition': best_book.get('edition') if best_book else None,
             'source': 'bookdb',
             'confidence': data.get('confidence', 0)
@@ -929,8 +2434,199 @@ def search_bookdb(title, author=None, api_key=None):
         return None
 
 
-def search_openlibrary(title, author=None):
-    """Search OpenLibrary for book metadata. Free, no API key needed."""
+def identify_audio_with_bookdb(audio_file, extract_seconds=90):
+    """
+    Use BookDB's GPU-powered Whisper API to identify a book from audio.
+
+    This uses a fair round-robin queue system:
+    1. Submit audio, get ticket + queue position
+    2. Poll for result (shows queue progress to user)
+    3. Return result when complete
+
+    This is PREFERRED over local transcription + Gemini because:
+    1. BookDB has a GTX 1080 running Whisper (faster)
+    2. No Gemini rate limits
+    3. BookDB cross-references against its 50M+ book database
+    4. Fair multi-user access via round-robin queue
+
+    Args:
+        audio_file: Path to the audio file
+        extract_seconds: How many seconds to extract (default 90)
+
+    Returns:
+        dict with author, title, narrator, series, etc. or None
+    """
+    import subprocess
+    import tempfile
+
+    bookdb_url = os.environ.get('BOOKDB_URL', 'https://bookdb.deucebucket.com')
+    logger.info(f"[BOOKDB AUDIO] Starting identification for: {audio_file}")
+    logger.debug(f"[BOOKDB AUDIO] Using API URL: {bookdb_url}")
+
+    try:
+        audio_path = Path(audio_file)
+        if not audio_path.exists():
+            logger.warning(f"[BOOKDB AUDIO] File not found: {audio_file}")
+            return None
+
+        # Extract first N seconds to a temp file
+        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            # Use ffmpeg to extract the intro - use fast seek for large files
+            logger.debug(f"[BOOKDB AUDIO] Extracting {extract_seconds}s from {audio_path.name}")
+            cmd = [
+                'ffmpeg', '-y',
+                '-ss', '0',  # Fast input seek
+                '-i', str(audio_path),
+                '-t', str(extract_seconds),
+                '-vn',  # No video (faster)
+                '-acodec', 'libmp3lame', '-q:a', '5',
+                '-loglevel', 'error',
+                tmp_path
+            ]
+            result = subprocess.run(cmd, capture_output=True, timeout=60)
+
+            if result.returncode != 0:
+                logger.warning(f"[BOOKDB AUDIO] ffmpeg extraction failed: {result.stderr.decode()[:200]}")
+                return None
+
+            # Check file size to ensure it's valid
+            tmp_size = os.path.getsize(tmp_path)
+            logger.debug(f"[BOOKDB AUDIO] Extracted file size: {tmp_size} bytes")
+            if tmp_size < 1000:
+                logger.warning(f"[BOOKDB AUDIO] Extracted file too small ({tmp_size} bytes), likely invalid audio")
+                return None
+
+            # Submit to BookDB queue
+            logger.info(f"[BOOKDB AUDIO] Submitting to queue: {bookdb_url}/api/identify_audio")
+            with open(tmp_path, 'rb') as f:
+                response = requests.post(
+                    f"{bookdb_url}/api/identify_audio",
+                    files={'audio': (audio_path.name, f, 'audio/mpeg')},
+                    timeout=30  # Just submitting, should be fast
+                )
+
+            if response.status_code != 200:
+                logger.warning(f"[BOOKDB AUDIO] API returned {response.status_code}: {response.text[:200]}")
+                return None
+
+            submit_data = response.json()
+
+            # Check if it's the new queue system (has ticket_id) or old sync system
+            if 'ticket_id' in submit_data:
+                # New queue system - poll for result
+                ticket_id = submit_data['ticket_id']
+                queue_position = submit_data.get('queue_position', '?')
+                estimated_seconds = submit_data.get('estimated_seconds', '?')
+
+                logger.info(f"[BOOKDB AUDIO] Queued! Position: {queue_position}, ETA: ~{estimated_seconds}s (ticket: {ticket_id})")
+
+                # Poll for result
+                poll_url = f"{bookdb_url}/api/identify_audio/{ticket_id}"
+                max_wait = 300  # 5 minutes max
+                poll_interval = 2  # Poll every 2 seconds
+                waited = 0
+                last_position = queue_position
+
+                while waited < max_wait:
+                    time.sleep(poll_interval)
+                    waited += poll_interval
+
+                    try:
+                        poll_response = requests.get(poll_url, timeout=10)
+                        if poll_response.status_code != 200:
+                            continue
+
+                        status_data = poll_response.json()
+                        status = status_data.get('status')
+
+                        # Update user on queue position changes
+                        new_position = status_data.get('queue_position')
+                        if new_position and new_position != last_position:
+                            logger.info(f"[BOOKDB AUDIO] Queue position: {new_position}")
+                            last_position = new_position
+
+                        if status == 'processing':
+                            logger.info(f"[BOOKDB AUDIO] Processing audio...")
+
+                        elif status == 'complete':
+                            # Got result!
+                            data = status_data.get('result', {})
+                            logger.info(f"[BOOKDB AUDIO] Complete! Processing result...")
+                            break
+
+                        elif status == 'error':
+                            logger.warning(f"[BOOKDB AUDIO] Job failed: {status_data.get('error')}")
+                            return None
+
+                    except Exception as poll_err:
+                        logger.debug(f"[BOOKDB AUDIO] Poll error (will retry): {poll_err}")
+                        continue
+
+                else:
+                    logger.warning(f"[BOOKDB AUDIO] Timed out waiting for result after {max_wait}s")
+                    return None
+
+            else:
+                # Old sync system - response has result directly
+                data = submit_data
+
+            # Process result (same for both systems)
+            transcript = data.get('transcript') or ''
+            matched_books = data.get('matched_books') or []
+            logger.info(f"[BOOKDB AUDIO] Result received - transcript: {len(transcript)} chars, matches: {len(matched_books)}")
+
+            if data.get('error'):
+                logger.warning(f"[BOOKDB AUDIO] API error: {data['error']}")
+                return None
+
+            best_match = matched_books[0] if matched_books else None
+
+            result = {
+                'author': data.get('author') or (best_match.get('author_name') if best_match else None),
+                'title': data.get('title') or (best_match.get('title') if best_match else None),
+                'narrator': data.get('narrator'),
+                'series': best_match.get('series_name') if best_match else None,
+                'series_num': best_match.get('series_position') if best_match else None,
+                'source': 'bookdb_audio',
+                'confidence': 'high' if best_match else 'medium',
+                'transcript': transcript[:500],
+            }
+
+            if result['author'] and result['title']:
+                logger.info(f"[BOOKDB AUDIO] Identified: {result['author']} - {result['title']}" +
+                           (f" ({result['series']} #{result['series_num']})" if result.get('series') else ""))
+                return result
+
+            if transcript:
+                logger.info(f"[BOOKDB AUDIO] No match but got transcript ({len(transcript)} chars) - returning for AI fallback")
+                return {'transcript': transcript, 'source': 'bookdb_audio'}
+
+            logger.warning(f"[BOOKDB AUDIO] No identification and no transcript returned")
+            return None
+
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    except requests.exceptions.Timeout:
+        logger.warning("[BOOKDB AUDIO] Request timed out")
+        return None
+    except Exception as e:
+        logger.warning(f"[BOOKDB AUDIO] Error: {e}")
+        return None
+
+
+def search_openlibrary(title, author=None, lang=None):
+    """Search OpenLibrary for book metadata. Free, no API key needed.
+
+    Args:
+        title: Book title to search for
+        author: Optional author name
+        lang: Optional ISO 639-1 language code to filter results
+    """
     rate_limit_wait('openlibrary')
     try:
         import urllib.parse
@@ -938,6 +2634,9 @@ def search_openlibrary(title, author=None):
         url = f"https://openlibrary.org/search.json?title={query}&limit=5"
         if author:
             url += f"&author={urllib.parse.quote(author)}"
+        if lang and lang != 'en':
+            # OpenLibrary supports language filtering
+            url += f"&language={lang}"
 
         resp = requests.get(url, timeout=10)
         if resp.status_code != 200:
@@ -967,8 +2666,15 @@ def search_openlibrary(title, author=None):
         logger.debug(f"OpenLibrary search failed: {e}")
         return None
 
-def search_google_books(title, author=None, api_key=None):
-    """Search Google Books for book metadata."""
+def search_google_books(title, author=None, api_key=None, lang=None):
+    """Search Google Books for book metadata.
+
+    Args:
+        title: Book title to search for
+        author: Optional author name
+        api_key: Optional Google API key for higher rate limits
+        lang: Optional ISO 639-1 language code to restrict results (e.g., 'de' for German)
+    """
     rate_limit_wait('googlebooks')
     try:
         import urllib.parse
@@ -979,6 +2685,9 @@ def search_google_books(title, author=None, api_key=None):
         url = f"https://www.googleapis.com/books/v1/volumes?q={urllib.parse.quote(query)}&maxResults=5"
         if api_key:
             url += f"&key={api_key}"
+        if lang and lang != 'en':
+            # langRestrict filters results to books in this language
+            url += f"&langRestrict={lang}"
 
         resp = requests.get(url, timeout=10)
         if resp.status_code != 200:
@@ -1032,8 +2741,26 @@ def search_google_books(title, author=None, api_key=None):
         logger.debug(f"Google Books search failed: {e}")
         return None
 
-def search_audnexus(title, author=None):
-    """Search Audnexus API for audiobook metadata. Pulls from Audible."""
+def search_audnexus(title, author=None, region=None):
+    """Search Audnexus API for audiobook metadata. Pulls from Audible.
+
+    Audnexus is a community-maintained API that provides Audible metadata.
+    It's useful for narrator info and audiobook-specific details but can
+    be slow or unavailable at times. Circuit breaker skips it temporarily
+    after repeated timeouts.
+
+    Args:
+        title: Book title to search for
+        author: Optional author name
+        region: Optional Audible region code (us, de, fr, it, es, jp, etc.)
+    """
+    # Circuit breaker: skip if API has been failing
+    cb = API_CIRCUIT_BREAKER.get('audnexus', {})
+    if cb.get('circuit_open_until', 0) > time.time():
+        remaining = int(cb['circuit_open_until'] - time.time())
+        logger.debug(f"Audnexus: Circuit open, skipping ({remaining}s remaining)")
+        return None
+
     rate_limit_wait('audnexus')
     try:
         import urllib.parse
@@ -1043,31 +2770,72 @@ def search_audnexus(title, author=None):
             query = f"{title} {author}"
 
         url = f"https://api.audnex.us/books?title={urllib.parse.quote(query)}"
+        # Add region parameter for localized results
+        if region and region != 'us':
+            url += f"&region={region}"
 
+        logger.debug(f"Audnexus: Searching for '{query}'")
         resp = requests.get(url, timeout=10, headers={'Accept': 'application/json'})
+
+        # Success - reset circuit breaker
+        if 'audnexus' in API_CIRCUIT_BREAKER:
+            API_CIRCUIT_BREAKER['audnexus']['failures'] = 0
+
         if resp.status_code != 200:
+            logger.debug(f"Audnexus: API returned status {resp.status_code}")
             return None
 
         data = resp.json()
         if not data or not isinstance(data, list) or len(data) == 0:
+            logger.debug(f"Audnexus: No results for '{query}'")
             return None
 
         # Get best match
         best = data[0]
+
+        # Extract series info - Audnexus returns series as object or seriesName/seriesPosition fields
+        series_name = None
+        series_num = None
+        if best.get('series'):
+            # Series can be an object with name field
+            if isinstance(best['series'], dict):
+                series_name = best['series'].get('name')
+                series_num = best['series'].get('position')
+            elif isinstance(best['series'], str):
+                series_name = best['series']
+        # Also check flat fields (some Audnexus responses use these)
+        if not series_name:
+            series_name = best.get('seriesName') or best.get('series_name')
+        if not series_num:
+            series_num = best.get('seriesPosition') or best.get('series_position')
+
         result = {
             'title': best.get('title', ''),
             'author': best.get('authors', [{}])[0].get('name', '') if best.get('authors') else '',
             'year': best.get('releaseDate', '')[:4] if best.get('releaseDate') else None,
             'narrator': best.get('narrators', [{}])[0].get('name', '') if best.get('narrators') else None,
+            'series': series_name,
+            'series_num': series_num,
             'source': 'audnexus'
         }
 
         if result['title'] and result['author']:
             logger.info(f"Audnexus found: {result['author']} - {result['title']}")
             return result
+        logger.debug(f"Audnexus: Result missing title or author for '{query}'")
+        return None
+    except requests.exceptions.Timeout:
+        # Timeout - increment circuit breaker
+        if 'audnexus' in API_CIRCUIT_BREAKER:
+            cb = API_CIRCUIT_BREAKER['audnexus']
+            cb['failures'] = cb.get('failures', 0) + 1
+            if cb['failures'] >= cb.get('max_failures', 3):
+                cb['circuit_open_until'] = time.time() + cb.get('cooldown', 300)
+                logger.warning(f"Audnexus: Circuit OPEN after {cb['failures']} timeouts, skipping for {cb['cooldown']}s")
+        logger.warning(f"Audnexus search timed out for '{title}'")
         return None
     except Exception as e:
-        logger.debug(f"Audnexus search failed: {e}")
+        logger.warning(f"Audnexus search failed for '{title}': {e}")
         return None
 
 def search_hardcover(title, author=None):
@@ -1080,7 +2848,7 @@ def search_hardcover(title, author=None):
         if author:
             query = f"{title} {author}"
 
-        # Hardcover uses GraphQL
+        # Hardcover uses GraphQL - request series info too
         graphql_query = {
             "query": """
                 query SearchBooks($query: String!) {
@@ -1089,6 +2857,7 @@ def search_hardcover(title, author=None):
                             title
                             contributions { author { name } }
                             releaseYear
+                            series { name position }
                         }
                     }
                 }
@@ -1116,10 +2885,17 @@ def search_hardcover(title, author=None):
         contributions = best.get('contributions', [])
         author_name = contributions[0].get('author', {}).get('name', '') if contributions else ''
 
+        # Extract series info from Hardcover response
+        series_info = best.get('series', {}) or {}
+        series_name = series_info.get('name') if isinstance(series_info, dict) else None
+        series_num = series_info.get('position') if isinstance(series_info, dict) else None
+
         result = {
             'title': best.get('title', ''),
             'author': author_name,
             'year': best.get('releaseYear'),
+            'series': series_name,
+            'series_num': series_num,
             'source': 'hardcover'
         }
 
@@ -1130,6 +2906,109 @@ def search_hardcover(title, author=None):
     except Exception as e:
         logger.debug(f"Hardcover search failed: {e}")
         return None
+
+def standardize_initials(name):
+    """Issue #54: Normalize author initials to consistent "A. B." format.
+
+    Examples:
+        "James S A Corey" → "James S. A. Corey"
+        "James S.A. Corey" → "James S. A. Corey"
+        "J.R.R. Tolkien" → "J. R. R. Tolkien"
+        "JRR Tolkien" → "J. R. R. Tolkien"
+        "C.S. Lewis" → "C. S. Lewis"
+        "CS Lewis" → "C. S. Lewis"
+
+    Preserves:
+        - Full names: "Stephen King" (unchanged)
+        - Mc/Mac/O' prefixes: "Freida McFadden" (unchanged)
+    """
+    import re
+    if not name:
+        return name
+
+    words = name.split()
+    result = []
+
+    for word in words:
+        # Skip Mc/Mac/O' prefixes - these are part of surnames, not initials
+        if re.match(r'^(Mc|Mac|O\')', word, re.IGNORECASE):
+            result.append(word)
+            continue
+
+        # Check if this word is entirely uppercase letters (initials without periods)
+        # e.g., "JRR" → "J. R. R."
+        if re.match(r'^[A-Z]{2,}$', word):
+            # Split into individual letters with periods
+            expanded = '. '.join(list(word)) + '.'
+            result.append(expanded)
+            continue
+
+        # Check if this is initials with periods stuck together
+        # e.g., "J.R.R." → "J. R. R."
+        if re.match(r'^([A-Z]\.)+$', word):
+            # Add spaces after each period
+            expanded = ' '.join(word.split('.')[:-1]) + '.'
+            expanded = '. '.join(c for c in expanded.replace(' ', '') if c != '.') + '.'
+            result.append(expanded)
+            continue
+
+        # Check if this is a single letter (initial without period)
+        # e.g., "S" in "James S A Corey" → "S."
+        if re.match(r'^[A-Z]$', word):
+            result.append(word + '.')
+            continue
+
+        # Check if this is a single initial with period
+        # e.g., "S." - already correct
+        if re.match(r'^[A-Z]\.$', word):
+            result.append(word)
+            continue
+
+        # Regular word - keep as is
+        result.append(word)
+
+    return ' '.join(result)
+
+
+def clean_author_name(author, config=None):
+    """Issue #50: Strip junk suffixes from author names.
+
+    Handles Calibre-style folder names like 'Peter F. Hamilton Bibliography'
+    which should become just 'Peter F. Hamilton'.
+
+    If config is provided and standardize_author_initials is enabled,
+    also normalizes initials to "A. B." format (Issue #54).
+    """
+    import re
+    if not author:
+        return author
+
+    clean = author
+    # Common junk suffixes found in library folder names
+    junk_patterns = [
+        r'\s+bibliography\s*$',
+        r'\s+collection\s*$',
+        r'\s+anthology\s*$',
+        r'\s+complete\s+works\s*$',
+        r'\s+selected\s+works\s*$',
+        r'\s+best\s+of\s*$',
+        r'\s+works\s+of\s*$',
+        r'\s+omnibus\s*$',
+    ]
+    for pattern in junk_patterns:
+        clean = re.sub(pattern, '', clean, flags=re.IGNORECASE)
+
+    # Also strip Calibre-style IDs from author names: "Author Name (123)"
+    clean = re.sub(r'\s*\(\d+\)\s*$', '', clean)
+
+    clean = clean.strip()
+
+    # Issue #54: Standardize initials if enabled
+    if config and config.get('standardize_author_initials', False):
+        clean = standardize_initials(clean)
+
+    return clean
+
 
 def extract_author_title(messy_name):
     """Try to extract author and title from a folder name like 'Author - Title' or 'Author/Title'."""
@@ -1144,8 +3023,13 @@ def extract_author_title(messy_name):
             if len(parts) == 2:
                 author = parts[0].strip()
                 title = parts[1].strip()
-                # Basic validation - author shouldn't be too long or look like a title
-                if len(author) < 50 and not re.search(r'\d{4}|book|vol|part|\[', author, re.I):
+                # Basic validation - author shouldn't be too long or look like a title/series
+                # Merijeek: "The Gentleman Bastard Sequence #3" was treated as author
+                # Check for series indicators: #N, Book N, Series, Saga, Chronicles, etc.
+                series_patterns = r'\d{4}|book\s*\d|vol\s*\d|part\s*\d|\[|#\d+|series|saga|chronicles|trilogy|quartet'
+                if len(author) < 50 and not re.search(series_patterns, author, re.I):
+                    # Issue #50: Clean author name (strip Bibliography, Collection, etc.)
+                    author = clean_author_name(author)
                     return author, title
 
     # No separator found - just return the whole thing as title
@@ -1190,26 +3074,30 @@ def lookup_book_metadata(messy_name, config, folder_path=None):
             return None
         return result
 
+    # Get language preference settings
+    preferred_lang = config.get('preferred_language', 'en')
+    audible_region = get_audible_region_for_language(preferred_lang)
+
     # 0. Try BookDB first (our private metadata service with fuzzy matching)
-    bookdb_key = config.get('bookdb_api_key')
-    if bookdb_key:
-        result = validate_result(search_bookdb(clean_title, author=author_hint, api_key=bookdb_key), clean_title)
-        if result:
-            return result
+    # Use user's key if configured, otherwise fall back to public key
+    bookdb_key = config.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
+    result = validate_result(search_bookdb(clean_title, author=author_hint, api_key=bookdb_key), clean_title)
+    if result:
+        return result
 
     # 1. Try Audnexus (best for audiobooks, pulls from Audible)
-    result = validate_result(search_audnexus(clean_title, author=author_hint), clean_title)
+    result = validate_result(search_audnexus(clean_title, author=author_hint, region=audible_region), clean_title)
     if result:
         return result
 
     # 2. Try OpenLibrary (free, huge database)
-    result = validate_result(search_openlibrary(clean_title, author=author_hint), clean_title)
+    result = validate_result(search_openlibrary(clean_title, author=author_hint, lang=preferred_lang), clean_title)
     if result:
         return result
 
     # 3. Try Google Books
     google_key = config.get('google_books_api_key')
-    result = validate_result(search_google_books(clean_title, author=author_hint, api_key=google_key), clean_title)
+    result = validate_result(search_google_books(clean_title, author=author_hint, api_key=google_key, lang=preferred_lang), clean_title)
     if result:
         return result
 
@@ -1226,7 +3114,7 @@ def gather_all_api_candidates(title, author=None, config=None):
     """
     Search ALL APIs and return ALL results (not just the first match).
     This is used for verification when we need multiple perspectives.
-    Now with garbage match filtering.
+    Now with garbage match filtering and language preference support.
     """
     candidates = []
     clean_title = clean_search_title(title)
@@ -1234,12 +3122,17 @@ def gather_all_api_candidates(title, author=None, config=None):
     if not clean_title or len(clean_title) < 3:
         return candidates
 
+    # Get language preference settings
+    preferred_lang = config.get('preferred_language', 'en') if config else 'en'
+    audible_region = get_audible_region_for_language(preferred_lang)
+
     # Search each API and collect all results
+    bookdb_url = config.get('bookdb_url') if config else None
     apis = [
-        ('BookDB', lambda t, a: search_bookdb(t, a, config.get('bookdb_api_key') if config else None)),
-        ('Audnexus', search_audnexus),
-        ('OpenLibrary', search_openlibrary),
-        ('GoogleBooks', lambda t, a: search_google_books(t, a, config.get('google_books_api_key') if config else None)),
+        ('BookDB', lambda t, a: search_bookdb(t, a, (config.get('bookdb_api_key') if config else None) or BOOKDB_PUBLIC_KEY, bookdb_url=bookdb_url)),
+        ('Audnexus', lambda t, a: search_audnexus(t, a, region=audible_region)),
+        ('OpenLibrary', lambda t, a: search_openlibrary(t, a, lang=preferred_lang)),
+        ('GoogleBooks', lambda t, a: search_google_books(t, a, config.get('google_books_api_key') if config else None, lang=preferred_lang)),
         ('Hardcover', search_hardcover),
     ]
 
@@ -1251,10 +3144,13 @@ def gather_all_api_candidates(title, author=None, config=None):
                 # Filter garbage matches
                 suggested_title = result.get('title', '')
                 if is_garbage_match(clean_title, suggested_title):
-                    logger.debug(f"REJECTED garbage from {api_name}: '{clean_title}' -> '{suggested_title}'")
+                    logger.info(f"[LAYER 1] REJECTED garbage from {api_name}: '{clean_title}' -> '{suggested_title}'")
                 else:
+                    # Ensure source attribution for Book Profile system
+                    result['source'] = api_name.lower()
                     result['search_query'] = f"{author} - {clean_title}" if author else clean_title
                     candidates.append(result)
+                    logger.info(f"[LAYER 1] {api_name} matched: {result.get('author')} - {result.get('title')}")
 
             # Also search without author (might find different results)
             if author:
@@ -1264,6 +3160,8 @@ def gather_all_api_candidates(title, author=None, config=None):
                     if is_garbage_match(clean_title, suggested_title):
                         logger.debug(f"REJECTED garbage from {api_name}: '{clean_title}' -> '{suggested_title}'")
                     elif result_no_author.get('author') != (result.get('author') if result else None):
+                        # Ensure source attribution for Book Profile system
+                        result_no_author['source'] = api_name.lower()
                         result_no_author['search_query'] = clean_title
                         candidates.append(result_no_author)
         except Exception as e:
@@ -1322,14 +3220,22 @@ Analyze whether the proposed change is CORRECT or WRONG. Consider:
    - "Mr. Murder" and "Dean Koontz's Frankenstein" = WRONG (0% match!)
    - "Midnight Texas 3" and "Night Shift" = CORRECT if Night Shift is book 3 of Midnight Texas
 
-2. AUTHOR MATCHING: Does the original author name match or partially match any candidate?
+2. RECOGNIZE FAMOUS BOOKS: Some titles are so famous they have a KNOWN author:
+   - "Le Petit Prince" / "The Little Prince" = Antoine de Saint-Exupéry (ALWAYS)
+   - "Преступление и наказание" / "Crime and Punishment" = Fyodor Dostoevsky (ALWAYS)
+   - "الحب في زمن الكوليرا" / "Love in the Time of Cholera" = Gabriel García Márquez (ALWAYS)
+   - "1984" = George Orwell (ALWAYS)
+   - "Don Quixote" / "Don Quijote" = Miguel de Cervantes (ALWAYS)
+   - "War and Peace" / "Война и мир" = Leo Tolstoy (ALWAYS)
+   - If the input says "Stephen King - الحب في زمن الكوليرا", this is WRONG - return Gabriel García Márquez.
+   - Return the CORRECT author for famous works, ignoring the wrong input author.
+
+3. AUTHOR MATCHING for non-famous works: Does the original author name match or partially match any candidate?
    - "Boyett" matches "Steven Boyett" (same person, use full name)
    - "Boyett" does NOT match "John Dickson Carr" (different person!)
    - "A.C. Crispin" matches "A. C. Crispin" or "Ann C. Crispin" (same person)
 
-3. TRUST THE INPUT: If original has a real author name, KEEP that author unless clearly wrong.
-
-4. FIND THE BEST MATCH: Pick the candidate whose author MATCHES or EXTENDS the original.
+4. FIND THE BEST MATCH: Pick the candidate that is the CORRECT book with the CORRECT author.
 
 RESPOND WITH JSON ONLY:
 {{
@@ -1343,10 +3249,11 @@ RESPOND WITH JSON ONLY:
 DECISION RULES:
 - If titles are completely different books = WRONG (don't just keyword match!)
 - If original author matches a candidate (like Boyett -> Steven Boyett) = CORRECT
-- If proposed author is completely different person AND same title = WRONG
+- For FAMOUS books (Le Petit Prince, Crime and Punishment, etc.): Return the REAL author, even if original is different
+- If proposed author is completely different person AND title doesn't match = WRONG
 - If uncertain = UNCERTAIN
 
-When in doubt, say WRONG. It's better to leave a book unfixed than to rename it to the wrong thing."""
+IMPORTANT: For famous/classic works, CORRECT the author to the real author. "James Patterson - Le Petit Prince" should become "Antoine de Saint-Exupéry - Le Petit Prince"."""
 
 
 def verify_drastic_change(original_input, original_author, original_title, proposed_author, proposed_title, config):
@@ -1374,21 +3281,12 @@ def verify_drastic_change(original_input, original_author, original_title, propo
         proposed_author, proposed_title, candidates
     )
 
-    # Call AI for verification
-    provider = config.get('ai_provider', 'openrouter')
+    # Call AI for verification using the provider chain
     try:
-        if provider == 'gemini' and config.get('gemini_api_key'):
-            verification = call_gemini(prompt, config)  # Already returns parsed dict
-        elif config.get('openrouter_api_key'):
-            verification = call_openrouter(prompt, config)  # Already returns parsed dict
-        else:
-            logger.error("No API key for verification!")
-            return None
-
+        verification = call_text_provider_chain(prompt, config)
         if not verification:
+            logger.error("No AI providers available for verification!")
             return None
-
-        # Result is already parsed by call_gemini/call_openrouter
 
         decision = verification.get('decision', 'UNCERTAIN')
         confidence = verification.get('confidence', 'LOW')
@@ -1414,20 +3312,58 @@ def verify_drastic_change(original_input, original_author, original_title, propo
 def build_prompt(messy_names, api_results=None):
     """Build the parsing prompt for AI, including any API lookup results."""
     items = []
+    narrator_warnings = []
     for i, name in enumerate(messy_names):
         item_text = f"ITEM_{i+1}: {name}"
+
+        # Check if the "author" part is actually a known narrator
+        # Parse author from "Author - Title" or "Author / Title" format
+        author_part = None
+        if ' - ' in name:
+            author_part = name.split(' - ')[0].strip()
+        elif ' / ' in name:
+            author_part = name.split(' / ')[0].strip()
+
+        if author_part:
+            narrator_check = check_if_narrator(author_part)
+            if narrator_check.get('is_narrator'):
+                item_text += f"\n  ⚠️ WARNING: '{author_part}' is a NARRATOR, not an author! Find the real author."
+                narrator_warnings.append(author_part)
+
         # Add API lookup result if available
         if api_results and i < len(api_results) and api_results[i]:
             result = api_results[i]
-            item_text += f"\n  -> API found: {result['author']} - {result['title']} (from {result['source']})"
+            series_info = ""
+            if result.get('series'):
+                series_info = f" [{result['series']}"
+                if result.get('series_num'):
+                    series_info += f" #{result['series_num']}"
+                series_info += "]"
+            item_text += f"\n  -> API found: {result['author']} - {result['title']}{series_info} (from {result['source']})"
         items.append(item_text)
     names_list = "\n".join(items)
+
+    # Add narrator warning section if any were found
+    narrator_section = ""
+    if narrator_warnings:
+        narrator_section = f"""
+NARRATOR WARNING - CRITICAL:
+The following names are KNOWN AUDIOBOOK NARRATORS, NOT AUTHORS:
+{', '.join(set(narrator_warnings))}
+
+These people READ books, they don't WRITE them. You MUST find the actual author.
+Examples:
+- Tim Gerard Reynolds narrates "Ready Player One" but Ernest Cline WROTE it
+- Scott Brick narrates many thrillers but is NOT the author
+- Ray Porter narrates "The Martian" but Andy Weir WROTE it
+DO NOT return a narrator as the author!
+"""
 
     return f"""You are a book metadata expert. For each filename, identify the REAL author and title.
 
 {names_list}
-
-MOST IMPORTANT RULE - TRUST THE EXISTING AUTHOR:
+{narrator_section}
+IMPORTANT RULE - TRUST THE EXISTING AUTHOR (with exceptions):
 If the input is already in "Author / Title" or "Author - Title" format with a human name as author:
 - KEEP THAT AUTHOR unless you're 100% certain it's wrong
 - Many books have the SAME TITLE by DIFFERENT AUTHORS
@@ -1436,9 +3372,16 @@ If the input is already in "Author / Title" or "Author - Title" format with a hu
 - If API returns a DIFFERENT AUTHOR for the same title, TRUST THE INPUT AUTHOR
 
 WHEN TO CHANGE THE AUTHOR:
-- Only if the "author" in input is clearly NOT an author name (e.g., "Bastards Series", "Unknown", "Various")
-- Only if the author/title are swapped (e.g., "Mistborn / Brandon Sanderson" -> swap them)
-- Only if it's clearly gibberish
+- If the "author" is marked as a NARRATOR above - these are readers, not writers!
+- If the "author" in input is clearly NOT an author name (e.g., "Bastards Series", "Unknown", "Various")
+- If the author/title are swapped (e.g., "Mistborn / Brandon Sanderson" -> swap them)
+- If it's clearly gibberish
+- **FOR FAMOUS/CLASSIC WORKS:** Return the CORRECT author even if input is wrong:
+  - "Le Petit Prince" / "The Little Prince" = Antoine de Saint-Exupéry (ALWAYS)
+  - "Преступление и наказание" / "Crime and Punishment" = Fyodor Dostoevsky (ALWAYS)
+  - "الحب في زمن الكوليرا" / "Love in the Time of Cholera" = Gabriel García Márquez (ALWAYS)
+  - "1984" = George Orwell, "Don Quixote" = Miguel de Cervantes, "War and Peace" = Leo Tolstoy
+  - If input says "Stephen King - الحب في زمن الكوليرا", output "Gabriel García Márquez - Love in the Time of Cholera"
 
 WHEN TO KEEP THE AUTHOR:
 - Input: "Boyett/The Hollow Man" -> Keep author "Boyett" (Steven Boyett wrote this book!)
@@ -1517,15 +3460,43 @@ Return JSON array. Each object MUST have "item" matching the ITEM_N label:
 Return ONLY the JSON array, nothing else."""
 
 def parse_json_response(text):
-    """Extract JSON from AI response."""
+    """Extract JSON from AI response - handles various AI response formats."""
     text = text.strip()
+
+    # Remove markdown code blocks
     if text.startswith("```json"):
         text = text[7:]
     if text.startswith("```"):
         text = text[3:]
     if text.endswith("```"):
         text = text[:-3]
-    return json.loads(text.strip())
+    text = text.strip()
+
+    # Try direct parse first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Extract first JSON object using regex (handles extra text before/after)
+    json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL)
+    if json_match:
+        try:
+            return json.loads(json_match.group())
+        except json.JSONDecodeError:
+            pass
+
+    # Try extracting JSON array
+    array_match = re.search(r'\[.*?\]', text, re.DOTALL)
+    if array_match:
+        try:
+            return json.loads(array_match.group())
+        except json.JSONDecodeError:
+            pass
+
+    # Log failure for debugging
+    logger.error(f"Failed to parse JSON from AI response: {text[:200]}...")
+    return None
 
 def call_ai(messy_names, config):
     """Call AI API to parse book names, with API lookups for context."""
@@ -1539,16 +3510,9 @@ def call_ai(messy_names, config):
 
     # Build prompt with API results included
     prompt = build_prompt(messy_names, api_results)
-    provider = config.get('ai_provider', 'openrouter')
 
-    # Use selected provider
-    if provider == 'gemini' and config.get('gemini_api_key'):
-        return call_gemini(prompt, config)
-    elif config.get('openrouter_api_key'):
-        return call_openrouter(prompt, config)
-    else:
-        logger.error("No API key configured!")
-        return None
+    # Use the provider chain for fallback support
+    return call_text_provider_chain(prompt, config)
 
 
 def explain_http_error(status_code, provider):
@@ -1567,7 +3531,15 @@ def explain_http_error(status_code, provider):
 
 
 def call_openrouter(prompt, config):
-    """Call OpenRouter API."""
+    """Call OpenRouter API with circuit breaker for daily limits."""
+    # Check circuit breaker - skip if we've hit daily limits
+    cb = API_CIRCUIT_BREAKER.get('openrouter', {})
+    if cb.get('circuit_open_until', 0) > time.time():
+        remaining = int(cb['circuit_open_until'] - time.time())
+        logger.debug(f"OpenRouter: Circuit OPEN, skipping (cooldown: {remaining}s remaining)")
+        return None
+
+    rate_limit_wait('openrouter')  # Respect free tier limits
     try:
         resp = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
@@ -1578,7 +3550,7 @@ def call_openrouter(prompt, config):
                 "X-Title": "Library Metadata Manager"
             },
             json={
-                "model": config.get('openrouter_model', 'google/gemma-3n-e4b-it:free'),
+                "model": config.get('openrouter_model', 'xiaomi/mimo-v2-flash:free'),
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1
             },
@@ -1586,10 +3558,36 @@ def call_openrouter(prompt, config):
         )
 
         if resp.status_code == 200:
+            # Reset circuit breaker on success
+            if 'openrouter' in API_CIRCUIT_BREAKER:
+                API_CIRCUIT_BREAKER['openrouter']['failures'] = 0
             result = resp.json()
             text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
             if text:
-                return parse_json_response(text)
+                # Issue #57: Log AI response for debugging hallucinations
+                logger.debug(f"OpenRouter raw response: {text[:500]}{'...' if len(text) > 500 else ''}")
+                parsed = parse_json_response(text)
+                if parsed:
+                    # Log the parsed author/title for traceability
+                    if isinstance(parsed, list):
+                        for item in parsed[:3]:  # Log first 3 items
+                            logger.info(f"OpenRouter parsed: {item.get('author', '?')} - {item.get('title', '?')}")
+                    elif isinstance(parsed, dict):
+                        logger.info(f"OpenRouter parsed: {parsed.get('author', parsed.get('recommended_author', '?'))} - {parsed.get('title', parsed.get('recommended_title', '?'))}")
+                return parsed
+        elif resp.status_code == 429:
+            # Rate limit - check if it's daily limit
+            try:
+                detail = resp.json().get('error', {}).get('message', '')
+                if 'free-models-per-day' in detail.lower() or 'daily' in detail.lower():
+                    # Daily limit hit - open circuit breaker for 1 hour
+                    logger.warning(f"OpenRouter: Daily limit reached, backing off for 1 hour")
+                    API_CIRCUIT_BREAKER['openrouter']['failures'] = cb.get('max_failures', 2)
+                    API_CIRCUIT_BREAKER['openrouter']['circuit_open_until'] = time.time() + cb.get('cooldown', 3600)
+                else:
+                    logger.warning(f"OpenRouter: Rate limited - {detail}")
+            except:
+                logger.warning("OpenRouter: Rate limited")
         else:
             error_msg = explain_http_error(resp.status_code, "OpenRouter")
             logger.warning(f"OpenRouter: {error_msg}")
@@ -1602,15 +3600,26 @@ def call_openrouter(prompt, config):
                 pass
     except requests.exceptions.Timeout:
         logger.error("OpenRouter: Request timed out after 90 seconds")
+        report_anonymous_error("OpenRouter timeout after 90 seconds", context="openrouter_api")
     except requests.exceptions.ConnectionError:
         logger.error("OpenRouter: Connection failed - check your internet")
+        report_anonymous_error("OpenRouter connection failed", context="openrouter_api")
     except Exception as e:
         logger.error(f"OpenRouter: {e}")
+        report_anonymous_error(f"OpenRouter error: {e}", context="openrouter_api")
     return None
 
 
 def call_gemini(prompt, config, retry_count=0):
     """Call Google Gemini API directly with automatic retry on rate limit."""
+    # Check circuit breaker
+    if is_circuit_open('gemini'):
+        logger.debug("[GEMINI] Circuit breaker open, skipping")
+        return None
+
+    # Respect rate limits (10 RPM free tier as of Jan 2026)
+    rate_limit_wait('gemini')
+
     try:
         api_key = config.get('gemini_api_key')
         model = config.get('gemini_model', 'gemini-2.0-flash')
@@ -1629,7 +3638,17 @@ def call_gemini(prompt, config, retry_count=0):
             result = resp.json()
             text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
             if text:
-                return parse_json_response(text)
+                # Issue #57: Log AI response for debugging hallucinations
+                logger.debug(f"Gemini raw response: {text[:500]}{'...' if len(text) > 500 else ''}")
+                parsed = parse_json_response(text)
+                if parsed:
+                    # Log the parsed author/title for traceability
+                    if isinstance(parsed, list):
+                        for item in parsed[:3]:  # Log first 3 items
+                            logger.info(f"Gemini parsed: {item.get('author', '?')} - {item.get('title', '?')}")
+                    elif isinstance(parsed, dict):
+                        logger.info(f"Gemini parsed: {parsed.get('author', parsed.get('recommended_author', '?'))} - {parsed.get('title', parsed.get('recommended_title', '?'))}")
+                return parsed
         elif resp.status_code == 429 and retry_count < 3:
             # Rate limit - parse retry time and wait
             error_msg = explain_http_error(resp.status_code, "Gemini")
@@ -1638,6 +3657,12 @@ def call_gemini(prompt, config, retry_count=0):
                 detail = resp.json().get('error', {}).get('message', '')
                 if detail:
                     logger.warning(f"Gemini detail: {detail}")
+                    # Check if this is a daily quota exceeded (not just per-minute rate limit)
+                    if 'quota' in detail.lower() and ('limit: 0' in detail or 'exceeded' in detail.lower()):
+                        logger.warning("[GEMINI] Daily quota exhausted - tripping circuit breaker")
+                        record_api_failure('gemini')
+                        record_api_failure('gemini')  # Trip immediately
+                        return None
                     # Try to parse "Please retry in X.XXXs" from message
                     import re
                     match = re.search(r'retry in (\d+\.?\d*)s', detail)
@@ -1664,11 +3689,881 @@ def call_gemini(prompt, config, retry_count=0):
                 pass
     except requests.exceptions.Timeout:
         logger.error("Gemini: Request timed out after 90 seconds")
+        report_anonymous_error("Gemini timeout after 90 seconds", context="gemini_api")
     except requests.exceptions.ConnectionError:
         logger.error("Gemini: Connection failed - check your internet")
+        report_anonymous_error("Gemini connection failed", context="gemini_api")
     except Exception as e:
         logger.error(f"Gemini: {e}")
+        report_anonymous_error(f"Gemini error: {e}", context="gemini_api")
     return None
+
+
+def call_ollama(prompt, config):
+    """Call local Ollama API for fully self-hosted AI."""
+    try:
+        ollama_url = config.get('ollama_url', 'http://localhost:11434')
+        model = config.get('ollama_model', 'llama3.2:3b')
+
+        # Ollama's generate endpoint
+        resp = requests.post(
+            f"{ollama_url}/api/generate",
+            json={
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.1
+                }
+            },
+            timeout=120  # Local models can be slower, especially on first load
+        )
+
+        if resp.status_code == 200:
+            result = resp.json()
+            text = result.get('response', '')
+            if text:
+                return parse_json_response(text)
+        elif resp.status_code == 404:
+            logger.error(f"Ollama: Model '{model}' not found. Run: ollama pull {model}")
+        else:
+            error_msg = explain_http_error(resp.status_code, "Ollama")
+            logger.warning(f"Ollama: {error_msg}")
+            try:
+                detail = resp.json().get('error', '')
+                if detail:
+                    logger.warning(f"Ollama detail: {detail}")
+            except:
+                pass
+    except requests.exceptions.Timeout:
+        logger.error("Ollama: Request timed out after 120 seconds - model may still be loading")
+        report_anonymous_error("Ollama timeout after 120 seconds", context="ollama_api")
+    except requests.exceptions.ConnectionError:
+        logger.error(f"Ollama: Connection failed - is Ollama running at {config.get('ollama_url', 'http://localhost:11434')}?")
+        report_anonymous_error("Ollama connection failed", context="ollama_api")
+    except Exception as e:
+        logger.error(f"Ollama: {e}")
+        report_anonymous_error(f"Ollama error: {e}", context="ollama_api")
+    return None
+
+
+def get_ollama_models(config):
+    """Fetch list of available models from Ollama server."""
+    try:
+        ollama_url = config.get('ollama_url', 'http://localhost:11434')
+        resp = requests.get(f"{ollama_url}/api/tags", timeout=10)
+        if resp.status_code == 200:
+            models = resp.json().get('models', [])
+            return [m.get('name', '') for m in models if m.get('name')]
+        return []
+    except:
+        return []
+
+
+def test_ollama_connection(config):
+    """Test connection to Ollama server."""
+    try:
+        ollama_url = config.get('ollama_url', 'http://localhost:11434')
+        resp = requests.get(f"{ollama_url}/api/tags", timeout=10)
+        if resp.status_code == 200:
+            models = resp.json().get('models', [])
+            return {
+                'success': True,
+                'models': [m.get('name', '') for m in models],
+                'model_count': len(models)
+            }
+        return {'success': False, 'error': f'HTTP {resp.status_code}'}
+    except requests.exceptions.ConnectionError:
+        return {'success': False, 'error': f'Cannot connect to {ollama_url}'}
+    except requests.exceptions.Timeout:
+        return {'success': False, 'error': 'Connection timed out'}
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
+
+
+# ============== PROVIDER CHAIN SYSTEM ==============
+# Configurable fallback chains for audio and text identification
+
+def call_text_provider_chain(prompt, config):
+    """
+    Call AI providers in configured order until one succeeds.
+
+    Uses config['text_provider_chain'] to determine order.
+    Default: ["gemini", "openrouter"]
+    Available: "gemini", "openrouter", "ollama"
+
+    Returns parsed response or None if all providers fail.
+    """
+    chain = config.get('text_provider_chain', ['gemini', 'openrouter'])
+    secrets = load_secrets()
+
+    # Merge secrets into config for provider calls
+    merged_config = {**config, **secrets}
+
+    for provider in chain:
+        provider = provider.lower().strip()
+        logger.debug(f"[PROVIDER CHAIN] Trying text provider: {provider}")
+
+        try:
+            if provider == 'gemini':
+                if not merged_config.get('gemini_api_key'):
+                    logger.debug("[PROVIDER CHAIN] Skipping gemini - no API key")
+                    continue
+                result = call_gemini(prompt, merged_config)
+                if result:
+                    logger.info(f"[PROVIDER CHAIN] Success with gemini")
+                    return result
+
+            elif provider == 'openrouter':
+                if not merged_config.get('openrouter_api_key'):
+                    logger.debug("[PROVIDER CHAIN] Skipping openrouter - no API key")
+                    continue
+                result = call_openrouter(prompt, merged_config)
+                if result:
+                    logger.info(f"[PROVIDER CHAIN] Success with openrouter")
+                    return result
+
+            elif provider == 'ollama':
+                result = call_ollama(prompt, merged_config)
+                if result:
+                    logger.info(f"[PROVIDER CHAIN] Success with ollama")
+                    return result
+
+            else:
+                logger.warning(f"[PROVIDER CHAIN] Unknown text provider: {provider}")
+
+        except Exception as e:
+            logger.warning(f"[PROVIDER CHAIN] {provider} failed with error: {e}")
+            continue
+
+    logger.warning("[PROVIDER CHAIN] All text providers failed")
+    return None
+
+
+def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
+    """
+    Call audio identification providers in configured order until one succeeds.
+
+    Uses config['audio_provider_chain'] to determine order.
+    Default: ["bookdb", "gemini"]
+    Available: "bookdb", "gemini", "openrouter", "ollama"
+
+    Note: openrouter and ollama require transcription first (slower).
+
+    Args:
+        audio_file: Path to audio file to analyze
+        config: App config
+        mode: 'credits' for opening credits, 'identify' for any chapter
+        duration: Seconds of audio to analyze
+
+    Returns dict with author, title, etc. or None if all providers fail.
+    """
+    chain = config.get('audio_provider_chain', ['bookdb', 'gemini'])
+    secrets = load_secrets()
+    merged_config = {**config, **secrets}
+
+    for provider in chain:
+        provider = provider.lower().strip()
+        logger.info(f"[AUDIO CHAIN] Trying audio provider: {provider}")
+
+        try:
+            if provider == 'bookdb':
+                # BookDB has GPU Whisper - best option
+                result = identify_audio_with_bookdb(audio_file)
+                if result and result.get('title'):
+                    logger.info(f"[AUDIO CHAIN] Success with bookdb: {result.get('author')} - {result.get('title')}")
+                    return result
+
+            elif provider == 'gemini':
+                if not merged_config.get('gemini_api_key'):
+                    logger.debug("[AUDIO CHAIN] Skipping gemini - no API key")
+                    continue
+                # Gemini can directly analyze audio
+                result = analyze_audio_with_gemini(audio_file, merged_config, duration=duration, mode=mode)
+                if result and (result.get('title') or result.get('author')):
+                    logger.info(f"[AUDIO CHAIN] Success with gemini: {result.get('author')} - {result.get('title')}")
+                    return result
+
+            elif provider == 'openrouter':
+                if not merged_config.get('openrouter_api_key'):
+                    logger.debug("[AUDIO CHAIN] Skipping openrouter - no API key")
+                    continue
+                # OpenRouter needs transcription first - try local whisper or skip
+                transcript = transcribe_audio_local(audio_file, duration)
+                if transcript:
+                    result = identify_book_from_transcript(transcript, merged_config)
+                    if result and result.get('title'):
+                        logger.info(f"[AUDIO CHAIN] Success with openrouter: {result.get('author')} - {result.get('title')}")
+                        return result
+                else:
+                    logger.debug("[AUDIO CHAIN] openrouter - no transcript available")
+
+            elif provider == 'ollama':
+                # Ollama needs transcription first
+                transcript = transcribe_audio_local(audio_file, duration)
+                if transcript:
+                    # Build prompt for book identification
+                    prompt = f"""Based on this audiobook transcript excerpt, identify the book.
+
+Transcript:
+{transcript[:2000]}
+
+Return JSON with: author, title, narrator (if mentioned), series (if mentioned), confidence (high/medium/low)"""
+                    result = call_ollama(prompt, merged_config)
+                    if result and result.get('title'):
+                        logger.info(f"[AUDIO CHAIN] Success with ollama: {result.get('author')} - {result.get('title')}")
+                        return result
+                else:
+                    logger.debug("[AUDIO CHAIN] ollama - no transcript available")
+
+            else:
+                logger.warning(f"[AUDIO CHAIN] Unknown audio provider: {provider}")
+
+        except Exception as e:
+            logger.warning(f"[AUDIO CHAIN] {provider} failed with error: {e}")
+            continue
+
+    logger.warning("[AUDIO CHAIN] All audio providers failed")
+    return None
+
+
+def transcribe_audio_local(audio_file, duration=90):
+    """
+    Attempt local audio transcription using whisper.cpp or whisper Python.
+    Returns transcript text or None.
+    """
+    import subprocess
+    import tempfile
+
+    try:
+        # First extract a sample
+        sample_path = extract_audio_sample(audio_file, duration_seconds=duration)
+        if not sample_path:
+            return None
+
+        try:
+            # Try whisper.cpp (faster if installed)
+            whisper_cpp = shutil.which('whisper.cpp') or shutil.which('whisper-cpp')
+            if whisper_cpp:
+                result = subprocess.run(
+                    [whisper_cpp, '-f', sample_path, '-otxt', '-np'],
+                    capture_output=True, text=True, timeout=120
+                )
+                if result.returncode == 0:
+                    # Read the output text file
+                    txt_path = sample_path + '.txt'
+                    if os.path.exists(txt_path):
+                        with open(txt_path, 'r') as f:
+                            transcript = f.read().strip()
+                        os.unlink(txt_path)
+                        return transcript
+
+            # Try Python whisper (slower, requires pip install openai-whisper)
+            try:
+                import whisper
+                model = whisper.load_model("base")  # Small model for speed
+                result = model.transcribe(sample_path, fp16=False)
+                return result.get('text', '')
+            except ImportError:
+                logger.debug("Local whisper not available - install with: pip install openai-whisper")
+                return None
+
+        finally:
+            if os.path.exists(sample_path):
+                os.unlink(sample_path)
+
+    except Exception as e:
+        logger.debug(f"Local transcription failed: {e}")
+        return None
+
+
+def get_first_audio_file(folder_path):
+    """
+    Get the audio file that sorts first in a folder (usually contains credits).
+    Audiobook credits (title/author/narrator) are typically announced in the
+    first 30-60 seconds of the first file.
+    """
+    import glob
+
+    # Get all audio files
+    audio_extensions = ['*.mp3', '*.m4b', '*.m4a', '*.flac', '*.ogg', '*.opus']
+    audio_files = []
+    for ext in audio_extensions:
+        audio_files.extend(glob.glob(os.path.join(folder_path, ext)))
+        audio_files.extend(glob.glob(os.path.join(folder_path, ext.upper())))
+
+    if not audio_files:
+        return None
+
+    # Sort naturally (so "2" comes before "10")
+    def natural_sort_key(s):
+        import re
+        return [int(text) if text.isdigit() else text.lower()
+                for text in re.split('([0-9]+)', os.path.basename(s))]
+
+    audio_files.sort(key=natural_sort_key)
+    return audio_files[0]
+
+
+def analyze_audio_for_credits(folder_path, config):
+    """
+    Analyze the FIRST audio file in a folder for opening credits.
+    Audiobooks typically announce "Title by Author, read by Narrator"
+    in the first 30-45 seconds of the first file.
+
+    Uses the configured audio_provider_chain for fallback support.
+    This is optimized for organized audiobook folders.
+    """
+    first_file = get_first_audio_file(folder_path)
+    if not first_file:
+        logger.debug(f"No audio files found in {folder_path}")
+        return None
+
+    logger.info(f"[AUDIO] Analyzing first file for credits: {os.path.basename(first_file)}")
+
+    # Use the provider chain for audio identification with fallback support
+    return call_audio_provider_chain(first_file, config, mode='credits', duration=45)
+
+
+def analyze_orphan_audio_file(audio_file, config):
+    """
+    Analyze any audio file to identify what book it belongs to.
+    Used for misplaced files or deep organization scans.
+
+    Narrators often announce chapter numbers and sometimes book titles
+    at the start of each chapter, not just the first one.
+
+    Uses the configured audio_provider_chain for fallback support.
+    """
+    logger.info(f"[AUDIO] Analyzing orphan file: {os.path.basename(audio_file)}")
+    return call_audio_provider_chain(audio_file, config, mode='identify', duration=45)
+
+
+def extract_audio_sample_from_middle(audio_file, duration_seconds=60, output_format='mp3'):
+    """
+    Extract audio from the MIDDLE of the file (for content-based identification).
+    This avoids intro music/credits and gets actual story content.
+    Returns path to temp file or None on failure.
+    """
+    import subprocess
+    import tempfile
+
+    try:
+        # First, get the total duration of the file
+        probe_cmd = [
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            audio_file
+        ]
+        result = subprocess.run(probe_cmd, capture_output=True, timeout=30)
+        if result.returncode != 0:
+            return None
+
+        total_duration = float(result.stdout.decode().strip())
+
+        # Start at 10% into the file, or 5 minutes, whichever is less
+        # This skips intros, music, and credits
+        start_time = min(total_duration * 0.1, 300)  # 5 minutes max skip
+
+        # Make sure we have enough content left
+        if start_time + duration_seconds > total_duration:
+            start_time = max(0, total_duration - duration_seconds - 10)
+
+        # Create temp file for the sample
+        temp_file = tempfile.NamedTemporaryFile(suffix=f'.{output_format}', delete=False)
+        temp_path = temp_file.name
+        temp_file.close()
+
+        # Extract sample from middle
+        cmd = [
+            'ffmpeg', '-y',
+            '-ss', str(int(start_time)),  # Start time
+            '-i', audio_file,
+            '-t', str(duration_seconds),  # Duration
+            '-vn',  # No video
+            '-acodec', 'libmp3lame' if output_format == 'mp3' else 'aac',
+            '-b:a', '64k',
+            '-ar', '16000',
+            '-ac', '1',
+            temp_path
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, timeout=120)
+
+        if result.returncode == 0 and os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+            logger.debug(f"Extracted middle sample from {start_time:.0f}s into file")
+            return temp_path
+        else:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            return None
+
+    except Exception as e:
+        logger.debug(f"Middle extraction error: {e}")
+        return None
+
+
+# Global whisper model cache
+_whisper_model = None
+_whisper_model_name = None
+
+
+def get_whisper_model(model_name=None):
+    """Get or create cached faster-whisper model.
+
+    Model sizes and accuracy (WER = Word Error Rate, lower is better):
+    - tiny:    ~10% WER, 75MB,  fastest
+    - base:    ~7% WER,  150MB, fast
+    - small:   ~5% WER,  465MB, moderate
+    - medium:  ~4% WER,  1.5GB, slower
+    - large-v3: ~3% WER, 3GB,  slowest but most accurate
+
+    For audiobooks with studio quality audio, large-v3 is recommended.
+    """
+    global _whisper_model, _whisper_model_name
+
+    # Default to large-v3 for best accuracy - audiobooks deserve it
+    if model_name is None:
+        config = load_config()
+        model_name = config.get('whisper_model', 'large-v3')
+
+    if _whisper_model is not None and _whisper_model_name == model_name:
+        return _whisper_model
+
+    try:
+        from faster_whisper import WhisperModel
+        logger.info(f"[WHISPER] Loading faster-whisper model: {model_name}")
+
+        # Check if CUDA is available for faster processing
+        # Use ctranslate2's built-in detection (faster-whisper's backend)
+        device = "cpu"
+        compute_type = "int8"  # Works on both CPU and GPU
+
+        try:
+            import ctranslate2
+            if ctranslate2.get_cuda_device_count() > 0:
+                device = "cuda"
+                # int8 works on all CUDA devices including GTX 1080 (compute 6.1)
+                # float16 only works on newer GPUs (compute 7.0+)
+                logger.info(f"[WHISPER] Using CUDA GPU acceleration (10x faster)")
+            else:
+                logger.info(f"[WHISPER] Using CPU (no CUDA GPU detected)")
+        except ImportError:
+            logger.info(f"[WHISPER] Using CPU (ctranslate2 not available)")
+
+        _whisper_model = WhisperModel(model_name, device=device, compute_type=compute_type)
+        _whisper_model_name = model_name
+        logger.info(f"[WHISPER] Model loaded successfully: {model_name}")
+        return _whisper_model
+    except ImportError:
+        logger.debug("[WHISPER] faster-whisper not installed")
+        return None
+    except Exception as e:
+        logger.warning(f"[WHISPER] Failed to load whisper model: {e}")
+        return None
+
+
+def transcribe_with_whisper(audio_file, config):
+    """
+    Transcribe audio using local faster-whisper model.
+    Returns transcribed text or None on failure.
+    """
+    model_name = config.get('whisper_model', 'base')  # tiny, base, small, medium, large-v3
+    model = get_whisper_model(model_name)
+
+    if not model:
+        return None
+
+    try:
+        logger.debug(f"[LAYER 4] Transcribing with whisper: {audio_file}")
+        segments, info = model.transcribe(audio_file, beam_size=5)
+
+        # Collect all text
+        text_parts = []
+        for segment in segments:
+            text_parts.append(segment.text)
+
+        transcript = ' '.join(text_parts).strip()
+
+        if transcript:
+            logger.info(f"[LAYER 4] Whisper transcribed {len(transcript)} chars, language: {info.language}")
+            return transcript
+        else:
+            logger.warning("[LAYER 4] Whisper produced empty transcript")
+            return None
+
+    except Exception as e:
+        logger.warning(f"[LAYER 4] Whisper transcription failed: {e}")
+        return None
+
+
+def identify_ebook_from_filename(filename, folder_path, config):
+    """
+    Identify an ebook using filename parsing + BookDB search.
+    No AI needed - just smart regex and database lookup.
+
+    Flow:
+    1. Parse filename with regex to extract author/title guess
+    2. Use BookDB search to verify and enrich metadata
+    """
+    # Clean the filename for parsing
+    clean_name = os.path.splitext(filename)[0]
+    folder_name = os.path.basename(os.path.dirname(folder_path)) if folder_path else ''
+
+    # Skip garbage filenames that can't be parsed
+    if re.match(r'^[a-f0-9]{8,}$', clean_name, re.I):  # Hash filename
+        logger.debug(f"[EBOOK] Skipping hash filename: {clean_name}")
+        return None
+    if re.match(r'^ebook[_\s]*\d+$', clean_name, re.I):  # ebook_1234
+        logger.debug(f"[EBOOK] Skipping generic ebook filename: {clean_name}")
+        return None
+
+    author = None
+    title = None
+
+    # Try common patterns
+    # Pattern 1: "Author - Title" or "Author_-_Title"
+    match = re.match(r'^(.+?)\s*[-_]+\s*(.+)$', clean_name)
+    if match:
+        part1, part2 = match.groups()
+        # Guess which is author vs title (authors usually shorter, titles have more words)
+        if len(part1.split()) <= 3 and not re.search(r'\d{4}', part1):
+            author, title = part1.strip(), part2.strip()
+        else:
+            title, author = part1.strip(), part2.strip()
+
+    # Pattern 2: Use folder name as author if it looks like a name
+    if not author and folder_name:
+        if re.match(r'^[A-Z][a-z]+(\s+[A-Z][a-z]+)+$', folder_name):  # "First Last" format
+            author = folder_name
+            title = clean_name
+
+    # Pattern 3: Just use the clean filename as title
+    if not title:
+        title = clean_name
+
+    if not title:
+        return None
+
+    # Search BookDB for verification
+    try:
+        search_query = f"{author} {title}" if author else title
+        logger.debug(f"[EBOOK] Searching BookDB for: {search_query}")
+
+        resp = requests.get(
+            f"{BOOKDB_API_URL}/search",
+            params={'q': search_query[:100]},  # Limit query length
+            timeout=10
+        )
+
+        if resp.status_code == 200:
+            results = resp.json()
+            if results and len(results) > 0:
+                best = results[0]
+                # Check if it's a reasonable match
+                result_title = best.get('name', '')
+                result_author = best.get('author_name', '')
+
+                if result_title:
+                    logger.info(f"[EBOOK] BookDB found: {result_author} - {result_title}")
+                    return {
+                        'author': result_author or author,
+                        'title': result_title,
+                        'series': best.get('series_name'),
+                        'series_num': best.get('series_position'),
+                        'confidence': 'high' if result_author else 'medium',
+                        'source': 'bookdb'
+                    }
+    except Exception as e:
+        logger.debug(f"[EBOOK] BookDB search error: {e}")
+
+    # Return our best guess without BookDB confirmation
+    if author and title:
+        return {
+            'author': author,
+            'title': title,
+            'confidence': 'low',
+            'source': 'filename'
+        }
+
+    return None
+
+
+def identify_book_from_transcript(transcript, config):
+    """
+    Use OpenRouter to identify a book from transcribed text.
+    This is the fallback when Gemini audio API is unavailable.
+    """
+    api_key = config.get('openrouter_api_key')
+    if not api_key:
+        logger.warning("[LAYER 4] No OpenRouter API key for transcript identification")
+        return None
+
+    # Respect free tier rate limits (20 req/min + daily limits)
+    rate_limit_wait('openrouter')
+
+    # Use a capable free model for book identification
+    # Options: xiaomi/mimo-v2-flash:free (262K ctx), allenai/molmo-2-8b:free, mistralai/devstral-2512:free
+    model = config.get('layer4_openrouter_model', 'xiaomi/mimo-v2-flash:free')
+
+    prompt = f"""You are a literary expert. Based on this audiobook transcript excerpt, identify the book.
+
+TRANSCRIPT:
+"{transcript[:2000]}"
+
+Analyze:
+1. Character names mentioned
+2. Plot elements and events
+3. Writing style and genre markers
+4. Setting details
+5. Any unique phrases or dialogue
+
+Return ONLY valid JSON (no markdown):
+{{
+    "title": "identified book title (or best guess)",
+    "author": "identified author name (or best guess)",
+    "series": "series name if applicable, or null",
+    "series_num": "book number if known, or null",
+    "narrator": null,
+    "genre": "detected genre",
+    "confidence": "high/medium/low",
+    "reasoning": "brief explanation of how you identified the book"
+}}"""
+
+    try:
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/deucebucket/library-manager",
+                "X-Title": "Library Manager"
+            },
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2,
+                "max_tokens": 1024
+            },
+            timeout=60
+        )
+
+        if resp.status_code != 200:
+            logger.warning(f"[LAYER 4] OpenRouter failed: {resp.status_code} - {resp.text[:200]}")
+            return None
+
+        data = resp.json()
+        text = data['choices'][0]['message']['content']
+
+        # Parse JSON from response
+        json_match = re.search(r'\{[\s\S]*\}', text)
+        if json_match:
+            result = json.loads(json_match.group())
+
+            if result.get('title') and result.get('author'):
+                logger.info(f"[LAYER 4] OpenRouter identified: {result.get('author')}/{result.get('title')} "
+                           f"(confidence: {result.get('confidence')})")
+            return result
+        else:
+            logger.warning(f"[LAYER 4] No JSON in OpenRouter response: {text[:200]}")
+            return None
+
+    except Exception as e:
+        logger.warning(f"[LAYER 4] OpenRouter identification error: {e}")
+        return None
+
+
+def transcribe_and_identify_content(audio_file, config):
+    """
+    Layer 4: Content-based identification.
+
+    Primary: Gemini Audio API (transcription + identification in one call)
+    Fallback: faster-whisper (local transcription) + OpenRouter (identification)
+
+    This catches books that have no intro credits (e.g., Part 2 of multi-part files).
+    """
+    import base64
+
+    # Extract sample from middle of the book
+    logger.debug(f"[LAYER 4] Extracting middle sample from: {audio_file}")
+    sample_path = extract_audio_sample_from_middle(audio_file, duration_seconds=60)
+    if not sample_path:
+        logger.warning(f"[LAYER 4] Could not extract middle sample from {audio_file}")
+        return None
+
+    logger.debug(f"[LAYER 4] Extracted sample to: {sample_path}")
+    result = None
+
+    try:
+        # === ATTEMPT 1: Gemini Audio API ===
+        gemini_key = config.get('gemini_api_key')
+        if gemini_key:
+            result = _try_gemini_content_identification(sample_path, gemini_key)
+
+        # === ATTEMPT 2: Whisper + OpenRouter fallback ===
+        if result is None:
+            openrouter_key = config.get('openrouter_api_key')
+            if openrouter_key:
+                logger.info("[LAYER 4] Trying fallback: faster-whisper + OpenRouter")
+                transcript = transcribe_with_whisper(sample_path, config)
+                if transcript:
+                    result = identify_book_from_transcript(transcript, config)
+                else:
+                    logger.warning("[LAYER 4] Whisper transcription failed, no fallback available")
+
+    finally:
+        # Clean up temp file
+        if sample_path and os.path.exists(sample_path):
+            try:
+                os.unlink(sample_path)
+            except:
+                pass
+
+    return result
+
+
+def _try_gemini_content_identification(sample_path, api_key):
+    """Try Gemini Audio API for content identification. Returns result or None."""
+    import base64
+
+    # Check circuit breaker
+    if is_circuit_open('gemini'):
+        logger.debug("[LAYER 4] Gemini circuit breaker open, skipping")
+        return None
+
+    # Respect rate limits
+    rate_limit_wait('gemini')
+
+    try:
+        with open(sample_path, 'rb') as f:
+            audio_data = base64.b64encode(f.read()).decode('utf-8')
+
+        model = 'gemini-2.5-flash'
+
+        prompt = """Listen to this audiobook excerpt and perform these tasks:
+
+1. TRANSCRIBE: Write out exactly what you hear - the actual story text being narrated.
+   Get at least 2-3 sentences of the actual story content.
+
+2. IDENTIFY: Based on the transcribed content, identify what book this is from.
+   Look for:
+   - Character names (protagonists, antagonists, places)
+   - Plot elements and events
+   - Writing style and genre
+   - Any unique phrases or dialogue
+   - Setting details
+
+3. SEARCH YOUR KNOWLEDGE: Match the content against known books.
+   Consider:
+   - Famous novels and their scenes
+   - Popular audiobook series
+   - Genre conventions (fantasy names, sci-fi terminology, etc.)
+
+Return in JSON format:
+{
+    "transcription": "The exact text you heard from the audiobook (2-3 sentences minimum)",
+    "title": "identified book title (or best guess)",
+    "author": "identified author name (or best guess)",
+    "series": "series name if applicable",
+    "series_num": "book number in series if known",
+    "narrator": "narrator if you can identify their voice style",
+    "genre": "detected genre (fantasy, sci-fi, thriller, romance, etc.)",
+    "confidence": "high/medium/low",
+    "reasoning": "brief explanation of how you identified the book"
+}
+
+Even if you're not 100% certain, provide your best guess with appropriate confidence level.
+Use character names, plot elements, and writing style as clues."""
+
+        resp = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
+            headers={"Content-Type": "application/json"},
+            json={
+                "contents": [{
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inline_data": {
+                                "mime_type": "audio/mp3",
+                                "data": audio_data
+                            }
+                        }
+                    ]
+                }],
+                "generationConfig": {
+                    "temperature": 0.2,
+                    "maxOutputTokens": 1024
+                }
+            },
+            timeout=90
+        )
+
+        if resp.status_code == 429:
+            detail = resp.text[:500]
+            logger.warning(f"[LAYER 4] Gemini rate limited (429): {detail}")
+            # Check if daily quota is exhausted
+            if 'quota' in detail.lower() and ('limit: 0' in detail or 'exceeded' in detail.lower()):
+                logger.warning("[LAYER 4] Gemini daily quota exhausted - tripping circuit breaker")
+                record_api_failure('gemini')
+                record_api_failure('gemini')
+            return None
+
+        if resp.status_code != 200:
+            logger.warning(f"[LAYER 4] Gemini API failed: {resp.status_code} - {resp.text[:200]}")
+            return None
+
+        data = resp.json()
+        logger.debug(f"[LAYER 4] Gemini response received")
+
+        # Extract the text response
+        try:
+            text = data['candidates'][0]['content']['parts'][0]['text']
+            logger.debug(f"[LAYER 4] Gemini text response: {text[:200]}")
+            # Parse JSON from response
+            import re
+            json_match = re.search(r'\{[\s\S]*\}', text)
+            if json_match:
+                result = json.loads(json_match.group())
+
+                # Log what we found
+                if result.get('title') and result.get('author'):
+                    logger.info(f"[LAYER 4] Content identified: {result.get('author')}/{result.get('title')} "
+                               f"(confidence: {result.get('confidence')}, reason: {result.get('reasoning', 'N/A')[:50]})")
+
+                return result
+            else:
+                logger.warning(f"[LAYER 4] No JSON found in Gemini response: {text[:200]}")
+                return None
+        except Exception as e:
+            logger.warning(f"[LAYER 4] Failed to parse Gemini content response: {e} - text: {text[:100] if 'text' in dir() else 'N/A'}")
+            return None
+
+    except Exception as e:
+        logger.warning(f"[LAYER 4] Content identification error: {e}")
+        return None
+
+    return None
+
+
+def analyze_audio_for_content(folder_path, config):
+    """
+    Layer 4: Analyze audio CONTENT to identify the book.
+
+    Unlike Layer 3 (credits), this extracts text from the actual story
+    and uses AI to identify the book from plot, characters, and style.
+
+    Best for:
+    - Multi-part files without intros (Part 2, Part 3, etc.)
+    - Books with music-only intros
+    - Files with corrupted/cut credits
+    """
+    first_file = get_first_audio_file(folder_path)
+    if not first_file:
+        return None
+
+    logger.info(f"[LAYER 4] Analyzing story content: {os.path.basename(first_file)}")
+    return transcribe_and_identify_content(first_file, config)
 
 
 def extract_audio_sample(audio_file, duration_seconds=90, output_format='mp3'):
@@ -1716,20 +4611,35 @@ def extract_audio_sample(audio_file, duration_seconds=90, output_format='mp3'):
         return None
 
 
-def analyze_audio_with_gemini(audio_file, config):
+def analyze_audio_with_gemini(audio_file, config, duration=90, mode='credits'):
     """
     Send audio sample to Gemini for analysis.
-    Extracts author, title, narrator, and series info from audiobook intro.
+
+    Modes:
+    - 'credits': Optimized for first file with opening credits (title/author/narrator announcement)
+    - 'identify': For any chapter file - extracts chapter info and any identifying details
+
+    Args:
+        audio_file: Path to the audio file
+        config: App config with Gemini API key
+        duration: Seconds of audio to analyze (default 90, use 45 for credits)
+        mode: 'credits' or 'identify'
+
     Returns dict with extracted info or None on failure.
     """
     import base64
+
+    # Check circuit breaker
+    if is_circuit_open('gemini'):
+        logger.debug("[GEMINI AUDIO] Circuit breaker open, skipping")
+        return None
 
     api_key = config.get('gemini_api_key')
     if not api_key:
         return None
 
-    # Extract audio sample (first 90 seconds)
-    sample_path = extract_audio_sample(audio_file, duration_seconds=90)
+    # Extract audio sample
+    sample_path = extract_audio_sample(audio_file, duration_seconds=duration)
     if not sample_path:
         logger.debug(f"Could not extract audio sample from {audio_file}")
         return None
@@ -1745,8 +4655,42 @@ def analyze_audio_with_gemini(audio_file, config):
         # Use gemini-2.5-flash for audio (separate quota from text analysis model)
         model = 'gemini-2.5-flash'
 
-        prompt = """Listen to this audiobook intro and extract the following information.
-Many audiobooks start with an announcement like "This is [Title] by [Author], read by [Narrator]".
+        # Different prompts for different analysis modes
+        if mode == 'identify':
+            # For orphan/misplaced files - need to identify what book this chapter belongs to
+            prompt = """Listen to this audiobook chapter and extract ANY identifying information.
+This may be a chapter from the middle of an audiobook, not necessarily the beginning.
+
+Narrators often announce the chapter number at the start of each chapter.
+Listen carefully for:
+- Chapter number or part number ("Chapter 12", "Part 3")
+- Book title (sometimes mentioned even in middle chapters)
+- Author name (sometimes mentioned)
+- Narrator name (sometimes mentioned)
+- Series name (e.g., "Book 3 of the Hunger Games series")
+- Character names (can help identify the book)
+- Any other identifying context clues
+
+Return in JSON format:
+{
+    "title": "book title if mentioned anywhere",
+    "author": "author name if mentioned",
+    "narrator": "narrator name if mentioned",
+    "series": "series name if mentioned",
+    "chapter_number": "chapter or part number if announced (e.g., '12', '3.5')",
+    "chapter_title": "chapter title if announced (e.g., 'The Battle Begins')",
+    "language": "ISO 639-1 code of spoken language (en, de, fr, es, etc.)",
+    "character_names": ["list", "of", "character", "names", "heard"],
+    "context_clues": "any other identifying info that could help identify the book",
+    "confidence": "high/medium/low"
+}
+
+If information is not clearly stated, use null. Do not guess - only report what you hear."""
+        else:
+            # Default 'credits' mode - for first file with opening credits
+            prompt = """Listen to this audiobook intro and extract the following information.
+Audiobooks typically start with an announcement like "This is [Title] by [Author], read by [Narrator]".
+This announcement is usually in the first 30-60 seconds.
 
 Extract and return in JSON format:
 {
@@ -1754,11 +4698,20 @@ Extract and return in JSON format:
     "author": "author name if mentioned",
     "narrator": "narrator name if mentioned",
     "series": "series name if mentioned",
+    "language": "ISO 639-1 code of the spoken language (e.g., en, de, fr, es)",
     "confidence": "high/medium/low based on how clearly the info was stated"
 }
 
+For the language field:
+- Listen to what language the narrator is speaking
+- Use the ISO 639-1 two-letter code (en=English, de=German, fr=French, es=Spanish, etc.)
+- This should reflect the SPOKEN language, not the original book language
+
 If information is not clearly stated in the audio, use null for that field.
 Only include information you actually heard - do not guess."""
+
+        # Respect rate limits before making the call
+        rate_limit_wait('gemini')
 
         resp = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
@@ -1787,13 +4740,100 @@ Only include information you actually heard - do not guess."""
                 parsed = parse_json_response(text)
                 if parsed:
                     logger.info(f"Audio analysis extracted: {parsed}")
+                    record_api_success('gemini')
                     return parsed
+        elif resp.status_code == 429:
+            # Rate limit or quota exceeded
+            detail = resp.text[:500]
+            logger.warning(f"Gemini audio API rate limited: {detail}")
+            if 'quota' in detail.lower() and ('limit: 0' in detail or 'exceeded' in detail.lower()):
+                logger.warning("[GEMINI AUDIO] Daily quota exhausted - tripping circuit breaker")
+                record_api_failure('gemini')
+                record_api_failure('gemini')
         else:
             logger.debug(f"Gemini audio API error {resp.status_code}: {resp.text[:200]}")
 
     except Exception as e:
         logger.debug(f"Audio analysis error: {e}")
         # Clean up temp file if it exists
+        if sample_path and os.path.exists(sample_path):
+            os.unlink(sample_path)
+
+    return None
+
+
+def detect_audio_language(audio_file, config):
+    """
+    Detect the spoken language from an audio file using Gemini.
+    This is a lightweight version of analyze_audio_with_gemini focused only on language.
+
+    Args:
+        audio_file: Path to audio file
+        config: App config with Gemini API key
+
+    Returns:
+        dict with 'language' (ISO 639-1 code), 'language_name', and 'confidence', or None
+    """
+    import base64
+
+    api_key = config.get('gemini_api_key')
+    if not api_key:
+        logger.debug("No Gemini API key for audio language detection")
+        return None
+
+    # Extract shorter audio sample (30 seconds is enough for language detection)
+    sample_path = extract_audio_sample(audio_file, duration_seconds=30)
+    if not sample_path:
+        logger.debug(f"Could not extract audio sample from {audio_file}")
+        return None
+
+    try:
+        with open(sample_path, 'rb') as f:
+            audio_data = base64.b64encode(f.read()).decode('utf-8')
+
+        os.unlink(sample_path)
+
+        model = 'gemini-2.5-flash'
+
+        prompt = """Listen to this audiobook sample and identify the spoken language.
+
+Return JSON only:
+{
+    "language": "ISO 639-1 two-letter code (en, de, fr, es, it, pt, nl, sv, no, da, fi, pl, ru, ja, zh, ko, etc.)",
+    "language_name": "Full language name (English, German, French, etc.)",
+    "confidence": "high/medium/low"
+}
+
+Focus on the SPOKEN language you hear in the narration, not any background music or sound effects."""
+
+        resp = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
+            headers={"Content-Type": "application/json"},
+            json={
+                "contents": [{
+                    "parts": [
+                        {"text": prompt},
+                        {"inline_data": {"mime_type": "audio/mp3", "data": audio_data}}
+                    ]
+                }],
+                "generationConfig": {"temperature": 0.1}
+            },
+            timeout=60
+        )
+
+        if resp.status_code == 200:
+            result = resp.json()
+            text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+            if text:
+                parsed = parse_json_response(text)
+                if parsed and parsed.get('language'):
+                    logger.info(f"Audio language detected: {parsed.get('language_name', parsed['language'])} ({parsed.get('confidence', 'unknown')} confidence)")
+                    return parsed
+        else:
+            logger.debug(f"Gemini audio language API error {resp.status_code}")
+
+    except Exception as e:
+        logger.debug(f"Audio language detection error: {e}")
         if sample_path and os.path.exists(sample_path):
             os.unlink(sample_path)
 
@@ -1833,7 +4873,7 @@ def get_audio_metadata_hints(book_path, config=None):
         logger.debug(f"ID3 extraction failed: {e}")
 
     # Audio analysis with Gemini (if enabled and configured)
-    if config and config.get('audio_analysis', False) and config.get('gemini_api_key'):
+    if config and config.get('enable_audio_analysis', False) and config.get('gemini_api_key'):
         audio_info = analyze_audio_with_gemini(first_file, config)
         if audio_info:
             if audio_info.get('title'):
@@ -1857,6 +4897,52 @@ import hashlib
 # Audio file extensions we care about
 AUDIO_EXTENSIONS = {'.m4b', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.wma', '.aac'}
 EBOOK_EXTENSIONS = {'.epub', '.pdf', '.mobi', '.azw3'}
+
+
+def detect_media_type(path):
+    """Issue #53: Detect what media types exist in a book folder.
+
+    Returns: 'audiobook', 'ebook', or 'both'
+    """
+    path = Path(path) if isinstance(path, str) else path
+
+    if not path.exists():
+        return 'audiobook'  # Default for missing paths
+
+    has_audio = False
+    has_ebook = False
+
+    # Check if it's a file or directory
+    if path.is_file():
+        ext = path.suffix.lower()
+        if ext in AUDIO_EXTENSIONS:
+            has_audio = True
+        elif ext in EBOOK_EXTENSIONS:
+            has_ebook = True
+    else:
+        # It's a directory - scan for files
+        try:
+            for item in path.rglob('*'):
+                if item.is_file():
+                    ext = item.suffix.lower()
+                    if ext in AUDIO_EXTENSIONS:
+                        has_audio = True
+                    elif ext in EBOOK_EXTENSIONS:
+                        has_ebook = True
+
+                    # Early exit if we found both
+                    if has_audio and has_ebook:
+                        break
+        except PermissionError:
+            pass
+
+    if has_audio and has_ebook:
+        return 'both'
+    elif has_ebook:
+        return 'ebook'
+    else:
+        return 'audiobook'
+
 
 # Patterns for disc/chapter folders (these are NOT book titles)
 DISC_CHAPTER_PATTERNS = [
@@ -1933,13 +5019,35 @@ def read_audio_metadata(file_path):
         return None
 
 
-def find_orphan_audio_files(lib_path):
+def find_orphan_audio_files(lib_path, config=None):
     """Find audio files sitting directly in author folders (not in book subfolders)."""
     orphans = []
+
+    # Issue #57: Get watch folder to exclude from orphan scanning
+    # Watch folder has its own processing flow and shouldn't be treated as an author folder
+    watch_folder = None
+    if config:
+        watch_folder = config.get('watch_folder', '').strip()
+    else:
+        # Fallback: load config if not provided
+        try:
+            cfg = load_config()
+            watch_folder = cfg.get('watch_folder', '').strip()
+        except Exception:
+            pass
 
     for author_dir in Path(lib_path).iterdir():
         if not author_dir.is_dir():
             continue
+
+        # Issue #57: Skip watch folder - it has its own processing flow
+        if watch_folder:
+            try:
+                if author_dir.resolve() == Path(watch_folder).resolve():
+                    logger.debug(f"Skipping watch folder in orphan scan: {author_dir}")
+                    continue
+            except Exception:
+                pass
 
         author = author_dir.name
 
@@ -1986,10 +5094,40 @@ def find_orphan_audio_files(lib_path):
 
 
 def organize_orphan_files(author_path, book_title, files, config=None):
-    """Create a book folder and move orphan files into it."""
+    """Create a book folder and move orphan files into it, including companion files.
+
+    Issue #57: If files are within a watch folder context and watch_output_folder is configured,
+    the organized files will be placed in watch_output_folder/Author/Title instead of in-place.
+    """
     import shutil
 
     author_dir = Path(author_path)
+    author_name = author_dir.name  # Extract author name for potential output folder path
+
+    # Issue #57: Check if we should use watch_output_folder instead of organizing in-place
+    # This applies when the orphan files are within the watch folder area
+    destination_base = author_dir  # Default: organize in place (current author folder)
+
+    if config:
+        watch_folder = config.get('watch_folder', '').strip()
+        watch_output_folder = config.get('watch_output_folder', '').strip()
+
+        if watch_folder and watch_output_folder:
+            try:
+                watch_path = Path(watch_folder).resolve()
+                author_path_resolved = author_dir.resolve()
+
+                # Check if author_path is within the watch folder tree
+                try:
+                    author_path_resolved.relative_to(watch_path)
+                    # Files are in watch folder context - use output folder
+                    destination_base = Path(watch_output_folder) / author_name
+                    logger.info(f"Orphan organization: Using watch output folder: {destination_base}")
+                except ValueError:
+                    # Not in watch folder - organize in place (default)
+                    pass
+            except Exception as e:
+                logger.debug(f"Orphan organization: Path check failed, organizing in place: {e}")
 
     # Clean up the book title for folder name
     clean_title = book_title
@@ -2003,7 +5141,8 @@ def organize_orphan_files(author_path, book_title, files, config=None):
     if not clean_title:
         return False, "Could not determine book title"
 
-    book_dir = author_dir / clean_title
+    # Issue #57: Use destination_base (could be author_dir or watch_output_folder/author)
+    book_dir = destination_base / clean_title
 
     # Check if folder already exists
     if book_dir.exists():
@@ -2014,10 +5153,32 @@ def organize_orphan_files(author_path, book_title, files, config=None):
     else:
         book_dir.mkdir(parents=True)
 
+    # Companion file extensions to also move (covers, metadata, etc.)
+    COMPANION_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp',  # covers
+                           '.nfo', '.txt', '.json', '.xml', '.cue',   # metadata
+                           '.pdf', '.epub', '.mobi',                   # companion ebooks
+                           '.srt', '.vtt', '.lrc'}                     # subtitles/lyrics
+
+    # Find companion files in the same directory as the audio files
+    companion_files = set()
+    source_dirs = set()
+    for file_path in files:
+        src = Path(file_path)
+        if src.exists():
+            source_dirs.add(src.parent)
+
+    for source_dir in source_dirs:
+        for f in source_dir.iterdir():
+            if f.is_file() and f.suffix.lower() in COMPANION_EXTENSIONS:
+                companion_files.add(str(f))
+
+    # Combine audio files and companion files
+    all_files = list(files) + list(companion_files)
+
     # Move files
     moved = 0
     errors = []
-    for file_path in files:
+    for file_path in all_files:
         try:
             src = Path(file_path)
             if src.exists():
@@ -2027,10 +5188,21 @@ def organize_orphan_files(author_path, book_title, files, config=None):
         except Exception as e:
             errors.append(f"{file_path}: {e}")
 
+    # Clean up empty source directories
+    for source_dir in source_dirs:
+        try:
+            if source_dir.exists() and source_dir != author_dir:
+                remaining = list(source_dir.iterdir())
+                if not remaining:
+                    source_dir.rmdir()
+                    logger.info(f"Cleaned up empty folder: {source_dir}")
+        except OSError:
+            pass
+
     if errors:
         return False, f"Moved {moved} files, {len(errors)} errors: {errors[0]}"
 
-    logger.info(f"Organized {moved} orphan files into: {book_dir}")
+    logger.info(f"Organized {moved} files (audio + companions) into: {book_dir}")
     return True, f"Created {book_dir.name} with {moved} files"
 
 
@@ -2238,7 +5410,7 @@ def group_loose_files(files):
     return groups
 
 
-def search_bookdb_api(title):
+def search_bookdb_api(title, retry_count=0):
     """
     Search the BookBucket API for a book (public endpoint, no auth needed).
     Uses Qdrant vector search - fast even with 50M books.
@@ -2254,6 +5426,8 @@ def search_bookdb_api(title):
     if is_unsearchable_query(search_title):
         logger.debug(f"BookDB API: Skipping unsearchable query '{search_title}'")
         return None
+
+    rate_limit_wait('bookdb')
 
     try:
         # Use longer timeout for cold start (embedding model can take 45-60s to load)
@@ -2271,6 +5445,17 @@ def search_bookdb_api(title):
                     logger.debug(f"BookDB API timeout on first attempt, retrying...")
                     continue
                 raise
+
+        # Handle rate limiting - respect Retry-After header from server
+        if response.status_code == 429 and retry_count < 3:
+            retry_after = response.headers.get('Retry-After', '60')
+            try:
+                wait_time = min(int(retry_after), 300)  # Cap at 5 minutes
+            except ValueError:
+                wait_time = 60 * (retry_count + 1)  # Fallback: 60s, 120s, 180s
+            logger.info(f"BookDB API rate limited, waiting {wait_time}s (Retry-After: {retry_after})...")
+            time.sleep(wait_time)
+            return search_bookdb_api(title, retry_count + 1)
 
         if response.status_code == 200:
             results = response.json()
@@ -2403,57 +5588,195 @@ def search_book_searxng(query, duration_hours=None):
     return []
 
 
+def calculate_input_quality(folder_name, filenames, info):
+    """
+    Score the quality of input data for AI identification.
+    Returns a score 0-100 and list of usable clues found.
+
+    Low quality inputs (random numbers, 'unknown', no words) should not be
+    trusted to AI as it will hallucinate famous books.
+    """
+    score = 0
+    clues = []
+
+    # Check folder name for useful info
+    folder_clean = re.sub(r'[_\-\d\.\[\]\(\)]', ' ', folder_name or '').strip()
+    words = [w for w in folder_clean.split() if len(w) > 2 and w.lower() not in ('unknown', 'audiobook', 'audio', 'book', 'mp3', 'the', 'and', 'part')]
+
+    if words:
+        score += min(40, len(words) * 10)  # Up to 40 points for meaningful words
+        clues.append(f"folder_words: {words[:5]}")
+
+    # Check for author-title pattern (e.g., "Author - Title")
+    if ' - ' in (folder_name or ''):
+        score += 20
+        clues.append("has_author_title_separator")
+
+    # Check metadata tags
+    if info.get('title') and info.get('title') not in ('none', 'Unknown', ''):
+        score += 25
+        clues.append(f"has_title_tag: {info.get('title')[:30]}")
+    if info.get('author') and info.get('author') not in ('none', 'Unknown', ''):
+        score += 25
+        clues.append(f"has_author_tag: {info.get('author')[:30]}")
+
+    # Check filenames for book/chapter info
+    meaningful_files = [f for f in filenames[:5] if re.search(r'[a-zA-Z]{4,}', f)]
+    if meaningful_files:
+        score += 10
+        clues.append(f"meaningful_filenames: {len(meaningful_files)}")
+
+    # Penalize garbage inputs
+    if re.match(r'^(unknown|audiobook|audio|book)?[\s_\-]*\d+$', folder_name or '', re.IGNORECASE):
+        score = max(0, score - 50)  # Heavy penalty for "unknown_123" type names
+        clues.append("PENALTY: numeric_garbage_name")
+
+    return min(100, score), clues
+
+
+def validate_ai_result(ai_result, folder_name, info):
+    """
+    Validate AI result against input to detect hallucinations.
+    Returns (is_valid, adjusted_confidence, reason)
+
+    Key insight: AI correcting the AUTHOR is valid (folder may have wrong author).
+    Hallucination = AI invents a completely DIFFERENT BOOK (wrong title).
+    """
+    if not ai_result or not ai_result.get('title'):
+        return False, 'none', 'no_result'
+
+    ai_title = (ai_result.get('title') or '').lower()
+    ai_author = (ai_result.get('author') or '').lower()
+
+    from difflib import SequenceMatcher
+
+    # Extract potential title from folder (after author separator if present)
+    folder_title = folder_name
+    if ' - ' in folder_name:
+        parts = folder_name.split(' - ', 1)
+        folder_title = parts[1] if len(parts) > 1 else parts[0]
+    folder_title = re.sub(r'[\[\(].*?[\]\)]', '', folder_title).strip().lower()
+
+    # Title similarity - primary check
+    title_similarity = SequenceMatcher(None, ai_title, folder_title).ratio()
+
+    # Also check title words (handles translations like "Le Petit Prince" vs "The Little Prince")
+    ai_title_words = set(re.findall(r'\b[a-zA-Z]{3,}\b', ai_title))
+    folder_title_words = set(re.findall(r'\b[a-zA-Z]{3,}\b', folder_title))
+    title_word_overlap = len(ai_title_words & folder_title_words)
+
+    # Check if key title words match (excluding common words)
+    common_words = {'the', 'and', 'book', 'part', 'volume', 'novel'}
+    meaningful_ai_words = ai_title_words - common_words
+    meaningful_folder_words = folder_title_words - common_words
+    meaningful_overlap = len(meaningful_ai_words & meaningful_folder_words)
+
+    reported_confidence = ai_result.get('confidence', 'medium')
+
+    # Validation rules - focus on TITLE, not author (author correction is valid!)
+
+    # If title has good similarity OR meaningful words overlap, it's probably the same book
+    title_matches = (
+        title_similarity >= 0.4 or  # Direct similarity
+        title_word_overlap >= 2 or  # Multiple words match
+        meaningful_overlap >= 1      # At least one meaningful word matches
+    )
+
+    if title_matches:
+        # Title matches - AI may be correcting the author, which is valid
+        if title_similarity >= 0.7:
+            return True, reported_confidence, 'validated'
+        else:
+            # Lower title similarity but words match - likely translation or variant
+            logger.info(f"AI title variant accepted: '{folder_title}' -> '{ai_title}' (similarity={title_similarity:.2f}, word_overlap={title_word_overlap})")
+            return True, 'medium', 'title_variant_accepted'
+
+    # Title doesn't match - check for complete hallucination
+    # Also check against original folder name (might have title at start)
+    folder_name_lower = folder_name.lower()
+    any_ai_word_in_folder = any(word in folder_name_lower for word in meaningful_ai_words if len(word) > 3)
+
+    if title_similarity < 0.2 and not any_ai_word_in_folder:
+        # AI returned something completely different - likely hallucination
+        logger.warning(f"AI HALLUCINATION DETECTED: Input='{folder_name[:50]}' -> AI='{ai_author} - {ai_title}' (similarity={title_similarity:.2f})")
+        return False, 'none', f'hallucination_detected (similarity={title_similarity:.2f})'
+
+    # Borderline case - accept with low confidence
+    logger.info(f"AI result borderline: '{folder_title}' -> '{ai_title}' (similarity={title_similarity:.2f})")
+    return True, 'low', 'borderline_match'
+
+
 def identify_book_with_ai(file_group, config):
     """
     Use AI to identify a book from file information.
     Sends filenames, duration, and any metadata to AI for identification.
+
+    Includes hallucination prevention:
+    1. Input quality check - skip AI for garbage inputs
+    2. Strict prompt - emphasize returning null over guessing
+    3. Output validation - detect when AI invents unrelated books
     """
     if not config:
         return None
 
     files = file_group.get('files', [])
     info = file_group.get('detected_info', {})
+    folder_name = file_group.get('folder_name', '')
 
     # Build context for AI
     filenames = [Path(f).name if isinstance(f, str) else f.name for f in files[:20]]
 
-    prompt = f"""Identify this audiobook from the following information:
+    # === HALLUCINATION PREVENTION: Input quality check ===
+    input_quality, clues = calculate_input_quality(folder_name, filenames, info)
 
-Files ({len(files)} total): {', '.join(filenames[:10])}{'...' if len(filenames) > 10 else ''}
-Total duration: {info.get('duration_hours', 'unknown')} hours
-Detected album tag: {info.get('title', 'none')}
-Detected artist tag: {info.get('author', 'none')}
+    if input_quality < 25:
+        # Input is garbage - don't even try AI, it will hallucinate
+        logger.info(f"AI skipped due to low input quality ({input_quality}): {folder_name[:50]} - clues: {clues}")
+        return {'author': None, 'title': None, 'confidence': 'none', 'reason': f'insufficient_input_quality ({input_quality}/100)'}
 
-Based on this information, identify the audiobook. Return JSON:
-{{"author": "Author Name", "title": "Book Title", "series": "Series Name or null", "confidence": "high/medium/low"}}
+    # === PROMPT - Identify and CORRECT wrong metadata ===
+    prompt = f"""You are identifying an audiobook and CORRECTING wrong metadata.
 
-If you cannot identify it with reasonable confidence, return:
+IMPORTANT: The folder/artist metadata may be WRONG. Your job is to identify the REAL book and author.
+
+RULES:
+1. If you recognize the TITLE, provide the CORRECT author even if the folder says a different author
+2. Example: "James Patterson - Le Petit Prince" -> The title is "Le Petit Prince" which is by Antoine de Saint-Exupéry, NOT James Patterson. Return the correct author.
+3. Only return null if the input is truly gibberish with no recognizable book title
+4. DO NOT invent books - if input is just numbers or "unknown_123", return null
+
+Input information:
+- Folder name: {folder_name}
+- Files ({len(files)} total): {', '.join(filenames[:10])}{'...' if len(filenames) > 10 else ''}
+- Duration: {info.get('duration_hours', 'unknown')} hours
+- Album tag: {info.get('title', 'none')}
+- Artist tag: {info.get('author', 'none')}
+
+If you can identify the book (even if metadata is wrong), return:
+{{"author": "CORRECT Author Name", "title": "CORRECT Book Title", "series": "Series Name or null", "confidence": "high/medium/low"}}
+
+Only if the title is truly unrecognizable, return:
 {{"author": null, "title": null, "confidence": "none", "reason": "why"}}"""
 
     try:
-        # Use existing AI call function
-        gemini_key = None
-        secrets = load_secrets()
-        if secrets:
-            gemini_key = secrets.get('gemini_api_key')
+        # Use the provider chain for fallback support
+        ai_result = call_text_provider_chain(prompt, config)
 
-        if gemini_key:
-            response = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{config.get('gemini_model', 'gemini-2.0-flash')}:generateContent",
-                headers={'Content-Type': 'application/json'},
-                params={'key': gemini_key},
-                json={'contents': [{'parts': [{'text': prompt}]}]},
-                timeout=30
-            )
+        if ai_result and isinstance(ai_result, dict):
+            # === HALLUCINATION PREVENTION: Validate output ===
+            is_valid, adjusted_confidence, reason = validate_ai_result(ai_result, folder_name, info)
 
-            if response.status_code == 200:
-                data = response.json()
-                text = data.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+            if not is_valid:
+                logger.warning(f"AI result rejected: {reason} - Input: {folder_name[:50]}")
+                return {'author': None, 'title': None, 'confidence': 'none', 'reason': reason}
 
-                # Parse JSON from response
-                json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
-                if json_match:
-                    return json.loads(json_match.group())
+            # Apply adjusted confidence
+            ai_result['confidence'] = adjusted_confidence
+            if reason != 'validated':
+                ai_result['validation_note'] = reason
+
+            return ai_result
+
     except Exception as e:
         logger.debug(f"AI identification failed: {e}")
 
@@ -2665,14 +5988,30 @@ def handle_chaos_library(lib_path, config=None):
                 if api_result.get('series'):
                     result['series'] = api_result.get('series')
 
-            # Fall back to AI if API didn't find it
-            if not author:
+            # Fall back to AI if API didn't find it OR to verify folder metadata
+            # Bug fix: Previously only called AI when no author existed, but folder metadata
+            # can be WRONG (e.g., "James Patterson - Le Petit Prince"). AI should verify.
+            folder_author = info.get('author')  # Original author from folder name
+            needs_ai_verification = (
+                not author or  # No author found yet
+                (not api_result and folder_author)  # Have folder author but BookDB didn't confirm
+            )
+
+            if needs_ai_verification:
                 search_progress.set_status(f"BookDB no match, trying AI for '{title[:30]}...'")
                 ai_result = identify_book_with_ai(group, config)
                 if ai_result and ai_result.get('author'):
-                    author = ai_result.get('author')
-                    title = ai_result.get('title') or title
-                    confidence = ai_result.get('confidence', 'medium')
+                    ai_author = ai_result.get('author')
+                    ai_title = ai_result.get('title')
+                    ai_confidence = ai_result.get('confidence', 'medium')
+
+                    # If we had a folder author and AI disagrees, log it and use AI
+                    if folder_author and ai_author.lower() != folder_author.lower():
+                        logger.info(f"AI CORRECTED author: '{folder_author}' -> '{ai_author}' for '{title}'")
+
+                    author = ai_author
+                    title = ai_title or title
+                    confidence = ai_confidence
                     result['identification'] = 'ai'
                     search_progress.set_status(f"AI identified: {author}")
                     if ai_result.get('series'):
@@ -3132,10 +6471,8 @@ Return JSON only:
     "reasoning": "Brief explanation"
 }}"""
 
-    result = call_gemini(prompt, config)
-    if result:
-        return result
-    return None
+    # Use the provider chain for fallback support
+    return call_text_provider_chain(prompt, config)
 
 
 def smart_analyze_path(audio_file_or_folder, library_root, config):
@@ -3205,6 +6542,12 @@ def analyze_author(author):
         issues.append("system_folder_not_author")
         return issues  # Don't bother checking anything else
 
+    # Issue #59: Placeholder author names need identification, not verification
+    # "Unknown Author", "Various Authors", etc. should be queued for processing
+    if is_placeholder_author(author):
+        issues.append("placeholder_author")
+        return issues  # Needs identification, skip other checks
+
     # Year in author name
     if re.search(r'\b(19[0-9]{2}|20[0-2][0-9])\b', author):
         issues.append("year_in_author")
@@ -3239,6 +6582,12 @@ def analyze_author(author):
         r'^[A-Z][a-z]+\s+[A-Z]\.[A-Z]\.\s*[A-Z][a-z]+$',     # Brandon R.R. Author
         r'^[A-Z][a-z]+\s+[A-Z]\.\s*(Le|De|Von|Van|La|Du)\s+[A-Z][a-z]+$',  # Ursula K. Le Guin
         r'^[A-Z][a-z]+\s+(Le|De|Von|Van|La|Du)\s+[A-Z][a-z]+$',  # Anne De Vries
+        # Issue #52: Additional name patterns
+        r'^[A-Z][a-z]+\s+[A-Z]\s+[A-Z]\s+[A-Z][a-z]+$',  # James S A Corey (single initials without periods)
+        r'^[A-Z][a-z]+\s+[A-Z]\s+[A-Z][a-z]+$',          # First A Last (one single initial)
+        r'^[A-Z][a-z]+\s+(Mc|Mac|O\')[A-Z][a-z]+$',      # Freida McFadden, Anne MacLeod, Mary O'Brien
+        r'^[A-Z][a-z]+\s+[A-Z][a-z]+\s+(Mc|Mac|O\')[A-Z][a-z]+$',  # First Middle McLastname
+        r'^[A-Z][a-z]+\s+[A-Z]\.\s+(Mc|Mac|O\')[A-Z][a-z]+$',  # First M. McLastname
     ]
     looks_like_name = any(re.match(p, author) for p in name_patterns)
 
@@ -3367,7 +6716,7 @@ def analyze_title(title, author):
 def find_audio_files(directory):
     """Recursively find all audio files in directory."""
     audio_files = []
-    for root, dirs, files in os.walk(directory):
+    for root, dirs, files in os.walk(directory, followlinks=True):
         for f in files:
             ext = os.path.splitext(f)[1].lower()
             if ext in AUDIO_EXTENSIONS:
@@ -3378,7 +6727,7 @@ def find_audio_files(directory):
 def find_ebook_files(directory):
     """Recursively find all ebook files in directory."""
     ebook_files = []
-    for root, dirs, files in os.walk(directory):
+    for root, dirs, files in os.walk(directory, followlinks=True):
         for f in files:
             ext = os.path.splitext(f)[1].lower()
             if ext in EBOOK_EXTENSIONS:
@@ -3441,6 +6790,355 @@ def get_file_signature(filepath, sample_size=8192):
         return None
 
 
+def get_audio_fingerprint(filepath, duration=30, offset=0):
+    """
+    Get audio fingerprint using chromaprint/fpcalc.
+
+    Args:
+        filepath: Path to audio file
+        duration: Seconds of audio to fingerprint (default 30)
+        offset: Start position in seconds (for sampling middle/end)
+
+    Returns dict with:
+        - fingerprint: The chromaprint fingerprint string
+        - duration: Total duration of the file in seconds
+        - error: Error message if failed
+    """
+    import subprocess
+
+    try:
+        # Build fpcalc command
+        cmd = ['fpcalc', '-length', str(duration)]
+        if offset > 0:
+            # Use ffmpeg to extract segment first (fpcalc doesn't support offset)
+            # For now, we'll just fingerprint from the start
+            pass
+        cmd.append(str(filepath))
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+        if result.returncode != 0:
+            return {'fingerprint': None, 'duration': None, 'error': result.stderr}
+
+        # Parse output
+        output = {}
+        for line in result.stdout.strip().split('\n'):
+            if '=' in line:
+                key, value = line.split('=', 1)
+                output[key] = value
+
+        return {
+            'fingerprint': output.get('FINGERPRINT'),
+            'duration': int(output.get('DURATION', 0)),
+            'error': None
+        }
+    except subprocess.TimeoutExpired:
+        return {'fingerprint': None, 'duration': None, 'error': 'Timeout'}
+    except FileNotFoundError:
+        return {'fingerprint': None, 'duration': None, 'error': 'fpcalc not installed'}
+    except Exception as e:
+        return {'fingerprint': None, 'duration': None, 'error': str(e)}
+
+
+def compare_fingerprints(fp1, fp2):
+    """
+    Compare two chromaprint fingerprints and return similarity score.
+
+    Chromaprint fingerprints are base64-encoded integers that can be
+    compared using popcount of XOR (Hamming distance).
+
+    Returns similarity score 0.0 to 1.0
+    """
+    import base64
+    import struct
+
+    if not fp1 or not fp2:
+        return 0.0
+
+    try:
+        # Decode base64 fingerprints to raw bytes
+        raw1 = base64.b64decode(fp1 + '==')  # Add padding if needed
+        raw2 = base64.b64decode(fp2 + '==')
+
+        # Convert to list of 32-bit integers
+        def to_ints(raw):
+            # Skip first 4 bytes (header)
+            data = raw[4:] if len(raw) > 4 else raw
+            ints = []
+            for i in range(0, len(data) - 3, 4):
+                val = struct.unpack('<I', data[i:i+4])[0]
+                ints.append(val)
+            return ints
+
+        ints1 = to_ints(raw1)
+        ints2 = to_ints(raw2)
+
+        if not ints1 or not ints2:
+            return 0.0
+
+        # Compare overlapping portion
+        min_len = min(len(ints1), len(ints2))
+        if min_len == 0:
+            return 0.0
+
+        # Count matching bits (using XOR and popcount)
+        total_bits = min_len * 32
+        different_bits = 0
+        for i in range(min_len):
+            xor = ints1[i] ^ ints2[i]
+            different_bits += bin(xor).count('1')
+
+        similarity = 1.0 - (different_bits / total_bits)
+        return max(0.0, similarity)
+
+    except Exception as e:
+        logger.debug(f"Fingerprint comparison error: {e}")
+        return 0.0
+
+
+def analyze_audiobook_completeness(folder_path):
+    """
+    Analyze an audiobook folder for completeness.
+
+    Returns dict with:
+        - total_duration: Total duration in seconds
+        - file_count: Number of audio files
+        - files: List of {path, duration, fingerprint_start, fingerprint_end}
+        - appears_complete: True if ending sounds like a proper ending
+        - appears_partial: True if it seems cut off
+    """
+    folder = Path(folder_path)
+    audio_files = sorted([f for f in folder.rglob('*') if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS])
+
+    if not audio_files:
+        return {'total_duration': 0, 'file_count': 0, 'files': [], 'appears_complete': False}
+
+    files_info = []
+    total_duration = 0
+
+    for audio_file in audio_files:
+        # Get fingerprint of first 30 seconds
+        fp_start = get_audio_fingerprint(str(audio_file), duration=30)
+
+        if fp_start['duration']:
+            total_duration += fp_start['duration']
+            files_info.append({
+                'path': str(audio_file),
+                'filename': audio_file.name,
+                'duration': fp_start['duration'],
+                'fingerprint_start': fp_start['fingerprint']
+            })
+
+    return {
+        'total_duration': total_duration,
+        'total_duration_hours': round(total_duration / 3600, 1),
+        'file_count': len(audio_files),
+        'files': files_info
+    }
+
+
+def compare_audiobooks_deep(source_path, dest_path):
+    """
+    Deep comparison of two audiobook folders using audio fingerprinting.
+
+    This goes beyond file hashes to detect:
+    - Same recording in different formats/bitrates
+    - Partial copies (one is subset of other)
+    - Different recordings of same book (different narrators)
+    - Corrupt/unreadable files
+
+    Returns dict with:
+        - same_recording: True if audio content matches
+        - source_is_subset: True if source is partial copy of dest
+        - dest_is_subset: True if dest is partial copy of source
+        - recording_similarity: 0.0-1.0 how similar the recordings are
+        - recommendation: 'keep_source', 'keep_dest', 'keep_both', 'merge'
+        - source_corrupt: True if source files are corrupt/unreadable
+        - dest_corrupt: True if dest files are corrupt/unreadable
+    """
+    source_info = analyze_audiobook_completeness(source_path)
+    dest_info = analyze_audiobook_completeness(dest_path)
+
+    # Check for corrupt files (files exist but can't be read/have no duration)
+    source_corrupt = source_info['file_count'] > 0 and source_info['total_duration'] == 0
+    dest_corrupt = dest_info['file_count'] > 0 and dest_info['total_duration'] == 0
+
+    result = {
+        'source_duration': source_info['total_duration'],
+        'source_duration_hours': source_info.get('total_duration_hours', 0),
+        'dest_duration': dest_info['total_duration'],
+        'dest_duration_hours': dest_info.get('total_duration_hours', 0),
+        'source_files': source_info['file_count'],
+        'dest_files': dest_info['file_count'],
+        'source_readable_files': len(source_info['files']),
+        'dest_readable_files': len(dest_info['files']),
+        'same_recording': False,
+        'source_is_subset': False,
+        'dest_is_subset': False,
+        'recording_similarity': 0.0,
+        'source_corrupt': source_corrupt,
+        'dest_corrupt': dest_corrupt,
+        'recommendation': 'keep_both'
+    }
+
+    # Handle corrupt files
+    if source_corrupt and not dest_corrupt:
+        result['recommendation'] = 'keep_dest'
+        result['reason'] = 'Source files are corrupt/unreadable'
+        return result
+    elif dest_corrupt and not source_corrupt:
+        result['recommendation'] = 'keep_source'
+        result['reason'] = 'Destination files are corrupt/unreadable'
+        return result
+    elif source_corrupt and dest_corrupt:
+        result['recommendation'] = 'keep_both'
+        result['reason'] = 'Both versions have corrupt/unreadable files'
+        return result
+
+    if not source_info['files'] or not dest_info['files']:
+        return result
+
+    # Compare first file fingerprints to detect same recording
+    source_first_fp = source_info['files'][0].get('fingerprint_start')
+    dest_first_fp = dest_info['files'][0].get('fingerprint_start')
+
+    if source_first_fp and dest_first_fp:
+        similarity = compare_fingerprints(source_first_fp, dest_first_fp)
+        result['recording_similarity'] = round(similarity, 2)
+
+        # High similarity = same recording
+        if similarity >= 0.7:
+            result['same_recording'] = True
+
+            # Determine which is more complete
+            source_dur = source_info['total_duration']
+            dest_dur = dest_info['total_duration']
+
+            if source_dur > dest_dur * 1.1:  # Source is 10%+ longer
+                result['dest_is_subset'] = True
+                result['recommendation'] = 'keep_source'
+                result['reason'] = f'Source is more complete ({source_dur//60}min vs {dest_dur//60}min)'
+            elif dest_dur > source_dur * 1.1:  # Dest is 10%+ longer
+                result['source_is_subset'] = True
+                result['recommendation'] = 'keep_dest'
+                result['reason'] = f'Destination is more complete ({dest_dur//60}min vs {source_dur//60}min)'
+            else:
+                # Similar length - prefer the properly named one (dest)
+                result['recommendation'] = 'keep_dest'
+                result['reason'] = 'Same recording, similar length - keeping properly named version'
+        else:
+            # Different recordings
+            result['reason'] = f'Different recordings ({similarity:.0%} similarity)'
+
+    return result
+
+
+def compare_book_folders(source_path, dest_path, deep_analysis=True):
+    """
+    Compare two book folders to determine if they contain the same audiobook.
+
+    Args:
+        source_path: Path to source folder
+        dest_path: Path to destination folder
+        deep_analysis: If True, use audio fingerprinting for comparison (slower but more accurate)
+
+    Returns dict with:
+        - identical: True if folders contain the same audio files
+        - source_only: Files only in source
+        - dest_only: Files only in destination
+        - matching: Files that match between both
+        - source_better: True if source has more/better files
+        - dest_better: True if destination has more/better files
+        - deep_analysis: Results from audio fingerprint comparison (if enabled)
+    """
+    source = Path(source_path)
+    dest = Path(dest_path)
+
+    # Get audio files from both folders
+    source_audio = [f for f in source.rglob('*') if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
+    dest_audio = [f for f in dest.rglob('*') if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
+
+    # Build signature maps
+    source_sigs = {}
+    for f in source_audio:
+        sig = get_file_signature(str(f))
+        if sig:
+            source_sigs[sig] = f
+
+    dest_sigs = {}
+    for f in dest_audio:
+        sig = get_file_signature(str(f))
+        if sig:
+            dest_sigs[sig] = f
+
+    # Compare
+    source_sig_set = set(source_sigs.keys())
+    dest_sig_set = set(dest_sigs.keys())
+
+    matching = source_sig_set & dest_sig_set
+    source_only = source_sig_set - dest_sig_set
+    dest_only = dest_sig_set - source_sig_set
+
+    # Calculate total sizes
+    source_total_size = sum(os.path.getsize(str(f)) for f in source_audio)
+    dest_total_size = sum(os.path.getsize(str(f)) for f in dest_audio)
+
+    result = {
+        'identical': len(matching) > 0 and len(source_only) == 0 and len(dest_only) == 0,
+        'matching_count': len(matching),
+        'source_only_count': len(source_only),
+        'dest_only_count': len(dest_only),
+        'source_files': len(source_audio),
+        'dest_files': len(dest_audio),
+        'source_size': source_total_size,
+        'dest_size': dest_total_size,
+        'source_better': source_total_size > dest_total_size or len(source_audio) > len(dest_audio),
+        'dest_better': dest_total_size > source_total_size or len(dest_audio) > len(source_audio),
+        'overlap_ratio': len(matching) / max(len(source_sig_set), len(dest_sig_set), 1)
+    }
+
+    # Determine if it's effectively the same book (high overlap or one is subset of other)
+    if result['overlap_ratio'] >= 0.8:
+        result['same_book'] = True
+    elif len(matching) > 0 and (len(source_only) == 0 or len(dest_only) == 0):
+        # One is a subset of the other
+        result['same_book'] = True
+    else:
+        result['same_book'] = False
+
+    # Deep analysis using audio fingerprinting (detects same recording in different formats,
+    # corrupt files, partial copies)
+    if deep_analysis and not result['same_book']:
+        try:
+            deep_result = compare_audiobooks_deep(source_path, dest_path)
+            result['deep_analysis'] = deep_result
+
+            # Update same_book based on deep analysis
+            if deep_result.get('same_recording'):
+                result['same_book'] = True
+                result['same_recording'] = True
+
+            # Update better flags based on corrupt file detection
+            if deep_result.get('dest_corrupt') and not deep_result.get('source_corrupt'):
+                result['source_better'] = True
+                result['dest_better'] = False
+                result['dest_corrupt'] = True
+            elif deep_result.get('source_corrupt') and not deep_result.get('dest_corrupt'):
+                result['source_better'] = False
+                result['dest_better'] = True
+                result['source_corrupt'] = True
+
+            # Copy recommendation
+            result['recommendation'] = deep_result.get('recommendation', 'keep_both')
+            result['reason'] = deep_result.get('reason', '')
+
+        except Exception as e:
+            logger.debug(f"Deep analysis failed: {e}")
+            result['deep_analysis'] = None
+
+    return result
+
+
 def deep_scan_library(config):
     """
     Deep scan library - the AUTISTIC LIBRARIAN approach.
@@ -3449,8 +7147,9 @@ def deep_scan_library(config):
     conn = get_db()
     c = conn.cursor()
 
-    scanned = 0
-    queued = 0
+    checked = 0  # Total book folders examined
+    scanned = 0  # New books added to tracking
+    queued = 0   # Books added to fix queue
     issues_found = {}  # path -> list of issues
 
     # Track files for duplicate detection
@@ -3499,10 +7198,13 @@ def deep_scan_library(config):
                 path_str = str(loose_file)
 
                 # Check if already in books table
-                c.execute('SELECT id FROM books WHERE path = ?', (path_str,))
+                c.execute('SELECT id, user_locked FROM books WHERE path = ?', (path_str,))
                 existing = c.fetchone()
 
                 if existing:
+                    # Skip user-locked books
+                    if existing['user_locked']:
+                        continue
                     book_id = existing['id']
                 else:
                     # Create books record for the loose file
@@ -3517,6 +7219,8 @@ def deep_scan_library(config):
                             VALUES (?, ?, ?, ?)''',
                          (book_id, f'loose_file_needs_folder:{filename}',
                           datetime.now().isoformat(), 1))  # High priority
+                # Set verification_layer=1 to start at Layer 1 (API lookup)
+                c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
                 queued += 1
                 issues_found[path_str] = ['loose_file_no_folder']
                 logger.info(f"Queued loose file: {filename} -> search for: {cleaned_filename}")
@@ -3535,10 +7239,13 @@ def deep_scan_library(config):
                     cleaned_filename = clean_search_title(filename)
                     path_str = str(loose_ebook)
 
-                    c.execute('SELECT id FROM books WHERE path = ?', (path_str,))
+                    c.execute('SELECT id, user_locked FROM books WHERE path = ?', (path_str,))
                     existing = c.fetchone()
 
                     if existing:
+                        # Skip user-locked books
+                        if existing['user_locked']:
+                            continue
                         book_id = existing['id']
                     else:
                         c.execute('''INSERT INTO books (path, current_author, current_title, status)
@@ -3551,6 +7258,8 @@ def deep_scan_library(config):
                                 VALUES (?, ?, ?, ?)''',
                              (book_id, f'ebook_loose:{filename}',
                               datetime.now().isoformat(), 2))
+                    # Set verification_layer=1 to start at Layer 1 (API lookup)
+                    c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
                     queued += 1
                     issues_found[path_str] = ['ebook_loose_file']
                     logger.info(f"Queued loose ebook: {filename}")
@@ -3561,6 +7270,17 @@ def deep_scan_library(config):
                 continue
 
             author = author_dir.name
+
+            # Issue #46: Skip watch folder if it's inside the library path
+            # This prevents the watch folder name from being used as an author
+            watch_folder = config.get('watch_folder', '').strip()
+            if watch_folder:
+                try:
+                    if author_dir.resolve() == Path(watch_folder).resolve():
+                        logger.debug(f"Skipping watch folder at author level: {author}")
+                        continue
+                except Exception:
+                    pass
 
             # Skip system folders at author level - these are NEVER authors
             author_system_folders = {'metadata', 'tmp', 'temp', 'cache', 'config', 'data', 'logs', 'log',
@@ -3577,9 +7297,49 @@ def deep_scan_library(config):
             direct_audio = [f for f in author_dir.iterdir()
                           if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
             if direct_audio:
-                # This "author" folder might actually be a book!
+                # This "author" folder is actually a book! Process it as such.
+                # This handles flat library structures where books are directly in the root
+                # (common with torrent downloads, Calibre-style exports, chaos test libraries, etc.)
                 issues_found[str(author_dir)] = author_issues + ["author_folder_has_audio_files"]
-                logger.warning(f"Author folder has audio files directly: {author}")
+                logger.info(f"Flat book folder detected (processing as book): {author}")
+
+                # Extract author/title from folder name
+                flat_author, flat_title = extract_author_title(author)
+                flat_path = str(author_dir)
+
+                checked += 1
+
+                # Check if already tracked
+                c.execute('SELECT id, status, profile, user_locked FROM books WHERE path = ?', (flat_path,))
+                existing_flat = c.fetchone()
+
+                if existing_flat:
+                    if existing_flat['user_locked']:
+                        continue
+                    if existing_flat['status'] in ['verified', 'fixed']:
+                        has_profile = existing_flat['profile'] and len(existing_flat['profile']) > 2
+                        if has_profile:
+                            continue
+                    flat_book_id = existing_flat['id']
+                else:
+                    c.execute('''INSERT INTO books (path, current_author, current_title, status)
+                                 VALUES (?, ?, ?, 'pending')''', (flat_path, flat_author, flat_title))
+                    conn.commit()
+                    flat_book_id = c.lastrowid
+                    scanned += 1
+                    logger.info(f"Added flat book: {flat_author} - {flat_title}")
+
+                # Queue for processing
+                c.execute('SELECT id FROM queue WHERE book_id = ?', (flat_book_id,))
+                if not c.fetchone():
+                    c.execute('''INSERT INTO queue (book_id, reason, priority)
+                                VALUES (?, ?, ?)''',
+                             (flat_book_id, 'flat_book_folder', 3))
+                    c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (flat_book_id,))
+                    conn.commit()
+                    queued += 1
+
+                continue  # Don't process subdirs as this is a flat book folder
 
             # Check if author folder has NO book subfolders (just disc folders)
             subdirs = [d for d in author_dir.iterdir() if d.is_dir()]
@@ -3594,6 +7354,19 @@ def deep_scan_library(config):
 
                 title = title_dir.name
                 path = str(title_dir)
+
+                # Issue #53: Strip author prefix from book folder name
+                # If folder is "David Baldacci - Dream Town" and parent is "David Baldacci",
+                # extract just "Dream Town" as the title
+                if author:
+                    _, extracted_title = extract_author_title(title)
+                    # Only use extracted title if it looks like we stripped the author
+                    if extracted_title != title:
+                        # Verify the stripped part matches the parent author
+                        stripped_author = title[:len(title) - len(extracted_title)].strip(' -–/')
+                        if calculate_title_similarity(stripped_author, author) >= 0.85:
+                            title = extracted_title
+                            logger.debug(f"Stripped author prefix from book folder: '{title_dir.name}' -> '{title}'")
 
                 # Skip if this looks like a disc/chapter folder
                 if is_disc_chapter_folder(title):
@@ -3612,10 +7385,10 @@ def deep_scan_library(config):
                     logger.debug(f"Skipping system folder: {path}")
                     continue
 
-                # Check if this is a SERIES folder containing multiple book subfolders
+                # Check if this is a SERIES folder containing book subfolders
                 # If so, skip it - we should process the books inside, not the series folder itself
                 subdirs = [d for d in title_dir.iterdir() if d.is_dir()]
-                if len(subdirs) >= 2:
+                if len(subdirs) >= 1:
                     # Count how many look like book folders (numbered, "Book N", etc.)
                     book_folder_patterns = [
                         r'^\d+\s*[-–—:.]?\s*\w',     # "01 Title", "1 - Title", "01. Title"
@@ -3628,54 +7401,125 @@ def deep_scan_library(config):
                         1 for d in subdirs
                         if any(re.search(p, d.name, re.IGNORECASE) for p in book_folder_patterns)
                     )
-                    if book_like_count >= 2:
-                        # This is a series folder, not a book - skip it
-                        logger.info(f"Skipping series folder (contains {book_like_count} book subfolders): {path}")
-                        # Mark in database as series_folder so we don't keep checking it
+                    # Issue #36 fix: Detect series folder even with just 1 book-like subfolder
+                    # Also check: if folder has no direct audio but subfolders do, it's a series folder
+                    direct_audio = [f for f in title_dir.iterdir()
+                                   if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
+                    subfolder_has_audio = any(
+                        any(f.suffix.lower() in AUDIO_EXTENSIONS for f in d.iterdir() if f.is_file())
+                        for d in subdirs
+                    )
+                    is_series = (book_like_count >= 1) or (not direct_audio and subfolder_has_audio and len(subdirs) >= 1)
+                    if is_series:
+                        # This is a series folder - process the book subfolders inside it
+                        series_name = title  # The folder name is the series name
+                        logger.info(f"Processing series folder '{series_name}' with {len(subdirs)} book subfolders: {path}")
+                        # Mark in database as series_folder
                         c.execute('SELECT id FROM books WHERE path = ?', (path,))
                         existing = c.fetchone()
                         if existing:
                             c.execute('UPDATE books SET status = ? WHERE id = ?', ('series_folder', existing['id']))
+                            # Issue #36: Remove from queue if it was previously queued
+                            # Series folders should never be in the processing queue
+                            c.execute('DELETE FROM queue WHERE book_id = ?', (existing['id'],))
                         else:
                             c.execute('''INSERT INTO books (path, current_author, current_title, status)
                                          VALUES (?, ?, ?, 'series_folder')''', (path, author, title))
                         conn.commit()
-                        continue
+
+                        # Process each book subfolder inside the series
+                        for book_dir in subdirs:
+                            if not book_dir.is_dir():
+                                continue
+                            book_title = book_dir.name
+                            book_path = str(book_dir)
+
+                            # Issue #53: Strip author prefix from book folder name
+                            # If folder is "David Baldacci - Dream Town" and parent is "David Baldacci",
+                            # extract just "Dream Town" as the title
+                            if author:
+                                _, extracted_title = extract_author_title(book_title)
+                                # Only use extracted title if it looks like we stripped the author
+                                if extracted_title != book_title:
+                                    # Verify the stripped part matches the parent author
+                                    stripped_author = book_title[:len(book_title) - len(extracted_title)].strip(' -–/')
+                                    if calculate_title_similarity(stripped_author, author) >= 0.85:
+                                        book_title = extracted_title
+                                        logger.debug(f"Stripped author prefix from book folder: '{book_dir.name}' -> '{book_title}'")
+
+                            # Skip disc/chapter folders
+                            if is_disc_chapter_folder(book_title):
+                                continue
+
+                            # Check for audio files in this book folder
+                            book_audio = [f for f in book_dir.iterdir()
+                                         if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
+                            if not book_audio:
+                                # Also check one level deeper (for disc subfolders)
+                                book_audio = [f for f in book_dir.rglob('*')
+                                             if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
+                            if not book_audio:
+                                continue  # No audio files, skip
+
+                            checked += 1
+
+                            # Check if already tracked
+                            c.execute('SELECT id, status, profile, user_locked FROM books WHERE path = ?', (book_path,))
+                            existing_book = c.fetchone()
+
+                            if existing_book:
+                                if existing_book['user_locked']:
+                                    continue
+                                if existing_book['status'] in ['verified', 'fixed']:
+                                    has_profile = existing_book['profile'] and len(existing_book['profile']) > 2
+                                    if has_profile:
+                                        continue
+                                book_id = existing_book['id']
+                            else:
+                                c.execute('''INSERT INTO books (path, current_author, current_title, status)
+                                             VALUES (?, ?, ?, 'pending')''', (book_path, author, book_title))
+                                conn.commit()
+                                book_id = c.lastrowid
+                                scanned += 1
+
+                            # Queue for processing
+                            c.execute('SELECT id FROM queue WHERE book_id = ?', (book_id,))
+                            if not c.fetchone():
+                                c.execute('''INSERT INTO queue (book_id, reason, priority)
+                                            VALUES (?, ?, ?)''',
+                                         (book_id, f'series_book:{series_name}', 3))
+                                c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
+                                conn.commit()
+                                queued += 1
+
+                        continue  # Done with this series folder
 
                 # Check if this folder contains multiple AUDIO FILES that look like different books
                 # (e.g., "Book 1.m4b", "Book 2.m4b" or "Necroscope Book 1.m4b", "Necroscope Book 2.m4b")
+                # Issue #29 fix: Use smart detection to avoid false positives on chapter files
                 audio_files = [f for f in title_dir.iterdir()
                                if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
                 if len(audio_files) >= 2:
-                    # Check if filenames indicate different book numbers
-                    book_file_patterns = [
-                        r'book\s*(\d+)',           # "Book 1", "Book 2"
-                        r'#(\d+)',                 # "#1", "#2"
-                        r'^(\d+)\s*[-–—:.]',       # "01 - Title", "02 - Title"
-                        r'[-_\s](\d+)[-_\s.]',     # " 1 ", "_1_", "-1-"
-                        r'volume\s*(\d+)',         # "Volume 1"
-                        r'vol\.?\s*(\d+)',         # "Vol 1", "Vol. 1"
-                    ]
-                    book_numbers_found = set()
-                    for f in audio_files:
-                        for pattern in book_file_patterns:
-                            match = re.search(pattern, f.stem, re.IGNORECASE)
-                            if match:
-                                book_numbers_found.add(match.group(1))
-                                break
+                    # Use smart multibook detection instead of brittle regex
+                    multibook_result = detect_multibook_vs_chapters(audio_files, config)
 
-                    if len(book_numbers_found) >= 2:
-                        # Multiple different book numbers found - this is a multi-book collection
-                        logger.info(f"Skipping multi-book collection (contains {len(book_numbers_found)} book files): {path}")
+                    if multibook_result['is_multibook']:
+                        # Confirmed multi-book collection - skip it
+                        logger.info(f"Skipping multi-book collection ({multibook_result['reason']}): {path}")
                         c.execute('SELECT id FROM books WHERE path = ?', (path,))
                         existing = c.fetchone()
                         if existing:
                             c.execute('UPDATE books SET status = ? WHERE id = ?', ('multi_book_files', existing['id']))
+                            # Issue #36: Remove from queue if it was previously queued
+                            c.execute('DELETE FROM queue WHERE book_id = ?', (existing['id'],))
                         else:
                             c.execute('''INSERT INTO books (path, current_author, current_title, status)
                                          VALUES (?, ?, ?, 'multi_book_files')''', (path, author, title))
                         conn.commit()
                         continue
+
+                # This is a valid book folder - count it
+                checked += 1
 
                 # Analyze title
                 title_issues = analyze_title(title, author)
@@ -3683,37 +7527,12 @@ def deep_scan_library(config):
 
                 all_issues = author_issues + title_issues + clean_issues
 
-                # CRITICAL: Detect REVERSED STRUCTURE (Series/Author instead of Author/Series)
-                # When: author folder looks like a title AND title folder looks like an author
-                author_looks_like_title = any(i in author_issues for i in [
-                    'year_in_author', 'title_words_in_author', 'author_contains_book_number',
-                    'not_a_name_pattern', 'author_starts_with_number'
-                ])
-                title_looks_like_author = 'title_looks_like_author' in title_issues
-
-                # Check if title folder is a proper name pattern (First Last)
-                title_is_name_pattern = bool(re.match(
-                    r'^[A-Z][a-z]+\s+[A-Z][a-z]+$|^[A-Z]\.\s*[A-Z][a-z]+$|^[A-Z][a-z]+,\s+[A-Z]',
-                    title
-                ))
-
-                if author_looks_like_title and (title_looks_like_author or title_is_name_pattern):
-                    # This is a reversed structure! Mark it specially
-                    all_issues = ['STRUCTURE_REVERSED'] + all_issues
-                    logger.info(f"Detected reversed structure: '{author}' is title, '{title}' is author")
-
-                    # Set status to 'structure_reversed' so we handle it differently
-                    c.execute('SELECT id FROM books WHERE path = ?', (path,))
-                    existing_rev = c.fetchone()
-                    if existing_rev:
-                        c.execute('UPDATE books SET status = ? WHERE id = ?',
-                                  ('structure_reversed', existing_rev['id']))
-                    else:
-                        c.execute('''INSERT INTO books (path, current_author, current_title, status)
-                                     VALUES (?, ?, ?, 'structure_reversed')''', (path, author, title))
-                    conn.commit()
-                    # Don't add to regular queue - needs special handling
-                    continue
+                # NOTE: Removed "reversed structure detection" in beta.69
+                # The old code tried to guess if author/title were swapped based on regex patterns.
+                # This caused false positives (Issue #52). Instead, we now let all items go through
+                # the normal API lookup flow. If the structure IS wrong, APIs won't find matches
+                # and the item will end up in "Needs Attention" for the user to fix manually.
+                # Trust the APIs, don't guess with patterns.
 
                 # Check for nested structure (disc folders inside book folder)
                 nested_dirs = [d for d in title_dir.iterdir() if d.is_dir()]
@@ -3739,12 +7558,30 @@ def deep_scan_library(config):
                     issues_found[path] = all_issues
 
                 # Add to database
-                c.execute('SELECT id, status FROM books WHERE path = ?', (path,))
+                c.execute('SELECT id, status, profile, user_locked FROM books WHERE path = ?', (path,))
                 existing = c.fetchone()
 
                 if existing:
-                    if existing['status'] in ['verified', 'fixed']:
+                    # Skip user-locked books - user has manually set metadata, never change it
+                    if existing['user_locked']:
                         continue
+
+                    # Skip books that are properly verified (have profile data)
+                    # Re-queue "legacy" verified books that have no profile
+                    if existing['status'] in ['verified', 'fixed']:
+                        has_profile = existing['profile'] and len(existing['profile']) > 2
+                        if has_profile:
+                            continue  # Properly verified, skip
+                        else:
+                            # Legacy verified without profile - re-queue for proper verification
+                            logger.info(f"Re-queuing legacy verified book (no profile): {author}/{title}")
+                            c.execute('UPDATE books SET status = ?, verification_layer = 1 WHERE id = ?',
+                                     ('pending', existing['id']))
+                            c.execute('''INSERT OR IGNORE INTO queue (book_id, reason, priority)
+                                        VALUES (?, ?, ?)''',
+                                     (existing['id'], 'legacy_needs_profile', 3))
+                            queued += 1
+                            continue
                     book_id = existing['id']
                 else:
                     c.execute('''INSERT INTO books (path, current_author, current_title, status)
@@ -3772,6 +7609,8 @@ def deep_scan_library(config):
                         c.execute('''INSERT INTO queue (book_id, reason, priority)
                                     VALUES (?, ?, ?)''',
                                  (book_id, reason, min(len(all_issues), 10)))
+                        # Set verification_layer=1 to start at Layer 1 (API lookup)
+                        c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
                         conn.commit()
                         queued += 1
 
@@ -3802,16 +7641,127 @@ def deep_scan_library(config):
     conn.close()
 
     logger.info(f"=== DEEP SCAN COMPLETE ===")
-    logger.info(f"Scanned: {scanned} new books")
-    logger.info(f"Queued: {queued} books with issues")
-    logger.info(f"Total issues found: {len(issues_found)} locations")
+    logger.info(f"Checked: {checked} book folders")
+    logger.info(f"Scanned: {scanned} new books added to tracking")
+    logger.info(f"Queued: {queued} books need fixing")
+    logger.info(f"Already correct: {checked - queued} books")
 
-    return scanned, queued
+    return checked, scanned, queued
 
 
-def scan_library(config):
-    """Wrapper that calls deep scan."""
-    return deep_scan_library(config)
+def scan_library(config, blocking=True):
+    """
+    Wrapper that calls deep scan with concurrency protection.
+
+    Issue #61: Prevents concurrent scans that cause SQLite UNIQUE constraint
+    and database locked errors.
+
+    Args:
+        config: Configuration dictionary
+        blocking: If True, wait for lock. If False, return immediately if busy.
+
+    Returns:
+        (checked, scanned, queued) tuple, or (0, 0, 0) if non-blocking and busy
+    """
+    global scan_in_progress
+
+    if not blocking:
+        # Non-blocking mode: return immediately if scan in progress
+        if scan_in_progress:
+            logger.info("Scan already in progress, skipping")
+            return (0, 0, 0)
+
+    with SCAN_LOCK:
+        scan_in_progress = True
+        try:
+            return deep_scan_library(config)
+        finally:
+            scan_in_progress = False
+
+def deep_verify_all_books(config):
+    """
+    Deep Verification Mode - "Hail Mary" full library audit.
+
+    Queues ALL books for API verification regardless of their current status
+    or how "clean" they look. This catches cases where folder structure looks
+    correct but the author attribution is actually wrong.
+
+    WARNING: This is expensive! It will:
+    - Make API calls for EVERY book in your library
+    - Take a very long time (hours for large libraries)
+    - Use significant API quota
+
+    Use this when:
+    - First importing a sketchy collection
+    - Suspecting widespread attribution issues
+    - Doing a one-time full audit
+    """
+    conn = get_db()
+    c = conn.cursor()
+
+    # Get ALL books that aren't user-locked or in special states
+    c.execute('''SELECT id, path, current_author, current_title, status, verification_layer, profile
+                 FROM books
+                 WHERE (user_locked IS NULL OR user_locked = 0)
+                   AND status NOT IN ('series_folder', 'multi_book_files', 'needs_split', 'needs_attention')''')
+
+    all_books = [dict(row) for row in c.fetchall()]
+
+    queued_count = 0
+    already_verified = 0
+    skipped = 0
+
+    for book in all_books:
+        book_id = book['id']
+
+        # Check if already has high-confidence profile from multiple sources
+        profile_json = book['profile']
+        if profile_json:
+            try:
+                profile = json.loads(profile_json)
+                # If profile has 3+ verification sources and 90%+ confidence, skip
+                layers_used = profile.get('verification_layers_used', [])
+                confidence = profile.get('overall_confidence', 0)
+                if len(layers_used) >= 3 and confidence >= 90:
+                    already_verified += 1
+                    continue
+            except:
+                pass
+
+        # Reset verification status and queue for fresh verification
+        c.execute('''UPDATE books
+                     SET status = 'pending',
+                         verification_layer = 1,
+                         profile = NULL,
+                         confidence = 0
+                     WHERE id = ?''', (book_id,))
+
+        # Add to queue if not already there
+        c.execute('SELECT id FROM queue WHERE book_id = ?', (book_id,))
+        if not c.fetchone():
+            c.execute('''INSERT INTO queue (book_id, reason, priority)
+                        VALUES (?, 'deep_verification', 5)''', (book_id,))
+            queued_count += 1
+        else:
+            # Already in queue - just update reason
+            c.execute('UPDATE queue SET reason = ?, priority = 5 WHERE book_id = ?',
+                     ('deep_verification', book_id))
+            queued_count += 1
+
+    conn.commit()
+    conn.close()
+
+    logger.info(f"=== DEEP VERIFICATION QUEUED ===")
+    logger.info(f"Queued for verification: {queued_count}")
+    logger.info(f"Already fully verified: {already_verified}")
+    logger.info(f"Total books checked: {len(all_books)}")
+
+    return {
+        'queued': queued_count,
+        'already_verified': already_verified,
+        'total': len(all_books)
+    }
+
 
 def check_rate_limit(config):
     """Check if we're within API rate limits. Returns (allowed, calls_this_hour, limit)."""
@@ -3836,14 +7786,808 @@ def check_rate_limit(config):
     return allowed, calls_today, max_per_hour
 
 
-def process_queue(config, limit=None):
-    """Process items in the queue."""
+# ============================================================================
+# NEW AUDIO-FIRST IDENTIFICATION SYSTEM
+# ============================================================================
+# Philosophy: Audio content is the SOURCE OF TRUTH, not folder names.
+# The narrator literally says "This is [Book] by [Author]" in the intro.
+# We transcribe that and use AI to parse it - THEN confirm with APIs.
+# ============================================================================
+
+def transcribe_audio_intro(file_path, duration_seconds=45):
+    """
+    Transcribe the INTRO of an audiobook (first 45 seconds).
+    This is where narrators typically announce: title, author, narrator.
+    Using 45 seconds keeps file size small for Gemini API (<5MB).
+
+    Returns: transcribed text or None
+    """
+    import subprocess
+    import tempfile
+
+    logger.info(f"[LAYER 1/AUDIO] Transcribing intro: {os.path.basename(str(file_path))}")
+
+    try:
+        # Check for symlink - resolve to real file for reading
+        file_path = Path(file_path)
+        if file_path.is_symlink():
+            file_path = file_path.resolve()
+            logger.debug(f"[LAYER 1/AUDIO] Resolved symlink to: {file_path}")
+
+        # First, try faster-whisper (local, free)
+        whisper_model = get_whisper_model()
+        if whisper_model:
+            # Extract intro clip - keep high quality audio for accurate transcription
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
+                tmp_path = tmp.name
+
+            # Use -ss BEFORE -i for fast input seeking
+            # Keep 22050Hz stereo for better quality than 16kHz mono
+            result = subprocess.run([
+                'ffmpeg', '-y',
+                '-ss', '0',  # Fast seek to start
+                '-i', str(file_path),
+                '-t', str(duration_seconds),  # Extract only this duration
+                '-acodec', 'libmp3lame', '-ar', '22050', '-ab', '128k',
+                tmp_path
+            ], capture_output=True, timeout=120)  # 120s for large m4b files with moov at end
+
+            if result.returncode == 0:
+                # Build initial prompt from folder hints to help with proper noun spelling
+                # Per OpenAI: "Fictitious prompts can steer the model to use particular spellings"
+                initial_prompt = "This is an audiobook introduction. The narrator typically announces the book title, author name, and narrator."
+
+                # Add folder hints to the prompt if available
+                folder_path = Path(file_path).parent
+                folder_name = folder_path.name
+                parent_name = folder_path.parent.name if folder_path.parent else ""
+
+                # Extract potential author/title from folder structure for spelling hints
+                hints = []
+                if parent_name and parent_name not in ['audiobooks', 'Unknown', '']:
+                    hints.append(parent_name)
+                if folder_name and folder_name not in ['audiobooks', 'Unknown', '']:
+                    hints.append(folder_name)
+
+                if hints:
+                    initial_prompt += f" Possible names: {', '.join(hints)}."
+
+                # Transcribe with better settings for accuracy
+                segments, info = whisper_model.transcribe(
+                    tmp_path,
+                    beam_size=5,
+                    language="en",  # Assume English for audiobooks
+                    initial_prompt=initial_prompt,
+                    word_timestamps=False,  # Not needed, saves processing
+                    vad_filter=True,  # Filter out silence/music for cleaner transcript
+                    vad_parameters=dict(
+                        min_silence_duration_ms=2000,  # 2 seconds - narrator pauses are normal
+                        speech_pad_ms=500,              # Pad speech segments
+                        threshold=0.3                   # Lower = less aggressive filtering
+                    )
+                )
+                transcript = " ".join([seg.text for seg in segments]).strip()
+                os.unlink(tmp_path)
+
+                if transcript and len(transcript) > 20:
+                    logger.info(f"[LAYER 1/AUDIO] Transcribed {len(transcript)} chars via whisper")
+                    return transcript
+
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+
+        # Fallback: OpenAI Whisper API
+        secrets = load_secrets()
+        openai_key = secrets.get('openai_api_key') if secrets else None
+
+        if openai_key:
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
+                tmp_path = tmp.name
+
+            # Use -ss BEFORE -i for fast input seeking
+            subprocess.run([
+                'ffmpeg', '-y',
+                '-ss', '0',
+                '-i', str(file_path),
+                '-t', str(duration_seconds),
+                '-acodec', 'libmp3lame', '-ar', '16000', '-ac', '1',
+                tmp_path
+            ], capture_output=True, timeout=120)  # 120s for large m4b files
+
+            with open(tmp_path, 'rb') as audio_file:
+                response = requests.post(
+                    'https://api.openai.com/v1/audio/transcriptions',
+                    headers={'Authorization': f'Bearer {openai_key}'},
+                    files={'file': audio_file},
+                    data={'model': 'whisper-1'},
+                    timeout=90
+                )
+
+            os.unlink(tmp_path)
+
+            if response.status_code == 200:
+                transcript = response.json().get('text', '')
+                logger.info(f"[LAYER 1/AUDIO] Transcribed {len(transcript)} chars via OpenAI")
+                return transcript
+
+        # Fallback 3: Use Gemini audio understanding (not transcription, but can extract intro)
+        config = load_config()
+        gemini_key = config.get('gemini_api_key')
+        if gemini_key and not is_circuit_open('gemini'):
+            logger.info("[LAYER 1/AUDIO] Trying Gemini audio analysis as fallback")
+            rate_limit_wait('gemini')  # Respect rate limits
+            # Extract intro clip
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
+                tmp_path = tmp.name
+
+            # Use -ss BEFORE -i for fast input seeking
+            result = subprocess.run([
+                'ffmpeg', '-y',
+                '-ss', '0',
+                '-i', str(file_path),
+                '-t', str(duration_seconds),
+                '-acodec', 'libmp3lame', '-ar', '16000', '-ac', '1',
+                tmp_path
+            ], capture_output=True, timeout=120)  # 120s for large m4b files
+
+            if result.returncode == 0 and os.path.exists(tmp_path):
+                # Read audio file and encode as base64
+                import base64
+                with open(tmp_path, 'rb') as f:
+                    audio_data = base64.standard_b64encode(f.read()).decode('utf-8')
+                os.unlink(tmp_path)
+
+                # Send to Gemini with audio
+                prompt = """Listen to this audiobook intro. Write out exactly what the narrator says, word for word.
+Focus on:
+- The book title announcement
+- The author name (who WROTE the book)
+- The narrator name (who is READING the book)
+- Any series information
+
+Just write what you hear - no interpretation or formatting."""
+
+                # Force gemini-2.0-flash for audio - other models don't support audio input
+                gemini_model = 'gemini-2.0-flash'  # Audio requires this model
+                response = requests.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent",
+                    params={'key': gemini_key},
+                    json={
+                        'contents': [{
+                            'parts': [
+                                {'text': prompt},
+                                {'inline_data': {'mime_type': 'audio/mp3', 'data': audio_data}}
+                            ]
+                        }]
+                    },
+                    timeout=60
+                )
+
+                if response.status_code == 200:
+                    text = response.json().get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+                    if text and len(text) > 20:
+                        logger.info(f"[LAYER 1/AUDIO] Gemini extracted {len(text)} chars from audio")
+                        return text
+                elif response.status_code == 429:
+                    # Rate limit or quota exceeded - trip circuit breaker
+                    try:
+                        error_detail = response.json().get('error', {}).get('message', response.text[:500])
+                    except:
+                        error_detail = response.text[:500]
+                    logger.warning(f"[LAYER 1/AUDIO] Gemini audio analysis failed: {response.status_code} - {error_detail}")
+                    if 'quota' in error_detail.lower() and ('limit: 0' in error_detail or 'exceeded' in error_detail.lower()):
+                        logger.warning("[LAYER 1/AUDIO] Daily quota exhausted - tripping circuit breaker")
+                        record_api_failure('gemini')
+                        record_api_failure('gemini')  # Trip immediately
+                else:
+                    # Log full error for debugging
+                    try:
+                        error_detail = response.json().get('error', {}).get('message', response.text[:200])
+                    except:
+                        error_detail = response.text[:200]
+                    logger.warning(f"[LAYER 1/AUDIO] Gemini audio analysis failed: {response.status_code} - {error_detail}")
+            else:
+                try:
+                    os.unlink(tmp_path)
+                except:
+                    pass
+
+        logger.warning("[LAYER 1/AUDIO] No transcription method available (no whisper, no OpenAI key, Gemini failed)")
+
+    except Exception as e:
+        logger.warning(f"[LAYER 1/AUDIO] Transcription failed: {e}")
+
+    return None
+
+
+def parse_transcript_with_ai(transcript, folder_hint=None, config=None):
+    """
+    Use AI to extract structured metadata from a transcription.
+
+    The narrator typically says something like:
+    "This is The Drawing of the Three, book two of the Dark Tower series,
+     by Stephen King, narrated by Frank Muller"
+
+    Returns: dict with author, title, narrator, series, series_num, confidence
+    """
+    if not transcript or len(transcript) < 20:
+        return None
+
+    config = config or load_config()
+
+    prompt = f"""You are extracting audiobook metadata from a transcription of the book's intro.
+
+TRANSCRIPTION (first 90 seconds of audiobook):
+\"\"\"{transcript[:1500]}\"\"\"
+
+{f"FOLDER HINT (may be wrong, use only if transcript is unclear): {folder_hint}" if folder_hint else ""}
+
+The narrator usually announces the book at the start. Extract:
+1. TITLE - The book's title
+2. AUTHOR - Who WROTE the book (not the narrator!)
+3. NARRATOR - Who is READING/performing the book
+4. SERIES - Series name if mentioned (null if standalone)
+5. SERIES_NUM - Book number in series if mentioned (null if not)
+
+IMPORTANT:
+- The AUTHOR is the writer, NOT the narrator/reader
+- If narrator says "written by X" or "by X", X is the author
+- If narrator says "read by Y" or "narrated by Y", Y is the narrator
+- Many intros say "Title by Author, narrated by Narrator"
+
+Return ONLY valid JSON:
+{{"title": "Book Title", "author": "Author Name", "narrator": "Narrator Name", "series": "Series Name or null", "series_num": "1 or null", "confidence": "high/medium/low"}}
+
+If you cannot identify the book from the transcript, return:
+{{"title": null, "author": null, "narrator": null, "series": null, "series_num": null, "confidence": "none", "reason": "why"}}"""
+
+    try:
+        # Try Gemini first
+        if config.get('gemini_api_key'):
+            api_key = config.get('gemini_api_key')
+            model = config.get('gemini_model', 'gemini-2.0-flash')
+
+            response = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                params={'key': api_key},
+                json={'contents': [{'parts': [{'text': prompt}]}]},
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                text = response.json().get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+                result = parse_json_response(text)
+                if result:
+                    logger.info(f"[LAYER 1/AUDIO] AI parsed: {result.get('author', '?')} - {result.get('title', '?')}")
+                    return result
+
+        # Fallback to OpenRouter
+        if config.get('openrouter_api_key'):
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    'Authorization': f"Bearer {config['openrouter_api_key']}",
+                    'Content-Type': 'application/json'
+                },
+                json={
+                    'model': config.get('openrouter_model', 'google/gemini-flash-1.5'),
+                    'messages': [{'role': 'user', 'content': prompt}]
+                },
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                text = response.json().get('choices', [{}])[0].get('message', {}).get('content', '')
+                result = parse_json_response(text)
+                if result:
+                    logger.info(f"[LAYER 1/AUDIO] AI parsed: {result.get('author', '?')} - {result.get('title', '?')}")
+                    return result
+
+    except Exception as e:
+        logger.warning(f"[LAYER 1/AUDIO] AI parsing failed: {e}")
+
+    return None
+
+
+def process_layer_1_audio(config, limit=None):
+    """
+    NEW Layer 1: Audio Transcription + AI Parsing
+
+    Philosophy: Audio is the source of truth. Narrators announce the book.
+    1. Transcribe first 90 seconds (the intro)
+    2. AI extracts: author, title, narrator, series
+    3. High confidence → identified
+    4. Low confidence → advance to Layer 2 (audio clip analysis)
+
+    This replaces the old "trust folder names" approach.
+    """
+    batch_size = limit or config.get('batch_size', 3)
+
+    # Get items from queue
+    conn = get_db()
+    c = conn.cursor()
+
+    # Process items that haven't been through audio identification yet
+    # ALSO include 'needs_attention' items - they failed old system, might succeed with audio
+    c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
+                        b.path, b.current_author, b.current_title, b.verification_layer
+                 FROM queue q
+                 JOIN books b ON q.book_id = b.id
+                 WHERE b.verification_layer IN (0, 1)
+                   AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files')
+                   AND (b.user_locked IS NULL OR b.user_locked = 0)
+                 ORDER BY q.priority, q.added_at
+                 LIMIT ?''', (batch_size,))
+    batch = [dict(row) for row in c.fetchall()]
+    conn.close()
+
+    if not batch:
+        return 0, 0
+
+    logger.info(f"[LAYER 1/AUDIO] Processing {len(batch)} items via audio transcription")
+
+    processed = 0
+    resolved = 0
+
+    for row in batch:
+        book_path = row['path']
+        folder_hint = f"{row['current_author']} - {row['current_title']}"
+
+        # Find first audio file
+        audio_file = None
+        for ext in ['.m4b', '.mp3', '.m4a', '.flac', '.ogg']:
+            files = list(Path(book_path).glob(f'*{ext}'))
+            if files:
+                audio_file = files[0]
+                break
+
+        if not audio_file:
+            # No audio file - this is likely an ebook. Try to identify from filename + BookDB
+            filename = os.path.basename(book_path)
+            logger.debug(f"[EBOOK] No audio, trying filename + BookDB for: {filename}")
+            ebook_result = identify_ebook_from_filename(filename, book_path, config)
+
+            if ebook_result and ebook_result.get('author') and ebook_result.get('title'):
+                # Got identification from filename + BookDB!
+                author = ebook_result.get('author')
+                title = ebook_result.get('title')
+                confidence = ebook_result.get('confidence', 'medium')
+                source = ebook_result.get('source', 'bookdb')
+
+                logger.info(f"[EBOOK] Identified via {source}: {author} - {title} ({confidence})")
+
+                # Check if different from current
+                current_author = row['current_author'] or ''
+                current_title = row['current_title'] or ''
+                if author.lower() != current_author.lower() or title.lower() != current_title.lower():
+                    conn = get_db()
+                    c = conn.cursor()
+
+                    # Update book with ebook-identified info
+                    profile = {
+                        'author': {'value': author, 'source': source, 'confidence': 80 if confidence == 'high' else 50},
+                        'title': {'value': title, 'source': source, 'confidence': 80 if confidence == 'high' else 50},
+                    }
+                    if ebook_result.get('series'):
+                        profile['series'] = {'value': ebook_result['series'], 'source': source, 'confidence': 70}
+                    if ebook_result.get('series_num'):
+                        profile['series_num'] = {'value': ebook_result['series_num'], 'source': source, 'confidence': 70}
+
+                    c.execute('''UPDATE books SET status = 'pending',
+                                profile = ?, confidence = ?, verification_layer = 2
+                                WHERE id = ?''',
+                              (json.dumps(profile), 80 if confidence == 'high' else 50, row['book_id']))
+
+                    # Add to history as pending fix
+                    c.execute('''INSERT INTO history
+                                (book_id, old_author, old_title, new_author, new_title, new_series, new_series_num, status)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
+                             (row['book_id'], row['current_author'], row['current_title'],
+                              author, title, ebook_result.get('series'), ebook_result.get('series_num')))
+
+                    # Remove from queue
+                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                    conn.commit()
+                    conn.close()
+                    resolved += 1
+                else:
+                    # Only mark as verified if we have confidence in the identification
+                    book_confidence = row.get('confidence', 0) or 0
+                    conn = get_db()
+                    c = conn.cursor()
+                    if book_confidence >= 40:
+                        logger.info(f"[EBOOK] Already correct (conf={book_confidence}): {current_author}/{current_title}")
+                        c.execute('UPDATE books SET status = ?, verification_layer = 2 WHERE id = ?',
+                                  ('verified', row['book_id']))
+                        resolved += 1
+                    else:
+                        logger.info(f"[EBOOK] Needs attention (low conf={book_confidence}): {current_author}/{current_title}")
+                        c.execute('UPDATE books SET status = ?, verification_layer = 2, error_message = ? WHERE id = ?',
+                                  ('needs_attention', f'Low confidence ({book_confidence}) - ebook needs manual verification', row['book_id']))
+                    conn.commit()
+                    conn.close()
+
+                processed += 1
+                continue
+
+            # Ebook identification failed - advance to Layer 2 for API lookups
+            logger.debug(f"[EBOOK] Filename parsing failed, advancing to Layer 2: {book_path}")
+            conn = get_db()
+            c = conn.cursor()
+            c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (row['book_id'],))
+            conn.commit()
+            conn.close()
+            processed += 1
+            continue
+
+        # === TRY BOOKDB API FIRST (GPU Whisper + 50M book database) ===
+        # This avoids Gemini rate limits and is faster
+        result = None
+        transcript = None
+
+        if config.get('use_bookdb_for_audio', True):
+            result = identify_audio_with_bookdb(audio_file)
+            if result and result.get('author') and result.get('title'):
+                # BookDB got a full identification - use it!
+                logger.info(f"[LAYER 1/AUDIO] BookDB identified: {result['author']} - {result['title']}")
+            else:
+                # BookDB didn't get a full match - might have a transcript though
+                transcript = result.get('transcript') if result else None
+                result = None  # Clear partial result to trigger AI fallback
+        else:
+            logger.info(f"[LAYER 1/AUDIO] BookDB audio disabled, using local transcription + AI")
+
+        # If no result yet, try local transcription + AI
+        if not result:
+            if not transcript:
+                # No transcript from BookDB (or BookDB disabled), do local transcription
+                transcript = transcribe_audio_intro(audio_file)
+
+            if not transcript:
+                logger.warning(f"[LAYER 1/AUDIO] Transcription failed, advancing to Layer 2: {book_path}")
+                conn = get_db()
+                c = conn.cursor()
+                # Reset status to pending if it was needs_attention - we still have more layers to try
+                c.execute('''UPDATE books SET verification_layer = 2,
+                            status = CASE WHEN status = 'needs_attention' THEN 'pending' ELSE status END
+                            WHERE id = ?''', (row['book_id'],))
+                conn.commit()
+                conn.close()
+                processed += 1
+                continue
+
+            # Parse with AI (fallback path - when BookDB disabled or didn't identify)
+            result = parse_transcript_with_ai(transcript, folder_hint, config)
+
+        if result and result.get('author') and result.get('title') and result.get('confidence') != 'none':
+            # Got identification from audio!
+            author = result.get('author')
+            title = result.get('title')
+            narrator = result.get('narrator')
+            series = result.get('series')
+            series_num = result.get('series_num')
+            confidence = result.get('confidence', 'medium')
+
+            logger.info(f"[LAYER 1/AUDIO] Identified from audio: {author} - {title} ({confidence})")
+
+            # Check if different from current (handle None values)
+            current_author = row['current_author'] or ''
+            current_title = row['current_title'] or ''
+            if author.lower() != current_author.lower() or title.lower() != current_title.lower():
+                # Needs fix - will be handled by existing fix mechanism
+                conn = get_db()
+                c = conn.cursor()
+
+                # Update book with audio-identified info
+                profile = {
+                    'author': {'value': author, 'source': 'audio_transcription', 'confidence': 85 if confidence == 'high' else 70},
+                    'title': {'value': title, 'source': 'audio_transcription', 'confidence': 85 if confidence == 'high' else 70},
+                }
+                if narrator:
+                    profile['narrator'] = {'value': narrator, 'source': 'audio_transcription', 'confidence': 80}
+                if series:
+                    profile['series'] = {'value': series, 'source': 'audio_transcription', 'confidence': 75}
+                if series_num:
+                    profile['series_num'] = {'value': str(series_num), 'source': 'audio_transcription', 'confidence': 75}
+
+                c.execute('''UPDATE books SET
+                            current_author = ?, current_title = ?,
+                            status = 'pending_fix', verification_layer = 3,
+                            profile = ?, confidence = ?
+                            WHERE id = ?''',
+                         (author, title, json.dumps(profile),
+                          85 if confidence == 'high' else 70, row['book_id']))
+
+                # Add to history
+                c.execute('''INSERT INTO history
+                            (book_id, old_author, old_title, new_author, new_title, new_narrator, new_series, new_series_num, status)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
+                         (row['book_id'], row['current_author'], row['current_title'],
+                          author, title, narrator, series, series_num))
+
+                # Remove from queue
+                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                conn.commit()
+                conn.close()
+
+                resolved += 1
+            else:
+                # Already correct - but update confidence since we did identify via audio
+                audio_confidence = 85 if confidence == 'high' else 70
+                conn = get_db()
+                c = conn.cursor()
+                c.execute('UPDATE books SET status = ?, verification_layer = 3, confidence = ? WHERE id = ?',
+                         ('verified', audio_confidence, row['book_id']))
+                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                conn.commit()
+                conn.close()
+
+                logger.info(f"[LAYER 1/AUDIO] Already correct (conf={audio_confidence}): {author}/{title}")
+                resolved += 1
+        else:
+            # Couldn't identify from transcript, advance to Layer 2
+            logger.info(f"[LAYER 1/AUDIO] Unclear transcript, advancing to Layer 2: {folder_hint}")
+            conn = get_db()
+            c = conn.cursor()
+            # Reset status to pending if it was needs_attention - we still have more layers to try
+            c.execute('''UPDATE books SET verification_layer = 2,
+                        status = CASE WHEN status = 'needs_attention' THEN 'pending' ELSE status END
+                        WHERE id = ?''', (row['book_id'],))
+            conn.commit()
+            conn.close()
+
+        processed += 1
+
+    logger.info(f"[LAYER 1/AUDIO] Processed {processed}, resolved {resolved} via audio transcription")
+    return processed, resolved
+
+
+def process_layer_1_api(config, limit=None):
+    """
+    Layer 1: API Database Lookups
+
+    Processes items at verification_layer=1 using API databases (BookDB, Audnexus, etc.)
+    Items that get a confident match are marked complete.
+    Items that fail are advanced to layer 2 (AI verification).
+
+    This is faster and cheaper than AI, so we try it first.
+
+    NOTE: This function uses a 3-phase approach to avoid holding DB locks during
+    external API calls (which can take 10-30+ seconds for a batch):
+      Phase 1: Quick fetch, release connection
+      Phase 2: External API work (no DB connection held)
+      Phase 3: Quick write, release connection
+    """
+    if not config.get('enable_api_lookups', True):
+        logger.info("[LAYER 1] API lookups disabled, skipping")
+        return 0, 0
+
+    # === PHASE 1: Fetch batch (quick read, release connection immediately) ===
+    conn = get_db()
+    c = conn.cursor()
+
+    batch_size = limit or config.get('batch_size', 3)
+    confidence_threshold = config.get('profile_confidence_threshold', 85)
+
+    # Get items awaiting API lookup (layer 1) or new items (layer 0)
+    # Skip user-locked books - user has manually set metadata
+    c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
+                        b.path, b.current_author, b.current_title, b.verification_layer
+                 FROM queue q
+                 JOIN books b ON q.book_id = b.id
+                 WHERE b.verification_layer IN (0, 1)
+                   AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                   AND (b.user_locked IS NULL OR b.user_locked = 0)
+                 ORDER BY q.priority, q.added_at
+                 LIMIT ?''', (batch_size,))
+    # Convert to dicts immediately - sqlite3.Row objects become invalid after conn.close()
+    batch = [dict(row) for row in c.fetchall()]
+    conn.close()  # Release DB lock BEFORE external API calls
+
+    if not batch:
+        return 0, 0
+
+    logger.info(f"[LAYER 1] Processing {len(batch)} items via API lookup")
+
+    # === PHASE 2: External API lookups (NO database connection held) ===
+    # Collect all actions to perform, then apply them in phase 3
+    actions = []  # List of action dicts describing what to do for each item
+
+    for row in batch:
+        current_author = row['current_author']
+        current_title = row['current_title']
+
+        # Use existing API candidate gathering function (EXTERNAL CALLS HAPPEN HERE)
+        candidates = gather_all_api_candidates(current_title, current_author, config)
+
+        # Determine what action to take based on API results
+        action = {
+            'book_id': row['book_id'],
+            'queue_id': row['queue_id'],
+            'type': None,  # Will be set below
+            'profile_json': None,
+            'confidence': None,
+            'log_message': None
+        }
+
+        if candidates:
+            # Issue #57 (Merijeek): Vote by author popularity across APIs
+            # If 6 APIs say "Charles Stross" and 1 says "China Mieville", Charles Stross should win
+            from collections import Counter
+
+            # Normalize author names for comparison (lowercase, strip whitespace)
+            def normalize_author(a):
+                return (a or '').lower().strip()
+
+            # Count votes for each author
+            author_votes = Counter()
+            author_to_candidate = {}  # Map normalized author -> best candidate with that author
+
+            for candidate in candidates:
+                norm_author = normalize_author(candidate.get('author'))
+                if norm_author and norm_author not in ['unknown', 'various', 'various authors', 'n/a', 'none']:
+                    author_votes[norm_author] += 1
+                    # Keep track of the candidate (prefer ones with series info)
+                    existing = author_to_candidate.get(norm_author)
+                    if not existing or (candidate.get('series') and not existing.get('series')):
+                        author_to_candidate[norm_author] = candidate
+
+            best_match = None
+
+            if author_votes:
+                # Get the most common author
+                most_common_author, vote_count = author_votes.most_common(1)[0]
+
+                # If current author matches the winner OR has more than 1 vote, use the winner
+                current_norm = normalize_author(current_author)
+
+                if vote_count > 1 or is_placeholder_author(current_author):
+                    # Multiple APIs agree OR current author is placeholder - trust the vote
+                    best_match = author_to_candidate.get(most_common_author)
+                    if vote_count > 1:
+                        logger.debug(f"[LAYER 1] Author vote: '{most_common_author}' won with {vote_count} votes")
+                elif current_norm == most_common_author:
+                    # Current author matches the winner - good!
+                    best_match = author_to_candidate.get(most_common_author)
+                elif current_norm in author_to_candidate:
+                    # Current author is in candidates but didn't win - still use it if only 1 vote each
+                    # This handles ties gracefully
+                    best_match = author_to_candidate.get(current_norm)
+                else:
+                    # Current author not in candidates at all - use the vote winner
+                    best_match = author_to_candidate.get(most_common_author)
+
+            if not best_match:
+                best_match = candidates[0]  # Ultimate fallback
+
+            # Check if this is a good enough match
+            match_title = best_match.get('title', '')
+            match_author = best_match.get('author', '')
+
+            if match_title and match_author:
+                # Calculate match confidence using word overlap similarity (returns 0.0-1.0)
+                title_sim = calculate_title_similarity(current_title, match_title) if current_title else 0
+
+                # IMPORTANT: If author is placeholder (Unknown, Various, etc.), we CANNOT verify as-is
+                # The book needs to be fixed, not verified. Advance to Layer 2 for proper identification.
+                if is_placeholder_author(current_author):
+                    action['type'] = 'advance_to_layer2'
+                    action['log_message'] = f"[LAYER 1] Placeholder author '{current_author}', advancing to AI for identification: {current_title}"
+                else:
+                    author_sim = calculate_title_similarity(current_author, match_author)
+                    avg_confidence = (title_sim + author_sim) / 2
+
+                    # confidence_threshold is 0-100 scale, convert to 0-1
+                    threshold = confidence_threshold / 100.0 if confidence_threshold > 1 else confidence_threshold
+                    if avg_confidence >= threshold:
+                        # Good match found - check if current values are correct or need fixing
+                        if title_sim >= 0.90 and author_sim >= 0.90:
+                            # Book is already correctly named - mark as verified and remove from queue
+                            action['type'] = 'verified'
+                            action['log_message'] = f"[LAYER 1] Verified OK ({avg_confidence:.0%}): {current_author}/{current_title}"
+
+                            # Create profile with verification source
+                            api_source = best_match.get('source', 'api')
+                            profile = BookProfile()
+                            profile.author.add_source(api_source, match_author)
+                            profile.title.add_source(api_source, match_title)
+                            if best_match.get('series'):
+                                profile.series.add_source(api_source, best_match['series'])
+                            if best_match.get('series_num'):
+                                profile.series_num.add_source(api_source, best_match['series_num'])
+
+                            # Issue #57: Fallback - extract series from title if API didn't provide it
+                            # This ensures consistent series detection between Layer 1 and Layer 2
+                            if not best_match.get('series'):
+                                extracted_series, extracted_num, _ = extract_series_from_title(match_title)
+                                if extracted_series:
+                                    profile.series.add_source('path', extracted_series)
+                                    if extracted_num:
+                                        profile.series_num.add_source('path', extracted_num)
+
+                            profile.verification_layers_used = ['api']
+                            profile.finalize()
+
+                            action['profile_json'] = json.dumps(profile.to_dict())
+                            action['confidence'] = profile.overall_confidence
+                        else:
+                            # API found the book but current values differ - let Layer 2 handle the fix
+                            action['type'] = 'advance_to_layer2'
+                            action['log_message'] = f"[LAYER 1] API match needs fix ({avg_confidence:.0%}, title={title_sim:.0%}, author={author_sim:.0%}): {current_author}/{current_title} -> {match_author}/{match_title}"
+                    else:
+                        # Low confidence - advance to AI layer
+                        action['type'] = 'advance_to_layer2'
+                        action['log_message'] = f"[LAYER 1] API match low confidence ({avg_confidence:.0f}%), advancing to AI: {current_author}/{current_title}"
+            else:
+                # No good match found - advance to AI
+                action['type'] = 'advance_to_layer2'
+                action['log_message'] = f"[LAYER 1] No API match, advancing to AI: {current_author}/{current_title}"
+        else:
+            # No candidates at all - advance to AI
+            action['type'] = 'advance_to_layer2'
+            action['log_message'] = f"[LAYER 1] No API candidates, advancing to AI: {current_author}/{current_title}"
+
+        actions.append(action)
+
+    # === PHASE 3: Apply all updates (quick write, release connection) ===
+    conn = get_db()
+    c = conn.cursor()
+
+    processed = 0
+    resolved = 0
+
+    for action in actions:
+        # Log the message (was logged inline before, now batched)
+        if action['log_message']:
+            logger.info(action['log_message'])
+
+        if action['type'] == 'verified':
+            # Save profile and mark as verified
+            c.execute('UPDATE books SET status = ?, verification_layer = 4, profile = ?, confidence = ? WHERE id = ?',
+                     ('verified', action['profile_json'], action['confidence'], action['book_id']))
+            c.execute('DELETE FROM queue WHERE id = ?', (action['queue_id'],))
+            resolved += 1
+        elif action['type'] == 'advance_to_layer2':
+            c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (action['book_id'],))
+
+        processed += 1
+
+    conn.commit()
+    conn.close()
+
+    logger.info(f"[LAYER 1] Processed {processed}, resolved {resolved} via API")
+    return processed, resolved
+
+
+def process_queue(config, limit=None, verification_layer=2):
+    """
+    Process items in the queue using AI verification.
+
+    Args:
+        config: Configuration dict
+        limit: Max items to process
+        verification_layer: Which layer's items to process (2=AI, 4=folder fallback)
+
+    NOTE: This function uses a 3-phase approach to avoid holding DB locks during
+    external AI API calls (which can take 5-30+ seconds):
+      Phase 1: Quick fetch, release connection
+      Phase 2: External AI call (no DB connection held)
+      Phase 3: Reconnect and process results
+    """
     # Check rate limit first
     allowed, calls_made, max_calls = check_rate_limit(config)
     if not allowed:
         logger.warning(f"Rate limit reached: {calls_made}/{max_calls} calls. Waiting...")
         return 0, 0
 
+    # Check if AI verification is enabled (before opening connection)
+    if not config.get('enable_ai_verification', True):
+        logger.info("[LAYER 2] AI verification disabled, skipping")
+        return 0, 0
+
+    # === PHASE 1: Fetch batch (quick read, release connection immediately) ===
     conn = get_db()
     c = conn.cursor()
 
@@ -3851,22 +8595,43 @@ def process_queue(config, limit=None):
     if limit:
         batch_size = min(batch_size, limit)
 
-    logger.info(f"[DEBUG] process_queue called with batch_size={batch_size}, limit={limit} (API: {calls_made}/{max_calls})")
+    layer_name = "LAYER 2/AI" if verification_layer == 2 else f"LAYER {verification_layer}"
+    logger.info(f"[{layer_name}] process_queue called with batch_size={batch_size}, limit={limit}, layer={verification_layer} (API: {calls_made}/{max_calls})")
 
-    # Get batch from queue
-    c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
-                        b.path, b.current_author, b.current_title
-                 FROM queue q
-                 JOIN books b ON q.book_id = b.id
-                 ORDER BY q.priority, q.added_at
-                 LIMIT ?''', (batch_size,))
-    batch = c.fetchall()
+    # Get batch from queue - process items at specified verification_layer
+    # Skip user-locked books - user has manually set metadata
+    api_enabled = config.get('enable_api_lookups', True)
+    if api_enabled or verification_layer == 4:
+        # Process items at specified layer (or layer 4 for folder fallback)
+        c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
+                            b.path, b.current_author, b.current_title,
+                            b.confidence, b.profile
+                     FROM queue q
+                     JOIN books b ON q.book_id = b.id
+                     WHERE b.verification_layer = ?
+                       AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                       AND (b.user_locked IS NULL OR b.user_locked = 0)
+                     ORDER BY q.priority, q.added_at
+                     LIMIT ?''', (verification_layer, batch_size))
+    else:
+        # API disabled - process all queue items directly with AI
+        c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
+                            b.path, b.current_author, b.current_title,
+                            b.confidence, b.profile
+                     FROM queue q
+                     JOIN books b ON q.book_id = b.id
+                     WHERE b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                       AND (b.user_locked IS NULL OR b.user_locked = 0)
+                     ORDER BY q.priority, q.added_at
+                     LIMIT ?''', (batch_size,))
+    # Convert to dicts immediately - sqlite3.Row objects become invalid after conn.close()
+    batch = [dict(row) for row in c.fetchall()]
+    conn.close()  # Release DB lock BEFORE external AI call
 
-    logger.info(f"[DEBUG] Fetched {len(batch)} items from queue")
+    logger.info(f"[{layer_name}] Fetched {len(batch)} items from queue")
 
     if not batch:
-        logger.info("[DEBUG] No items in batch, returning 0")
-        conn.close()
+        logger.info(f"[{layer_name}] No items in batch, returning 0")
         return 0, 0  # (processed, fixed)
 
     # Build messy names for AI
@@ -3876,19 +8641,22 @@ def process_queue(config, limit=None):
     for i, name in enumerate(messy_names):
         logger.info(f"[DEBUG]   Item {i+1}: {name}")
 
+    # === PHASE 2: External AI call (NO database connection held) ===
     results = call_ai(messy_names, config)
     logger.info(f"[DEBUG] AI returned {len(results) if results else 0} results")
+
+    if not results:
+        logger.warning("No results from AI")
+        return 0, 0  # (processed, fixed)
+
+    # === PHASE 3: Process results and apply DB updates ===
+    conn = get_db()
+    c = conn.cursor()
 
     # Update API call stats (INSERT if not exists, then UPDATE to preserve other columns)
     today = datetime.now().strftime('%Y-%m-%d')
     c.execute('INSERT OR IGNORE INTO stats (date) VALUES (?)', (today,))
     c.execute('UPDATE stats SET api_calls = COALESCE(api_calls, 0) + 1 WHERE date = ?', (today,))
-
-    if not results:
-        logger.warning("No results from AI")
-        conn.commit()
-        conn.close()
-        return 0, 0  # (processed, fixed)
 
     processed = 0
     fixed = 0
@@ -3913,23 +8681,13 @@ def process_queue(config, limit=None):
                     processed += 1
                     continue
 
-            # Check for multiple book FILES
+            # Check for multiple book FILES using smart detection (Issue #29 fix)
             audio_files = [f for f in old_path.iterdir()
                            if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
             if len(audio_files) >= 2:
-                book_file_patterns = [
-                    r'book\s*(\d+)', r'#(\d+)', r'^(\d+)\s*[-–—:.]',
-                    r'[-_\s](\d+)[-_\s.]', r'volume\s*(\d+)', r'vol\.?\s*(\d+)'
-                ]
-                book_numbers = set()
-                for f in audio_files:
-                    for pattern in book_file_patterns:
-                        match = re.search(pattern, f.stem, re.IGNORECASE)
-                        if match:
-                            book_numbers.add(match.group(1))
-                            break
-                if len(book_numbers) >= 2:
-                    logger.warning(f"BLOCKED: {row['path']} contains {len(book_numbers)} different book files - skipping")
+                multibook_result = detect_multibook_vs_chapters(audio_files, config)
+                if multibook_result['is_multibook']:
+                    logger.warning(f"BLOCKED: {row['path']} is multibook ({multibook_result['reason']}) - skipping")
                     c.execute('UPDATE books SET status = ? WHERE id = ?', ('multi_book_files', row['book_id']))
                     c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                     processed += 1
@@ -3943,6 +8701,57 @@ def process_queue(config, limit=None):
         new_year = result.get('year')  # Publication year
         new_edition = (result.get('edition') or '').strip() or None  # Anniversary, Unabridged, etc.
         new_variant = (result.get('variant') or '').strip() or None  # Graphic Audio, Full Cast, BBC Radio
+
+        # CRITICAL: Catch AI returning literal "None" or "null" as strings
+        # This happens when AI misunderstands the JSON format or the book
+        null_strings = {'none', 'null', 'n/a', 'unknown', 'untitled', ''}
+        if new_title.lower() in null_strings:
+            logger.warning(f"AI returned invalid title '{new_title}' - treating as empty")
+            new_title = ''
+        if new_author.lower() in null_strings:
+            logger.warning(f"AI returned invalid author '{new_author}' - treating as empty")
+            new_author = ''
+
+        # CRITICAL: Detect when AI swaps author/title (common when folder has title first)
+        # If new_title looks like current_author and new_author looks like current_title, swap them
+        if new_author and new_title and row.get('current_author') and row.get('current_title'):
+            # Check if AI accidentally swapped them
+            current_author_clean = row['current_author'].lower().strip()
+            current_title_clean = row['current_title'].lower().strip()
+            new_author_clean = new_author.lower().strip()
+            new_title_clean = new_title.lower().strip()
+
+            # If new_author matches old_title and new_title matches old_author, AI swapped them
+            if (new_author_clean == current_title_clean and new_title_clean == current_author_clean):
+                logger.warning(f"AI appears to have swapped author/title, correcting: {new_author}/{new_title} -> {new_title}/{new_author}")
+                new_author, new_title = new_title, new_author
+
+        # CRITICAL: Known narrators that AI sometimes mistakes for authors
+        # These are famous audiobook narrators, NOT authors
+        known_narrators = {
+            'scott brick', 'ray porter', 'luke daniels', 'wil wheaton', 'steven pacey',
+            'tim gerard reynolds', 'r.c. bray', 'rc bray', 'nick podehl', 'simon vance',
+            'michael kramer', 'kate reading', 'january lavoy', 'rebecca soler',
+            'kirby heyborne', 'stephen fry', 'rob inglis', 'toby longworth',
+            'joe morton', 'bahni turpin', 'robin miles', 'dion graham'
+        }
+        if new_author.lower() in known_narrators:
+            # Narrator mistaken for author - flag for attention
+            logger.warning(f"AI returned narrator '{new_author}' as author - flagging for attention")
+            c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                     ('needs_attention', f"AI returned narrator '{new_author}' as author - needs manual review", row['book_id']))
+            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+            processed += 1
+            continue
+
+        # Auto-save narrator to BookDB if we found one
+        if new_narrator:
+            auto_save_narrator(new_narrator, source='ai_extract')
+
+        # Issue #57: Apply author initials standardization if enabled
+        # This ensures "Peter F Hamilton" becomes "Peter F. Hamilton" consistently
+        if config.get('standardize_author_initials', False) and new_author:
+            new_author = standardize_initials(new_author)
 
         # If AI didn't detect series, try to extract it from title patterns
         # First try the ORIGINAL title (has series info like "The Reckoners, Book 2 - Firefight")
@@ -3978,11 +8787,37 @@ def process_queue(config, limit=None):
                     logger.info(f"Extracted series from new title: '{extracted_series}' #{extracted_num} - '{extracted_title}'")
 
         if not new_author or not new_title:
-            # Remove from queue, mark as verified
-            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-            c.execute('UPDATE books SET status = ? WHERE id = ?', ('verified', row['book_id']))
+            # AI couldn't identify the book - decide what to do based on existing verification
+            # Check if book was already verified by Layer 1 (has profile with confidence)
+            book_confidence = row.get('confidence', 0) or 0
+            has_profile = row.get('profile') is not None and row.get('profile') != ''
+
+            if is_placeholder_author(row['current_author']):
+                # Placeholder author - advance to Layer 3 for audio analysis
+                if config.get('enable_audio_analysis', False):
+                    logger.info(f"Advancing to Layer 3 (AI empty, placeholder author '{row['current_author']}'): {row['current_title']}")
+                    c.execute('UPDATE books SET verification_layer = 3 WHERE id = ?', (row['book_id'],))
+                    conn.commit()
+                    processed += 1
+                    continue
+                else:
+                    # Audio analysis disabled - mark as needs_attention
+                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                    logger.info(f"Needs attention (AI empty, placeholder author '{row['current_author']}', no audio): {row['current_title']}")
+                    c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                             ('needs_attention', f"Could not identify author (currently '{row['current_author']}')", row['book_id']))
+            elif book_confidence >= 40 and has_profile:
+                # Book was verified by Layer 1 with decent confidence - trust that verification
+                c.execute('UPDATE books SET status = ? WHERE id = ?', ('verified', row['book_id']))
+                logger.info(f"Verified OK (Layer 1 verified, AI empty): {row['current_author']}/{row['current_title']} (conf={book_confidence})")
+            else:
+                # No prior verification AND AI couldn't identify - needs attention, not blind trust
+                # The folder name might have typos or be completely wrong
+                logger.info(f"Needs attention (AI empty, no prior verification): {row['current_author']}/{row['current_title']}")
+                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))  # Fix: remove from queue
+                c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                         ('needs_attention', f"AI could not verify - folder may have typos or incorrect metadata", row['book_id']))
             processed += 1
-            logger.info(f"Verified OK (empty result): {row['current_author']}/{row['current_title']}")
             continue
 
         # Check if fix needed (also check narrator change)
@@ -3992,6 +8827,7 @@ def process_queue(config, limit=None):
             # Find which configured library this book belongs to
             # (Don't assume 2-level structure - series_grouping uses 3 levels)
             lib_path = None
+            is_from_watch_folder = False
             for lp in config.get('library_paths', []):
                 lp_path = Path(lp)
                 try:
@@ -4000,6 +8836,24 @@ def process_queue(config, limit=None):
                     break
                 except ValueError:
                     continue
+
+            # Issue #57: Check if book is from watch folder and should go to watch_output_folder
+            watch_folder = config.get('watch_folder', '').strip()
+            watch_output_folder = config.get('watch_output_folder', '').strip()
+            if watch_folder and watch_output_folder:
+                try:
+                    watch_path = Path(watch_folder).resolve()
+                    old_path_resolved = old_path.resolve()
+                    try:
+                        old_path_resolved.relative_to(watch_path)
+                        # Book is in watch folder - use output folder as target
+                        lib_path = Path(watch_output_folder)
+                        is_from_watch_folder = True
+                        logger.info(f"Watch folder book: routing to output folder {lib_path}")
+                    except ValueError:
+                        pass  # Not in watch folder
+                except Exception as e:
+                    logger.debug(f"Watch folder path check failed: {e}")
 
             # Fallback if not found in configured libraries
             if lib_path is None:
@@ -4082,25 +8936,114 @@ def process_queue(config, limit=None):
                         drastic_change = is_drastic_author_change(row['current_author'], new_author)
                         logger.info(f"CORRECTED: {row['current_author']} -> {new_author} (was wrong: {verification['reasoning'][:50]}...)")
                     else:
-                        # AI is uncertain - block the change
-                        logger.warning(f"BLOCKED (uncertain): {row['current_author']} -> {new_author}")
-                        # Record as pending_fix for manual review
-                        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message)
-                                     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?)''',
-                                 (row['book_id'], row['current_author'], row['current_title'],
-                                  new_author, new_title, str(old_path), str(new_path),
-                                  f"Uncertain: {verification.get('reasoning', 'needs review')}"))
+                        # AI is uncertain - check if Trust the Process mode enabled
+                        trust_mode = config.get('trust_the_process', False)
+                        if trust_mode and config.get('gemini_api_key'):
+                            # Try audio analysis as tie-breaker
+                            logger.info(f"TRUST THE PROCESS: Uncertain verification, trying audio tie-breaker...")
+                            # Use smart first-file detection for opening credits
+                            audio_result = analyze_audio_for_credits(str(old_path), config)
+
+                            if audio_result and audio_result.get('author'):
+                                audio_author = audio_result.get('author', '')
+                                audio_title = audio_result.get('title', '')
+                                # Check if audio confirms new author OR original author
+                                new_match = audio_author.lower() in new_author.lower() or new_author.lower() in audio_author.lower()
+                                old_match = audio_author.lower() in row['current_author'].lower() or row['current_author'].lower() in audio_author.lower()
+
+                                if new_match and not old_match:
+                                    # Audio confirms new author - proceed with change
+                                    logger.info(f"TRUST THE PROCESS: Audio confirms change to '{new_author}'")
+                                    if audio_title:
+                                        new_title = audio_title
+                                    drastic_change = False  # Allow auto-fix
+                                elif old_match and not new_match:
+                                    # Audio says keep original - don't change
+                                    logger.info(f"TRUST THE PROCESS: Audio says keep '{row['current_author']}'")
+                                    new_author = row['current_author']
+                                    drastic_change = False
+                                else:
+                                    # Audio is ambiguous - add to needs_attention list
+                                    logger.warning(f"TRUST THE PROCESS: Audio ambiguous, flagging for attention")
+                                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?, ?, ?, ?, ?, ?)''',
+                                             (row['book_id'], row['current_author'], row['current_title'],
+                                              new_author, new_title, str(old_path), str(new_path),
+                                              f"Unidentifiable: AI uncertain, audio ambiguous. Audio heard: {audio_author}",
+                                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                              str(new_year) if new_year else None, new_edition, new_variant))
+                                    c.execute('UPDATE books SET status = ? WHERE id = ?', ('needs_attention', row['book_id']))
+                                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                    processed += 1
+                                    continue
+                            else:
+                                # No audio analysis possible - flag for attention
+                                logger.warning(f"TRUST THE PROCESS: No audio available, flagging for attention")
+                                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                  new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                             VALUES (?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?, ?, ?, ?, ?, ?)''',
+                                         (row['book_id'], row['current_author'], row['current_title'],
+                                          new_author, new_title, str(old_path), str(new_path),
+                                          f"Unidentifiable: AI uncertain, no audio analysis available",
+                                          new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                          str(new_year) if new_year else None, new_edition, new_variant))
+                                c.execute('UPDATE books SET status = ? WHERE id = ?', ('needs_attention', row['book_id']))
+                                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                processed += 1
+                                continue
+                        else:
+                            # Standard mode - block the change
+                            logger.warning(f"BLOCKED (uncertain): {row['current_author']} -> {new_author}")
+                            # Record as pending_fix for manual review
+                            c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                              new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?, ?)''',
+                                     (row['book_id'], row['current_author'], row['current_title'],
+                                      new_author, new_title, str(old_path), str(new_path),
+                                      f"Uncertain: {verification.get('reasoning', 'needs review')}",
+                                      new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                      str(new_year) if new_year else None, new_edition, new_variant))
+                            c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', row['book_id']))
+                            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                            processed += 1
+                            continue
+                else:
+                    # Verification failed completely - check Trust the Process mode
+                    trust_mode = config.get('trust_the_process', False)
+                    if trust_mode and config.get('gemini_api_key'):
+                        # Try audio analysis as last resort
+                        logger.info(f"TRUST THE PROCESS: Verification failed, trying audio as last resort...")
+                        # Use smart first-file detection for opening credits
+                        audio_result = analyze_audio_for_credits(str(old_path), config)
+                        if audio_result and audio_result.get('author'):
+                            # Use audio result directly
+                            new_author = audio_result.get('author', new_author)
+                            new_title = audio_result.get('title', new_title)
+                            new_narrator = audio_result.get('narrator', new_narrator)
+                            drastic_change = is_drastic_author_change(row['current_author'], new_author)
+                            logger.info(f"TRUST THE PROCESS: Using audio metadata: {new_author} - {new_title}")
+                        else:
+                            # Audio failed or no audio files - flag for attention
+                            c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                              new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                         VALUES (?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?, ?, ?, ?, ?, ?)''',
+                                     (row['book_id'], row['current_author'], row['current_title'],
+                                      new_author, new_title, str(old_path), str(new_path),
+                                      f"Unidentifiable: All verification methods failed",
+                                      new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                      str(new_year) if new_year else None, new_edition, new_variant))
+                            c.execute('UPDATE books SET status = ? WHERE id = ?', ('needs_attention', row['book_id']))
+                            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                            processed += 1
+                            continue
+                    else:
+                        # Standard mode - block the change
+                        logger.warning(f"BLOCKED (verification failed): {row['current_author']} -> {new_author}")
                         c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', row['book_id']))
                         c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                         processed += 1
                         continue
-                else:
-                    # Verification failed - block the change
-                    logger.warning(f"BLOCKED (verification failed): {row['current_author']} -> {new_author}")
-                    c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', row['book_id']))
-                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                    processed += 1
-                    continue
 
                 # Recalculate new_path with potentially updated author/title/narrator
                 new_path = build_new_path(lib_path, new_author, new_title,
@@ -4118,13 +9061,76 @@ def process_queue(config, limit=None):
                     processed += 1
                     continue
 
-            # Only auto-fix if enabled AND NOT a drastic change
-            # Drastic changes ALWAYS require manual approval to prevent data loss
-            if config.get('auto_fix', False) and not drastic_change:
+            # Issue #57 fix: Check if book is already in correct location
+            # Without this check, we'd compare the folder to itself and mark it as "duplicate"
+            if old_path.resolve() == new_path.resolve():
+                # Issue #59: If author is placeholder (Unknown, etc.), advance to Layer 3 for audio analysis
+                if is_placeholder_author(new_author):
+                    # Check if audio analysis is enabled before advancing
+                    if config.get('enable_audio_analysis', False):
+                        logger.info(f"Advancing to Layer 3 (placeholder author '{new_author}'): {old_path.name}")
+                        c.execute('UPDATE books SET verification_layer = 3 WHERE id = ?', (row['book_id'],))
+                        conn.commit()
+                        processed += 1
+                        continue
+                    else:
+                        # Audio analysis disabled - mark as needs_attention
+                        logger.info(f"Needs attention (placeholder author '{new_author}', no audio analysis): {old_path.name}")
+                        c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                        c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                                 ('needs_attention', f"Could not identify author (currently '{new_author}')", row['book_id']))
+                else:
+                    # Only mark as verified if we have actual confidence in the identification
+                    # Otherwise the AI is just echoing back the folder name without verification
+                    book_confidence = row.get('confidence', 0) or 0
+                    if book_confidence >= 40:
+                        logger.info(f"Already correct (conf={book_confidence}): {old_path.name}")
+                        c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                        c.execute('UPDATE books SET status = ? WHERE id = ?',
+                                 ('verified', row['book_id']))
+                    else:
+                        # Low/no confidence - needs manual verification
+                        logger.info(f"Needs attention (low confidence={book_confidence}): {old_path.name}")
+                        c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                        c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                                 ('needs_attention', f'Low confidence ({book_confidence}) - could not verify identification', row['book_id']))
+                conn.commit()
+                processed += 1
+                continue
+
+            # Issue #59: If author is placeholder (Unknown, etc.), advance to Layer 3 for audio analysis
+            if is_placeholder_author(new_author):
+                # Check if audio analysis is enabled before advancing
+                if config.get('enable_audio_analysis', False):
+                    logger.info(f"Advancing to Layer 3 (AI returned placeholder '{new_author}'): {row['current_author']}/{row['current_title']}")
+                    c.execute('UPDATE books SET verification_layer = 3 WHERE id = ?', (row['book_id'],))
+                    conn.commit()
+                    processed += 1
+                    continue
+                else:
+                    # Audio analysis disabled - mark as needs_attention
+                    logger.info(f"NEEDS ATTENTION (placeholder author '{new_author}', no audio analysis): {row['current_author']}/{row['current_title']}")
+                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?, ?, ?, ?, ?, ?)''',
+                             (row['book_id'], row['current_author'], row['current_title'],
+                              new_author, new_title, str(old_path), str(new_path),
+                              f"Could not identify author (got '{new_author}')",
+                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                              str(new_year) if new_year else None, new_edition, new_variant))
+                    c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                             ('needs_attention', f"Could not identify author (got '{new_author}')", row['book_id']))
+                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                    processed += 1
+                    continue
+
+            # Only auto-fix if enabled AND NOT a drastic change (unless Trust the Process mode)
+            # In Trust the Process mode, verified drastic changes can be auto-fixed
+            trust_mode = config.get('trust_the_process', False)
+            can_auto_fix = config.get('auto_fix', False) and (not drastic_change or trust_mode)
+            if can_auto_fix:
                 # Actually rename the folder
                 try:
-                    import shutil
-
                     if new_path.exists():
                         # Destination already exists - check if it has files
                         existing_files = list(new_path.iterdir())
@@ -4164,17 +9170,188 @@ def process_queue(config, limit=None):
                             if resolved_path:
                                 new_path = resolved_path
                             else:
-                                # Couldn't resolve - mark as conflict
-                                logger.warning(f"CONFLICT: {new_path} exists - no unique distinguisher found")
-                                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message)
-                                             VALUES (?, ?, ?, ?, ?, ?, ?, 'error', 'Destination exists - could not resolve version conflict')''',
-                                         (row['book_id'], row['current_author'], row['current_title'],
-                                          new_author, new_title, str(old_path), str(new_path)))
-                                c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                                         ('conflict', 'Destination folder exists - multiple versions detected', row['book_id']))
-                                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                                processed += 1
-                                continue
+                                # Couldn't resolve with distinguishers - check if it's actually a duplicate
+                                logger.info(f"Comparing folders to check for duplicate: {old_path} vs {new_path}")
+                                comparison = compare_book_folders(old_path, new_path)
+
+                                # Check for corrupt file scenarios first
+                                if comparison.get('dest_corrupt'):
+                                    # Destination is corrupt - source is valid, move source to version path
+                                    # Don't replace corrupt dest - let user deal with that
+                                    logger.warning(f"CORRUPT DEST: {new_path} has corrupt/unreadable files, source {old_path} is valid - moving source to version path")
+
+                                    # Create version path for the valid source
+                                    version_path = build_new_path(
+                                        lib_path, new_author, new_title,
+                                        series=new_series, series_num=new_series_num,
+                                        narrator=new_narrator,
+                                        variant="Valid Copy" if not new_variant else f"{new_variant}, Valid Copy",
+                                        config=config
+                                    )
+                                    if version_path and not version_path.exists():
+                                        new_path = version_path
+                                        logger.info(f"Moving valid source to: {new_path}")
+                                        # Fall through to the move code below
+                                    else:
+                                        # Can't create version path - just record the issue
+                                        reason = comparison.get('reason', 'Destination files are corrupt/unreadable')
+                                        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                          new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                                     VALUES (?, ?, ?, ?, ?, ?, ?, 'corrupt_dest', ?, ?, ?, ?, ?, ?, ?)''',
+                                                 (row['book_id'], row['current_author'], row['current_title'],
+                                                  new_author, new_title, str(old_path), str(new_path),
+                                                  f"{reason}. Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files (corrupt)",
+                                                  new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                                  str(new_year) if new_year else None, new_edition, new_variant))
+                                        c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                                                 ('corrupt_dest', f'Destination {new_path} is corrupt - source is valid', row['book_id']))
+                                        c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                        processed += 1
+                                        continue
+
+                                if comparison.get('source_corrupt'):
+                                    # Source is corrupt - mark as duplicate (keep dest)
+                                    logger.warning(f"CORRUPT SOURCE: {old_path} has corrupt/unreadable files, dest {new_path} is valid")
+                                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'duplicate', ?, ?, ?, ?, ?, ?, ?)''',
+                                             (row['book_id'], row['current_author'], row['current_title'],
+                                              new_author, new_title, str(old_path), str(new_path),
+                                              f"Source is corrupt/unreadable, destination is valid. Recommend removing corrupt source.",
+                                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                              str(new_year) if new_year else None, new_edition, new_variant))
+                                    c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                                             ('duplicate', f'Corrupt - valid copy exists at {new_path}', row['book_id']))
+                                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                    processed += 1
+                                    continue
+
+                                if comparison['identical'] or comparison['same_book']:
+                                    # It's a duplicate! Mark for removal instead of conflict
+                                    logger.info(f"DUPLICATE DETECTED: {old_path} is duplicate of {new_path} "
+                                               f"(identical={comparison['identical']}, overlap={comparison['overlap_ratio']:.0%})")
+
+                                    # Determine which to keep based on recommendation
+                                    recommendation = comparison.get('recommendation', 'keep_dest')
+                                    reason = comparison.get('reason', '')
+
+                                    if recommendation == 'keep_source' and comparison['source_better']:
+                                        # Source is better - note this for user review
+                                        logger.info(f"Note: Source is better ({reason})")
+
+                                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'duplicate', ?, ?, ?, ?, ?, ?, ?)''',
+                                             (row['book_id'], row['current_author'], row['current_title'],
+                                              new_author, new_title, str(old_path), str(new_path),
+                                              f"Duplicate detected ({comparison['overlap_ratio']:.0%} match, {comparison['matching_count']} files). Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files. {reason}",
+                                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                              str(new_year) if new_year else None, new_edition, new_variant))
+                                    c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                                             ('duplicate', f'Duplicate of {new_path}', row['book_id']))
+                                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                    processed += 1
+                                    continue
+                                else:
+                                    # Different versions - these are BOTH valid, create unique path for source
+                                    # Don't error out - find a way to distinguish them and move!
+                                    deep_info = comparison.get('deep_analysis', {})
+                                    logger.info(f"DIFFERENT VERSIONS: {old_path.name} vs existing {new_path.name} - creating unique path")
+
+                                    # Generate a distinguisher based on what we know about the source
+                                    # Priority: narrator > file count > folder name hint
+                                    version_distinguisher = None
+
+                                    # Try to get narrator from source audio files
+                                    if not new_narrator:
+                                        try:
+                                            source_narrator = extract_narrator_from_folder(old_path)
+                                            if source_narrator:
+                                                version_distinguisher = source_narrator
+                                                logger.info(f"Using narrator from source: {source_narrator}")
+                                        except Exception as e:
+                                            logger.debug(f"Could not extract narrator: {e}")
+                                    else:
+                                        version_distinguisher = new_narrator
+
+                                    # Fallback: use file characteristics
+                                    if not version_distinguisher:
+                                        src_files = comparison.get('source_files', 0)
+                                        src_size_mb = comparison.get('source_size', 0) // 1024 // 1024
+                                        # Create a distinguisher like "Version B" or use file count
+                                        # Check what versions already exist
+                                        existing_versions = []
+                                        for sibling in new_path.parent.iterdir():
+                                            if sibling.is_dir() and sibling.name.startswith(new_path.name):
+                                                existing_versions.append(sibling.name)
+
+                                        # Generate next version letter
+                                        if not existing_versions:
+                                            # Existing one is "A", new one is "B"
+                                            version_distinguisher = "Version B"
+                                        else:
+                                            # Find next available letter
+                                            used_letters = set()
+                                            for v in existing_versions:
+                                                if 'Version ' in v:
+                                                    try:
+                                                        letter = v.split('Version ')[1][0]
+                                                        used_letters.add(letter)
+                                                    except:
+                                                        pass
+                                            for letter in 'BCDEFGHIJKLMNOPQRSTUVWXYZ':
+                                                if letter not in used_letters:
+                                                    version_distinguisher = f"Version {letter}"
+                                                    break
+
+                                        logger.info(f"Using fallback distinguisher: {version_distinguisher}")
+
+                                    # Build new path with distinguisher
+                                    if version_distinguisher:
+                                        # Add as variant (in brackets)
+                                        unique_path = build_new_path(
+                                            lib_path, new_author, new_title,
+                                            series=new_series, series_num=new_series_num,
+                                            narrator=new_narrator,
+                                            variant=version_distinguisher if not new_variant else f"{new_variant}, {version_distinguisher}",
+                                            config=config
+                                        )
+                                        if unique_path and not unique_path.exists():
+                                            new_path = unique_path
+                                            logger.info(f"Resolved to unique path: {new_path}")
+                                            # Don't continue - fall through to the move code below
+                                        else:
+                                            # Still can't find unique path - now error
+                                            logger.warning(f"CONFLICT: Could not create unique path for different version")
+                                            c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                              new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                                         VALUES (?, ?, ?, ?, ?, ?, ?, 'error', ?, ?, ?, ?, ?, ?, ?)''',
+                                                     (row['book_id'], row['current_author'], row['current_title'],
+                                                      new_author, new_title, str(old_path), str(new_path),
+                                                      f"Different version exists, could not generate unique path. Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files",
+                                                      new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                                      str(new_year) if new_year else None, new_edition, new_variant))
+                                            c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                                                     ('conflict', 'Different version exists, unique path generation failed', row['book_id']))
+                                            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                            processed += 1
+                                            continue
+                                    else:
+                                        # No distinguisher at all - error
+                                        logger.warning(f"CONFLICT: No distinguisher available for different version")
+                                        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                                                          new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                                     VALUES (?, ?, ?, ?, ?, ?, ?, 'error', ?, ?, ?, ?, ?, ?, ?)''',
+                                                 (row['book_id'], row['current_author'], row['current_title'],
+                                                  new_author, new_title, str(old_path), str(new_path),
+                                                  f"Different version exists, no distinguisher available. Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files",
+                                                  new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                                                  str(new_year) if new_year else None, new_edition, new_variant))
+                                        c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                                                 ('conflict', 'Different version exists', row['book_id']))
+                                        c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                        processed += 1
+                                        continue
                         else:
                             # Destination is empty folder - safe to use it
                             shutil.move(str(old_path), str(new_path.parent / (new_path.name + "_temp")))
@@ -4206,10 +9383,14 @@ def process_queue(config, limit=None):
                     c.execute("DELETE FROM history WHERE book_id = ? AND status = 'pending_fix'", (row['book_id'],))
 
                     # Record in history
-                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'fixed')''',
+                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
+                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'fixed', ?, ?, ?, ?, ?, ?)''',
                              (row['book_id'], row['current_author'], row['current_title'],
-                              new_author, new_title, str(old_path), str(new_path)))
+                              new_author, new_title, str(old_path), str(new_path),
+                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                              str(new_year) if new_year else None, new_edition, new_variant))
+                    history_id = c.lastrowid  # Capture the newly inserted history record ID
 
                     # Update book record - handle case where another book already has this path
                     try:
@@ -4222,6 +9403,42 @@ def process_queue(config, limit=None):
                         c.execute('DELETE FROM books WHERE id = ?', (row['book_id'],))
 
                     fixed += 1
+
+                    # Embed metadata tags if enabled
+                    if config.get('metadata_embedding_enabled', False):
+                        try:
+                            embed_metadata = build_metadata_for_embedding(
+                                author=new_author,
+                                title=new_title,
+                                series=new_series,
+                                series_num=str(new_series_num) if new_series_num else None,
+                                narrator=new_narrator,
+                                year=str(new_year) if new_year else None,
+                                edition=new_edition,
+                                variant=new_variant
+                            )
+                            embed_result = embed_tags_for_path(
+                                new_path,
+                                embed_metadata,
+                                create_backup=config.get('metadata_embedding_backup_sidecar', True),
+                                overwrite=config.get('metadata_embedding_overwrite_managed', True)
+                            )
+                            if embed_result['success']:
+                                embed_status = 'ok'
+                                embed_error = None
+                                logger.info(f"Embedded tags in {embed_result['files_processed']} files at {new_path}")
+                            else:
+                                embed_status = 'error'
+                                embed_error = embed_result.get('error') or '; '.join(embed_result.get('errors', []))[:500]
+                                logger.warning(f"Tag embedding failed for {new_path}: {embed_error}")
+                            # Update history with embed status using the captured history ID
+                            c.execute('UPDATE history SET embed_status = ?, embed_error = ? WHERE id = ?',
+                                     (embed_status, embed_error, history_id))
+                        except Exception as embed_e:
+                            logger.error(f"Tag embedding exception for {new_path}: {embed_e}")
+                            c.execute('UPDATE history SET embed_status = ?, embed_error = ? WHERE id = ?',
+                                     ('error', str(embed_e)[:500], history_id))
+
                 except Exception as e:
                     error_msg = str(e)
                     logger.error(f"Error fixing {row['path']}: {error_msg}")
@@ -4230,16 +9447,39 @@ def process_queue(config, limit=None):
             else:
                 # Drastic change or auto_fix disabled - record as pending for manual review
                 logger.info(f"PENDING APPROVAL: {row['current_author']} -> {new_author} (drastic={drastic_change})")
-                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
+                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
+                                                  new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?)''',
                          (row['book_id'], row['current_author'], row['current_title'],
-                          new_author, new_title, str(old_path), str(new_path)))
+                          new_author, new_title, str(old_path), str(new_path),
+                          new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                          str(new_year) if new_year else None, new_edition, new_variant))
                 c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', row['book_id']))
                 fixed += 1
         else:
-            # No fix needed
-            c.execute('UPDATE books SET status = ? WHERE id = ?', ('verified', row['book_id']))
-            logger.info(f"Verified OK: {row['current_author']}/{row['current_title']}")
+            # No fix needed - AI confirmed current values are correct
+            # Issue #59: check if author is placeholder
+            if is_placeholder_author(row['current_author']):
+                c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
+                         ('needs_attention', f"Could not identify author (currently '{row['current_author']}')", row['book_id']))
+                logger.info(f"Needs attention (placeholder author): {row['current_author']}/{row['current_title']}")
+            else:
+                # Create profile documenting that AI verified this book
+                profile = BookProfile()
+                profile.author.add_source('ai', new_author)
+                profile.title.add_source('ai', new_title)
+                if new_series:
+                    profile.series.add_source('ai', new_series)
+                if new_series_num:
+                    profile.series_num.add_source('ai', new_series_num)
+                if new_narrator:
+                    profile.narrator.add_source('ai', new_narrator)
+                profile.verification_layers_used = ['ai']
+                profile.finalize()
+
+                c.execute('UPDATE books SET status = ?, profile = ?, confidence = ? WHERE id = ?',
+                         ('verified', json.dumps(profile.to_dict()), profile.overall_confidence, row['book_id']))
+                logger.info(f"Verified OK (AI confirmed): {row['current_author']}/{row['current_title']} (conf={profile.overall_confidence})")
 
         # Remove from queue
         c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
@@ -4252,8 +9492,443 @@ def process_queue(config, limit=None):
     conn.commit()
     conn.close()
 
-    logger.info(f"[DEBUG] Batch complete: {processed} processed, {fixed} fixed")
+    logger.info(f"[LAYER 2/AI] Batch complete: {processed} processed, {fixed} fixed")
     return processed, fixed
+
+
+def process_layer_3_audio(config, limit=None, verification_layer=3):
+    """
+    Layer 2/3: Audio Analysis
+
+    Processes items at specified verification_layer using Gemini audio analysis.
+    This is an expensive layer - extracts metadata from audiobook intros.
+    Items that still can't be identified are marked as 'needs_attention'.
+
+    Args:
+        verification_layer: Which layer to process (2 for unclear L1 results, 3 for API failures)
+
+    NOTE: This function uses a 3-phase approach to avoid holding DB locks during
+    expensive Gemini audio analysis calls (which can take 10-30+ seconds per item):
+      Phase 1: Quick fetch, release connection
+      Phase 2: Audio analysis (no DB connection held)
+      Phase 3: Quick write, release connection
+    """
+    if not config.get('enable_audio_analysis', False):
+        logger.info("[LAYER 3] Audio analysis disabled, skipping")
+        return 0, 0
+
+    # Check if we have Gemini API key
+    secrets = load_secrets()
+    if not secrets or not secrets.get('gemini_api_key'):
+        logger.info("[LAYER 3] No Gemini API key for audio analysis, skipping")
+        return 0, 0
+
+    # Check Gemini circuit breaker - don't process if Gemini is unavailable
+    if is_circuit_open('gemini'):
+        cb = API_CIRCUIT_BREAKER.get('gemini', {})
+        remaining = int(cb.get('circuit_open_until', 0) - time.time())
+        logger.info(f"[LAYER 3] Gemini circuit breaker open ({remaining}s remaining), pausing audio analysis")
+        return 0, 0  # Return 0,0 to signal caller to wait
+
+    # === PHASE 1: Fetch batch (quick read, release connection immediately) ===
+    conn = get_db()
+    c = conn.cursor()
+
+    batch_size = limit or config.get('batch_size', 3)
+
+    # Get items awaiting audio analysis at specified verification layer
+    # Skip user-locked books - user has manually set metadata
+    c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
+                        b.path, b.current_author, b.current_title
+                 FROM queue q
+                 JOIN books b ON q.book_id = b.id
+                 WHERE b.verification_layer = ?
+                   AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                   AND (b.user_locked IS NULL OR b.user_locked = 0)
+                 ORDER BY q.priority, q.added_at
+                 LIMIT ?''', (verification_layer, batch_size,))
+    # Convert to dicts immediately - sqlite3.Row objects become invalid after conn.close()
+    batch = [dict(row) for row in c.fetchall()]
+    conn.close()  # Release DB lock BEFORE expensive audio analysis
+
+    if not batch:
+        return 0, 0
+
+    logger.info(f"[LAYER 3] Processing {len(batch)} items via audio analysis")
+
+    # === PHASE 2: Audio analysis (NO database connection held) ===
+    # Collect all analysis results, then apply them in phase 3
+    analysis_results = []  # List of (row, action_type, action_data)
+
+    for row in batch:
+        path = row['path']
+        book_path = Path(path)
+
+        # Find audio files in this folder
+        audio_files = find_audio_files(str(book_path)) if book_path.is_dir() else [str(book_path)]
+
+        if not audio_files:
+            # No audio files - will mark as needs attention
+            analysis_results.append((row, 'no_audio', {
+                'log_message': f"[LAYER 3] No audio files found, marking needs attention: {path}"
+            }))
+            continue
+
+        # Try audio analysis with Gemini (EXPENSIVE EXTERNAL CALL)
+        # Use smart first-file detection for opening credits (title/author/narrator announcements)
+        audio_result = analyze_audio_for_credits(str(book_path), config)
+
+        if audio_result and audio_result.get('author') and audio_result.get('title'):
+            # Audio analysis succeeded - but validate the response isn't garbage
+            new_author = audio_result.get('author', '')
+            new_title = audio_result.get('title', '')
+
+            # VALIDATION: Reject obviously bad AI responses
+            is_garbage = False
+            garbage_reason = None
+
+            # Check for garbage titles (too short, sentence fragments, etc.)
+            if len(new_title) < 3:
+                is_garbage = True
+                garbage_reason = f"Title too short: '{new_title}'"
+            elif new_title.lower().startswith(('the ', 'a ', 'an ')) and len(new_title) < 10:
+                is_garbage = True
+                garbage_reason = f"Title looks like fragment: '{new_title}'"
+            elif len(new_title.split()) > 15:
+                is_garbage = True
+                garbage_reason = f"Title too long (looks like AI rambling): '{new_title[:50]}...'"
+            elif any(phrase in new_title.lower() for phrase in ['presents', 'division of', 'recorded books', 'audio', 'penguin', 'random house', 'tantor']):
+                is_garbage = True
+                garbage_reason = f"Title contains publisher/format text: '{new_title[:50]}'"
+
+            # Check for garbage authors
+            if not is_garbage:
+                if len(new_author) < 2:
+                    is_garbage = True
+                    garbage_reason = f"Author too short: '{new_author}'"
+                elif len(new_author.split()) > 6:
+                    is_garbage = True
+                    garbage_reason = f"Author too long (looks like AI rambling): '{new_author[:50]}...'"
+                elif any(phrase in new_author.lower() for phrase in ['written and read', 'presents', 'narrated by', 'audio', 'publisher']):
+                    is_garbage = True
+                    garbage_reason = f"Author contains non-name text: '{new_author[:50]}'"
+
+            if is_garbage:
+                logger.warning(f"[LAYER 3] Rejecting garbage AI response: {garbage_reason}")
+                analysis_results.append((row, 'failed', {
+                    'log_message': f"[LAYER 3] AI returned garbage, marking needs attention: {path}"
+                }))
+                continue
+
+            new_narrator = audio_result.get('narrator', '')
+            new_series = audio_result.get('series', '')
+            new_series_num = audio_result.get('series_num')
+
+            # Auto-save narrator to BookDB if we found one
+            if new_narrator:
+                auto_save_narrator(new_narrator, source='audio_extract')
+
+            # Contribute to community database (if opt-in enabled)
+            contribute_audio_extraction(
+                title=new_title,
+                author=new_author,
+                narrator=new_narrator,
+                series=new_series,
+                series_position=new_series_num,
+                language=audio_result.get('language'),
+                confidence=audio_result.get('confidence', 'medium')
+            )
+
+            # Issue #57: Apply author initials standardization if enabled
+            if config.get('standardize_author_initials', False) and new_author:
+                new_author = standardize_initials(new_author)
+
+            logger.info(f"[LAYER 3] Audio extracted: {new_author}/{new_title} (narrator: {new_narrator})")
+
+            current_author = row['current_author']
+            current_title = row['current_title']
+
+            # Check if extracted data differs from current values (returns 0.0-1.0)
+            author_match = calculate_title_similarity(current_author, new_author) if current_author else 0
+            title_match = calculate_title_similarity(current_title, new_title) if current_title else 0
+
+            if author_match >= 0.90 and title_match >= 0.90:
+                # Audio confirms current values are correct
+                analysis_results.append((row, 'verified', {
+                    'log_message': f"[LAYER 3] Audio confirms existing metadata, marking verified: {current_author}/{current_title}"
+                }))
+            else:
+                # Audio suggests different values - build new path
+                lib_path = None
+                for lp in config.get('library_paths', []):
+                    lp_path = Path(lp)
+                    try:
+                        book_path.relative_to(lp_path)
+                        lib_path = lp_path
+                        break
+                    except ValueError:
+                        continue
+
+                if lib_path is None:
+                    lib_path = book_path.parent.parent
+                    logger.warning(f"[LAYER 3] Book path {book_path} not under any configured library, guessing lib_path={lib_path}")
+
+                new_path = build_new_path(lib_path, new_author, new_title,
+                                          series=new_series, series_num=new_series_num,
+                                          narrator=new_narrator, config=config)
+
+                if new_path is None:
+                    analysis_results.append((row, 'error', {
+                        'log_message': f"[LAYER 3] SAFETY BLOCK: Invalid path for '{new_author}' / '{new_title}'",
+                        'error_message': 'Audio extraction produced invalid path'
+                    }))
+                else:
+                    analysis_results.append((row, 'pending_fix', {
+                        'log_message': f"[LAYER 3] Creating pending fix: {current_author}/{current_title} -> {new_author}/{new_title}",
+                        'new_author': new_author,
+                        'new_title': new_title,
+                        'new_narrator': new_narrator,
+                        'new_series': new_series,
+                        'new_series_num': new_series_num,
+                        'new_path': str(new_path),
+                        'book_path': str(book_path)
+                    }))
+        else:
+            # Audio analysis failed
+            analysis_results.append((row, 'failed', {
+                'log_message': f"[LAYER 3] Audio analysis failed, marking needs attention: {path}"
+            }))
+
+    # === PHASE 3: Apply all updates (quick write, release connection) ===
+    conn = get_db()
+    c = conn.cursor()
+
+    processed = 0
+    resolved = 0
+
+    for row, action_type, action_data in analysis_results:
+        # Log the message
+        if action_data.get('log_message'):
+            if 'SAFETY BLOCK' in action_data['log_message'] or 'failed' in action_data['log_message'] or 'No audio' in action_data['log_message']:
+                logger.warning(action_data['log_message'])
+            else:
+                logger.info(action_data['log_message'])
+
+        if action_type == 'no_audio':
+            c.execute('UPDATE books SET status = ?, verification_layer = 4, error_message = ? WHERE id = ?',
+                     ('needs_attention', 'No audio files found for analysis', row['book_id']))
+            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+
+        elif action_type == 'verified':
+            c.execute('UPDATE books SET status = ?, verification_layer = 4 WHERE id = ?',
+                     ('verified', row['book_id']))
+            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+            resolved += 1
+
+        elif action_type == 'error':
+            c.execute('UPDATE books SET status = ?, verification_layer = 4, error_message = ? WHERE id = ?',
+                     ('error', action_data['error_message'], row['book_id']))
+            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+
+        elif action_type == 'pending_fix':
+            c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                              new_narrator, new_series, new_series_num)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?)''',
+                     (row['book_id'], row['current_author'], row['current_title'],
+                      action_data['new_author'], action_data['new_title'],
+                      action_data['book_path'], action_data['new_path'],
+                      'Identified via audio analysis',
+                      action_data['new_narrator'], action_data['new_series'],
+                      str(action_data['new_series_num']) if action_data['new_series_num'] else None))
+            c.execute('UPDATE books SET status = ?, verification_layer = 4 WHERE id = ?',
+                     ('pending_fix', row['book_id']))
+            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+            resolved += 1
+
+        elif action_type == 'failed':
+            # Layer 3 (credits) failed - advance to Layer 4 (content analysis) if enabled
+            if config.get('enable_content_analysis', True):  # Enabled by default if audio analysis is on
+                logger.info(f"Advancing to Layer 4 (credits analysis failed): {row['current_title']}")
+                c.execute('UPDATE books SET verification_layer = 4 WHERE id = ?', (row['book_id'],))
+                # Keep in queue for Layer 4
+            else:
+                c.execute('UPDATE books SET status = ?, verification_layer = 5, error_message = ? WHERE id = ?',
+                         ('needs_attention', 'All verification layers exhausted - manual review required', row['book_id']))
+                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+
+        processed += 1
+
+    conn.commit()
+    conn.close()
+
+    logger.info(f"[LAYER 3] Processed {processed}, resolved {resolved} via audio")
+    return processed, resolved
+
+
+def process_layer_4_content(config, limit=None):
+    """
+    Layer 4: Content-Based Identification
+
+    The FINAL layer - analyzes actual story CONTENT to identify books.
+    Unlike Layer 3 (credits/intro), this:
+    - Extracts audio from the MIDDLE of the book (actual narration)
+    - Transcribes the spoken text
+    - Uses AI to identify the book from plot, characters, writing style
+
+    Best for:
+    - Multi-part files (Part 2, Part 3) that have no intro credits
+    - Books with music-only intros
+    - Files with cut/corrupted opening credits
+
+    Items that still can't be identified after this are truly unidentifiable
+    and are marked as 'needs_attention' for manual review.
+    """
+    if not config.get('enable_audio_analysis', False):
+        logger.info("[LAYER 4] Audio analysis disabled, skipping content analysis")
+        return 0, 0
+
+    # Check if we have Gemini API key
+    secrets = load_secrets()
+    if not secrets or not secrets.get('gemini_api_key'):
+        logger.info("[LAYER 4] No Gemini API key for content analysis, skipping")
+        return 0, 0
+
+    # === PHASE 1: Fetch batch ===
+    conn = get_db()
+    c = conn.cursor()
+
+    batch_size = limit or config.get('batch_size', 3)
+
+    # Get items awaiting content analysis (layer 4)
+    c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
+                        b.path, b.current_author, b.current_title
+                 FROM queue q
+                 JOIN books b ON q.book_id = b.id
+                 WHERE b.verification_layer = 4
+                   AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention', 'pending_fix')
+                   AND (b.user_locked IS NULL OR b.user_locked = 0)
+                 ORDER BY q.priority, q.added_at
+                 LIMIT ?''', (batch_size,))
+    batch = [dict(row) for row in c.fetchall()]
+    conn.close()
+
+    if not batch:
+        return 0, 0
+
+    logger.info(f"[LAYER 4] Processing {len(batch)} items via content analysis")
+
+    # === PHASE 2: Content analysis ===
+    results = []  # (row, action_type, action_data)
+
+    for row in batch:
+        path = row['path']
+        book_path = Path(path)
+
+        # Analyze content from middle of the book
+        content_result = analyze_audio_for_content(str(book_path), config)
+
+        if content_result and content_result.get('author') and content_result.get('title'):
+            # Don't accept low-confidence guesses for placeholder authors
+            confidence = content_result.get('confidence', 'low')
+            new_author = content_result.get('author', '')
+
+            if is_placeholder_author(new_author):
+                logger.warning(f"[LAYER 4] Content analysis returned placeholder '{new_author}', marking needs_attention")
+                results.append((row, 'failed', {'log': f"Content analysis returned placeholder author: {new_author}"}))
+                continue
+
+            # Content analysis succeeded!
+            new_title = content_result.get('title', '')
+            new_series = content_result.get('series')
+            new_series_num = content_result.get('series_num')
+            new_narrator = content_result.get('narrator')
+
+            # Auto-save narrator if found
+            if new_narrator:
+                auto_save_narrator(new_narrator, source='content_extract')
+
+            # Build new path
+            lib_path = None
+            for lp in config.get('library_paths', []):
+                try:
+                    book_path.relative_to(Path(lp))
+                    lib_path = Path(lp)
+                    break
+                except ValueError:
+                    continue
+
+            if not lib_path:
+                lib_path = book_path.parent.parent
+
+            # Build target path with series grouping if applicable
+            if new_series and config.get('series_grouping', True):
+                series_num_str = f"{new_series_num} - " if new_series_num else ""
+                new_path = lib_path / new_author / new_series / f"{series_num_str}{new_title}"
+            else:
+                new_path = lib_path / new_author / new_title
+
+            # Add narrator suffix if enabled
+            if new_narrator and config.get('include_narrator_in_filename', True):
+                new_path = new_path.parent / f"{new_path.name} {{{new_narrator}}}"
+
+            results.append((row, 'identified', {
+                'new_author': new_author,
+                'new_title': new_title,
+                'new_series': new_series,
+                'new_series_num': new_series_num,
+                'new_narrator': new_narrator,
+                'new_path': str(new_path),
+                'book_path': str(book_path),
+                'confidence': confidence,
+                'reasoning': content_result.get('reasoning', '')
+            }))
+        else:
+            # Content analysis failed - this is truly unidentifiable
+            results.append((row, 'failed', {'log': 'Content analysis could not identify book'}))
+
+    # === PHASE 3: Apply results ===
+    conn = get_db()
+    c = conn.cursor()
+
+    processed = 0
+    resolved = 0
+    today = datetime.now().date().isoformat()
+
+    for row, action_type, action_data in results:
+        if action_type == 'identified':
+            logger.info(f"[LAYER 4] Creating pending fix: {row['current_author']}/{row['current_title']} -> "
+                       f"{action_data['new_author']}/{action_data['new_title']} "
+                       f"(confidence: {action_data['confidence']})")
+
+            c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
+                                              new_narrator, new_series, new_series_num)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?)''',
+                     (row['book_id'], row['current_author'], row['current_title'],
+                      action_data['new_author'], action_data['new_title'],
+                      action_data['book_path'], action_data['new_path'],
+                      f"Identified via content analysis: {action_data.get('reasoning', '')[:100]}",
+                      action_data['new_narrator'], action_data['new_series'],
+                      str(action_data['new_series_num']) if action_data['new_series_num'] else None))
+            c.execute('UPDATE books SET status = ?, verification_layer = 5 WHERE id = ?',
+                     ('pending_fix', row['book_id']))
+            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+            resolved += 1
+
+        elif action_type == 'failed':
+            # All layers exhausted - truly needs manual review
+            logger.warning(f"[LAYER 4] All layers exhausted, marking needs_attention: {row['current_title']}")
+            c.execute('UPDATE books SET status = ?, verification_layer = 5, error_message = ? WHERE id = ?',
+                     ('needs_attention', 'All verification layers (API, AI, credits, content) exhausted - manual review required', row['book_id']))
+            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+
+        processed += 1
+
+    conn.commit()
+    conn.close()
+
+    logger.info(f"[LAYER 4] Processed {processed}, resolved {resolved} via content analysis")
+    return processed, resolved
+
 
 def apply_fix(history_id):
     """Apply a pending fix from history."""
@@ -4270,12 +9945,21 @@ def apply_fix(history_id):
     old_path = Path(fix['old_path'])
     new_path = Path(fix['new_path'])
 
+    # Issue #49: Check if this is a watch folder item
+    book_id = fix['book_id']
+    c.execute('SELECT source_type FROM books WHERE id = ?', (book_id,))
+    book_row = c.fetchone()
+    source_type = book_row['source_type'] if book_row and book_row['source_type'] else 'library'
+    is_watch_folder_item = (source_type == 'watch_folder')
+
     # CRITICAL SAFETY: Validate paths before any file operations
     config = load_config()
     library_paths = [Path(p).resolve() for p in config.get('library_paths', [])]
+    watch_folder = config.get('watch_folder', '').strip()
 
-    # Check old_path is in a library
+    # Check old_path is in a library (or watch folder for watch folder items)
     old_in_library = False
+    old_in_watch_folder = False
     for lib in library_paths:
         try:
             old_path.resolve().relative_to(lib)
@@ -4284,7 +9968,15 @@ def apply_fix(history_id):
         except ValueError:
             continue
 
-    # Check new_path is in a library
+    # Issue #49: Also check if old_path is in watch folder
+    if watch_folder and not old_in_library:
+        try:
+            old_path.resolve().relative_to(Path(watch_folder).resolve())
+            old_in_watch_folder = True
+        except ValueError:
+            pass
+
+    # Check new_path is in a library (always required - this is where the book goes)
     new_in_library = False
     for lib in library_paths:
         try:
@@ -4294,8 +9986,11 @@ def apply_fix(history_id):
         except ValueError:
             continue
 
-    if not old_in_library or not new_in_library:
-        error_msg = f"SAFETY BLOCK: Path outside library! old_in_lib={old_in_library}, new_in_lib={new_in_library}"
+    # Issue #49: Allow watch folder items to have old_path in watch folder
+    old_path_valid = old_in_library or (is_watch_folder_item and old_in_watch_folder)
+
+    if not old_path_valid or not new_in_library:
+        error_msg = f"SAFETY BLOCK: Path outside library! old_in_lib={old_in_library}, old_in_watch={old_in_watch_folder}, new_in_lib={new_in_library}"
         logger.error(error_msg)
         c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
                  ('error', error_msg, history_id))
@@ -4330,34 +10025,50 @@ def apply_fix(history_id):
     try:
         import shutil
 
-        # Check if we're moving a file (ebook/loose file) vs a folder
+        # Check if we're moving a file (ebook/loose file/single m4b) vs a folder
         is_file_move = old_path.is_file()
 
-        if new_path.exists():
-            if is_file_move:
-                # Moving a file to existing location - destination file already exists
-                error_msg = f"Destination file already exists: {new_path.name}"
+        # If moving a single file, ensure new_path includes the filename with extension
+        # (build_new_path returns a folder path, but for single files we need to include the filename)
+        if is_file_move:
+            # Check if new_path looks like a folder (no extension or doesn't match audio extension)
+            audio_extensions = {'.m4b', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.wma', '.aac'}
+            if new_path.suffix.lower() not in audio_extensions:
+                # new_path is a folder, we need to create folder and put file inside
+                file_dest = new_path / old_path.name
+                logger.info(f"Single file move: {old_path.name} -> {file_dest}")
+            else:
+                file_dest = new_path
+
+            if file_dest.exists():
+                error_msg = f"Destination file already exists: {file_dest.name}"
+                c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
+                         ('error', error_msg, history_id))
+                conn.commit()
+                conn.close()
+                return False, error_msg
+
+            # Create destination folder and move file
+            file_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(old_path), str(file_dest))
+            # Update new_path to the folder for embedding later
+            new_path = file_dest.parent
+        elif new_path.exists():
+            # Moving a folder - check if destination has files
+            existing_files = list(new_path.iterdir())
+            if existing_files:
+                # DON'T MERGE - this is likely a different narrator version
+                error_msg = "Destination folder already exists with files - possible different narrator version"
                 c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
                          ('error', error_msg, history_id))
                 conn.commit()
                 conn.close()
                 return False, error_msg
             else:
-                # Moving a folder - check if destination has files
-                existing_files = list(new_path.iterdir())
-                if existing_files:
-                    # DON'T MERGE - this is likely a different narrator version
-                    error_msg = "Destination folder already exists with files - possible different narrator version"
-                    c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
-                             ('error', error_msg, history_id))
-                    conn.commit()
-                    conn.close()
-                    return False, error_msg
-                else:
-                    # Destination is empty folder - safe to use it
-                    shutil.move(str(old_path), str(new_path.parent / (new_path.name + "_temp")))
-                    new_path.rmdir()
-                    (new_path.parent / (new_path.name + "_temp")).rename(new_path)
+                # Destination is empty folder - safe to use it
+                shutil.move(str(old_path), str(new_path.parent / (new_path.name + "_temp")))
+                new_path.rmdir()
+                (new_path.parent / (new_path.name + "_temp")).rename(new_path)
         else:
             # Destination doesn't exist - create parent folders and move
             new_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4371,12 +10082,50 @@ def apply_fix(history_id):
             pass
 
         # Update book record
-        c.execute('''UPDATE books SET path = ?, current_author = ?, current_title = ?, status = ?
+        # Issue #49: For watch folder items, also update source_type to 'library' since it's now in the library
+        c.execute('''UPDATE books SET path = ?, current_author = ?, current_title = ?, status = ?, source_type = 'library'
                      WHERE id = ?''',
                  (str(new_path), fix['new_author'], fix['new_title'], 'fixed', fix['book_id']))
 
         # Update history status
         c.execute('UPDATE history SET status = ? WHERE id = ?', ('fixed', history_id))
+
+        # Embed metadata tags if enabled
+        embed_status = None
+        embed_error = None
+        if config.get('metadata_embedding_enabled', False):
+            try:
+                embed_metadata = build_metadata_for_embedding(
+                    author=fix['new_author'],
+                    title=fix['new_title'],
+                    series=fix['new_series'] if fix['new_series'] else None,
+                    series_num=fix['new_series_num'] if fix['new_series_num'] else None,
+                    narrator=fix['new_narrator'] if fix['new_narrator'] else None,
+                    year=fix['new_year'] if fix['new_year'] else None,
+                    edition=fix['new_edition'] if fix['new_edition'] else None,
+                    variant=fix['new_variant'] if fix['new_variant'] else None
+                )
+                embed_result = embed_tags_for_path(
+                    new_path,
+                    embed_metadata,
+                    create_backup=config.get('metadata_embedding_backup_sidecar', True),
+                    overwrite=config.get('metadata_embedding_overwrite_managed', True)
+                )
+                if embed_result['success']:
+                    embed_status = 'ok'
+                    logger.info(f"Embedded tags in {embed_result['files_processed']} files at {new_path}")
+                else:
+                    embed_status = 'error'
+                    embed_error = embed_result.get('error') or '; '.join(embed_result.get('errors', []))[:500]
+                    logger.warning(f"Tag embedding failed for {new_path}: {embed_error}")
+            except Exception as embed_e:
+                embed_status = 'error'
+                embed_error = str(embed_e)[:500]
+                logger.error(f"Tag embedding exception for {new_path}: {embed_e}")
+
+            # Update history with embed status
+            c.execute('UPDATE history SET embed_status = ?, embed_error = ? WHERE id = ?',
+                     (embed_status, embed_error, history_id))
 
         conn.commit()
         conn.close()
@@ -4396,7 +10145,16 @@ worker_running = False
 processing_status = {"active": False, "processed": 0, "total": 0, "current": "", "errors": []}
 
 def process_all_queue(config):
-    """Process ALL items in the queue in batches, respecting rate limits."""
+    """Process ALL items in the queue using AUDIO-FIRST identification.
+
+    NEW layered processing (audio is source of truth):
+    - Layer 1: Audio transcription + AI parsing (narrator announces the book)
+    - Layer 2: AI audio clip analysis (if transcription unclear)
+    - Layer 3: API enrichment (add series, year, etc. - NOT identification)
+    - Layer 4: Folder name fallback (last resort, low confidence)
+
+    Philosophy: The audio content IS the book. Folder names can be wrong.
+    """
     global processing_status
 
     conn = get_db()
@@ -4410,40 +10168,176 @@ def process_all_queue(config):
         return 0, 0  # (total_processed, total_fixed)
 
     # Calculate delay between batches based on rate limit
-    max_per_hour = config.get('max_requests_per_hour', 30)
-    # Spread requests across the hour: 3600 seconds / max_requests
-    min_delay = max(2, 3600 // max_per_hour)  # At least 2 seconds
+    user_max = config.get('max_requests_per_hour', 30)
+    max_per_hour = max(10, min(user_max, 500))
+    min_delay = max(2, 3600 // max_per_hour)
     logger.info(f"Rate limit: {max_per_hour}/hour, delay between batches: {min_delay}s")
 
-    processing_status = {"active": True, "processed": 0, "total": total, "current": "", "errors": []}
-    logger.info(f"=== STARTING PROCESS ALL: {total} items in queue ===")
+    processing_status = {"active": True, "processed": 0, "total": total, "current": "", "errors": [], "layer": 1}
+    logger.info(f"=== STARTING AUDIO-FIRST PROCESSING: {total} items in queue ===")
+
+    # Issue #62: Clean up stuck queue items (needs_attention or verified items shouldn't be in queue)
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''DELETE FROM queue WHERE book_id IN (
+                    SELECT b.id FROM books b WHERE b.status IN ('needs_attention', 'verified', 'fixed')
+                 )''')
+    cleaned = c.rowcount
+    if cleaned > 0:
+        logger.info(f"Cleaned {cleaned} stuck items from queue (already needs_attention/verified/fixed)")
+        total -= cleaned
+    conn.commit()
+    conn.close()
+
+    # Advance any items stuck at Layer 2 from previous runs (Layer 2 disabled by default)
+    if not config.get('enable_audio_analysis', False):
+        conn = get_db()
+        c = conn.cursor()
+        # Get book IDs first so we can ensure they're in the queue
+        c.execute('SELECT id FROM books WHERE verification_layer = 2 AND status = "pending"')
+        stuck_books = [row['id'] for row in c.fetchall()]
+        if stuck_books:
+            c.execute('UPDATE books SET verification_layer = 4 WHERE verification_layer = 2 AND status = "pending"')
+            # Ensure all are in the queue for processing
+            for book_id in stuck_books:
+                c.execute('SELECT id FROM queue WHERE book_id = ?', (book_id,))
+                if not c.fetchone():
+                    c.execute('INSERT INTO queue (book_id, reason, priority) VALUES (?, ?, ?)',
+                             (book_id, 'startup_layer2_recovery', 5))
+            conn.commit()
+            logger.info(f"Advanced {len(stuck_books)} stuck items from Layer 2 to Layer 4")
+        conn.close()
 
     total_processed = 0
     total_fixed = 0
+
+    # NEW LAYER 1: Audio Transcription (narrator announces the book)
+    # This is now the PRIMARY identification method
+    if config.get('enable_audio_identification', True):  # New setting, defaults to True
+        logger.info("=== LAYER 1: Audio Transcription + AI Parsing ===")
+        processing_status["layer"] = 1
+        processing_status["current"] = "Layer 1: Audio transcription"
+        layer1_processed = 0
+        layer1_resolved = 0
+        while True:
+            processed, resolved = process_layer_1_audio(config)
+            if processed == 0:
+                break
+            layer1_processed += processed
+            layer1_resolved += resolved
+            processing_status["processed"] = layer1_processed
+            time.sleep(2)  # Audio processing needs more time
+        logger.info(f"Layer 1 complete: {layer1_processed} items processed, {layer1_resolved} resolved via audio")
+        total_processed += layer1_processed
+        total_fixed += layer1_resolved
+
+    # LAYER 2: AI Audio Clip Analysis (if transcription was unclear)
+    # Sends a longer audio sample to AI for deeper analysis
+    if config.get('enable_audio_analysis', False):
+        logger.info("=== LAYER 2: AI Audio Clip Analysis (for unclear L1 results) ===")
+        processing_status["layer"] = 2
+        processing_status["current"] = "Layer 2: AI audio analysis"
+        layer2_processed = 0
+        layer2_resolved = 0
+        circuit_wait_count = 0
+        while True:
+            # Check if Gemini circuit breaker is open - wait instead of skipping
+            if is_circuit_open('gemini'):
+                cb = API_CIRCUIT_BREAKER.get('gemini', {})
+                remaining = int(cb.get('circuit_open_until', 0) - time.time())
+                if remaining > 0:
+                    circuit_wait_count += 1
+                    wait_time = min(remaining, 60)  # Wait max 60s at a time
+                    logger.info(f"[LAYER 2] Gemini circuit breaker open, waiting {wait_time}s ({remaining}s total remaining)")
+                    processing_status["current"] = f"Layer 2: Waiting for Gemini ({remaining}s)"
+                    time.sleep(wait_time)
+                    if circuit_wait_count > 30:  # Give up after ~30 minutes of waiting
+                        logger.warning("[LAYER 2] Gemini unavailable too long, moving to next layer")
+                        break
+                    continue
+
+            processed, resolved = process_layer_3_audio(config, verification_layer=2)  # Process Layer 2 items
+            if processed == 0:
+                break
+            circuit_wait_count = 0  # Reset wait count on successful processing
+            layer2_processed += processed
+            layer2_resolved += resolved
+            total_processed += processed
+            total_fixed += resolved
+            processing_status["processed"] = total_processed
+            time.sleep(2)  # Audio processing needs more time
+        logger.info(f"Layer 2 complete: {layer2_processed} items processed, {layer2_resolved} resolved via AI audio")
+    else:
+        # Layer 2 is disabled - advance any items stuck at verification_layer=2 to Layer 4
+        # This ensures they get processed by the folder fallback instead of being orphaned
+        conn = get_db()
+        c = conn.cursor()
+        # Get the book IDs first so we can add them to the queue
+        c.execute('SELECT id FROM books WHERE verification_layer = 2 AND status = "pending"')
+        layer2_books = [row['id'] for row in c.fetchall()]
+        if layer2_books:
+            # Update verification_layer
+            c.execute('UPDATE books SET verification_layer = 4 WHERE verification_layer = 2 AND status = "pending"')
+            # Ensure all advanced items are in the queue
+            for book_id in layer2_books:
+                c.execute('SELECT id FROM queue WHERE book_id = ?', (book_id,))
+                if not c.fetchone():
+                    c.execute('INSERT INTO queue (book_id, reason, priority) VALUES (?, ?, ?)',
+                             (book_id, 'layer2_fallback', 5))
+            conn.commit()
+            logger.info(f"Layer 2 disabled - advanced {len(layer2_books)} items to Layer 4 (folder fallback)")
+        conn.close()
+
+    # LAYER 3: API Enrichment (NOT identification - add series, year, description, etc.)
+    # At this point we should know the book - now we enrich it with metadata
+    if config.get('enable_api_lookups', True):
+        logger.info("=== LAYER 3: API Enrichment (adding metadata to identified books) ===")
+        processing_status["layer"] = 3
+        processing_status["current"] = "Layer 3: API enrichment"
+        layer3_processed = 0
+        while True:
+            processed, resolved = process_layer_1_api(config)  # Existing API lookup
+            if processed == 0:
+                break
+            layer3_processed += processed
+            total_processed += processed
+            processing_status["processed"] = total_processed
+            time.sleep(0.5)  # APIs are fast
+        logger.info(f"Layer 3 complete: {layer3_processed} items enriched via API")
+
+    # LAYER 4: Folder Name Fallback (LAST RESORT - low confidence)
+    # Only used when audio-based identification completely failed
+    # Folder names CAN be wrong - this is why confidence is set LOW
+    logger.info("=== LAYER 4: Folder Name Fallback (last resort, low confidence) ===")
+    processing_status["layer"] = 4
+    processing_status["current"] = "Layer 4: Folder fallback"
+
     batch_num = 0
     rate_limit_hits = 0
+    empty_batch_count = 0
+    layer4_processed = 0
+    layer4_fixed = 0
 
     while True:
-        # Reload config each batch so settings changes take effect immediately
         config = load_config()
 
-        # Check rate limit before processing
         allowed, calls_made, max_calls = check_rate_limit(config)
         if not allowed:
             rate_limit_hits += 1
-            wait_time = min(300 * rate_limit_hits, 1800)  # 5 min, 10 min, 15 min... max 30 min
-            logger.info(f"Rate limit reached ({calls_made}/{max_calls}), waiting {wait_time//60} minutes... (hit #{rate_limit_hits})")
-            processing_status["current"] = f"Rate limited, waiting {wait_time//60}min... ({calls_made}/{max_calls})"
+            wait_time = min(300 * rate_limit_hits, 1800)
+            logger.info(f"Rate limit reached ({calls_made}/{max_calls}), waiting {wait_time//60} minutes...")
+            processing_status["current"] = f"Rate limited, waiting {wait_time//60}min..."
             time.sleep(wait_time)
             continue
 
         batch_num += 1
-        logger.info(f"--- Processing batch {batch_num} (API: {calls_made}/{max_calls}) ---")
+        logger.info(f"--- Layer 4 batch {batch_num} (API: {calls_made}/{max_calls}) ---")
 
-        processed, fixed = process_queue(config)
+        # process_queue uses AI to verify folder-based guesses
+        # At this point, we're trusting folder names as a last resort
+        processed, fixed = process_queue(config, verification_layer=4)
 
         if processed == 0:
-            # Check if queue is actually empty or if there was an error
             conn = get_db()
             c = conn.cursor()
             c.execute('SELECT COUNT(*) as count FROM queue')
@@ -4454,26 +10348,490 @@ def process_all_queue(config):
                 logger.info("Queue is now empty")
                 break
             else:
-                # Could be rate limit or API error
-                logger.warning(f"No items processed but {remaining} remain")
-                processing_status["errors"].append(f"Batch {batch_num}: No items processed, {remaining} remain")
-                # Wait and retry once
+                empty_batch_count += 1
+                logger.warning(f"No items processed but {remaining} remain (attempt {empty_batch_count}/3)")
+                if empty_batch_count >= 3:
+                    logger.info(f"Layer 4 cannot process remaining {remaining} items")
+                    break
                 time.sleep(10)
                 continue
 
+        empty_batch_count = 0
+        layer4_processed += processed
+        layer4_fixed += fixed
         total_processed += processed
         total_fixed += fixed
         processing_status["processed"] = total_processed
-        processing_status["current"] = f"Batch {batch_num}: {processed} processed"
-        logger.info(f"Batch {batch_num} complete: {processed} processed, {fixed} fixed, {total_processed}/{total} total")
-
-        # Rate limiting delay between batches
-        logger.debug(f"Waiting {min_delay}s before next batch...")
+        logger.info(f"Layer 4 Batch {batch_num}: {processed} processed, {fixed} fixed")
         time.sleep(min_delay)
 
+    logger.info(f"Layer 4 complete: {layer4_processed} items processed, {layer4_fixed} fixed via folder fallback")
+
     processing_status["active"] = False
-    logger.info(f"=== PROCESS ALL COMPLETE: {total_processed} processed, {total_fixed} fixed ===")
+    processing_status["layer"] = 0
+    logger.info(f"=== LAYERED PROCESSING COMPLETE: {total_processed} processed, {total_fixed} fixed ===")
     return total_processed, total_fixed
+
+
+# ============================================================================
+# WATCH FOLDER FUNCTIONALITY
+# ============================================================================
+
+# Track processed watch folder items to avoid reprocessing
+watch_folder_processed = set()
+watch_folder_last_scan = 0
+
+def get_watch_folder_items(watch_folder: str, min_age_seconds: int = 30) -> list:
+    """
+    Scan watch folder for audiobook folders/files ready for processing.
+    Returns list of paths that are old enough (not still downloading).
+    """
+    items = []
+    watch_path = Path(watch_folder)
+
+    if not watch_path.exists():
+        logger.warning(f"Watch folder does not exist: {watch_folder}")
+        return items
+
+    current_time = time.time()
+
+    # Look for audiobook folders (contain audio files)
+    audio_extensions = {'.mp3', '.m4a', '.m4b', '.flac', '.ogg', '.opus', '.wav', '.aac'}
+
+    for item in watch_path.iterdir():
+        item_path = str(item.resolve())
+
+        # Skip if already processed
+        if item_path in watch_folder_processed:
+            continue
+
+        # Check if folder contains audio files or is an audio file
+        has_audio = False
+        newest_mtime = 0
+
+        if item.is_dir():
+            for f in item.rglob('*'):
+                if f.is_file():
+                    if f.suffix.lower() in audio_extensions:
+                        has_audio = True
+                    try:
+                        mtime = f.stat().st_mtime
+                        if mtime > newest_mtime:
+                            newest_mtime = mtime
+                    except:
+                        pass
+        elif item.is_file() and item.suffix.lower() in audio_extensions:
+            has_audio = True
+            try:
+                newest_mtime = item.stat().st_mtime
+            except:
+                pass
+
+        if not has_audio:
+            continue
+
+        # Check file age - skip if too recent (still downloading)
+        file_age = current_time - newest_mtime
+        if file_age < min_age_seconds:
+            logger.debug(f"Watch folder: Skipping {item.name} - too recent ({file_age:.0f}s < {min_age_seconds}s)")
+            continue
+
+        items.append(item_path)
+
+    return items
+
+
+def move_to_output_folder(source_path: str, output_folder: str, author: str, title: str,
+                          series: str = None, series_num = None,
+                          use_hard_links: bool = False, delete_empty: bool = True) -> tuple:
+    """
+    Move or hard-link an audiobook to the output folder with proper naming.
+    Returns (success: bool, new_path: str, error: str or None)
+
+    Issue #57: Now supports series organization - builds path as:
+    - output/Author/Series/# - Title (when series and series_num provided)
+    - output/Author/Series/Title (when only series provided)
+    - output/Author/Title (when no series)
+    """
+    source = Path(source_path)
+    output = Path(output_folder)
+
+    if not source.exists():
+        return False, None, f"Source does not exist: {source_path}"
+
+    if not output.exists():
+        try:
+            output.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            return False, None, f"Cannot create output folder: {e}"
+
+    # Sanitize author and title for filesystem
+    safe_author = sanitize_path_component(author) if author else "Unknown"
+    safe_title = sanitize_path_component(title) if title else source.name
+    safe_series = sanitize_path_component(series) if series else None
+
+    # Build destination path with series support (Issue #57)
+    # Format: output/Author/Series/## - Title or output/Author/Title
+    # Merijeek: ABS compatibility - pad single-digit numbers
+    if safe_series:
+        if series_num:
+            # Zero-pad series numbers for ABS compatibility
+            try:
+                num = float(str(series_num).replace(',', '.'))
+                formatted_num = f"{int(num):02d}" if num == int(num) else str(series_num)
+            except (ValueError, TypeError):
+                formatted_num = str(series_num)
+            title_folder = f"{formatted_num} - {safe_title}"
+        else:
+            title_folder = safe_title
+        dest_folder = output / safe_author / safe_series / title_folder
+    else:
+        dest_folder = output / safe_author / safe_title
+
+    # Check for existing destination
+    if dest_folder.exists():
+        # Add version suffix - handle series path structure
+        version = 2
+        while True:
+            if safe_series:
+                if series_num:
+                    versioned_title = f"{series_num} - {safe_title} [Version {chr(64+version)}]"
+                else:
+                    versioned_title = f"{safe_title} [Version {chr(64+version)}]"
+                versioned = output / safe_author / safe_series / versioned_title
+            else:
+                versioned = output / safe_author / f"{safe_title} [Version {chr(64+version)}]"
+            if not versioned.exists():
+                dest_folder = versioned
+                break
+            version += 1
+            if version > 26:
+                return False, None, f"Too many versions exist for {safe_author}/{safe_title}"
+
+    try:
+        dest_folder.mkdir(parents=True, exist_ok=True)
+
+        # Track if we fell back to copy (need to delete originals afterward)
+        used_copy_fallback = False
+        files_to_delete = []
+
+        if source.is_file():
+            # Single file - move/link to destination folder
+            dest_file = dest_folder / source.name
+            if use_hard_links:
+                try:
+                    os.link(source, dest_file)
+                except OSError as e:
+                    if "Invalid cross-device link" in str(e) or e.errno == 18:
+                        # Cross-filesystem - fall back to copy, then delete original
+                        logger.warning(f"Hard link failed (cross-filesystem), falling back to copy+delete: {source.name}")
+                        shutil.copy2(source, dest_file)
+                        used_copy_fallback = True
+                        files_to_delete.append(source)
+                    else:
+                        raise
+            else:
+                shutil.move(str(source), str(dest_file))
+        else:
+            # Directory - move/link all files
+            for src_file in source.rglob('*'):
+                if src_file.is_file():
+                    rel_path = src_file.relative_to(source)
+                    dest_file = dest_folder / rel_path
+                    dest_file.parent.mkdir(parents=True, exist_ok=True)
+
+                    if use_hard_links:
+                        try:
+                            os.link(src_file, dest_file)
+                        except OSError as e:
+                            if "Invalid cross-device link" in str(e) or e.errno == 18:
+                                logger.warning(f"Hard link failed, copy+delete: {src_file.name}")
+                                shutil.copy2(src_file, dest_file)
+                                used_copy_fallback = True
+                                files_to_delete.append(src_file)
+                            else:
+                                raise
+                    else:
+                        shutil.move(str(src_file), str(dest_file))
+
+            # Clean up empty source folder if not using hard links OR if we used copy fallback
+            if (not use_hard_links or used_copy_fallback) and delete_empty:
+                try:
+                    # Remove empty directories bottom-up
+                    for dirpath, dirnames, filenames in os.walk(str(source), topdown=False):
+                        if not filenames and not dirnames:
+                            os.rmdir(dirpath)
+                    if source.exists() and not any(source.iterdir()):
+                        source.rmdir()
+                except Exception as e:
+                    logger.debug(f"Could not clean up empty folder {source}: {e}")
+
+        # Delete originals if we used copy fallback (handles both single files and directories)
+        if used_copy_fallback and delete_empty:
+            for f in files_to_delete:
+                try:
+                    if f.exists():
+                        f.unlink()
+                        logger.debug(f"Deleted source after copy fallback: {f}")
+                except Exception as e:
+                    logger.warning(f"Could not delete source {f}: {e}")
+
+        return True, str(dest_folder), None
+
+    except Exception as e:
+        logger.error(f"Move/link error for {source_path}: {e}")
+        return False, None, str(e)
+
+
+def process_watch_folder(config: dict) -> int:
+    """
+    Process items in the watch folder.
+    Returns number of items processed.
+    """
+    global watch_folder_processed, watch_folder_last_scan
+
+    watch_folder = config.get('watch_folder', '').strip()
+    output_folder = config.get('watch_output_folder', '').strip()
+    use_hard_links = config.get('watch_use_hard_links', False)
+    delete_empty = config.get('watch_delete_empty_folders', True)
+    min_age = config.get('watch_min_file_age_seconds', 30)
+
+    if not watch_folder:
+        return 0
+
+    # Default output to first library path
+    if not output_folder:
+        library_paths = config.get('library_paths', [])
+        if not library_paths:
+            logger.warning("Watch folder: No output folder and no library paths configured")
+            return 0
+        output_folder = library_paths[0]
+
+    logger.info(f"=== WATCH FOLDER SCAN: {watch_folder} ===")
+
+    items = get_watch_folder_items(watch_folder, min_age)
+    if not items:
+        logger.debug("Watch folder: No new items to process")
+        return 0
+
+    logger.info(f"Watch folder: Found {len(items)} new items to process")
+    processed = 0
+
+    conn = get_db()
+    c = conn.cursor()
+
+    for item_path in items:
+        try:
+            item = Path(item_path)
+            logger.info(f"Watch folder: Processing {item.name}")
+
+            # Issue #57: Use parent folder as author hint if item is in a subfolder
+            # e.g., /watch/Peter F. Hamilton/02 Night Without Stars.mp3 -> author hint = "Peter F. Hamilton"
+            watch_path_obj = Path(watch_folder)
+            parent_folder = item.parent
+            folder_author_hint = None
+            if parent_folder != watch_path_obj and parent_folder.parent == watch_path_obj:
+                # Item is in a direct subfolder of watch folder - use folder name as author hint
+                folder_author_hint = parent_folder.name
+                if not is_placeholder_author(folder_author_hint):
+                    logger.info(f"Watch folder: Using parent folder as author hint: '{folder_author_hint}'")
+
+            # Extract author/title from the folder/file name
+            author_hint, title_part = extract_author_title(item.stem if item.is_file() else item.name)
+
+            # Prefer folder author hint over filename parsing
+            original_author = folder_author_hint if folder_author_hint else (author_hint if author_hint else 'Unknown')
+            author = original_author
+            title = title_part if title_part else item.name
+            original_title = title
+
+            # Try API lookups for better identification
+            # Issue #57: Fix argument order - gather_all_api_candidates(title, author, config)
+            # Also try searching with just the full filename if author-title parsing might be wrong
+            needs_verification = False
+            api_author = None
+            api_title = None
+            api_series = None
+            api_series_num = None
+            series = None
+            series_num = None
+            try:
+                # First try with parsed author/title
+                candidates = gather_all_api_candidates(title, author, config)
+
+                # If no good matches and author looks suspicious, try with full filename as title
+                # Normalize confidence to 0-100 scale for comparison
+                def norm_conf(c):
+                    raw = c.get('confidence', 0) if c else 0
+                    return raw * 100 if raw <= 1 else raw
+                if (not candidates or norm_conf(candidates[0]) < 60):
+                    # The filename might be "Title - Author" or just "Title", not "Author - Title"
+                    # Try searching with the full original name as the title
+                    full_name = item.stem if item.is_file() else item.name
+                    full_candidates = gather_all_api_candidates(full_name, None, config)
+                    if full_candidates and norm_conf(full_candidates[0]) > norm_conf(candidates[0] if candidates else None):
+                        candidates = full_candidates
+                        logger.debug(f"Watch folder: Full filename search gave better results for '{full_name}'")
+
+                if candidates:
+                    # Use best match
+                    best = candidates[0]
+                    # Handle confidence as either 0-1 (fraction) or 0-100 (percentage)
+                    raw_confidence = best.get('confidence', 0)
+                    confidence = raw_confidence * 100 if raw_confidence <= 1 else raw_confidence
+                    if confidence >= 60:
+                        api_author = best.get('author', author)
+                        api_title = best.get('title', title)
+                        api_series = best.get('series')
+                        api_series_num = best.get('series_num')
+
+                        # Issue #57: Check if API author is drastically different from our hint
+                        # This catches cases like "Night Without Stars" matching wrong author
+                        if api_author and original_author and not is_placeholder_author(original_author):
+                            # We have a real author hint - verify if API disagrees
+                            author_similarity = calculate_title_similarity(original_author.lower(), api_author.lower())
+                            if author_similarity < 0.5:
+                                # API found different author - needs verification
+                                logger.info(f"Watch folder: API author '{api_author}' differs from hint '{original_author}' - verifying...")
+                                needs_verification = True
+
+                        # Issue #57: Same-title-different-author detection
+                        # If we have NO author hint and multiple APIs returned different authors
+                        # for similar titles, this could be a common title with multiple books
+                        if not needs_verification and is_placeholder_author(original_author) and len(candidates) > 1:
+                            # Check if different APIs found different authors for similar titles
+                            unique_authors = set()
+                            for c in candidates:
+                                c_title = c.get('title', '')
+                                c_author = c.get('author', '')
+                                # Only count if title is similar to what we searched
+                                if c_author and calculate_title_similarity(title.lower(), c_title.lower()) > 0.6:
+                                    unique_authors.add(c_author.lower())
+                            if len(unique_authors) > 1:
+                                # Multiple authors for same/similar title - ambiguous, needs verification
+                                logger.warning(f"Watch folder: Multiple authors found for '{title}': {unique_authors} - flagging for review")
+                                needs_verification = True
+
+                        if not needs_verification:
+                            author = api_author
+                            title = api_title
+                            series = api_series
+                            series_num = api_series_num
+                            series_info = f" [{series} #{series_num}]" if series and series_num else (f" [{series}]" if series else "")
+                            logger.info(f"Watch folder: Identified as {author} - {title}{series_info}")
+
+            except Exception as e:
+                logger.debug(f"Watch folder: API lookup failed, using path analysis: {e}")
+
+            # Issue #57: Verify drastic author changes before accepting
+            if needs_verification and api_author and api_title:
+                try:
+                    verification = verify_drastic_change(
+                        item.name,  # original input
+                        original_author,  # original author (our hint)
+                        original_title,  # original title
+                        api_author,  # proposed author from API
+                        api_title,  # proposed title from API
+                        config
+                    )
+                    if verification and verification.get('verified'):
+                        # Verification passed - use the verified result
+                        author = verification.get('author', api_author)
+                        title = verification.get('title', api_title)
+                        # Issue #57: Preserve series info from API when verification passes
+                        series = api_series
+                        series_num = api_series_num
+                        series_info = f" [{series} #{series_num}]" if series and series_num else (f" [{series}]" if series else "")
+                        logger.info(f"Watch folder: Verified change to {author} - {title}{series_info}")
+                    else:
+                        # Verification failed - keep original hint, flag for attention
+                        reason = verification.get('reasoning', 'Verification failed') if verification else 'No verification result'
+                        logger.warning(f"Watch folder: Rejected API match '{api_author}' for '{item.name}' - {reason}")
+                        # Keep original author hint if we had one, otherwise use Unknown
+                        author = original_author if not is_placeholder_author(original_author) else 'Unknown'
+                        title = original_title
+                except Exception as e:
+                    logger.warning(f"Watch folder: Verification failed for '{item.name}': {e}")
+                    # On verification error, be conservative - use original hint
+                    author = original_author if not is_placeholder_author(original_author) else 'Unknown'
+                    title = original_title
+
+            # Issue #57: Apply author initials standardization if enabled
+            if config.get('standardize_author_initials', False) and author:
+                author = standardize_initials(author)
+
+            # Issue #40: Check if author is still unknown/placeholder after API lookup
+            # If so, flag for user attention instead of auto-processing
+            author_is_placeholder = is_placeholder_author(author)
+            if author_is_placeholder:
+                logger.warning(f"Watch folder: Unknown author for '{title}' - will require user review")
+
+            # Move to output folder (Issue #57: pass series info for proper organization)
+            success, new_path, error = move_to_output_folder(
+                item_path, output_folder, author, title,
+                series=series, series_num=series_num,
+                use_hard_links=use_hard_links, delete_empty=delete_empty
+            )
+
+            if success:
+                logger.info(f"Watch folder: Moved to {new_path}")
+                watch_folder_processed.add(item_path)
+                processed += 1
+
+                # Add to books table
+                # Issue #40: If author is unknown, mark as needs_attention for user review
+                try:
+                    if author_is_placeholder:
+                        # Unknown author - requires user intervention before processing
+                        # Issue #57: Include source_type for watch folder tracking
+                        c.execute('''INSERT OR REPLACE INTO books
+                                     (path, current_author, current_title, status, error_message, source_type, added_at, updated_at)
+                                     VALUES (?, ?, ?, 'needs_attention', ?, 'watch_folder', datetime('now'), datetime('now'))''',
+                                  (new_path, author, title, 'Watch folder: Could not determine author - please review and correct'))
+                        logger.info(f"Watch folder: Flagged for attention (unknown author): {title}")
+                    else:
+                        # Known author - normal processing
+                        # Issue #57: Include source_type for watch folder tracking
+                        c.execute('''INSERT OR REPLACE INTO books
+                                     (path, current_author, current_title, status, source_type, added_at, updated_at)
+                                     VALUES (?, ?, ?, 'pending', 'watch_folder', datetime('now'), datetime('now'))''',
+                                  (new_path, author, title))
+                    conn.commit()
+                except Exception as e:
+                    logger.debug(f"Watch folder: Could not add to books table: {e}")
+            else:
+                logger.error(f"Watch folder: Failed to move {item.name}: {error}")
+                # Issue #49: Track failed items in the database so user can see and fix them
+                # Add to watch_folder_processed to prevent infinite retry loop
+                watch_folder_processed.add(item_path)
+                try:
+                    # Check if this item is already tracked
+                    c.execute('SELECT id FROM books WHERE path = ?', (item_path,))
+                    existing = c.fetchone()
+                    if existing:
+                        # Update existing record with error
+                        c.execute('''UPDATE books SET status = ?, error_message = ?, source_type = ?, updated_at = datetime('now')
+                                     WHERE id = ?''',
+                                  ('watch_folder_error', f'Watch folder: {error}', 'watch_folder', existing['id']))
+                    else:
+                        # Insert new record for the failed item
+                        c.execute('''INSERT INTO books
+                                     (path, current_author, current_title, status, error_message, source_type, added_at, updated_at)
+                                     VALUES (?, ?, ?, 'watch_folder_error', ?, 'watch_folder', datetime('now'), datetime('now'))''',
+                                  (item_path, author, title, f'Watch folder: {error}'))
+                    conn.commit()
+                    logger.info(f"Watch folder: Tracked failure for user review: {item.name}")
+                except Exception as db_err:
+                    logger.debug(f"Watch folder: Could not track failure in DB: {db_err}")
+
+        except Exception as e:
+            logger.error(f"Watch folder: Error processing {item_path}: {e}")
+
+    conn.close()
+    watch_folder_last_scan = time.time()
+    logger.info(f"Watch folder: Processed {processed}/{len(items)} items")
+    return processed
+
 
 def background_worker():
     """Background worker that periodically scans and processes."""
@@ -4490,10 +10848,9 @@ def background_worker():
                 # Scan library
                 scan_library(config)
 
-                # Process queue if auto_fix is enabled
-                if config.get('auto_fix', False):
-                    logger.debug("Worker: Auto-fix enabled, processing queue")
-                    process_all_queue(config)
+                # Process queue (auto_fix setting controls whether fixes are applied or sent to pending)
+                logger.debug("Worker: Processing queue")
+                process_all_queue(config)
             except Exception as e:
                 logger.error(f"Worker error: {e}", exc_info=True)
 
@@ -4507,23 +10864,62 @@ def background_worker():
 
     logger.info("Background worker thread stopped")
 
+
+# Watch folder worker - runs on its own interval
+watch_worker_thread = None
+watch_worker_running = False
+
+def watch_folder_worker():
+    """Background worker that monitors watch folder for new audiobooks."""
+    global watch_worker_running
+
+    logger.info("Watch folder worker thread started")
+
+    while watch_worker_running:
+        config = load_config()
+
+        if config.get('watch_mode', False) and config.get('watch_folder', '').strip():
+            try:
+                process_watch_folder(config)
+            except Exception as e:
+                logger.error(f"Watch folder worker error: {e}", exc_info=True)
+
+        # Sleep for watch interval (default 60 seconds)
+        interval = config.get('watch_interval_seconds', 60)
+        for _ in range(int(interval)):
+            if not watch_worker_running:
+                break
+            time.sleep(1)
+
+    logger.info("Watch folder worker thread stopped")
+
+
 def start_worker():
     """Start the background worker."""
-    global worker_thread, worker_running
+    global worker_thread, worker_running, watch_worker_thread, watch_worker_running
 
     if worker_thread and worker_thread.is_alive():
         logger.info("Worker already running")
-        return
+    else:
+        worker_running = True
+        worker_thread = threading.Thread(target=background_worker, daemon=True)
+        worker_thread.start()
+        logger.info("Background worker started")
 
-    worker_running = True
-    worker_thread = threading.Thread(target=background_worker, daemon=True)
-    worker_thread.start()
-    logger.info("Background worker started")
+    # Also start watch folder worker
+    config = load_config()
+    if config.get('watch_mode', False) and config.get('watch_folder', '').strip():
+        if not (watch_worker_thread and watch_worker_thread.is_alive()):
+            watch_worker_running = True
+            watch_worker_thread = threading.Thread(target=watch_folder_worker, daemon=True)
+            watch_worker_thread.start()
+            logger.info("Watch folder worker started")
 
 def stop_worker():
     """Stop the background worker."""
-    global worker_running
+    global worker_running, watch_worker_running
     worker_running = False
+    watch_worker_running = False
     logger.info("Background worker stop requested")
 
 def is_worker_running():
@@ -4541,6 +10937,11 @@ def inject_worker_status():
 @app.route('/')
 def dashboard():
     """Main dashboard."""
+    # Check if first-run setup is needed
+    config = load_config()
+    if needs_setup(config):
+        return redirect('/setup')
+
     conn = get_db()
     c = conn.cursor()
 
@@ -4560,10 +10961,10 @@ def dashboard():
     c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'pending_fix'")
     pending_fixes = c.fetchone()['count']
 
-    # Get recent history
+    # Get recent history (use LEFT JOIN in case book was deleted)
     c.execute('''SELECT h.*, b.path FROM history h
-                 JOIN books b ON h.book_id = b.id
-                 ORDER BY h.fixed_at DESC LIMIT 10''')
+                 LEFT JOIN books b ON h.book_id = b.id
+                 ORDER BY h.fixed_at DESC LIMIT 15''')
     recent_history = c.fetchall()
 
     # Get stats for last 7 days
@@ -4586,14 +10987,76 @@ def dashboard():
                           config=config,
                           worker_running=worker_running)
 
+
+@app.route('/setup')
+def setup_wizard():
+    """First-run setup wizard for new users."""
+    config = load_config()
+    # If already configured, redirect to library (unless force=1 for screenshots/testing)
+    if not needs_setup(config) and request.args.get('force') != '1':
+        return redirect('/library')
+    return render_template('setup_wizard.html', config=config)
+
+
+@app.route('/api/setup/complete', methods=['POST'])
+def complete_setup():
+    """Save initial setup configuration.
+
+    IMPORTANT: This MERGES with existing config, never overwrites.
+    If user has existing settings, they are preserved.
+    """
+    data = request.json
+    config = load_config()  # Load existing config first
+    secrets = load_secrets()
+
+    # MERGE library paths - add new ones, keep existing
+    existing_paths = config.get('library_paths', [])
+    new_paths = data.get('library_paths', [])
+    for path in new_paths:
+        if path and path not in existing_paths:
+            existing_paths.append(path)
+    config['library_paths'] = existing_paths
+
+    # Only update AI provider if user selected one in wizard
+    if data.get('ai_provider'):
+        config['ai_provider'] = data['ai_provider']
+
+    # Only save API keys if provided (don't clear existing)
+    if data.get('gemini_api_key'):
+        secrets['gemini_api_key'] = data['gemini_api_key']
+    if data.get('openrouter_api_key'):
+        secrets['openrouter_api_key'] = data['openrouter_api_key']
+    if data.get('ollama_url'):
+        config['ollama_url'] = data['ollama_url']
+    if data.get('ollama_model'):
+        config['ollama_model'] = data['ollama_model']
+
+    # Only update toggles if explicitly set in wizard
+    if 'auto_fix' in data:
+        config['auto_fix'] = data['auto_fix']
+    if 'ebook_management' in data:
+        config['ebook_management'] = data['ebook_management']
+    if 'trust_the_process' in data:
+        config['trust_the_process'] = data['trust_the_process']
+
+    # Mark setup as completed (prevents re-showing wizard)
+    config['setup_completed'] = True
+
+    save_config(config)
+    save_secrets(secrets)
+
+    logger.info(f"Setup wizard completed. Library paths: {config['library_paths']}")
+    return jsonify({'success': True, 'redirect': '/library'})
+
+
 @app.route('/orphans')
 def orphans_page():
-    """Orphan files management page."""
-    return render_template('orphans.html')
+    """Redirect to unified Library view with orphan filter."""
+    return redirect('/library?filter=orphan')
 
 @app.route('/queue')
 def queue_page():
-    """Queue management page."""
+    """Queue page with Multi-Edit support."""
     conn = get_db()
     c = conn.cursor()
 
@@ -4602,8 +11065,7 @@ def queue_page():
                  FROM queue q
                  JOIN books b ON q.book_id = b.id
                  ORDER BY q.priority, q.added_at''')
-    queue_items = c.fetchall()
-
+    queue_items = [dict(row) for row in c.fetchall()]
     conn.close()
 
     return render_template('queue.html', queue_items=queue_items)
@@ -4619,19 +11081,58 @@ def history_page():
     per_page = 50
     offset = (page - 1) * per_page
 
+    # Get duplicate count for the UI
+    c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'duplicate'")
+    duplicate_count = c.fetchone()['count']
+
+    # Get needs_attention count for the UI
+    c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'needs_attention'")
+    needs_attention_count = c.fetchone()['count']
+
+    # Get error count for the UI
+    c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'error'")
+    error_count = c.fetchone()['count']
+
     # Build query based on status filter
+    # Join with books table to get user_locked status
     if status_filter == 'pending':
         c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'pending_fix'")
         total = c.fetchone()['count']
-        c.execute('''SELECT * FROM history
-                     WHERE status = 'pending_fix'
-                     ORDER BY fixed_at DESC
+        c.execute('''SELECT h.*, b.user_locked FROM history h
+                     LEFT JOIN books b ON h.book_id = b.id
+                     WHERE h.status = 'pending_fix'
+                     ORDER BY h.fixed_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+    elif status_filter == 'duplicate':
+        c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'duplicate'")
+        total = c.fetchone()['count']
+        c.execute('''SELECT h.*, b.user_locked FROM history h
+                     LEFT JOIN books b ON h.book_id = b.id
+                     WHERE h.status = 'duplicate'
+                     ORDER BY h.fixed_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+    elif status_filter == 'attention':
+        c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'needs_attention'")
+        total = c.fetchone()['count']
+        c.execute('''SELECT h.*, b.user_locked FROM history h
+                     LEFT JOIN books b ON h.book_id = b.id
+                     WHERE h.status = 'needs_attention'
+                     ORDER BY h.fixed_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+    elif status_filter == 'error':
+        c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'error'")
+        total = c.fetchone()['count']
+        c.execute('''SELECT h.*, b.user_locked FROM history h
+                     LEFT JOIN books b ON h.book_id = b.id
+                     WHERE h.status = 'error'
+                     ORDER BY h.fixed_at DESC
                      LIMIT ? OFFSET ?''', (per_page, offset))
     else:
         c.execute('SELECT COUNT(*) as count FROM history')
         total = c.fetchone()['count']
-        c.execute('''SELECT * FROM history
-                     ORDER BY fixed_at DESC
+        c.execute('''SELECT h.*, b.user_locked FROM history h
+                     LEFT JOIN books b ON h.book_id = b.id
+                     ORDER BY h.fixed_at DESC
                      LIMIT ? OFFSET ?''', (per_page, offset))
     rows = c.fetchall()
     conn.close()
@@ -4650,7 +11151,10 @@ def history_page():
                           page=page,
                           total_pages=total_pages,
                           total=total,
-                          status_filter=status_filter)
+                          status_filter=status_filter,
+                          duplicate_count=duplicate_count,
+                          needs_attention_count=needs_attention_count,
+                          error_count=error_count)
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings_page():
@@ -4664,34 +11168,86 @@ def settings_page():
         config['ai_provider'] = request.form.get('ai_provider', 'openrouter')
         config['openrouter_model'] = request.form.get('openrouter_model', 'google/gemma-3n-e4b-it:free')
         config['gemini_model'] = request.form.get('gemini_model', 'gemini-1.5-flash')
+        config['ollama_url'] = request.form.get('ollama_url', 'http://localhost:11434').strip()
+        config['ollama_model'] = request.form.get('ollama_model', 'llama3.2:3b').strip()
         config['scan_interval_hours'] = int(request.form.get('scan_interval_hours', 6))
         config['batch_size'] = int(request.form.get('batch_size', 3))
-        config['max_requests_per_hour'] = int(request.form.get('max_requests_per_hour', 30))
+        # Clamp rate limit to safe range (10-500) to prevent API bans
+        user_rate = int(request.form.get('max_requests_per_hour', 30))
+        config['max_requests_per_hour'] = max(10, min(user_rate, 500))
         config['auto_fix'] = 'auto_fix' in request.form
+        config['trust_the_process'] = 'trust_the_process' in request.form
         config['protect_author_changes'] = 'protect_author_changes' in request.form
         config['enabled'] = 'enabled' in request.form
         config['series_grouping'] = 'series_grouping' in request.form
         config['ebook_management'] = 'ebook_management' in request.form
         config['ebook_library_mode'] = request.form.get('ebook_library_mode', 'merge')
-        config['audio_analysis'] = 'audio_analysis' in request.form
-        config['google_books_api_key'] = request.form.get('google_books_api_key', '').strip() or None
+        # Verification layer settings (added beta.43)
+        config['enable_api_lookups'] = 'enable_api_lookups' in request.form
+        config['enable_ai_verification'] = 'enable_ai_verification' in request.form
+        config['enable_audio_analysis'] = 'enable_audio_analysis' in request.form
+        config['use_bookdb_for_audio'] = 'use_bookdb_for_audio' in request.form
+        config['deep_scan_mode'] = 'deep_scan_mode' in request.form
+        config['profile_confidence_threshold'] = int(request.form.get('profile_confidence_threshold', 85))
+        config['skip_confirmations'] = 'skip_confirmations' in request.form
+        config['anonymous_error_reporting'] = 'anonymous_error_reporting' in request.form
+        config['error_reporting_include_titles'] = 'error_reporting_include_titles' in request.form
+        config['metadata_embedding_enabled'] = 'metadata_embedding_enabled' in request.form
+        config['metadata_embedding_overwrite_managed'] = 'metadata_embedding_overwrite_managed' in request.form
+        config['metadata_embedding_backup_sidecar'] = 'metadata_embedding_backup_sidecar' in request.form
+        # Language settings
+        config['preferred_language'] = request.form.get('preferred_language', 'en')
+        config['preserve_original_titles'] = 'preserve_original_titles' in request.form
+        config['detect_language_from_audio'] = 'detect_language_from_audio' in request.form
+        # google_books_api_key is now stored in secrets only (security fix)
         config['update_channel'] = request.form.get('update_channel', 'stable')
         config['naming_format'] = request.form.get('naming_format', 'author/title')
         config['custom_naming_template'] = request.form.get('custom_naming_template', '{author}/{title}').strip()
+        # Watch folder settings
+        config['watch_mode'] = 'watch_mode' in request.form
+        config['watch_folder'] = request.form.get('watch_folder', '').strip()
+        config['watch_output_folder'] = request.form.get('watch_output_folder', '').strip()
+        config['watch_use_hard_links'] = 'watch_use_hard_links' in request.form
+        config['watch_interval_seconds'] = int(request.form.get('watch_interval_seconds', 60))
+        config['watch_delete_empty_folders'] = 'watch_delete_empty_folders' in request.form
+        config['watch_min_file_age_seconds'] = int(request.form.get('watch_min_file_age_seconds', 30))
+        # Author initials setting (Issue #54)
+        config['standardize_author_initials'] = 'standardize_author_initials' in request.form
+
+        # Provider chain settings - parse comma-separated values into lists
+        audio_chain_str = request.form.get('audio_provider_chain', 'bookdb,gemini').strip()
+        config['audio_provider_chain'] = [p.strip() for p in audio_chain_str.split(',') if p.strip()]
+        text_chain_str = request.form.get('text_provider_chain', 'gemini,openrouter').strip()
+        config['text_provider_chain'] = [p.strip() for p in text_chain_str.split(',') if p.strip()]
 
         # Save config (without secrets)
         save_config(config)
 
-        # Save secrets separately
-        secrets = {
-            'openrouter_api_key': request.form.get('openrouter_api_key', ''),
-            'gemini_api_key': request.form.get('gemini_api_key', '')
-        }
+        # Save secrets separately (preserving existing secrets like abs_api_token)
+        # Only update API keys if user provided a new value (security: keys are no longer in HTML)
+        secrets = load_secrets()
+        new_openrouter_key = request.form.get('openrouter_api_key', '').strip()
+        new_gemini_key = request.form.get('gemini_api_key', '').strip()
+        new_google_books_key = request.form.get('google_books_api_key', '').strip()
+
+        # Only overwrite existing keys if user entered a new value
+        if new_openrouter_key:
+            secrets['openrouter_api_key'] = new_openrouter_key
+        if new_gemini_key:
+            secrets['gemini_api_key'] = new_gemini_key
+        if new_google_books_key:
+            secrets['google_books_api_key'] = new_google_books_key
         save_secrets(secrets)
 
         return redirect(url_for('settings_page'))
 
     config = load_config()
+    secrets = load_secrets()
+    # Pass key existence flags (not actual values) to template for UI indicators
+    # SECURITY: Never pass actual API keys to templates - only boolean existence flags
+    config['gemini_api_key'] = bool(secrets.get('gemini_api_key', ''))
+    config['openrouter_api_key'] = bool(secrets.get('openrouter_api_key', ''))
+    config['google_books_api_key'] = bool(secrets.get('google_books_api_key', ''))
     return render_template('settings.html', config=config, version=APP_VERSION)
 
 
@@ -4788,9 +11344,168 @@ def api_check_path():
 @app.route('/api/scan', methods=['POST'])
 def api_scan():
     """Trigger a library scan."""
+    # Issue #61: Check if scan already in progress
+    if scan_in_progress:
+        return jsonify({
+            'success': False,
+            'error': 'Scan already in progress',
+            'message': 'A scan is already running. Please wait for it to complete.'
+        }), 409  # HTTP 409 Conflict
+
     config = load_config()
-    scanned, queued = scan_library(config)
-    return jsonify({'success': True, 'scanned': scanned, 'queued': queued})
+    checked, scanned, queued = scan_library(config)
+    return jsonify({
+        'success': True,
+        'checked': checked,      # Total book folders examined
+        'scanned': scanned,      # New books added to tracking
+        'queued': queued         # Books needing fixes
+    })
+
+
+@app.route('/api/scan/status', methods=['GET'])
+def api_scan_status():
+    """Check if a scan is currently in progress. Issue #61."""
+    return jsonify({
+        'scanning': scan_in_progress
+    })
+
+
+@app.route('/api/whisper-status', methods=['GET'])
+def api_whisper_status():
+    """Check if faster-whisper is installed and model is ready."""
+    config = load_config()
+    model_name = config.get('whisper_model', 'base')
+
+    # Check if faster-whisper is installed
+    try:
+        import faster_whisper
+        installed = True
+    except ImportError:
+        installed = False
+        return jsonify({
+            'installed': False,
+            'model': model_name,
+            'model_ready': False
+        })
+
+    # Check if model is downloaded (check HuggingFace cache)
+    import os
+    cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+    model_dir = f"models--Systran--faster-whisper-{model_name}"
+    model_ready = os.path.isdir(os.path.join(cache_dir, model_dir))
+
+    return jsonify({
+        'installed': installed,
+        'model': model_name,
+        'model_ready': model_ready
+    })
+
+
+@app.route('/api/install-whisper', methods=['POST'])
+def api_install_whisper():
+    """Install faster-whisper package via pip."""
+    import subprocess
+    import sys
+
+    try:
+        # Ensure pip cache and user install directories exist and are writable
+        # This handles Docker containers where /app/.local may not exist
+        pip_cache = os.path.join(os.path.dirname(__file__), '.cache', 'pip')
+        pip_local = os.path.join(os.path.dirname(__file__), '.local')
+        os.makedirs(pip_cache, exist_ok=True)
+        os.makedirs(pip_local, exist_ok=True)
+
+        # Set up environment for pip to use our directories
+        env = os.environ.copy()
+        env['HOME'] = os.path.dirname(__file__)  # /app
+        env['PIP_CACHE_DIR'] = pip_cache
+        env['PYTHONUSERBASE'] = pip_local
+
+        # Install faster-whisper with --user flag to install to PYTHONUSERBASE
+        result = subprocess.run(
+            [sys.executable, '-m', 'pip', 'install', '--user', 'faster-whisper'],
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 minute timeout
+            env=env
+        )
+
+        if result.returncode == 0:
+            # Add user site-packages to path if not already there
+            user_site = os.path.join(pip_local, 'lib', f'python{sys.version_info.major}.{sys.version_info.minor}', 'site-packages')
+            if user_site not in sys.path:
+                sys.path.insert(0, user_site)
+
+            return jsonify({
+                'success': True,
+                'message': 'faster-whisper installed successfully. Refresh the page to use it.'
+            })
+        else:
+            error_msg = result.stderr[:500] if result.stderr else 'Unknown error'
+            logger.error(f"[WHISPER] Install failed: {error_msg}")
+            return jsonify({
+                'success': False,
+                'error': f'Install failed: {error_msg}'
+            })
+
+    except subprocess.TimeoutExpired:
+        return jsonify({
+            'success': False,
+            'error': 'Installation timed out after 5 minutes'
+        })
+    except Exception as e:
+        logger.error(f"[WHISPER] Install error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+
+
+@app.route('/api/deep_verify', methods=['POST'])
+def api_deep_verify():
+    """
+    Deep Verification Mode - "Hail Mary" full library audit.
+
+    Queues ALL books for API verification regardless of how "clean" they look.
+    This catches cases where folder structure appears correct but author
+    attribution is actually wrong.
+
+    WARNING: This is expensive and time-consuming!
+    """
+    config = load_config()
+
+    # Get stats first to show what will be affected
+    conn = get_db()
+    c = conn.cursor()
+
+    c.execute('''SELECT COUNT(*) FROM books
+                 WHERE (user_locked IS NULL OR user_locked = 0)
+                   AND status NOT IN ('series_folder', 'multi_book_files', 'needs_split', 'needs_attention')''')
+    total_books = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM queue")
+    current_queue = c.fetchone()[0]
+
+    conn.close()
+
+    # Run deep verification
+    result = deep_verify_all_books(config)
+
+    # Estimate time (rough: ~30 seconds per book for full API cycle)
+    estimated_minutes = (result['queued'] * 30) // 60
+    estimated_hours = estimated_minutes // 60
+    estimated_minutes = estimated_minutes % 60
+
+    return jsonify({
+        'success': True,
+        'queued': result['queued'],
+        'already_verified': result['already_verified'],
+        'total_books': result['total'],
+        'previous_queue_size': current_queue,
+        'estimated_time': f"{estimated_hours}h {estimated_minutes}m" if estimated_hours else f"{estimated_minutes}m",
+        'message': f"Deep verification queued {result['queued']} books for full API verification"
+    })
+
 
 @app.route('/api/chaos_scan', methods=['POST'])
 def api_chaos_scan():
@@ -5092,7 +11807,7 @@ def api_delete_corrupt():
 
 @app.route('/api/process', methods=['POST'])
 def api_process():
-    """Process the queue."""
+    """Process the queue using layered processing."""
     config = load_config()
     data = request.json if request.is_json else {}
     process_all = data.get('all', False)
@@ -5104,9 +11819,57 @@ def api_process():
         # Process entire queue in batches
         processed, fixed = process_all_queue(config)
     else:
-        processed, fixed = process_queue(config, limit)
+        # Use layered processing even for limited batches
+        # Layer 1: API lookups first
+        total_processed = 0
+        total_fixed = 0
 
-    return jsonify({'success': True, 'processed': processed, 'fixed': fixed})
+        if config.get('enable_api_lookups', True):
+            l1_processed, l1_resolved = process_layer_1_api(config, limit)
+            total_processed += l1_processed
+            logger.info(f"[LAYER 1] Processed {l1_processed}, resolved {l1_resolved}")
+
+        # Layer 2: AI verification for items that passed through Layer 1
+        if config.get('enable_ai_verification', True):
+            l2_processed, l2_fixed = process_queue(config, limit)
+            total_processed += l2_processed
+            total_fixed += l2_fixed
+
+        # Layer 3: Audio analysis (if enabled)
+        if config.get('enable_audio_analysis', False):
+            l3_processed, l3_fixed = process_layer_3_audio(config, limit)
+            total_processed += l3_processed
+            total_fixed += l3_fixed
+
+        processed, fixed = total_processed, total_fixed
+
+    # Issue #57: Calculate verified count (processed items that didn't need fixing)
+    verified = processed - fixed
+
+    # Check remaining queue size for status message
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) FROM queue')
+    remaining = c.fetchone()[0]
+    conn.close()
+
+    # Build helpful status message
+    if remaining == 0:
+        status = 'complete'
+        message = f'Queue complete! {fixed} renamed, {verified} already correct'
+    else:
+        status = 'partial'
+        message = f'Processed batch: {fixed} renamed, {verified} already correct. {remaining} remaining in queue.'
+
+    return jsonify({
+        'success': True,
+        'processed': processed,
+        'fixed': fixed,
+        'verified': verified,
+        'remaining': remaining,
+        'status': status,
+        'message': message
+    })
 
 @app.route('/api/process_status')
 def api_process_status():
@@ -5197,6 +11960,38 @@ def api_apply_all_pending():
         'message': f'Applied {applied} fixes, {errors} errors'
     })
 
+
+@app.route('/api/reject_all_pending', methods=['POST'])
+def api_reject_all_pending():
+    """Reject all pending fixes, resetting books to pending status."""
+    conn = get_db()
+    c = conn.cursor()
+
+    # Get count first
+    c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'pending_fix'")
+    count = c.fetchone()['count']
+
+    if count == 0:
+        conn.close()
+        return jsonify({'success': True, 'message': 'No pending fixes to reject', 'rejected': 0})
+
+    # Reset books to pending status (NOT verified - user just rejected the proposed fix)
+    # Reset verification_layer so they can be re-processed if desired
+    c.execute('''UPDATE books SET status = 'pending', verification_layer = 0
+                 WHERE id IN (SELECT book_id FROM history WHERE status = 'pending_fix')''')
+
+    # Delete all pending fix entries
+    c.execute("DELETE FROM history WHERE status = 'pending_fix'")
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        'success': True,
+        'message': f'Rejected {count} pending fixes (books reset to pending)',
+        'rejected': count
+    })
+
+
 @app.route('/api/remove_from_queue/<int:queue_id>', methods=['POST'])
 def api_remove_from_queue(queue_id):
     """Remove an item from the queue."""
@@ -5213,6 +12008,38 @@ def api_remove_from_queue(queue_id):
 
     conn.close()
     return jsonify({'success': True})
+
+
+@app.route('/api/clear_queue', methods=['POST'])
+def api_clear_queue():
+    """Clear all items from the queue, marking them as verified."""
+    conn = get_db()
+    c = conn.cursor()
+
+    # Get count first
+    c.execute('SELECT COUNT(*) as count FROM queue')
+    count = c.fetchone()['count']
+
+    if count == 0:
+        conn.close()
+        return jsonify({'success': True, 'message': 'Queue already empty', 'cleared': 0})
+
+    # Reset queued books to pending status (NOT verified - they weren't actually verified!)
+    # Also reset verification_layer so they can be re-processed if re-scanned
+    c.execute('''UPDATE books SET status = 'pending', verification_layer = 0
+                 WHERE id IN (SELECT book_id FROM queue)''')
+
+    # Clear the queue
+    c.execute('DELETE FROM queue')
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        'success': True,
+        'message': f'Cleared {count} items from queue (reset to pending)',
+        'cleared': count
+    })
+
 
 @app.route('/api/find_drastic_changes')
 def api_find_drastic_changes():
@@ -5299,8 +12126,9 @@ def api_undo_all_drastic():
 
 @app.route('/api/undo/<int:history_id>', methods=['POST'])
 def api_undo(history_id):
-    """Undo a fix - rename folder back to original name."""
+    """Undo a fix - rename folder back to original name and restore original tags."""
     import shutil
+    from audio_tagging import restore_tags_from_sidecar
 
     conn = get_db()
     c = conn.cursor()
@@ -5333,13 +12161,49 @@ def api_undo(history_id):
         }), 409
 
     try:
+        new_path_obj = Path(new_path)
+        
+        # Determine folder for sidecar (if new_path is a file, parent has sidecar)
+        if new_path_obj.is_file():
+            sidecar_folder = new_path_obj.parent
+        else:
+            sidecar_folder = new_path_obj
+
+        # Restore original tags from sidecar backup before moving
+        tags_restored = False
+        tags_message = ""
+        try:
+            restore_result = restore_tags_from_sidecar(
+                sidecar_folder,
+                delete_sidecar_on_success=True  # Clean up sidecar after successful restore
+            )
+            if restore_result['files_restored'] > 0:
+                tags_restored = True
+                tags_message = f" Tags restored for {restore_result['files_restored']} file(s)."
+                logger.info(f"Undo: Restored tags for {restore_result['files_restored']} files")
+            elif restore_result.get('error'):
+                tags_message = f" (Tag restore note: {restore_result['error']})"
+        except Exception as tag_err:
+            logger.warning(f"Could not restore tags during undo: {tag_err}")
+            tags_message = " (Tags could not be restored)"
+
         # Rename back to original
         shutil.move(new_path, old_path)
         logger.info(f"Undo: Renamed '{new_path}' back to '{old_path}'")
 
+        # Clean up empty parent folder if we moved a file
+        if new_path_obj.is_file():
+            try:
+                parent = new_path_obj.parent
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
+                    logger.info(f"Undo: Removed empty folder {parent}")
+            except OSError:
+                pass
+
         # Update history record
-        c.execute('''UPDATE history SET status = 'undone', error_message = 'Manually undone by user'
-                     WHERE id = ?''', (history_id,))
+        c.execute('''UPDATE history SET status = 'undone', error_message = ?
+                     WHERE id = ?''', (f'Manually undone by user{tags_message}', history_id))
 
         # Update book record back to original - use 'protected' status so deep rescan won't re-queue
         c.execute('''UPDATE books SET
@@ -5352,13 +12216,282 @@ def api_undo(history_id):
 
         return jsonify({
             'success': True,
-            'message': f"Undone! Renamed back to: {record['old_author']} / {record['old_title']}"
+            'message': f"Undone! Renamed back to: {record['old_author']} / {record['old_title']}{tags_message}",
+            'tags_restored': tags_restored
         })
 
     except Exception as e:
         conn.close()
         logger.error(f"Undo failed: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/remove_duplicate/<int:history_id>', methods=['POST'])
+def api_remove_duplicate(history_id):
+    """Remove a confirmed duplicate - deletes the source folder (old_path) since destination is properly named."""
+    import shutil
+
+    conn = get_db()
+    c = conn.cursor()
+
+    # Get the history record
+    c.execute('SELECT * FROM history WHERE id = ?', (history_id,))
+    record = c.fetchone()
+
+    if not record:
+        conn.close()
+        return jsonify({'success': False, 'error': 'History record not found'}), 404
+
+    if record['status'] != 'duplicate':
+        conn.close()
+        return jsonify({'success': False, 'error': 'This record is not marked as a duplicate'}), 400
+
+    old_path = record['old_path']  # This is the duplicate to remove
+    new_path = record['new_path']  # This is the properly named copy to keep
+
+    # Safety checks
+    if not os.path.exists(old_path):
+        # Already removed - just update status
+        c.execute('UPDATE history SET status = ? WHERE id = ?', ('duplicate_removed', history_id))
+        c.execute('DELETE FROM books WHERE id = ?', (record['book_id'],))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'message': 'Duplicate was already removed'})
+
+    if not os.path.exists(new_path):
+        conn.close()
+        return jsonify({
+            'success': False,
+            'error': f'The properly named copy no longer exists: {new_path}. Refusing to delete.'
+        }), 400
+
+    # Re-verify it's still a duplicate before deleting
+    comparison = compare_book_folders(old_path, new_path)
+    if not (comparison['identical'] or comparison['same_book']):
+        conn.close()
+        return jsonify({
+            'success': False,
+            'error': f'Files have changed - no longer appears to be a duplicate (overlap: {comparison["overlap_ratio"]:.0%}). Please review manually.'
+        }), 400
+
+    try:
+        # Get size before removal for logging
+        total_size = sum(f.stat().st_size for f in Path(old_path).rglob('*') if f.is_file())
+
+        # Remove the duplicate folder
+        shutil.rmtree(old_path)
+        logger.info(f"Removed duplicate: {old_path} ({total_size // 1024 // 1024}MB)")
+
+        # Clean up empty parent folder (e.g., Unknown/)
+        parent = Path(old_path).parent
+        try:
+            if parent.exists() and not any(parent.iterdir()):
+                parent.rmdir()
+                logger.info(f"Removed empty parent folder: {parent}")
+        except OSError:
+            pass
+
+        # Update records
+        c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
+                 ('duplicate_removed', f'Removed {total_size // 1024 // 1024}MB duplicate', history_id))
+        c.execute('DELETE FROM books WHERE id = ?', (record['book_id'],))
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': f'Removed duplicate ({total_size // 1024 // 1024}MB freed)',
+            'removed_path': old_path,
+            'kept_path': new_path
+        })
+
+    except Exception as e:
+        conn.close()
+        logger.error(f"Failed to remove duplicate: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/replace_corrupt/<int:history_id>', methods=['POST'])
+def api_replace_corrupt(history_id):
+    """Replace corrupt destination with valid source - delete corrupt, move source to dest path."""
+    import shutil
+
+    conn = get_db()
+    c = conn.cursor()
+
+    # Get the history record
+    c.execute('SELECT * FROM history WHERE id = ?', (history_id,))
+    record = c.fetchone()
+
+    if not record:
+        conn.close()
+        return jsonify({'success': False, 'error': 'History record not found'}), 404
+
+    if record['status'] != 'corrupt_dest':
+        conn.close()
+        return jsonify({'success': False, 'error': 'This record is not marked as corrupt_dest'}), 400
+
+    old_path = record['old_path']  # Valid source
+    new_path = record['new_path']  # Corrupt destination
+
+    # Safety checks
+    if not os.path.exists(old_path):
+        conn.close()
+        return jsonify({
+            'success': False,
+            'error': f'Valid source no longer exists: {old_path}'
+        }), 400
+
+    try:
+        # Get sizes for logging
+        source_size = sum(f.stat().st_size for f in Path(old_path).rglob('*') if f.is_file())
+
+        # Delete the corrupt destination if it exists
+        if os.path.exists(new_path):
+            dest_size = sum(f.stat().st_size for f in Path(new_path).rglob('*') if f.is_file())
+            shutil.rmtree(new_path)
+            logger.info(f"Deleted corrupt destination: {new_path} ({dest_size // 1024 // 1024}MB)")
+
+        # Create parent directories if needed
+        Path(new_path).parent.mkdir(parents=True, exist_ok=True)
+
+        # Move the valid source to the destination
+        shutil.move(old_path, new_path)
+        logger.info(f"Moved valid source to destination: {old_path} -> {new_path}")
+
+        # Clean up empty parent folder
+        parent = Path(old_path).parent
+        try:
+            if parent.exists() and not any(parent.iterdir()):
+                parent.rmdir()
+                logger.info(f"Removed empty parent folder: {parent}")
+        except OSError:
+            pass
+
+        # Update records
+        c.execute('''UPDATE history SET status = ?, error_message = ? WHERE id = ?''',
+                 ('fixed', f'Replaced corrupt destination with valid source ({source_size // 1024 // 1024}MB)', history_id))
+        c.execute('''UPDATE books SET path = ?, current_author = ?, current_title = ?, status = ? WHERE id = ?''',
+                 (new_path, record['new_author'], record['new_title'], 'fixed', record['book_id']))
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': f'Replaced corrupt destination with valid source ({source_size // 1024 // 1024}MB)',
+            'new_path': new_path
+        })
+
+    except Exception as e:
+        conn.close()
+        logger.error(f"Failed to replace corrupt destination: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/remove_all_duplicates', methods=['POST'])
+def api_remove_all_duplicates():
+    """Remove all confirmed duplicates in one operation."""
+    import shutil
+
+    conn = get_db()
+    c = conn.cursor()
+
+    # Get all duplicate records
+    c.execute("SELECT * FROM history WHERE status = 'duplicate'")
+    duplicates = c.fetchall()
+
+    if not duplicates:
+        conn.close()
+        return jsonify({'success': True, 'message': 'No duplicates to remove', 'removed': 0})
+
+    removed = 0
+    skipped = 0
+    errors = []
+    total_freed = 0
+
+    for record in duplicates:
+        old_path = record['old_path']
+        new_path = record['new_path']
+
+        # Skip if already removed
+        if not os.path.exists(old_path):
+            c.execute('UPDATE history SET status = ? WHERE id = ?', ('duplicate_removed', record['id']))
+            c.execute('DELETE FROM books WHERE id = ?', (record['book_id'],))
+            removed += 1
+            continue
+
+        # Skip if destination no longer exists
+        if not os.path.exists(new_path):
+            skipped += 1
+            errors.append(f"Skipped {old_path}: destination {new_path} no longer exists")
+            continue
+
+        # Re-verify
+        comparison = compare_book_folders(old_path, new_path)
+        if not (comparison['identical'] or comparison['same_book']):
+            skipped += 1
+            errors.append(f"Skipped {old_path}: no longer appears to be duplicate")
+            continue
+
+        try:
+            total_size = sum(f.stat().st_size for f in Path(old_path).rglob('*') if f.is_file())
+            shutil.rmtree(old_path)
+            total_freed += total_size
+
+            # Clean up empty parent
+            parent = Path(old_path).parent
+            try:
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
+            except OSError:
+                pass
+
+            c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
+                     ('duplicate_removed', f'Removed {total_size // 1024 // 1024}MB duplicate', record['id']))
+            c.execute('DELETE FROM books WHERE id = ?', (record['book_id'],))
+            removed += 1
+
+        except Exception as e:
+            skipped += 1
+            errors.append(f"Failed to remove {old_path}: {e}")
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        'success': True,
+        'removed': removed,
+        'skipped': skipped,
+        'freed_mb': total_freed // 1024 // 1024,
+        'errors': errors[:10] if errors else []  # Limit errors in response
+    })
+
+
+@app.route('/api/clear_all_errors', methods=['POST'])
+def api_clear_all_errors():
+    """Clear all error entries from history."""
+    conn = get_db()
+    c = conn.cursor()
+
+    # Get count before clearing
+    c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'error'")
+    count = c.fetchone()['count']
+
+    if count == 0:
+        conn.close()
+        return jsonify({'success': True, 'message': 'No errors to clear', 'cleared': 0})
+
+    # Delete all error entries
+    c.execute("DELETE FROM history WHERE status = 'error'")
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        'success': True,
+        'message': f'Cleared {count} error entries',
+        'cleared': count
+    })
+
 
 @app.route('/api/stats')
 def api_stats():
@@ -5381,9 +12514,6 @@ def api_stats():
     c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'verified'")
     verified = c.fetchone()['count']
 
-    c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'structure_reversed'")
-    structure_reversed = c.fetchone()['count']
-
     conn.close()
 
     return jsonify({
@@ -5392,7 +12522,6 @@ def api_stats():
         'fixed': fixed,
         'pending_fixes': pending,
         'verified': verified,
-        'structure_reversed': structure_reversed,
         'worker_running': is_worker_running(),
         'processing': processing_status
     })
@@ -5412,6 +12541,44 @@ def api_queue():
 
     conn.close()
     return jsonify({'items': items, 'count': len(items)})
+
+
+@app.route('/api/error_reports')
+def api_error_reports():
+    """Get stored anonymous error reports (for debug menu)."""
+    reports = get_error_reports()
+    return jsonify({
+        'success': True,
+        'reports': reports,
+        'count': len(reports)
+    })
+
+
+@app.route('/api/error_reports/clear', methods=['POST'])
+def api_clear_error_reports():
+    """Clear all stored error reports."""
+    clear_error_reports()
+    return jsonify({'success': True, 'message': 'Error reports cleared'})
+
+
+@app.route('/api/error_reports/send', methods=['POST'])
+def api_send_error_reports():
+    """Send error reports to the developer via email."""
+    reports = get_error_reports()
+
+    if not reports:
+        return jsonify({
+            'success': False,
+            'error': 'No error reports to send'
+        })
+
+    # Get optional user message from request
+    data = request.get_json() or {}
+    user_message = data.get('message', '').strip()
+
+    result = send_error_report_email(reports, user_message if user_message else None)
+    return jsonify(result)
+
 
 @app.route('/api/analyze_path', methods=['POST'])
 def api_analyze_path():
@@ -5455,90 +12622,10 @@ def api_analyze_path():
     return jsonify(result)
 
 
-@app.route('/api/structure_reversed')
-def api_structure_reversed():
-    """Get items with reversed folder structure (Series/Author instead of Author/Series)."""
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute('''SELECT id, path, current_author, current_title
-                 FROM books
-                 WHERE status = 'structure_reversed'
-                 ORDER BY path''')
-    items = []
-    for row in c.fetchall():
-        items.append({
-            'id': row['id'],
-            'path': row['path'],
-            'detected_series': row['current_author'],  # What we think is the series/title
-            'detected_author': row['current_title'],   # What we think is the author
-            'suggestion': f"Move to: {row['current_title']}/{row['current_author']}"
-        })
-
-    conn.close()
-    return jsonify({'items': items, 'count': len(items)})
-
-
-@app.route('/api/structure_reversed/fix/<int:book_id>', methods=['POST'])
-def api_fix_structure_reversed(book_id):
-    """Fix a reversed structure by swapping author/title in the path."""
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute('SELECT * FROM books WHERE id = ?', (book_id,))
-    book = c.fetchone()
-    if not book:
-        return jsonify({'success': False, 'error': 'Book not found'}), 404
-
-    if book['status'] != 'structure_reversed':
-        return jsonify({'success': False, 'error': 'Book is not marked as structure_reversed'}), 400
-
-    old_path = Path(book['path'])
-    detected_series = book['current_author']  # This is actually the series/title
-    detected_author = book['current_title']   # This is actually the author
-
-    # Build new path: Author/Series (or Author/Title if no series)
-    lib_root = old_path.parent.parent  # Go up from Title/Author to library root
-    new_path = lib_root / detected_author / detected_series
-
-    try:
-        if not old_path.exists():
-            c.execute('UPDATE books SET status = ? WHERE id = ?', ('missing', book_id))
-            conn.commit()
-            return jsonify({'success': False, 'error': 'Source path no longer exists'}), 400
-
-        # Create target directory if needed
-        new_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Move the folder
-        import shutil
-        shutil.move(str(old_path), str(new_path))
-
-        # Update database
-        c.execute('''UPDATE books SET
-                     path = ?,
-                     current_author = ?,
-                     current_title = ?,
-                     status = 'fixed'
-                     WHERE id = ?''',
-                  (str(new_path), detected_author, detected_series, book_id))
-        conn.commit()
-
-        logger.info(f"Fixed reversed structure: {old_path} -> {new_path}")
-
-        return jsonify({
-            'success': True,
-            'old_path': str(old_path),
-            'new_path': str(new_path),
-            'author': detected_author,
-            'title': detected_series
-        })
-
-    except Exception as e:
-        logger.error(f"Failed to fix reversed structure: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-    finally:
-        conn.close()
+# NOTE: Removed /api/structure_reversed endpoints in beta.69
+# The reversed structure detection was causing false positives (Issue #52).
+# Items that need attention now go through normal API lookup flow and end up
+# in "Needs Attention" if APIs can't find matches. Users can fix manually there.
 
 
 @app.route('/api/worker/start', methods=['POST'])
@@ -5558,7 +12645,7 @@ def api_stop_worker():
 def api_logs():
     """Get recent log entries."""
     try:
-        log_file = BASE_DIR / 'app.log'
+        log_file = DATA_DIR / 'app.log'
         if log_file.exists():
             with open(log_file, 'r') as f:
                 # Read last 100 lines
@@ -5584,31 +12671,14 @@ def api_clear_history():
         return jsonify({'success': False, 'message': str(e)})
 
 
-@app.route('/api/reset_database', methods=['POST'])
-def api_reset_database():
-    """Reset entire database - DANGER!"""
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        c.execute('DELETE FROM queue')
-        c.execute('DELETE FROM history')
-        c.execute('DELETE FROM books')
-        c.execute('DELETE FROM stats')
-        conn.commit()
-        conn.close()
-        logger.warning("DATABASE RESET by user!")
-        return jsonify({'success': True, 'message': 'Database reset complete'})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
-
-
 @app.route('/api/recent_history')
 def api_recent_history():
     """Get recent history items for live updates."""
     conn = get_db()
     c = conn.cursor()
+    # Use LEFT JOIN in case book was deleted or book_id is NULL
     c.execute('''SELECT h.*, b.path FROM history h
-                 JOIN books b ON h.book_id = b.id
+                 LEFT JOIN books b ON h.book_id = b.id
                  ORDER BY h.fixed_at DESC LIMIT 15''')
     items = [dict(row) for row in c.fetchall()]
     conn.close()
@@ -5622,7 +12692,7 @@ def api_orphans():
     orphans = []
 
     for lib_path in config.get('library_paths', []):
-        lib_orphans = find_orphan_audio_files(lib_path)
+        lib_orphans = find_orphan_audio_files(lib_path, config)
         orphans.extend(lib_orphans)
 
     return jsonify({
@@ -5658,7 +12728,7 @@ def api_organize_all_orphans():
     results = {'organized': 0, 'errors': 0, 'details': []}
 
     for lib_path in config.get('library_paths', []):
-        orphans = find_orphan_audio_files(lib_path)
+        orphans = find_orphan_audio_files(lib_path, config)
 
         for orphan in orphans:
             if orphan['detected_title'] == 'Unknown Album':
@@ -5680,12 +12750,512 @@ def api_organize_all_orphans():
                 results['errors'] += 1
                 results['details'].append(f"Error: {orphan['author']}: {message}")
 
+    # Issue #57: Auto-scan after organizing to pick up newly created book folders
+    # This ensures the database reflects the new folder structure
+    scan_results = {'checked': 0, 'scanned': 0, 'queued': 0}
+    if results['organized'] > 0:
+        try:
+            checked, scanned, queued = scan_library(config)
+            scan_results = {'checked': checked, 'scanned': scanned, 'queued': queued}
+            logger.info(f"Post-organize scan: checked={checked}, scanned={scanned}, queued={queued}")
+        except Exception as e:
+            logger.error(f"Post-organize scan failed: {e}")
+
     return jsonify({
         'success': True,
         'organized': results['organized'],
         'errors': results['errors'],
-        'details': results['details'][:20]  # Limit details
+        'details': results['details'][:20],  # Limit details
+        'scan': scan_results  # Include scan results so UI knows items were added
     })
+
+
+@app.route('/api/library')
+def api_library():
+    """
+    Unified library view - returns ALL items (books, orphans, pending fixes, queue)
+    with filter counts. This powers the unified Library page.
+    """
+    config = load_config()
+    conn = get_db()
+    c = conn.cursor()
+
+    # Get filter and pagination params
+    status_filter = request.args.get('filter', 'all')
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 50, type=int)
+    offset = (page - 1) * per_page
+
+    items = []
+
+    # Get search parameter
+    search_query = request.args.get('search', '').strip()
+
+    # === COUNTS for filter chips ===
+    counts = {
+        'all': 0,
+        'pending': 0,
+        'orphan': 0,
+        'queue': 0,
+        'fixed': 0,
+        'verified': 0,
+        'error': 0,
+        'attention': 0,
+        'locked': 0,
+        # Issue #53: Media type counts
+        'audiobook_only': 0,
+        'ebook_only': 0,
+        'both_formats': 0
+    }
+
+    # Get media type filter (Issue #53)
+    media_filter = request.args.get('media', 'all')  # 'all', 'audiobook', 'ebook', 'both'
+
+    # Count books by status
+    c.execute("SELECT COUNT(*) FROM books")
+    counts['all'] = c.fetchone()[0]
+
+    # Issue #53: Count by media type
+    c.execute("SELECT COUNT(*) FROM books WHERE media_type = 'audiobook' OR media_type IS NULL")
+    counts['audiobook_only'] = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM books WHERE media_type = 'ebook'")
+    counts['ebook_only'] = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM books WHERE media_type = 'both'")
+    counts['both_formats'] = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM history WHERE status = 'pending_fix'")
+    counts['pending'] = c.fetchone()[0]
+
+    # Issue #36: Queue count should exclude series_folder and multi_book_files
+    c.execute('''SELECT COUNT(*) FROM queue q
+                 JOIN books b ON q.book_id = b.id
+                 WHERE b.status NOT IN ('series_folder', 'multi_book_files', 'verified', 'fixed')''')
+    counts['queue'] = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM history WHERE status = 'fixed'")
+    counts['fixed'] = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM books WHERE status = 'verified'")
+    counts['verified'] = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM history WHERE status IN ('error', 'duplicate', 'corrupt_dest')")
+    counts['error'] = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM history WHERE status = 'needs_attention'")
+    attention_history = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM books WHERE status IN ('needs_attention', 'structure_reversed', 'watch_folder_error')")
+    attention_books = c.fetchone()[0]
+    counts['attention'] = attention_history + attention_books
+
+    # Count user-locked books
+    c.execute("SELECT COUNT(*) FROM books WHERE user_locked = 1")
+    counts['locked'] = c.fetchone()[0]
+
+    # Count orphans (detected on-the-fly)
+    orphan_list = []
+    for lib_path in config.get('library_paths', []):
+        orphan_list.extend(find_orphan_audio_files(lib_path))
+    counts['orphan'] = len(orphan_list)
+
+    # Update 'all' count to include orphans
+    counts['all'] += counts['orphan']
+
+    # === FETCH ITEMS based on filter ===
+    if status_filter == 'orphan':
+        # Return orphans as items
+        for idx, orphan in enumerate(orphan_list[offset:offset + per_page]):
+            items.append({
+                'id': f'orphan_{idx}',
+                'type': 'orphan',
+                'author': orphan['author'],
+                'title': orphan['detected_title'],
+                'path': orphan['author_path'],
+                'status': 'orphan',
+                'file_count': orphan['file_count'],
+                'files': orphan['files'],
+                'author_path': orphan['author_path']
+            })
+
+    elif status_filter == 'pending':
+        # Items with pending fixes
+        c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
+                            h.old_path, h.new_path, h.status, h.fixed_at, h.error_message,
+                            b.path, b.current_author, b.current_title
+                     FROM history h
+                     JOIN books b ON h.book_id = b.id
+                     WHERE h.status = 'pending_fix'
+                     ORDER BY h.fixed_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'pending_fix',
+                'book_id': row['book_id'],
+                'author': row['old_author'],
+                'title': row['old_title'],
+                'new_author': row['new_author'],
+                'new_title': row['new_title'],
+                'old_path': row['old_path'],
+                'new_path': row['new_path'],
+                'path': row['path'],
+                'status': 'pending_fix',
+                'fixed_at': row['fixed_at']
+            })
+
+    elif status_filter == 'queue':
+        # Items in the processing queue
+        # Issue #36: Filter out series_folder and multi_book_files - they should never appear in queue
+        c.execute('''SELECT q.id as queue_id, q.reason, q.added_at, q.priority,
+                            b.id as book_id, b.path, b.current_author, b.current_title, b.status
+                     FROM queue q
+                     JOIN books b ON q.book_id = b.id
+                     WHERE b.status NOT IN ('series_folder', 'multi_book_files', 'verified', 'fixed')
+                     ORDER BY q.priority, q.added_at
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['queue_id'],
+                'type': 'queue',
+                'book_id': row['book_id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
+                'path': row['path'],
+                'status': 'in_queue',
+                'reason': row['reason'],
+                'priority': row['priority'],
+                'added_at': row['added_at']
+            })
+
+    elif status_filter == 'fixed':
+        # Successfully fixed items
+        c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
+                            h.old_path, h.new_path, h.status, h.fixed_at,
+                            b.path
+                     FROM history h
+                     JOIN books b ON h.book_id = b.id
+                     WHERE h.status = 'fixed'
+                     ORDER BY h.fixed_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'fixed',
+                'book_id': row['book_id'],
+                'author': row['new_author'],
+                'title': row['new_title'],
+                'old_author': row['old_author'],
+                'old_title': row['old_title'],
+                'old_path': row['old_path'],
+                'new_path': row['new_path'],
+                'path': row['path'],
+                'status': 'fixed',
+                'fixed_at': row['fixed_at']
+            })
+
+    elif status_filter == 'verified':
+        # Verified/OK books - include profile for source display
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, profile, confidence, user_locked
+                     FROM books
+                     WHERE status = 'verified'
+                     ORDER BY updated_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            item = {
+                'id': row['id'],
+                'type': 'book',
+                'book_id': row['id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
+                'path': row['path'],
+                'status': 'verified',
+                'confidence': row['confidence'] or 0,
+                'user_locked': row['user_locked'] == 1
+            }
+            # Parse profile to get verification sources
+            if row['profile']:
+                try:
+                    profile_data = json.loads(row['profile'])
+                    # Collect all unique sources used
+                    all_sources = set()
+                    for field_name in ['author', 'title', 'narrator', 'series']:
+                        if field_name in profile_data and profile_data[field_name].get('sources'):
+                            all_sources.update(profile_data[field_name]['sources'])
+                    item['sources'] = list(all_sources)
+                    item['verification_layers'] = profile_data.get('verification_layers_used', [])
+                except:
+                    pass
+            items.append(item)
+
+    elif status_filter == 'error':
+        # Error items from history
+        c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
+                            h.old_path, h.new_path, h.status, h.fixed_at, h.error_message,
+                            b.path
+                     FROM history h
+                     JOIN books b ON h.book_id = b.id
+                     WHERE h.status IN ('error', 'duplicate', 'corrupt_dest')
+                     ORDER BY h.fixed_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'error',
+                'book_id': row['book_id'],
+                'author': row['old_author'],
+                'title': row['old_title'],
+                'new_author': row['new_author'],
+                'new_title': row['new_title'],
+                'old_path': row['old_path'],
+                'new_path': row['new_path'],
+                'path': row['path'],
+                'status': row['status'],
+                'error_message': row['error_message'],
+                'fixed_at': row['fixed_at']
+            })
+
+    elif status_filter == 'attention':
+        # Items needing attention
+        c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
+                            h.old_path, h.new_path, h.status, h.fixed_at, h.error_message,
+                            b.path
+                     FROM history h
+                     JOIN books b ON h.book_id = b.id
+                     WHERE h.status = 'needs_attention'
+                     ORDER BY h.fixed_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'attention',
+                'book_id': row['book_id'],
+                'author': row['old_author'],
+                'title': row['old_title'],
+                'new_author': row['new_author'],
+                'new_title': row['new_title'],
+                'path': row['path'],
+                'status': 'needs_attention',
+                'error_message': row['error_message']
+            })
+        # Also get books with structure issues or watch folder errors
+        c.execute('''SELECT id, path, current_author, current_title, status, error_message, source_type
+                     FROM books
+                     WHERE status IN ('needs_attention', 'structure_reversed', 'watch_folder_error')
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'book_attention',
+                'book_id': row['id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
+                'path': row['path'],
+                'status': row['status'],
+                'error_message': row['error_message'],
+                'source_type': row['source_type'] if row['source_type'] else 'library'
+            })
+
+    elif status_filter == 'locked':
+        # User-locked books - books where user has manually set metadata
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked
+                     FROM books
+                     WHERE user_locked = 1
+                     ORDER BY updated_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'book',
+                'book_id': row['id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
+                'path': row['path'],
+                'status': row['status'],
+                'user_locked': True
+            })
+
+    # Issue #53: Media type filters
+    elif status_filter == 'audiobook_only':
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
+                     FROM books
+                     WHERE media_type = 'audiobook' OR media_type IS NULL
+                     ORDER BY current_author, current_title
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'book',
+                'book_id': row['id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
+                'path': row['path'],
+                'status': row['status'],
+                'user_locked': row['user_locked'] == 1,
+                'media_type': row['media_type'] or 'audiobook'
+            })
+
+    elif status_filter == 'ebook_only':
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
+                     FROM books
+                     WHERE media_type = 'ebook'
+                     ORDER BY current_author, current_title
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'book',
+                'book_id': row['id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
+                'path': row['path'],
+                'status': row['status'],
+                'user_locked': row['user_locked'] == 1,
+                'media_type': 'ebook'
+            })
+
+    elif status_filter == 'both_formats':
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
+                     FROM books
+                     WHERE media_type = 'both'
+                     ORDER BY current_author, current_title
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'book',
+                'book_id': row['id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
+                'path': row['path'],
+                'status': row['status'],
+                'user_locked': row['user_locked'] == 1,
+                'media_type': 'both'
+            })
+
+    elif status_filter == 'search' and search_query:
+        # Search across all books by author or title
+        search_pattern = f'%{search_query}%'
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
+                     FROM books
+                     WHERE current_author LIKE ? OR current_title LIKE ?
+                     ORDER BY current_author, current_title
+                     LIMIT ? OFFSET ?''', (search_pattern, search_pattern, per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'book',
+                'book_id': row['id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
+                'path': row['path'],
+                'status': row['status'],
+                'user_locked': row['user_locked'] == 1,
+                'media_type': row['media_type'] or 'audiobook'
+            })
+        # Get total for search results
+        c.execute('''SELECT COUNT(*) FROM books
+                     WHERE current_author LIKE ? OR current_title LIKE ?''',
+                  (search_pattern, search_pattern))
+        counts['search'] = c.fetchone()[0]
+
+    else:  # 'all' - show everything mixed
+        # Get recent history items (includes pending, fixed, errors)
+        c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
+                            h.old_path, h.new_path, h.status, h.fixed_at, h.error_message,
+                            b.path, b.current_author, b.current_title, b.user_locked
+                     FROM history h
+                     JOIN books b ON h.book_id = b.id
+                     ORDER BY h.fixed_at DESC
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            item_type = 'pending_fix' if row['status'] == 'pending_fix' else \
+                        'fixed' if row['status'] == 'fixed' else \
+                        'error' if row['status'] in ('error', 'duplicate', 'corrupt_dest') else 'history'
+            items.append({
+                'id': row['id'],
+                'type': item_type,
+                'book_id': row['book_id'],
+                'author': row['old_author'] if row['status'] == 'pending_fix' else row['new_author'],
+                'title': row['old_title'] if row['status'] == 'pending_fix' else row['new_title'],
+                'old_author': row['old_author'],
+                'old_title': row['old_title'],
+                'new_author': row['new_author'],
+                'new_title': row['new_title'],
+                'old_path': row['old_path'],
+                'new_path': row['new_path'],
+                'path': row['path'],
+                'status': row['status'],
+                'error_message': row['error_message'],
+                'fixed_at': row['fixed_at'],
+                'user_locked': row['user_locked'] == 1
+            })
+
+    conn.close()
+
+    # Calculate total for pagination
+    if status_filter == 'orphan':
+        total = counts['orphan']
+    elif status_filter == 'pending':
+        total = counts['pending']
+    elif status_filter == 'queue':
+        total = counts['queue']
+    elif status_filter == 'fixed':
+        total = counts['fixed']
+    elif status_filter == 'verified':
+        total = counts['verified']
+    elif status_filter == 'error':
+        total = counts['error']
+    elif status_filter == 'attention':
+        total = counts['attention']
+    elif status_filter == 'locked':
+        total = counts['locked']
+    elif status_filter == 'search':
+        total = counts.get('search', 0)
+    # Issue #53: Media type filters
+    elif status_filter == 'audiobook_only':
+        total = counts['audiobook_only']
+    elif status_filter == 'ebook_only':
+        total = counts['ebook_only']
+    elif status_filter == 'both_formats':
+        total = counts['both_formats']
+    else:
+        total = counts['all']
+
+    total_pages = (total + per_page - 1) // per_page if total > 0 else 1
+
+    return jsonify({
+        'success': True,
+        'items': items,
+        'counts': counts,
+        'filter': status_filter,
+        'search': search_query,
+        'page': page,
+        'per_page': per_page,
+        'total': total,
+        'total_pages': total_pages,
+        'skip_confirmations': config.get('skip_confirmations', False)
+    })
+
+
+@app.route('/library')
+def library_page():
+    """Unified library view - the main page."""
+    config = load_config()
+    return render_template('library.html',
+                          config=config,
+                          worker_running=is_worker_running())
+
+
+@app.route('/api/settings/skip_confirmations', methods=['POST'])
+def api_skip_confirmations():
+    """Toggle skip confirmations setting."""
+    data = request.json
+    value = data.get('value', False)
+
+    config = load_config()
+    config['skip_confirmations'] = value
+    save_config(config)
+
+    return jsonify({'success': True, 'value': value})
 
 
 @app.route('/api/version')
@@ -5860,6 +13430,15 @@ def api_perform_update():
     # Get the app directory (where this script is located)
     app_dir = os.path.dirname(os.path.abspath(__file__))
 
+    # Determine target branch based on update channel
+    config = load_config()
+    channel = config.get('update_channel', 'stable')
+    target_branch = {
+        'stable': 'main',
+        'beta': 'develop',
+        'nightly': 'develop'  # nightly also uses develop for now
+    }.get(channel, 'main')
+
     try:
         # First check if we're in a git repo
         result = subprocess.run(
@@ -5883,7 +13462,7 @@ def api_perform_update():
             cwd=app_dir, capture_output=True, text=True, timeout=10
         ).stdout.strip()
 
-        # Perform git fetch + pull
+        # Fetch all branches
         fetch_result = subprocess.run(
             ['git', 'fetch', '--all'],
             cwd=app_dir,
@@ -5892,8 +13471,26 @@ def api_perform_update():
             timeout=60
         )
 
+        # Checkout the target branch based on update channel
+        checkout_result = subprocess.run(
+            ['git', 'checkout', target_branch],
+            cwd=app_dir,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if checkout_result.returncode != 0:
+            return jsonify({
+                'success': False,
+                'error': f'Failed to switch to {target_branch} branch',
+                'details': checkout_result.stderr or checkout_result.stdout,
+                'instructions': f'You may have local changes. Try: git stash && git checkout {target_branch}'
+            })
+
+        # Pull latest from target branch
         pull_result = subprocess.run(
-            ['git', 'pull', '--ff-only'],
+            ['git', 'pull', 'origin', target_branch, '--ff-only'],
             cwd=app_dir,
             capture_output=True,
             text=True,
@@ -5921,8 +13518,10 @@ def api_perform_update():
             'updated': updated,
             'before': before,
             'after': after,
+            'branch': target_branch,
+            'channel': channel,
             'output': pull_result.stdout,
-            'message': 'Update complete! Restart the app to apply changes.' if updated else 'Already up to date.',
+            'message': f'Updated to {channel} ({target_branch})! Restart the app to apply changes.' if updated else f'Already up to date on {channel} ({target_branch}).',
             'restart_required': updated
         })
 
@@ -5976,13 +13575,90 @@ def api_bug_report():
     import platform
     import sys
 
-    # Get config (sanitize API keys)
     config = load_config()
-    safe_config = {k: v for k, v in config.items()}
-    if safe_config.get('openrouter_api_key'):
-        safe_config['openrouter_api_key'] = '***REDACTED***'
-    if safe_config.get('gemini_api_key'):
-        safe_config['gemini_api_key'] = '***REDACTED***'
+
+    # Test API connections instead of showing keys
+    api_status = {}
+
+    # Gemini
+    if config.get('gemini_api_key'):
+        try:
+            resp = requests.get(
+                f"https://generativelanguage.googleapis.com/v1beta/models?key={config['gemini_api_key']}",
+                timeout=5
+            )
+            api_status['gemini'] = 'connected' if resp.status_code == 200 else f'error ({resp.status_code})'
+        except:
+            api_status['gemini'] = 'connection failed'
+    else:
+        api_status['gemini'] = 'not configured'
+
+    # Google Books
+    if config.get('google_books_api_key'):
+        try:
+            resp = requests.get(
+                f"https://www.googleapis.com/books/v1/volumes?q=test&maxResults=1&key={config['google_books_api_key']}",
+                timeout=5
+            )
+            api_status['google_books'] = 'connected' if resp.status_code == 200 else f'error ({resp.status_code})'
+        except:
+            api_status['google_books'] = 'connection failed'
+    else:
+        api_status['google_books'] = 'not configured'
+
+    # OpenRouter
+    if config.get('openrouter_api_key'):
+        try:
+            resp = requests.get(
+                "https://openrouter.ai/api/v1/models",
+                headers={"Authorization": f"Bearer {config['openrouter_api_key']}"},
+                timeout=5
+            )
+            api_status['openrouter'] = 'connected' if resp.status_code == 200 else f'error ({resp.status_code})'
+        except:
+            api_status['openrouter'] = 'connection failed'
+    else:
+        api_status['openrouter'] = 'not configured'
+
+    # Audiobookshelf
+    if config.get('abs_url') and config.get('abs_api_token'):
+        try:
+            resp = requests.get(
+                f"{config['abs_url'].rstrip('/')}/api/libraries",
+                headers={"Authorization": f"Bearer {config['abs_api_token']}"},
+                timeout=5
+            )
+            api_status['audiobookshelf'] = 'connected' if resp.status_code == 200 else f'error ({resp.status_code})'
+        except:
+            api_status['audiobookshelf'] = 'connection failed'
+    else:
+        api_status['audiobookshelf'] = 'not configured'
+
+    # BookDB
+    bookdb_url = config.get('bookdb_url', 'https://bookdb.deucebucket.com')
+    try:
+        resp = requests.get(f"{bookdb_url}/health", timeout=5)
+        api_status['bookdb'] = 'connected' if resp.status_code == 200 else f'error ({resp.status_code})'
+    except:
+        api_status['bookdb'] = 'connection failed'
+
+    # Build safe config - only include non-sensitive settings
+    safe_config = {}
+    # Settings that are safe to share (no paths, no keys, no personal info)
+    safe_keys = [
+        'naming_format', 'series_grouping', 'auto_fix', 'protect_author_changes',
+        'scan_interval_hours', 'batch_size', 'max_requests_per_hour',
+        'enable_api_lookups', 'enable_ai_verification', 'enable_audio_analysis',
+        'deep_scan_mode', 'profile_confidence_threshold', 'skip_confirmations',
+        'ai_provider', 'openrouter_model', 'ollama_model', 'update_channel',
+        'enable_ebooks', 'embed_metadata', 'library_language'
+    ]
+    for key in safe_keys:
+        if key in config:
+            safe_config[key] = config[key]
+
+    # Show library path count, not actual paths
+    safe_config['library_paths_count'] = len(config.get('library_paths', []))
 
     # Get database stats
     conn = get_db()
@@ -5997,21 +13673,35 @@ def api_bug_report():
     error_count = c.fetchone()['count']
     conn.close()
 
-    # Get recent error/warning logs
-    log_file = BASE_DIR / 'app.log'
+    # Get recent error/warning logs - sanitize paths
+    log_file = DATA_DIR / 'app.log'
     recent_errors = []
     if log_file.exists():
         with open(log_file, 'r') as f:
             lines = f.readlines()[-200:]
-            recent_errors = [l.strip() for l in lines if 'ERROR' in l or 'WARNING' in l][-30:]
+            for line in lines:
+                if 'ERROR' in line or 'WARNING' in line:
+                    # Sanitize paths - replace anything that looks like a full path
+                    sanitized = re.sub(r'/[a-zA-Z0-9_\-./]+/([^/\s]+)', r'[path]/\1', line.strip())
+                    # Also sanitize Windows paths
+                    sanitized = re.sub(r'[A-Z]:\\[a-zA-Z0-9_\-\\]+\\([^\\]+)', r'[path]\\\1', sanitized)
+                    recent_errors.append(sanitized)
+            recent_errors = recent_errors[-30:]
 
     # Build report
     report = f"""## Bug Report - Library Manager
 
 ### System Info
-- **Python:** {sys.version}
+- **Python:** {sys.version.split()[0]}
 - **Platform:** {platform.system()} {platform.release()}
 - **App Version:** {APP_VERSION}
+
+### API Connection Status
+- **Gemini:** {api_status['gemini']}
+- **Google Books:** {api_status['google_books']}
+- **OpenRouter:** {api_status['openrouter']}
+- **Audiobookshelf:** {api_status['audiobookshelf']}
+- **BookDB:** {api_status['bookdb']}
 
 ### Configuration
 ```json
@@ -6024,7 +13714,7 @@ def api_bug_report():
 - History Entries: {history_count}
 - Books with Errors: {error_count}
 
-### Recent Errors/Warnings
+### Recent Errors/Warnings (paths sanitized)
 ```
 {chr(10).join(recent_errors) if recent_errors else 'No recent errors'}
 ```
@@ -6039,6 +13729,246 @@ def api_bug_report():
 """
 
     return jsonify({'report': report})
+
+
+# ============== OLLAMA INTEGRATION ==============
+
+@app.route('/api/test_ollama', methods=['POST'])
+def api_test_ollama():
+    """Test connection to Ollama server."""
+    data = request.get_json() or {}
+    ollama_url = data.get('ollama_url', 'http://localhost:11434').strip().rstrip('/')
+
+    result = test_ollama_connection({'ollama_url': ollama_url})
+    return jsonify(result)
+
+
+@app.route('/api/ollama_models', methods=['POST'])
+def api_ollama_models():
+    """Get list of available models from Ollama server."""
+    data = request.get_json() or {}
+    ollama_url = data.get('ollama_url', 'http://localhost:11434').strip().rstrip('/')
+
+    models = get_ollama_models({'ollama_url': ollama_url})
+    if models:
+        return jsonify({
+            'success': True,
+            'models': models
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'models': [],
+            'error': 'Could not fetch models from Ollama server'
+        })
+
+
+# ============== API CONNECTION TESTING ==============
+
+@app.route('/api/test_bookdb', methods=['POST'])
+def api_test_bookdb():
+    """Test connection to BookDB."""
+    config = load_config()
+    bookdb_url = config.get('bookdb_url', 'https://bookdb.deucebucket.com')
+
+    try:
+        resp = requests.get(f"{bookdb_url}/stats", timeout=5)
+        if resp.status_code == 200:
+            try:
+                data = resp.json()
+                return jsonify({
+                    'success': True,
+                    'books_count': data.get('books', 0),
+                    'authors_count': data.get('authors', 0),
+                    'series_count': data.get('series', 0),
+                    'message': f"Connected - {data.get('books', 0):,} books, {data.get('authors', 0):,} authors"
+                })
+            except:
+                return jsonify({
+                    'success': False,
+                    'error': 'BookDB responded but returned invalid data'
+                })
+        else:
+            return jsonify({
+                'success': False,
+                'error': f'BookDB returned status {resp.status_code}'
+            })
+    except requests.exceptions.ConnectionError:
+        return jsonify({
+            'success': False,
+            'error': 'Cannot connect to BookDB - is it running?'
+        })
+    except requests.exceptions.Timeout:
+        return jsonify({
+            'success': False,
+            'error': 'BookDB connection timed out'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'BookDB error: {str(e)}'
+        })
+
+
+@app.route('/api/clear_api_key', methods=['POST'])
+def api_clear_api_key():
+    """Clear a specific API key from secrets."""
+    data = request.get_json() or {}
+    key_name = data.get('key_name', '')
+
+    # Whitelist of allowed keys to clear
+    allowed_keys = ['gemini_api_key', 'openrouter_api_key', 'google_books_api_key']
+
+    if key_name not in allowed_keys:
+        return jsonify({
+            'success': False,
+            'error': f'Invalid key name: {key_name}'
+        })
+
+    try:
+        secrets = load_secrets()
+        if key_name in secrets:
+            del secrets[key_name]
+            save_secrets(secrets)
+            logger.info(f"Cleared API key: {key_name}")
+            return jsonify({
+                'success': True,
+                'message': f'{key_name} has been removed'
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'message': f'{key_name} was not configured'
+            })
+    except Exception as e:
+        logger.error(f"Error clearing API key {key_name}: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+
+
+@app.route('/api/test_gemini', methods=['POST'])
+def api_test_gemini():
+    """Test Gemini API connection."""
+    config = load_config()
+    api_key = config.get('gemini_api_key', '')
+
+    if not api_key:
+        return jsonify({
+            'success': False,
+            'error': 'No Gemini API key configured'
+        })
+
+    try:
+        model = config.get('gemini_model', 'gemini-2.0-flash')
+        resp = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
+            headers={"Content-Type": "application/json"},
+            json={"contents": [{"parts": [{"text": "Reply with just the word 'connected'"}]}]},
+            timeout=10
+        )
+
+        if resp.status_code == 200:
+            return jsonify({
+                'success': True,
+                'model': model,
+                'message': 'Gemini API connected'
+            })
+        else:
+            error_msg = resp.json().get('error', {}).get('message', f'Status {resp.status_code}')
+            return jsonify({
+                'success': False,
+                'error': error_msg
+            })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+
+
+@app.route('/api/test_openrouter', methods=['POST'])
+def api_test_openrouter():
+    """Test OpenRouter API connection."""
+    config = load_config()
+    api_key = config.get('openrouter_api_key', '')
+
+    if not api_key:
+        return jsonify({
+            'success': False,
+            'error': 'No OpenRouter API key configured'
+        })
+
+    try:
+        model = config.get('openrouter_model', 'google/gemma-3n-e4b-it:free')
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": "Reply with just the word 'connected'"}],
+                "max_tokens": 10
+            },
+            timeout=10
+        )
+
+        if resp.status_code == 200:
+            return jsonify({
+                'success': True,
+                'model': model,
+                'message': 'OpenRouter API connected'
+            })
+        else:
+            error_data = resp.json()
+            error_msg = error_data.get('error', {}).get('message', f'Status {resp.status_code}')
+            return jsonify({
+                'success': False,
+                'error': error_msg
+            })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+
+
+@app.route('/api/reset_database', methods=['POST'])
+def api_reset_database():
+    """Reset the database and trigger a fresh scan."""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+
+        # Clear all tables
+        c.execute('DELETE FROM books')
+        c.execute('DELETE FROM queue')
+        c.execute('DELETE FROM history')
+        c.execute('DELETE FROM stats')
+
+        conn.commit()
+        conn.close()
+
+        # Trigger a scan
+        config = load_config()
+        if config.get('library_paths'):
+            import threading
+            def run_scan():
+                scan_library(config)
+            threading.Thread(target=run_scan, daemon=True).start()
+
+        return jsonify({
+            'success': True,
+            'message': 'Database reset. Scan started.'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
 
 
 # ============== AUDIOBOOKSHELF INTEGRATION ==============
@@ -6097,11 +14027,16 @@ def api_abs_connect():
     result = client.test_connection()
 
     if result.get('success'):
-        # Save to config
+        # Save URL to config
         config = load_config()
         config['abs_url'] = abs_url
-        config['abs_api_token'] = abs_token
         save_config(config)
+
+        # Save token to secrets (preserving existing secrets)
+        secrets = load_secrets()
+        secrets['abs_api_token'] = abs_token
+        save_secrets(secrets)
+
         return jsonify({'success': True, 'message': f"Connected as {result.get('username')}"})
     else:
         return jsonify({'success': False, 'error': result.get('error', 'Connection failed')})
@@ -6554,6 +14489,7 @@ def api_abs_remove_exclude():
 def api_search_bookdb():
     """Search BookBucket for books/series to manually match.
     Uses the public /search endpoint - no API key required.
+    Falls back to Google Books if BookDB is unavailable or returns no results.
     """
     query = request.args.get('q', '').strip()
     search_type = request.args.get('type', 'all')  # 'books', 'series', or 'all'
@@ -6563,6 +14499,40 @@ def api_search_bookdb():
     if not query or len(query) < 2:
         return jsonify({'error': 'Query must be at least 2 characters', 'results': []})
 
+    # Keep original query for series number extraction
+    original_query = query
+
+    # Extract series number from ORIGINAL query (e.g., "Horus Heresy Book 36" or "#36")
+    # Do this BEFORE cleaning so we capture the book number
+    extracted_series_num = None
+    extracted_series_name = None
+    series_patterns = [
+        r'(?:book|#|no\.?|number)\s*(\d+)',  # "Book 36", "#36", "No. 36"
+        r'(\d+)(?:st|nd|rd|th)\s+book',       # "36th book"
+        r'^\s*(\d+)\s*[-–]\s*\w',             # "5 - Title" at start (Issue #38)
+    ]
+    for pattern in series_patterns:
+        match = re.search(pattern, original_query, re.IGNORECASE)
+        if match:
+            extracted_series_num = int(match.group(1))
+            break
+
+    # Also try to extract series name (text before "book N" or similar)
+    series_name_match = re.match(r'^(.+?)\s+(?:book|#|no\.?)\s*\d+', original_query, re.IGNORECASE)
+    if series_name_match:
+        extracted_series_name = series_name_match.group(1).strip()
+
+    # Issue #38: Clean the query to strip leading book numbers like "5 - " or "01. "
+    # This prevents book numbers from polluting search results
+    # Preserves actual titles like "1984" (number without separator)
+    clean_query = clean_search_title(query)
+    if clean_query and len(clean_query) >= 2:
+        query = clean_query
+
+    bookdb_error = None
+    results = []
+
+    # Try BookDB first
     try:
         params = {'q': query, 'limit': limit}
         if author:
@@ -6577,17 +14547,118 @@ def api_search_bookdb():
         # Longer timeout for cold start (embedding model can take 45-60s to load)
         resp = requests.get(endpoint, params=params, timeout=60)
 
-        if resp.status_code != 200:
-            return jsonify({'error': f'BookDB API error: {resp.status_code}', 'results': []})
-
-        results = resp.json()
-        return jsonify({'results': results, 'count': len(results)})
+        if resp.status_code == 200:
+            results = resp.json()
+            # Enrich results with extracted series info if they lack it
+            if results and extracted_series_num:
+                for result in results:
+                    if not result.get('series_position'):
+                        result['series_position'] = extracted_series_num
+                        result['series_position_source'] = 'extracted_from_query'
+                    if not result.get('series_name') and extracted_series_name:
+                        result['series_name'] = extracted_series_name
+                        result['series_name_source'] = 'extracted_from_query'
+            if results:
+                return jsonify({
+                    'results': results,
+                    'count': len(results),
+                    'source': 'bookdb',
+                    'extracted_series_num': extracted_series_num,
+                    'extracted_series_name': extracted_series_name
+                })
+            # No results from BookDB - will try fallback
+            bookdb_error = 'No results found in BookDB'
+        else:
+            bookdb_error = f'BookDB API error: {resp.status_code}'
 
     except requests.exceptions.ConnectionError:
-        return jsonify({'error': 'BookBucket API not available. The metadata database may be temporarily down for maintenance.', 'results': []})
+        bookdb_error = 'BookDB server temporarily unavailable (not your issue - our server)'
+    except requests.exceptions.Timeout:
+        bookdb_error = 'BookDB server timeout (not your issue - our server is slow/down)'
     except Exception as e:
         logger.error(f"BookBucket search error: {e}")
-        return jsonify({'error': str(e), 'results': []})
+        bookdb_error = str(e)
+
+    # Fallback to Google Books
+    try:
+        logger.info(f"Manual match fallback to Google Books for '{query}' (BookDB: {bookdb_error})")
+        config = load_config()
+        google_key = config.get('google_books_api_key')
+
+        import urllib.parse
+        search_query = query
+        if author:
+            search_query += f" inauthor:{author}"
+
+        url = f"https://www.googleapis.com/books/v1/volumes?q={urllib.parse.quote(search_query)}&maxResults={limit}"
+        if google_key:
+            url += f"&key={google_key}"
+
+        resp = requests.get(url, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            items = data.get('items', [])
+
+            google_results = []
+            for item in items:
+                vol = item.get('volumeInfo', {})
+                authors = vol.get('authors', [])
+                if not vol.get('title') or not authors:
+                    continue
+
+                # Extract series info from subtitle
+                series_name = None
+                series_num = None
+                subtitle = vol.get('subtitle', '')
+                if subtitle:
+                    match = re.search(r'^A\s+(.+?)\s+Novel$', subtitle, re.IGNORECASE)
+                    if match:
+                        series_name = match.group(1)
+                    match = re.search(r'Book\s+(\d+)\s+of\s+(.+)', subtitle, re.IGNORECASE)
+                    if match:
+                        series_num = int(match.group(1))
+                        series_name = match.group(2)
+                    match = re.search(r'(.+?)\s+(?:Book|#)\s*(\d+)', subtitle, re.IGNORECASE)
+                    if match:
+                        series_name = match.group(1)
+                        series_num = int(match.group(2))
+
+                # Use extracted series info if we didn't find any in the subtitle
+                final_series_name = series_name or extracted_series_name
+                final_series_num = series_num or extracted_series_num
+
+                google_results.append({
+                    'type': 'book',
+                    'name': vol.get('title', ''),
+                    'title': vol.get('title', ''),
+                    'author_name': authors[0] if authors else '',
+                    'year_published': vol.get('publishedDate', '')[:4] if vol.get('publishedDate') else None,
+                    'series_name': final_series_name,
+                    'series_position': final_series_num,
+                    'series_position_source': 'extracted_from_query' if (final_series_num and not series_num) else None,
+                    'description': vol.get('description', '')[:500] if vol.get('description') else None,
+                    'source': 'googlebooks'
+                })
+
+            if google_results:
+                return jsonify({
+                    'results': google_results,
+                    'count': len(google_results),
+                    'source': 'googlebooks',
+                    'fallback_reason': bookdb_error,
+                    'extracted_series_num': extracted_series_num,
+                    'extracted_series_name': extracted_series_name
+                })
+
+    except Exception as e:
+        logger.error(f"Google Books fallback error: {e}")
+
+    # Both failed
+    return jsonify({
+        'error': f'Search unavailable - this is a server issue on our end, not yours. Try again in a few minutes. ({bookdb_error})',
+        'results': [],
+        'server_issue': True
+    })
 
 
 @app.route('/api/bookdb_stats')
@@ -6731,92 +14802,335 @@ def api_series_detail(series_id):
 def api_manual_match():
     """
     Save a manual match for a book in the queue.
-    Accepts custom author/title OR a selected BookBucket result.
+    Accepts custom author/title OR a selected BookDB result.
+    Creates a pending_fix entry in history for review.
     """
-    data = request.get_json() or {}
-    queue_id = data.get('queue_id')
+    try:
+        data = request.get_json() or {}
+        queue_id = data.get('queue_id')
 
-    # Manual entry fields
-    new_author = data.get('author', '').strip()
-    new_title = data.get('title', '').strip()
+        # Manual entry fields
+        new_author = data.get('author', '').strip()
+        new_title = data.get('title', '').strip()
 
-    # Or BookBucket selection
-    bookdb_result = data.get('bookdb_result')  # Full result object from search
+        # Or BookDB selection
+        bookdb_result = data.get('bookdb_result')  # Full result object from search
 
-    if not queue_id:
-        return jsonify({'success': False, 'error': 'queue_id required'})
+        if not queue_id:
+            return jsonify({'success': False, 'error': 'queue_id required'})
 
-    conn = get_local_db()
-    c = conn.cursor()
+        conn = get_db()
+        c = conn.cursor()
 
-    # Get the queue item
-    c.execute('SELECT * FROM processing_queue WHERE id = ?', (queue_id,))
-    item = c.fetchone()
-    if not item:
+        # Get the queue item with book info
+        c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
+                            b.path, b.current_author, b.current_title
+                     FROM queue q
+                     JOIN books b ON q.book_id = b.id
+                     WHERE q.id = ?''', (queue_id,))
+        item = c.fetchone()
+        if not item:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Queue item not found'})
+
+        book_id = item['book_id']
+        old_path = item['path']
+        old_author = item['current_author']
+        old_title = item['current_title']
+
+        # Determine new values from BookDB result if provided
+        new_series = None
+        new_series_num = None
+        new_narrator = None
+        new_year = None
+        if bookdb_result:
+            new_author = bookdb_result.get('author_name') or new_author
+            new_title = bookdb_result.get('name') or bookdb_result.get('title') or new_title
+            new_series = bookdb_result.get('series_name')
+            new_series_num = bookdb_result.get('series_position')
+            new_year = bookdb_result.get('year_published')
+
+        # Also accept series fields directly (for manual entry without BookDB selection)
+        if not new_series and data.get('series_name'):
+            new_series = data.get('series_name')
+        if not new_series_num and data.get('series_position'):
+            new_series_num = data.get('series_position')
+
+        if not new_author or not new_title:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Author and title required'})
+
+        # Find which library this book belongs to
+        config = load_config()
+
+        # Issue #57: Apply author initials standardization if enabled
+        if config.get('standardize_author_initials', False) and new_author:
+            new_author = standardize_initials(new_author)
+        lib_path = None
+
+        # Issue #57: Check if book is from watch folder and should go to watch_output_folder
+        watch_folder = config.get('watch_folder', '').strip()
+        watch_output_folder = config.get('watch_output_folder', '').strip()
+        if watch_folder and watch_output_folder:
+            try:
+                watch_path = Path(watch_folder).resolve()
+                old_path_resolved = Path(old_path).resolve()
+                try:
+                    old_path_resolved.relative_to(watch_path)
+                    # Book is in watch folder - use output folder as target
+                    lib_path = Path(watch_output_folder)
+                    logger.info(f"Manual match: routing watch folder book to output folder {lib_path}")
+                except ValueError:
+                    pass  # Not in watch folder
+            except Exception as e:
+                logger.debug(f"Watch folder path check failed: {e}")
+
+        # If not from watch folder, find which library it belongs to
+        if lib_path is None:
+            for lp in config.get('library_paths', []):
+                lp_path = Path(lp)
+                try:
+                    Path(old_path).relative_to(lp_path)
+                    lib_path = lp_path
+                    break
+                except ValueError:
+                    continue
+
+        if lib_path is None:
+            lib_path = Path(old_path).parent.parent
+
+        # Build the new path
+        new_path = build_new_path(lib_path, new_author, new_title,
+                                  series=new_series, series_num=new_series_num,
+                                  narrator=new_narrator, year=new_year, config=config)
+
+        if new_path is None:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Could not build valid path for this metadata'})
+
+        # Issue #57: Delete any existing pending/error/needs_attention entries for this book
+        # When user manually matches, the old entries are superseded by the new fix
+        # Also clear duplicate/corrupt_dest errors (Merijeek: manual fix should clear ALL error states)
+        c.execute("DELETE FROM history WHERE book_id = ? AND status IN ('pending_fix', 'error', 'needs_attention', 'duplicate', 'corrupt_dest')", (book_id,))
+
+        # Insert as pending fix in history (like process_queue does)
+        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
+                                          new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?)''',
+                 (book_id, old_author, old_title,
+                  new_author, new_title, old_path, str(new_path),
+                  new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                  str(new_year) if new_year else None, None, None))
+
+        # Update book status
+        c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', book_id))
+
+        # Remove from queue
+        c.execute('DELETE FROM queue WHERE id = ?', (queue_id,))
+
+        conn.commit()
         conn.close()
-        return jsonify({'success': False, 'error': 'Queue item not found'})
 
-    item = dict(item)
-    old_path = item['folder_path']
-    old_author = item['current_author']
-    old_title = item['current_title']
+        return jsonify({
+            'success': True,
+            'message': f'Saved: {old_author}/{old_title} → {new_author}/{new_title}',
+            'new_author': new_author,
+            'new_title': new_title
+        })
+    except Exception as e:
+        logger.error(f"Error in manual_match: {e}")
+        return jsonify({'success': False, 'error': str(e)})
 
-    # Determine new values
-    if bookdb_result:
-        new_author = bookdb_result.get('author_name') or new_author
-        new_title = bookdb_result.get('name') or bookdb_result.get('title') or new_title
-        # Include series info if available
-        series_name = bookdb_result.get('series_name')
-        series_pos = bookdb_result.get('series_position')
-        if series_name and series_pos:
-            new_title = f"{new_title} ({series_name} #{int(series_pos) if series_pos == int(series_pos) else series_pos})"
 
-    if not new_author or not new_title:
+@app.route('/api/edit_book', methods=['POST'])
+def api_edit_book():
+    """
+    Edit a book's metadata and lock it from future changes.
+    Can edit from history (pending or fixed) or directly from books table.
+    User edits are "cemented" - the system will never overwrite them.
+    """
+    try:
+        data = request.get_json() or {}
+        history_id = data.get('history_id')
+        book_id = data.get('book_id')
+
+        # Manual entry fields
+        new_author = data.get('author', '').strip()
+        new_title = data.get('title', '').strip()
+
+        # Or BookDB selection
+        bookdb_result = data.get('bookdb_result')
+
+        if not history_id and not book_id:
+            return jsonify({'success': False, 'error': 'history_id or book_id required'})
+
+        conn = get_db()
+        c = conn.cursor()
+
+        # Get the book info
+        if history_id:
+            c.execute('''SELECT h.id as history_id, h.book_id, h.old_path, h.new_path,
+                                h.old_author, h.old_title, h.status as history_status,
+                                b.path, b.current_author, b.current_title, b.source_type
+                         FROM history h
+                         JOIN books b ON h.book_id = b.id
+                         WHERE h.id = ?''', (history_id,))
+            item = c.fetchone()
+            if not item:
+                conn.close()
+                return jsonify({'success': False, 'error': 'History item not found'})
+            book_id = item['book_id']
+            old_path = item['old_path'] or item['path']
+            old_author = item['old_author'] or item['current_author']
+            old_title = item['old_title'] or item['current_title']
+            history_status = item['history_status']
+        else:
+            c.execute('SELECT id, path, current_author, current_title, source_type FROM books WHERE id = ?', (book_id,))
+            item = c.fetchone()
+            if not item:
+                conn.close()
+                return jsonify({'success': False, 'error': 'Book not found'})
+            old_path = item['path']
+            old_author = item['current_author']
+            old_title = item['current_title']
+            history_status = None
+
+        # Determine new values from BookDB result if provided
+        new_series = None
+        new_series_num = None
+        new_narrator = None
+        new_year = None
+        if bookdb_result:
+            new_author = bookdb_result.get('author_name') or new_author
+            new_title = bookdb_result.get('name') or bookdb_result.get('title') or new_title
+            new_series = bookdb_result.get('series_name')
+            new_series_num = bookdb_result.get('series_position')
+            new_year = bookdb_result.get('year_published')
+
+        # Also accept series fields directly
+        if not new_series and data.get('series_name'):
+            new_series = data.get('series_name')
+        if not new_series_num and data.get('series_position'):
+            new_series_num = data.get('series_position')
+
+        if not new_author or not new_title:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Author and title required'})
+
+        # Find which library this book belongs to (or should go to for watch folder items)
+        config = load_config()
+
+        # Issue #57: Apply author initials standardization if enabled
+        if config.get('standardize_author_initials', False) and new_author:
+            new_author = standardize_initials(new_author)
+
+        lib_path = None
+        # Issue #51: sqlite3.Row doesn't have .get() - use bracket access with fallback
+        source_type = item['source_type'] if item['source_type'] else 'library'
+
+        # Issue #49: For watch folder items, use the output folder as destination
+        if source_type == 'watch_folder':
+            # Watch folder items go to watch_output_folder or first library path
+            output_folder = config.get('watch_output_folder', '').strip()
+            if output_folder:
+                lib_path = Path(output_folder)
+            elif config.get('library_paths'):
+                lib_path = Path(config['library_paths'][0])
+            else:
+                conn.close()
+                return jsonify({'success': False, 'error': 'No output folder configured for watch folder items'})
+        else:
+            # Normal library item - find which library it belongs to
+            for lp in config.get('library_paths', []):
+                lp_path = Path(lp)
+                try:
+                    Path(old_path).relative_to(lp_path)
+                    lib_path = lp_path
+                    break
+                except ValueError:
+                    continue
+
+            if lib_path is None:
+                lib_path = Path(old_path).parent.parent
+
+        # Build the new path
+        new_path = build_new_path(lib_path, new_author, new_title,
+                                  series=new_series, series_num=new_series_num,
+                                  narrator=new_narrator, year=new_year, config=config)
+
+        if new_path is None:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Could not build valid path for this metadata'})
+
+        # Issue #57: Delete any existing pending/error/needs_attention entries for this book
+        # When user manually edits, the old entries are superseded by the new fix
+        # Also clear duplicate/corrupt_dest errors (Merijeek: manual fix should clear ALL error states)
+        c.execute("DELETE FROM history WHERE book_id = ? AND status IN ('pending_fix', 'error', 'needs_attention', 'duplicate', 'corrupt_dest')", (book_id,))
+
+        # Insert/update as pending fix
+        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
+                                          new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?)''',
+                 (book_id, old_author, old_title,
+                  new_author, new_title, old_path, str(new_path),
+                  new_narrator, new_series, str(new_series_num) if new_series_num else None,
+                  str(new_year) if new_year else None, None, None))
+
+        # Update book status and LOCK it - user has set metadata, never change it
+        c.execute('UPDATE books SET status = ?, user_locked = 1, current_author = ?, current_title = ? WHERE id = ?',
+                  ('pending_fix', new_author, new_title, book_id))
+
+        # Remove from queue if present
+        c.execute('DELETE FROM queue WHERE book_id = ?', (book_id,))
+
+        conn.commit()
         conn.close()
-        return jsonify({'success': False, 'error': 'Author and title required'})
 
-    # Build new path
-    config = load_config()
-    library_paths = config.get('library_paths', [])
+        return jsonify({
+            'success': True,
+            'message': f'Saved and locked: {old_author}/{old_title} → {new_author}/{new_title}',
+            'new_author': new_author,
+            'new_title': new_title,
+            'locked': True
+        })
+    except Exception as e:
+        logger.error(f"Error in edit_book: {e}")
+        return jsonify({'success': False, 'error': str(e)})
 
-    # Find which library this book is in
-    library_root = None
-    for lib_path in library_paths:
-        if old_path.startswith(lib_path):
-            library_root = lib_path
-            break
 
-    if not library_root:
+@app.route('/api/unlock_book/<int:book_id>', methods=['POST'])
+def api_unlock_book(book_id):
+    """
+    Unlock a book so it can be re-processed by the system.
+    Removes the user_locked flag.
+    """
+    try:
+        conn = get_db()
+        c = conn.cursor()
+
+        c.execute('SELECT id, path, current_author, current_title, user_locked FROM books WHERE id = ?', (book_id,))
+        book = c.fetchone()
+
+        if not book:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Book not found'})
+
+        if not book['user_locked']:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Book is not locked'})
+
+        # Unlock the book
+        c.execute('UPDATE books SET user_locked = 0 WHERE id = ?', (book_id,))
+        conn.commit()
         conn.close()
-        return jsonify({'success': False, 'error': 'Could not determine library root'})
 
-    # New path: Library/Author/Title
-    new_path = os.path.join(library_root, new_author, new_title)
-
-    # Check if it would overwrite something
-    if os.path.exists(new_path) and new_path != old_path:
-        conn.close()
-        return jsonify({'success': False, 'error': f'Path already exists: {new_path}'})
-
-    # Record as pending fix (don't rename immediately - user can review)
-    c.execute('''
-        INSERT INTO fix_history (folder_path, old_path, new_path, old_author, new_author,
-                                old_title, new_title, status, source, fixed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'manual', datetime('now'))
-    ''', (old_path, old_path, new_path, old_author, new_author, old_title, new_title))
-
-    # Remove from queue
-    c.execute('DELETE FROM processing_queue WHERE id = ?', (queue_id,))
-
-    conn.commit()
-    conn.close()
-
-    return jsonify({
-        'success': True,
-        'message': f'Saved pending fix: {old_author}/{old_title} → {new_author}/{new_title}',
-        'old_path': old_path,
-        'new_path': new_path
-    })
+        return jsonify({
+            'success': True,
+            'message': f'Unlocked: {book["current_author"]}/{book["current_title"]} - will be re-processed on next scan'
+        })
+    except Exception as e:
+        logger.error(f"Error unlocking book: {e}")
+        return jsonify({'success': False, 'error': str(e)})
 
 
 # ============== BACKUP & RESTORE ==============
@@ -6950,7 +15264,19 @@ def api_backup_info():
 
 # ============== MAIN ==============
 
+def _setup_user_packages():
+    """Add user site-packages to path for runtime-installed packages (like Whisper)."""
+    # This allows packages installed via /api/install-whisper to be found
+    pip_local = os.path.join(os.path.dirname(__file__), '.local')
+    user_site = os.path.join(pip_local, 'lib', f'python{sys.version_info.major}.{sys.version_info.minor}', 'site-packages')
+    if os.path.isdir(user_site) and user_site not in sys.path:
+        sys.path.insert(0, user_site)
+        logger.debug(f"Added user site-packages to path: {user_site}")
+
+
 if __name__ == '__main__':
+    _setup_user_packages()  # Allow runtime-installed packages (Issue #63)
+    migrate_legacy_config()  # Migrate from old location if needed (Issue #23)
     init_config()  # Create config files if they don't exist
     init_db()
     start_worker()

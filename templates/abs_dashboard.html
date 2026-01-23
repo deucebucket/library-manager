@@ -7,6 +7,31 @@
     <span class="text-muted">v{{ version }}</span>
 </div>
 
+<!-- What does this do? -->
+<div class="alert alert-info alert-dismissible fade show mb-4" role="alert" id="abs-info-banner">
+    <h5 class="alert-heading"><i class="bi bi-info-circle"></i> What does this integration do?</h5>
+    <p class="mb-2"><strong>Current features:</strong></p>
+    <ul class="mb-2">
+        <li><strong>Progress Grid</strong> - See which books each user has started, finished, or is currently reading</li>
+        <li><strong>Archive Candidates</strong> - Find books everyone has finished (safe to archive to free up space)</li>
+        <li><strong>Untouched</strong> - Find books no one has ever started (consider promoting or removing)</li>
+        <li><strong>User Groups</strong> - Create groups to set archive rules (e.g., "archive when Family group finishes")</li>
+    </ul>
+    <p class="mb-2"><strong>How it works with Library Manager:</strong></p>
+    <ul class="mb-0">
+        <li>Library Manager organizes and renames your audiobook files on disk</li>
+        <li>Audiobookshelf reads those same files and serves them to listeners</li>
+        <li>This dashboard pulls progress data FROM ABS to help you manage your library</li>
+        <li><em>Tip:</em> Enable "Series Grouping" in Settings to use ABS-compatible folder structure</li>
+    </ul>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close" onclick="localStorage.setItem('abs_info_dismissed', 'true')"></button>
+</div>
+<script>
+if (localStorage.getItem('abs_info_dismissed') === 'true') {
+    document.getElementById('abs-info-banner')?.remove();
+}
+</script>
+
 {% if not abs_connected %}
 <!-- Connection Setup -->
 <div class="card mb-4">
@@ -26,8 +51,13 @@
             <div class="col-md-6">
                 <div class="mb-3">
                     <label class="form-label">API Token</label>
-                    <input type="password" class="form-control bg-dark text-light" id="abs-token"
-                           placeholder="Your ABS API token">
+                    <div class="input-group">
+                        <input type="password" class="form-control bg-dark text-light" id="abs-token"
+                               placeholder="Your ABS API token">
+                        <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('abs-token')" title="Show/hide token">
+                            <i class="bi bi-eye"></i>
+                        </button>
+                    </div>
                     <small class="text-muted">Find in ABS: Settings → Users → Click your user → API Token</small>
                 </div>
             </div>
@@ -319,6 +349,22 @@
 let absUsers = [];
 let absLibraries = [];
 let currentLibraryId = null;
+
+// Issue #60: Toggle password visibility
+function togglePasswordVisibility(inputId) {
+    const input = document.getElementById(inputId);
+    const btn = input.nextElementSibling;
+    const icon = btn.querySelector('i');
+    if (input.type === 'password') {
+        input.type = 'text';
+        icon.classList.remove('bi-eye');
+        icon.classList.add('bi-eye-slash');
+    } else {
+        input.type = 'password';
+        icon.classList.remove('bi-eye-slash');
+        icon.classList.add('bi-eye');
+    }
+}
 
 {% if abs_connected %}
 // Load data on page load

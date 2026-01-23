@@ -7,8 +7,8 @@
     <span class="text-muted">v{{ version }}</span>
 </div>
 
-<!-- Quick Tutorial -->
-<div class="alert alert-info alert-dismissible fade show mb-4" role="alert">
+<!-- Quick Tutorial (remembers dismissal) -->
+<div class="alert alert-info alert-dismissible fade show mb-4" role="alert" id="how-it-works-banner">
     <h5 class="alert-heading"><i class="bi bi-lightbulb"></i> How It Works</h5>
     <hr>
     <div class="row">
@@ -27,7 +27,7 @@
             <code>Brandon Sanderson/The Final Empire</code></small>
         </div>
     </div>
-    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" onclick="dismissHowItWorks()"></button>
 </div>
 
 <!-- Main Settings Form -->
@@ -35,13 +35,23 @@
     <!-- Nav Tabs -->
     <ul class="nav nav-tabs mb-3" role="tablist">
         <li class="nav-item">
-            <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-general" type="button">
-                <i class="bi bi-sliders"></i> General
+            <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-library" type="button">
+                <i class="bi bi-folder"></i> Library
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-processing" type="button">
+                <i class="bi bi-cpu"></i> Processing
             </button>
         </li>
         <li class="nav-item">
             <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-ai" type="button">
                 <i class="bi bi-robot"></i> AI Setup
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-safety" type="button">
+                <i class="bi bi-shield-check"></i> Safety
             </button>
         </li>
         <li class="nav-item">
@@ -53,30 +63,40 @@
 
     <!-- Tab Content -->
     <div class="tab-content">
-        <!-- General Tab -->
-        <div class="tab-pane fade show active" id="tab-general">
+
+        <!-- ==================== LIBRARY TAB ==================== -->
+        <div class="tab-pane fade show active" id="tab-library">
             <div class="row">
                 <div class="col-lg-6">
-                    <!-- Library Settings -->
+                    <!-- Library Paths -->
                     <div class="card mb-3">
                         <div class="card-header py-2">
-                            <i class="bi bi-folder"></i> Library
+                            <i class="bi bi-folder"></i> Library Paths
                         </div>
                         <div class="card-body">
                             <div class="mb-3">
-                                <label class="form-label">Library Paths <small class="text-muted">(one per line)</small></label>
-                                <textarea class="form-control bg-dark text-light" name="library_paths" id="library_paths" rows="2"
+                                <label class="form-label">Paths to scan <small class="text-muted">(one per line)</small></label>
+                                <textarea class="form-control bg-dark text-light" name="library_paths" id="library_paths" rows="3"
                                           placeholder="/mnt/audiobooks">{{ config.library_paths | join('\n') }}</textarea>
                                 <div class="mt-2">
                                     <button type="button" class="btn btn-sm btn-outline-info" onclick="testLibraryPaths()">
                                         <i class="bi bi-folder-check"></i> Test Paths
                                     </button>
-                                    <small class="text-muted ms-2">Check if paths are accessible (helps debug Docker mount issues)</small>
+                                    <small class="text-muted ms-2">Check if paths are accessible</small>
                                 </div>
                                 <div id="path-test-results" class="mt-2" style="display: none;"></div>
                             </div>
+                        </div>
+                    </div>
+
+                    <!-- Folder Naming Format -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-pencil"></i> Folder Naming
+                        </div>
+                        <div class="card-body">
                             <div class="mb-2">
-                                <label class="form-label">Folder Naming Format</label>
+                                <label class="form-label">Naming Format</label>
                                 <select class="form-select bg-dark text-light" name="naming_format" id="naming_format" onchange="toggleCustomNaming()">
                                     <option value="author/title" {% if config.naming_format == 'author/title' or (not config.naming_format and not config.custom_naming_template) %}selected{% endif %}>
                                         Author/Title - Audiobookshelf, Plex, Jellyfin
@@ -85,14 +105,14 @@
                                         Author - Title (flat) - Booksonic, basic players
                                     </option>
                                     <option value="custom" {% if config.naming_format == 'custom' %}selected{% endif %}>
-                                        Custom Template - Build your own
+                                        Custom Template
                                     </option>
                                 </select>
                             </div>
 
                             <!-- Custom Naming Template Builder -->
                             <div id="custom-naming-builder" class="mt-3" style="display: none;">
-                                <label class="form-label">Custom Naming Template</label>
+                                <label class="form-label">Custom Template</label>
                                 <div class="input-group mb-2">
                                     <input type="text" class="form-control bg-dark text-light font-monospace"
                                            name="custom_naming_template" id="custom_naming_template"
@@ -105,151 +125,39 @@
                                 </div>
 
                                 <div class="mb-2">
-                                    <small class="text-muted d-block mb-1">Click tags to add them:</small>
+                                    <small class="text-muted d-block mb-1">Click to add:</small>
                                     <div class="d-flex flex-wrap gap-1">
-                                        <button type="button" class="btn btn-sm btn-outline-info naming-tag" onclick="insertTag('{author}')">
-                                            {author}
-                                        </button>
-                                        <button type="button" class="btn btn-sm btn-outline-info naming-tag" onclick="insertTag('{title}')">
-                                            {title}
-                                        </button>
-                                        <button type="button" class="btn btn-sm btn-outline-warning naming-tag" onclick="insertTag('{series}')">
-                                            {series}
-                                        </button>
-                                        <button type="button" class="btn btn-sm btn-outline-warning naming-tag" onclick="insertTag('{series_num}')">
-                                            {series_num}
-                                        </button>
-                                        <button type="button" class="btn btn-sm btn-outline-success naming-tag" onclick="insertTag('{narrator}')">
-                                            {narrator}
-                                        </button>
-                                        <button type="button" class="btn btn-sm btn-outline-secondary naming-tag" onclick="insertTag('{year}')">
-                                            {year}
-                                        </button>
-                                        <button type="button" class="btn btn-sm btn-outline-secondary naming-tag" onclick="insertTag('{edition}')">
-                                            {edition}
-                                        </button>
-                                        <button type="button" class="btn btn-sm btn-outline-secondary naming-tag" onclick="insertTag('{variant}')">
-                                            {variant}
-                                        </button>
+                                        <button type="button" class="btn btn-sm btn-outline-info naming-tag" onclick="insertTag('{author}')">{author}</button>
+                                        <button type="button" class="btn btn-sm btn-outline-info naming-tag" onclick="insertTag('{title}')">{title}</button>
+                                        <button type="button" class="btn btn-sm btn-outline-warning naming-tag" onclick="insertTag('{series}')">{series}</button>
+                                        <button type="button" class="btn btn-sm btn-outline-warning naming-tag" onclick="insertTag('{series_num}')">{series_num}</button>
+                                        <button type="button" class="btn btn-sm btn-outline-success naming-tag" onclick="insertTag('{narrator}')">{narrator}</button>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary naming-tag" onclick="insertTag('{year}')">{year}</button>
                                     </div>
                                 </div>
 
-                                <div class="mb-2">
-                                    <small class="text-muted d-block mb-1">Quick separators:</small>
-                                    <div class="d-flex flex-wrap gap-1">
-                                        <button type="button" class="btn btn-sm btn-outline-light" onclick="insertTag('/')">
-                                            /
-                                        </button>
-                                        <button type="button" class="btn btn-sm btn-outline-light" onclick="insertTag(' - ')">
-                                            -
-                                        </button>
-                                        <button type="button" class="btn btn-sm btn-outline-light" onclick="insertTag(' ')">
-                                            space
-                                        </button>
-                                        <button type="button" class="btn btn-sm btn-outline-light" onclick="insertTag('(')">
-                                            (
-                                        </button>
-                                        <button type="button" class="btn btn-sm btn-outline-light" onclick="insertTag(')')">
-                                            )
-                                        </button>
-                                        <button type="button" class="btn btn-sm btn-outline-light" onclick="insertTag('[')">
-                                            [
-                                        </button>
-                                        <button type="button" class="btn btn-sm btn-outline-light" onclick="insertTag(']')">
-                                            ]
-                                        </button>
-                                        <button type="button" class="btn btn-sm btn-outline-light" onclick="insertTag('{')">
-                                            {
-                                        </button>
-                                        <button type="button" class="btn btn-sm btn-outline-light" onclick="insertTag('}')">
-                                            }
-                                        </button>
-                                    </div>
-                                </div>
-
-                                <div class="alert alert-dark small py-2 mb-0" id="naming-preview">
+                                <div class="alert alert-dark small py-2 mb-0">
                                     <strong>Preview:</strong> <code id="preview-output">Brandon Sanderson/The Final Empire</code>
                                 </div>
+                            </div>
 
-                                <div class="mt-2">
-                                    <small class="text-muted">
-                                        <i class="bi bi-info-circle"></i>
-                                        Tags in <span class="text-warning">yellow</span> require series info.
-                                        Missing data will be omitted. Use <code>/</code> for folder separation.
-                                    </small>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+                            <hr class="my-3">
 
-                    <!-- Behavior -->
-                    <div class="card mb-3">
-                        <div class="card-header py-2">
-                            <i class="bi bi-toggles"></i> Behavior
-                        </div>
-                        <div class="card-body">
-                            <div class="form-check form-switch mb-2">
-                                <input class="form-check-input" type="checkbox" name="enabled" id="enabled"
-                                       {% if config.enabled %}checked{% endif %}>
-                                <label class="form-check-label" for="enabled">
-                                    <strong>Enable Background Processing</strong>
-                                </label>
-                            </div>
-                            <div class="form-check form-switch mb-2">
-                                <input class="form-check-input" type="checkbox" name="auto_fix" id="auto_fix"
-                                       {% if config.auto_fix %}checked{% endif %} onchange="warnAutoFix(this)">
-                                <label class="form-check-label" for="auto_fix">
-                                    <strong>Auto-Fix Mode</strong>
-                                    <span class="badge bg-warning text-dark">Caution</span>
-                                    <br><small class="text-muted">Rename folders automatically without approval</small>
-                                </label>
-                            </div>
-                            <div class="form-check form-switch mb-2">
-                                <input class="form-check-input" type="checkbox" name="protect_author_changes" id="protect_author_changes"
-                                       {% if config.protect_author_changes %}checked{% endif %}>
-                                <label class="form-check-label" for="protect_author_changes">
-                                    <strong>Smart Verification</strong>
-                                    <span class="badge bg-success">Recommended</span>
-                                    <br><small class="text-muted">Extra verification when author changes completely</small>
-                                </label>
-                            </div>
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" name="series_grouping" id="series_grouping"
                                        {% if config.series_grouping %}checked{% endif %}>
                                 <label class="form-check-label" for="series_grouping">
                                     <strong>Series Grouping</strong>
-                                    <span class="badge bg-info">BETA</span>
-                                    <br><small class="text-muted">Group series books: <code>Author/Series/1 - Title</code></small>
+                                    <br><small class="text-muted">Use <code>Author/Series/1 - Title/</code> format</small>
                                 </label>
                             </div>
+
                             <div class="form-check form-switch mb-2">
-                                <input class="form-check-input" type="checkbox" name="ebook_management" id="ebook_management"
-                                       {% if config.ebook_management %}checked{% endif %} onchange="toggleEbookOptions()">
-                                <label class="form-check-label" for="ebook_management">
-                                    <strong>Ebook Management</strong>
-                                    <span class="badge bg-info">BETA</span>
-                                    <br><small class="text-muted">Organize ebooks (.epub, .mobi, .azw3, .pdf)</small>
-                                </label>
-                            </div>
-                            <div id="ebook-options" class="ms-4 mb-2" style="display: none;">
-                                <label class="form-label small">Ebook Library Mode</label>
-                                <select class="form-select form-select-sm bg-dark text-light" name="ebook_library_mode" style="max-width: 250px;">
-                                    <option value="merge" {% if config.ebook_library_mode == 'merge' %}selected{% endif %}>
-                                        Merge with Audiobooks (ABS)
-                                    </option>
-                                    <option value="separate" {% if config.ebook_library_mode == 'separate' %}selected{% endif %}>
-                                        Separate Ebook Library
-                                    </option>
-                                </select>
-                                <small class="text-muted d-block mt-1">Merge: puts ebook in same Author/Title/ folder as audiobook</small>
-                            </div>
-                            <div class="form-check form-switch mb-2 mt-3">
-                                <input class="form-check-input" type="checkbox" name="audio_analysis" id="audio_analysis"
-                                       {% if config.audio_analysis %}checked{% endif %}>
-                                <label class="form-check-label" for="audio_analysis">
-                                    <strong>Audio Analysis</strong>
-                                    <span class="badge bg-info">BETA</span>
-                                    <br><small class="text-muted">Use Gemini to analyze audiobook intros for author/title (requires Gemini API key)</small>
+                                <input class="form-check-input" type="checkbox" name="standardize_author_initials" id="standardize_author_initials"
+                                       {% if config.standardize_author_initials %}checked{% endif %}>
+                                <label class="form-check-label" for="standardize_author_initials">
+                                    <strong>Standardize Author Initials</strong>
+                                    <br><small class="text-muted">Normalize to <code>J. R. R. Tolkien</code> format</small>
                                 </label>
                             </div>
                         </div>
@@ -257,51 +165,91 @@
                 </div>
 
                 <div class="col-lg-6">
-                    <!-- Processing -->
+                    <!-- Watch Folder -->
                     <div class="card mb-3">
                         <div class="card-header py-2">
-                            <i class="bi bi-speedometer2"></i> Processing
+                            <i class="bi bi-eye"></i> Watch Folder
                         </div>
                         <div class="card-body">
-                            <div class="row">
-                                <div class="col-6 mb-2">
-                                    <label class="form-label">Scan Interval</label>
-                                    <div class="input-group input-group-sm">
-                                        <input type="number" class="form-control bg-dark text-light" name="scan_interval_hours"
-                                               value="{{ config.scan_interval_hours }}" min="1" max="168">
-                                        <span class="input-group-text bg-dark text-light">hours</span>
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="watch_mode" id="watch_mode"
+                                       {% if config.watch_mode %}checked{% endif %} onchange="toggleWatchOptions()">
+                                <label class="form-check-label" for="watch_mode">
+                                    <strong>Enable Watch Folder</strong>
+                                    <br><small class="text-muted">Auto-organize new audiobooks from a folder</small>
+                                </label>
+                            </div>
+                            <div id="watch-options" class="mt-3" style="display: {% if config.watch_mode %}block{% else %}none{% endif %};">
+                                <div class="mb-2">
+                                    <label class="form-label small mb-1">Input Folder</label>
+                                    <input type="text" class="form-control form-control-sm bg-dark text-light"
+                                           name="watch_folder" id="watch_folder" value="{{ config.watch_folder or '' }}"
+                                           placeholder="/path/to/downloads">
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label small mb-1">Output Folder <small class="text-muted">(optional)</small></label>
+                                    <input type="text" class="form-control form-control-sm bg-dark text-light"
+                                           name="watch_output_folder" id="watch_output_folder" value="{{ config.watch_output_folder or '' }}"
+                                           placeholder="Defaults to first library path">
+                                </div>
+                                <div class="row mb-2">
+                                    <div class="col-6">
+                                        <label class="form-label small mb-1">Check Interval</label>
+                                        <div class="input-group input-group-sm">
+                                            <input type="number" class="form-control bg-dark text-light"
+                                                   name="watch_interval_seconds" value="{{ config.watch_interval_seconds or 60 }}" min="10">
+                                            <span class="input-group-text bg-dark text-light">sec</span>
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <label class="form-label small mb-1">Min File Age</label>
+                                        <div class="input-group input-group-sm">
+                                            <input type="number" class="form-control bg-dark text-light"
+                                                   name="watch_min_file_age_seconds" value="{{ config.watch_min_file_age_seconds or 30 }}" min="5">
+                                            <span class="input-group-text bg-dark text-light">sec</span>
+                                        </div>
                                     </div>
                                 </div>
-                                <div class="col-6 mb-2">
-                                    <label class="form-label">Batch Size</label>
-                                    <input type="number" class="form-control form-control-sm bg-dark text-light" name="batch_size"
-                                           value="{{ config.batch_size }}" min="1" max="10">
+                                <div class="form-check form-switch mb-1">
+                                    <input class="form-check-input" type="checkbox" name="watch_use_hard_links" id="watch_use_hard_links"
+                                           {% if config.watch_use_hard_links %}checked{% endif %}>
+                                    <label class="form-check-label small" for="watch_use_hard_links">Use hard links (same filesystem)</label>
                                 </div>
-                            </div>
-                            <div class="mb-0">
-                                <label class="form-label">Max API Calls/Hour</label>
-                                <input type="number" class="form-control form-control-sm bg-dark text-light" name="max_requests_per_hour"
-                                       value="{{ config.max_requests_per_hour }}" min="1" max="500" style="max-width: 120px;">
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" name="watch_delete_empty_folders" id="watch_delete_empty_folders"
+                                           {% if config.watch_delete_empty_folders is not defined or config.watch_delete_empty_folders %}checked{% endif %}>
+                                    <label class="form-check-label small" for="watch_delete_empty_folders">Delete empty folders after moving</label>
+                                </div>
                             </div>
                         </div>
                     </div>
 
-                    <!-- Updates -->
+                    <!-- Ebook Management -->
                     <div class="card mb-3">
                         <div class="card-header py-2">
-                            <i class="bi bi-arrow-repeat"></i> Updates
+                            <i class="bi bi-book"></i> Ebook Management
+                            <span class="badge bg-info float-end">BETA</span>
                         </div>
-                        <div class="card-body py-2">
-                            <div class="d-flex align-items-center gap-2">
-                                <select class="form-select form-select-sm bg-dark text-light" name="update_channel" style="max-width: 180px;">
-                                    <option value="stable" {% if config.update_channel == 'stable' %}selected{% endif %}>Stable</option>
-                                    <option value="beta" {% if config.update_channel == 'beta' %}selected{% endif %}>Beta</option>
-                                    <option value="nightly" {% if config.update_channel == 'nightly' %}selected{% endif %}>Nightly</option>
+                        <div class="card-body">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="ebook_management" id="ebook_management"
+                                       {% if config.ebook_management %}checked{% endif %} onchange="toggleEbookOptions()">
+                                <label class="form-check-label" for="ebook_management">
+                                    <strong>Enable Ebook Management</strong>
+                                    <br><small class="text-muted">Organize .epub, .mobi, .azw3, .pdf files</small>
+                                </label>
+                            </div>
+                            <div id="ebook-options" class="mt-2" style="display: {% if config.ebook_management %}block{% else %}none{% endif %};">
+                                <label class="form-label small">Library Mode</label>
+                                <select class="form-select form-select-sm bg-dark text-light" name="ebook_library_mode">
+                                    <option value="merge" {% if config.ebook_library_mode == 'merge' %}selected{% endif %}>
+                                        Merge with Audiobooks (ABS)
+                                    </option>
+                                    <option value="separate" {% if config.ebook_library_mode == 'separate' %}selected{% endif %}>
+                                        Separate Ebook Library
+                                    </option>
                                 </select>
-                                <button type="button" class="btn btn-sm btn-outline-info" onclick="checkUpdateNow()">
-                                    <i class="bi bi-arrow-clockwise"></i> Check
-                                </button>
-                                <span id="update-status"></span>
+                                <small class="text-muted d-block mt-1">Merge puts ebooks in same Author/Title/ folder as audiobook</small>
                             </div>
                         </div>
                     </div>
@@ -309,7 +257,173 @@
             </div>
         </div>
 
-        <!-- AI Setup Tab -->
+        <!-- ==================== PROCESSING TAB ==================== -->
+        <div class="tab-pane fade" id="tab-processing">
+            <div class="row">
+                <div class="col-lg-6">
+                    <!-- Background Processing -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-play-circle"></i> Background Processing
+                        </div>
+                        <div class="card-body">
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" name="enabled" id="enabled"
+                                       {% if config.enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="enabled">
+                                    <strong>Enable Background Processing</strong>
+                                    <br><small class="text-muted">Automatically process queue items in the background</small>
+                                </label>
+                            </div>
+
+                            <div class="row">
+                                <div class="col-6 mb-2">
+                                    <label class="form-label small">Scan Interval</label>
+                                    <div class="input-group input-group-sm">
+                                        <input type="number" class="form-control bg-dark text-light" name="scan_interval_hours"
+                                               value="{{ config.scan_interval_hours }}" min="1" max="168">
+                                        <span class="input-group-text bg-dark text-light">hours</span>
+                                    </div>
+                                </div>
+                                <div class="col-6 mb-2">
+                                    <label class="form-label small">Batch Size</label>
+                                    <input type="number" class="form-control form-control-sm bg-dark text-light" name="batch_size"
+                                           value="{{ config.batch_size }}" min="1" max="10">
+                                </div>
+                            </div>
+                            <div class="mb-0">
+                                <label class="form-label small">Max API Calls/Hour</label>
+                                <input type="number" class="form-control form-control-sm bg-dark text-light" name="max_requests_per_hour"
+                                       value="{{ config.max_requests_per_hour }}" min="10" max="500" style="max-width: 120px;">
+                                <small class="text-muted">Range: 10-500 (prevents API rate limiting)</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Confidence -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-sliders"></i> Confidence Settings
+                        </div>
+                        <div class="card-body">
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" name="deep_scan_mode"
+                                       id="deep_scan_mode" {% if config.deep_scan_mode %}checked{% endif %}>
+                                <label class="form-check-label" for="deep_scan_mode">
+                                    <strong>Deep Scan Mode</strong>
+                                    <br><small class="text-muted">Run ALL enabled layers for every book (slower, more thorough)</small>
+                                </label>
+                            </div>
+
+                            <div class="mb-0">
+                                <label class="form-label">Confidence Threshold: <strong id="threshold-display">{{ config.profile_confidence_threshold or 85 }}%</strong></label>
+                                <input type="range" class="form-range" name="profile_confidence_threshold"
+                                       id="profile_confidence_threshold" min="50" max="100" step="5"
+                                       value="{{ config.profile_confidence_threshold or 85 }}"
+                                       oninput="document.getElementById('threshold-display').textContent = this.value + '%'">
+                                <small class="text-muted">Higher = more certain before stopping, lower = faster</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-lg-6">
+                    <!-- Identification Sources -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-layers"></i> Identification Layers
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-3">
+                                Books are identified in order. Each layer only runs if the previous one didn't get a confident match.
+                            </p>
+
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" name="enable_api_lookups"
+                                       id="enable_api_lookups" {% if config.enable_api_lookups != false %}checked{% endif %}>
+                                <label class="form-check-label" for="enable_api_lookups">
+                                    <i class="bi bi-cloud text-info"></i> <strong>Layer 1: Database Lookups</strong>
+                                    <span class="badge bg-success">Free</span>
+                                    <br><small class="text-muted">BookDB, Audnexus, OpenLibrary, Google Books</small>
+                                </label>
+                            </div>
+
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" name="enable_ai_verification"
+                                       id="enable_ai_verification" {% if config.enable_ai_verification != false %}checked{% endif %}>
+                                <label class="form-check-label" for="enable_ai_verification">
+                                    <i class="bi bi-robot text-warning"></i> <strong>Layer 2: AI Verification</strong>
+                                    <span class="badge bg-warning text-dark">Uses Tokens</span>
+                                    <br><small class="text-muted">Ask AI when databases don't have a confident match</small>
+                                </label>
+                            </div>
+
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="enable_audio_analysis"
+                                       id="enable_audio_analysis" {% if config.enable_audio_analysis %}checked{% endif %}
+                                       {% if not config.gemini_api_key %}disabled title="Requires Gemini API key"{% endif %}>
+                                <label class="form-check-label" for="enable_audio_analysis">
+                                    <i class="bi bi-soundwave text-danger"></i> <strong>Layer 3: Audio Analysis</strong>
+                                    <span class="badge bg-warning text-dark">Uses Tokens</span>
+                                    {% if not config.gemini_api_key %}<span class="badge bg-secondary">Needs Gemini</span>{% endif %}
+                                    <br><small class="text-muted">Listen to first 90 seconds for narrator intro</small>
+                                </label>
+                            </div>
+
+                            <!-- BookDB Audio sub-option -->
+                            <div class="form-check form-switch mb-2 ms-4">
+                                <input class="form-check-input" type="checkbox" name="use_bookdb_for_audio"
+                                       id="use_bookdb_for_audio" {% if config.use_bookdb_for_audio is not defined or config.use_bookdb_for_audio %}checked{% endif %}>
+                                <label class="form-check-label" for="use_bookdb_for_audio">
+                                    <i class="bi bi-cloud-arrow-up text-primary"></i> Use BookDB for Audio ID
+                                    <span class="badge bg-success">Recommended</span>
+                                    <br><small class="text-muted">GPU Whisper + 50M book database (faster, no rate limits). Disable to use your own AI/Whisper.</small>
+                                </label>
+                            </div>
+
+                            <div class="form-check form-switch mb-0">
+                                <input class="form-check-input" type="checkbox" name="enable_content_analysis"
+                                       id="enable_content_analysis" {% if config.enable_content_analysis %}checked{% endif %}
+                                       onchange="toggleLayer4Settings()">
+                                <label class="form-check-label" for="enable_content_analysis">
+                                    <i class="bi bi-book text-info"></i> <strong>Layer 4: Content Analysis</strong>
+                                    <span class="badge bg-info text-dark">Final Resort</span>
+                                    <br><small class="text-muted">Transcribe story text to identify book (uses Whisper + AI)</small>
+                                </label>
+                            </div>
+
+                            <!-- Layer 4 Settings (shown when enabled) -->
+                            <div id="layer4-settings" class="ms-4 mt-2 p-2 border-start border-info" style="display: {% if config.enable_content_analysis %}block{% else %}none{% endif %};">
+                                <div class="mb-2">
+                                    <label class="form-label small mb-1">Speech-to-Text Model</label>
+                                    <select class="form-select form-select-sm bg-dark text-light" name="whisper_model" id="whisper_model">
+                                        <option value="tiny" {% if config.whisper_model == 'tiny' %}selected{% endif %}>Tiny (~75MB) - Fastest</option>
+                                        <option value="base" {% if config.whisper_model == 'base' or not config.whisper_model %}selected{% endif %}>Base (~150MB) - Recommended</option>
+                                        <option value="small" {% if config.whisper_model == 'small' %}selected{% endif %}>Small (~465MB) - Better accuracy</option>
+                                        <option value="medium" {% if config.whisper_model == 'medium' %}selected{% endif %}>Medium (~1.5GB) - High accuracy</option>
+                                    </select>
+                                    <small class="text-muted">Model downloads automatically on first use</small>
+                                </div>
+                                <div class="mb-0">
+                                    <label class="form-label small mb-1">Book ID Model (OpenRouter)</label>
+                                    <select class="form-select form-select-sm bg-dark text-light" name="layer4_openrouter_model" id="layer4_openrouter_model">
+                                        <option value="xiaomi/mimo-v2-flash:free" {% if config.layer4_openrouter_model == 'xiaomi/mimo-v2-flash:free' or not config.layer4_openrouter_model %}selected{% endif %}>Xiaomi MiMo Flash (Free, 262K ctx)</option>
+                                        <option value="mistralai/devstral-2512:free" {% if config.layer4_openrouter_model == 'mistralai/devstral-2512:free' %}selected{% endif %}>Mistral Devstral (Free)</option>
+                                        <option value="meta-llama/llama-3.1-8b-instruct:free" {% if config.layer4_openrouter_model == 'meta-llama/llama-3.1-8b-instruct:free' %}selected{% endif %}>Llama 3.1 8B (Free)</option>
+                                    </select>
+                                    <small class="text-muted">Requires OpenRouter API key</small>
+                                </div>
+                                <div class="mt-2">
+                                    <span id="whisper-status" class="badge bg-secondary">Checking whisper status...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ==================== AI SETUP TAB ==================== -->
         <div class="tab-pane fade" id="tab-ai">
             <div class="row">
                 <div class="col-lg-6">
@@ -326,6 +440,9 @@
                                     <option value="openrouter" {% if config.ai_provider == 'openrouter' %}selected{% endif %}>
                                         OpenRouter (Free models available)
                                     </option>
+                                    <option value="ollama" {% if config.ai_provider == 'ollama' %}selected{% endif %}>
+                                        Ollama (Self-hosted - No API costs)
+                                    </option>
                                 </select>
                             </div>
 
@@ -333,22 +450,28 @@
                             <div id="gemini-settings">
                                 <div class="mb-3">
                                     <label class="form-label">Gemini API Key</label>
-                                    <input type="password" class="form-control bg-dark text-light" name="gemini_api_key"
-                                           value="{{ config.gemini_api_key or '' }}" placeholder="AIza...">
+                                    <div class="input-group">
+                                        <input type="password" class="form-control bg-dark text-light" name="gemini_api_key" id="gemini_api_key"
+                                               value="" placeholder="{% if config.gemini_api_key %}Key configured (enter new to replace){% else %}AIza...{% endif %}"
+                                               data-has-key="{{ 'true' if config.gemini_api_key else 'false' }}">
+                                        <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('gemini_api_key')" title="Show/hide key">
+                                            <i class="bi bi-eye"></i>
+                                        </button>
+                                        {% if config.gemini_api_key %}
+                                        <span class="input-group-text bg-success text-white" id="gemini-key-check"><i class="bi bi-check"></i></span>
+                                        <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('gemini_api_key')" title="Remove key">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                        {% endif %}
+                                    </div>
                                     <small class="text-muted">Free at <a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a></small>
                                 </div>
                                 <div class="mb-0">
                                     <label class="form-label">Model</label>
                                     <select class="form-select bg-dark text-light" name="gemini_model">
-                                        <option value="gemma-3-27b-it" {% if config.gemini_model == 'gemma-3-27b-it' %}selected{% endif %}>
-                                            Gemma 3 27B (Best - 14,400/day)
-                                        </option>
-                                        <option value="gemma-3-12b-it" {% if config.gemini_model == 'gemma-3-12b-it' %}selected{% endif %}>
-                                            Gemma 3 12B (Faster)
-                                        </option>
-                                        <option value="gemini-2.0-flash" {% if config.gemini_model == 'gemini-2.0-flash' %}selected{% endif %}>
-                                            Gemini 2.0 Flash (Lower quota)
-                                        </option>
+                                        <option value="gemma-3-27b-it" {% if config.gemini_model == 'gemma-3-27b-it' %}selected{% endif %}>Gemma 3 27B (Best)</option>
+                                        <option value="gemma-3-12b-it" {% if config.gemini_model == 'gemma-3-12b-it' %}selected{% endif %}>Gemma 3 12B (Faster)</option>
+                                        <option value="gemini-2.0-flash" {% if config.gemini_model == 'gemini-2.0-flash' %}selected{% endif %}>Gemini 2.0 Flash</option>
                                     </select>
                                 </div>
                             </div>
@@ -357,20 +480,58 @@
                             <div id="openrouter-settings" style="display: none;">
                                 <div class="mb-3">
                                     <label class="form-label">OpenRouter API Key</label>
-                                    <input type="password" class="form-control bg-dark text-light" name="openrouter_api_key"
-                                           value="{{ config.openrouter_api_key or '' }}" placeholder="sk-or-v1-...">
+                                    <div class="input-group">
+                                        <input type="password" class="form-control bg-dark text-light" name="openrouter_api_key" id="openrouter_api_key"
+                                               value="" placeholder="{% if config.openrouter_api_key %}Key configured (enter new to replace){% else %}sk-or-v1-...{% endif %}"
+                                               data-has-key="{{ 'true' if config.openrouter_api_key else 'false' }}">
+                                        <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('openrouter_api_key')" title="Show/hide key">
+                                            <i class="bi bi-eye"></i>
+                                        </button>
+                                        {% if config.openrouter_api_key %}
+                                        <span class="input-group-text bg-success text-white" id="openrouter-key-check"><i class="bi bi-check"></i></span>
+                                        <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('openrouter_api_key')" title="Remove key">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                        {% endif %}
+                                    </div>
                                     <small class="text-muted">Get at <a href="https://openrouter.ai" target="_blank">openrouter.ai</a></small>
                                 </div>
                                 <div class="mb-0">
                                     <label class="form-label">Model</label>
                                     <select class="form-select bg-dark text-light" name="openrouter_model">
-                                        <option value="google/gemma-3n-e4b-it:free" {% if config.openrouter_model == 'google/gemma-3n-e4b-it:free' %}selected{% endif %}>
-                                            Google Gemma 3N (Free)
-                                        </option>
-                                        <option value="meta-llama/llama-3.3-70b-instruct:free" {% if config.openrouter_model == 'meta-llama/llama-3.3-70b-instruct:free' %}selected{% endif %}>
-                                            Llama 3.3 70B (Free)
-                                        </option>
+                                        <option value="google/gemma-3n-e4b-it:free" {% if config.openrouter_model == 'google/gemma-3n-e4b-it:free' %}selected{% endif %}>Google Gemma 3N (Free)</option>
+                                        <option value="meta-llama/llama-3.3-70b-instruct:free" {% if config.openrouter_model == 'meta-llama/llama-3.3-70b-instruct:free' %}selected{% endif %}>Llama 3.3 70B (Free)</option>
                                     </select>
+                                </div>
+                            </div>
+
+                            <!-- Ollama Settings -->
+                            <div id="ollama-settings" style="display: none;">
+                                <div class="mb-3">
+                                    <label class="form-label">Ollama Server URL</label>
+                                    <input type="text" class="form-control bg-dark text-light" name="ollama_url" id="ollama_url"
+                                           value="{{ config.ollama_url or 'http://localhost:11434' }}" placeholder="http://localhost:11434">
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Model</label>
+                                    <div class="input-group">
+                                        <select class="form-select bg-dark text-light" name="ollama_model" id="ollama_model">
+                                            {% if config.ollama_model %}
+                                            <option value="{{ config.ollama_model }}" selected>{{ config.ollama_model }}</option>
+                                            {% else %}
+                                            <option value="llama3.2:3b" selected>llama3.2:3b (default)</option>
+                                            {% endif %}
+                                        </select>
+                                        <button type="button" class="btn btn-outline-secondary" onclick="refreshOllamaModels()" title="Refresh">
+                                            <i class="bi bi-arrow-clockwise"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="mb-0">
+                                    <button type="button" class="btn btn-sm btn-outline-info" onclick="testOllamaConnection()">
+                                        <i class="bi bi-plug"></i> Test Connection
+                                    </button>
+                                    <span id="ollama-status" class="ms-2"></span>
                                 </div>
                             </div>
                         </div>
@@ -393,8 +554,123 @@
                             </ol>
                             <div class="mb-0">
                                 <label class="form-label small">Google Books API Key <span class="text-muted">(optional)</span></label>
-                                <input type="password" class="form-control form-control-sm bg-dark text-light" name="google_books_api_key"
-                                       value="{{ config.google_books_api_key or '' }}" placeholder="For higher rate limits">
+                                <div class="input-group input-group-sm">
+                                    <input type="password" class="form-control bg-dark text-light" name="google_books_api_key" id="google_books_api_key"
+                                           value="" placeholder="{% if config.google_books_api_key %}Key configured{% else %}For higher rate limits{% endif %}"
+                                           data-has-key="{{ 'true' if config.google_books_api_key else 'false' }}">
+                                    <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('google_books_api_key')" title="Show/hide key">
+                                        <i class="bi bi-eye"></i>
+                                    </button>
+                                    {% if config.google_books_api_key %}
+                                    <span class="input-group-text bg-success text-white" id="google-books-key-check"><i class="bi bi-check"></i></span>
+                                    <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('google_books_api_key')" title="Remove key">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Provider Fallback Chains -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-diagram-3"></i> Provider Fallback Chains
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-3">
+                                Configure the order providers are tried. If one fails, the next is used.
+                                Drag to reorder, uncheck to disable.
+                            </p>
+
+                            <!-- Audio Provider Chain -->
+                            <div class="mb-3">
+                                <label class="form-label d-flex align-items-center">
+                                    <i class="bi bi-volume-up me-2"></i> Audio Identification
+                                    <small class="text-muted ms-2">(transcription + ID)</small>
+                                </label>
+                                <div id="audio-provider-chain" class="provider-chain">
+                                    {% set audio_chain = config.audio_provider_chain or ['bookdb', 'gemini'] %}
+                                    {% set all_audio_providers = ['bookdb', 'gemini', 'openrouter', 'ollama'] %}
+                                    {% for provider in audio_chain %}
+                                    <div class="provider-item d-flex align-items-center mb-1 p-2 bg-dark rounded" data-provider="{{ provider }}">
+                                        <i class="bi bi-grip-vertical me-2 text-muted drag-handle" style="cursor: grab;"></i>
+                                        <input type="checkbox" class="form-check-input me-2" checked data-chain="audio" value="{{ provider }}">
+                                        <span class="me-auto">
+                                            {% if provider == 'bookdb' %}
+                                            <strong>BookDB</strong> <small class="text-success">(GPU Whisper - Best)</small>
+                                            {% elif provider == 'gemini' %}
+                                            <strong>Gemini</strong> <small class="text-info">(Native audio)</small>
+                                            {% elif provider == 'openrouter' %}
+                                            <strong>OpenRouter</strong> <small class="text-warning">(Needs local Whisper)</small>
+                                            {% elif provider == 'ollama' %}
+                                            <strong>Ollama</strong> <small class="text-warning">(Needs local Whisper)</small>
+                                            {% endif %}
+                                        </span>
+                                    </div>
+                                    {% endfor %}
+                                    {% for provider in all_audio_providers if provider not in audio_chain %}
+                                    <div class="provider-item d-flex align-items-center mb-1 p-2 bg-dark rounded opacity-50" data-provider="{{ provider }}">
+                                        <i class="bi bi-grip-vertical me-2 text-muted drag-handle" style="cursor: grab;"></i>
+                                        <input type="checkbox" class="form-check-input me-2" data-chain="audio" value="{{ provider }}">
+                                        <span class="me-auto">
+                                            {% if provider == 'bookdb' %}
+                                            <strong>BookDB</strong> <small class="text-success">(GPU Whisper - Best)</small>
+                                            {% elif provider == 'gemini' %}
+                                            <strong>Gemini</strong> <small class="text-info">(Native audio)</small>
+                                            {% elif provider == 'openrouter' %}
+                                            <strong>OpenRouter</strong> <small class="text-warning">(Needs local Whisper)</small>
+                                            {% elif provider == 'ollama' %}
+                                            <strong>Ollama</strong> <small class="text-warning">(Needs local Whisper)</small>
+                                            {% endif %}
+                                        </span>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                                <input type="hidden" name="audio_provider_chain" id="audio_provider_chain" value="{{ audio_chain | join(',') }}">
+                            </div>
+
+                            <!-- Text Provider Chain -->
+                            <div class="mb-0">
+                                <label class="form-label d-flex align-items-center">
+                                    <i class="bi bi-chat-text me-2"></i> Text Identification
+                                    <small class="text-muted ms-2">(AI verification)</small>
+                                </label>
+                                <div id="text-provider-chain" class="provider-chain">
+                                    {% set text_chain = config.text_provider_chain or ['gemini', 'openrouter'] %}
+                                    {% set all_text_providers = ['gemini', 'openrouter', 'ollama'] %}
+                                    {% for provider in text_chain %}
+                                    <div class="provider-item d-flex align-items-center mb-1 p-2 bg-dark rounded" data-provider="{{ provider }}">
+                                        <i class="bi bi-grip-vertical me-2 text-muted drag-handle" style="cursor: grab;"></i>
+                                        <input type="checkbox" class="form-check-input me-2" checked data-chain="text" value="{{ provider }}">
+                                        <span class="me-auto">
+                                            {% if provider == 'gemini' %}
+                                            <strong>Gemini/Gemma</strong> <small class="text-success">(Free tier)</small>
+                                            {% elif provider == 'openrouter' %}
+                                            <strong>OpenRouter</strong> <small class="text-info">(Free models)</small>
+                                            {% elif provider == 'ollama' %}
+                                            <strong>Ollama</strong> <small class="text-warning">(Self-hosted)</small>
+                                            {% endif %}
+                                        </span>
+                                    </div>
+                                    {% endfor %}
+                                    {% for provider in all_text_providers if provider not in text_chain %}
+                                    <div class="provider-item d-flex align-items-center mb-1 p-2 bg-dark rounded opacity-50" data-provider="{{ provider }}">
+                                        <i class="bi bi-grip-vertical me-2 text-muted drag-handle" style="cursor: grab;"></i>
+                                        <input type="checkbox" class="form-check-input me-2" data-chain="text" value="{{ provider }}">
+                                        <span class="me-auto">
+                                            {% if provider == 'gemini' %}
+                                            <strong>Gemini/Gemma</strong> <small class="text-success">(Free tier)</small>
+                                            {% elif provider == 'openrouter' %}
+                                            <strong>OpenRouter</strong> <small class="text-info">(Free models)</small>
+                                            {% elif provider == 'ollama' %}
+                                            <strong>Ollama</strong> <small class="text-warning">(Self-hosted)</small>
+                                            {% endif %}
+                                        </span>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                                <input type="hidden" name="text_provider_chain" id="text_provider_chain" value="{{ text_chain | join(',') }}">
                             </div>
                         </div>
                     </div>
@@ -402,17 +678,280 @@
             </div>
         </div>
 
-        <!-- Advanced Tab -->
+        <!-- ==================== SAFETY TAB ==================== -->
+        <div class="tab-pane fade" id="tab-safety">
+            <div class="row">
+                <div class="col-lg-6">
+                    <!-- Auto-Apply Settings -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-lightning"></i> Automation
+                        </div>
+                        <div class="card-body">
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" name="auto_fix" id="auto_fix"
+                                       {% if config.auto_fix %}checked{% endif %} onchange="warnAutoFix(this)">
+                                <label class="form-check-label" for="auto_fix">
+                                    <strong>Auto-Apply Fixes</strong>
+                                    <span class="badge bg-warning text-dark">Caution</span>
+                                    <br><small class="text-muted">Apply safe fixes automatically (non-drastic changes only)</small>
+                                </label>
+                            </div>
+
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" name="protect_author_changes" id="protect_author_changes"
+                                       {% if config.protect_author_changes %}checked{% endif %}>
+                                <label class="form-check-label" for="protect_author_changes">
+                                    <strong>Require Approval for Author Changes</strong>
+                                    <span class="badge bg-success">Recommended</span>
+                                    <br><small class="text-muted">When author changes completely (e.g. "Unknown" → "Stephen King"), send to Pending</small>
+                                </label>
+                            </div>
+
+                        </div>
+                    </div>
+
+                    <!-- Trust the Process - DANGER ZONE -->
+                    <div class="card mb-3 border-danger">
+                        <div class="card-header py-2 bg-danger bg-opacity-25 text-danger">
+                            <i class="bi bi-exclamation-octagon"></i> <strong>Experimental Mode</strong>
+                        </div>
+                        <div class="card-body">
+                            <div class="form-check form-switch mb-0">
+                                <input class="form-check-input" type="checkbox" name="trust_the_process" id="trust_the_process"
+                                       {% if config.trust_the_process %}checked{% endif %} onchange="warnTrustTheProcess(this)">
+                                <label class="form-check-label" for="trust_the_process">
+                                    <strong class="text-danger">Trust the Process</strong>
+                                    <span class="badge bg-danger">YOLO MODE</span>
+                                    <br><small class="text-muted">Auto-apply <strong>ALL</strong> changes when AI + audio analysis agree. No safety net.</small>
+                                    <br><small class="text-danger"><i class="bi bi-exclamation-triangle"></i> Can rename entire library automatically. BACKUP FIRST!</small>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- UI Behavior -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-ui-checks"></i> UI Behavior
+                        </div>
+                        <div class="card-body">
+                            <div class="form-check form-switch mb-0">
+                                <input class="form-check-input" type="checkbox" name="skip_confirmations" id="skip_confirmations"
+                                       {% if config.skip_confirmations %}checked{% endif %}>
+                                <label class="form-check-label" for="skip_confirmations">
+                                    <strong>Skip Confirmation Dialogs</strong>
+                                    <br><small class="text-muted">No "Are you sure?" popups when clicking Apply, Reject, or Undo</small>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-lg-6">
+                    <!-- Metadata Embedding -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-tags"></i> Metadata Embedding
+                            <span class="badge bg-info float-end">BETA</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="metadata_embedding_enabled" id="metadata_embedding_enabled"
+                                       {% if config.metadata_embedding_enabled %}checked{% endif %} onchange="toggleEmbeddingOptions()">
+                                <label class="form-check-label" for="metadata_embedding_enabled">
+                                    <strong>Enable Metadata Embedding</strong>
+                                    <br><small class="text-muted">Write metadata tags into audio files when fixes are applied</small>
+                                </label>
+                            </div>
+                            <div id="embedding-options" class="ms-4" style="display: {% if config.metadata_embedding_enabled %}block{% else %}none{% endif %};">
+                                <div class="form-check form-switch mb-2">
+                                    <input class="form-check-input" type="checkbox" name="metadata_embedding_overwrite_managed" id="metadata_embedding_overwrite_managed"
+                                           {% if config.metadata_embedding_overwrite_managed %}checked{% endif %}>
+                                    <label class="form-check-label small" for="metadata_embedding_overwrite_managed">
+                                        Overwrite existing tags (title/author/series/narrator/year)
+                                    </label>
+                                </div>
+                                <div class="form-check form-switch mb-2">
+                                    <input class="form-check-input" type="checkbox" name="metadata_embedding_backup_sidecar" id="metadata_embedding_backup_sidecar"
+                                           {% if config.metadata_embedding_backup_sidecar %}checked{% endif %}>
+                                    <label class="form-check-label small" for="metadata_embedding_backup_sidecar">
+                                        Create backup before modifying tags
+                                    </label>
+                                </div>
+                                <small class="text-muted">
+                                    <i class="bi bi-info-circle"></i> Supports MP3, M4B/M4A, FLAC, Ogg/Opus, WMA
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ==================== ADVANCED TAB ==================== -->
         <div class="tab-pane fade" id="tab-advanced">
             <div class="row">
                 <div class="col-lg-6">
+                    <!-- Language -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-translate"></i> Language
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label class="form-label">Preferred Metadata Language</label>
+                                <select class="form-select bg-dark text-light" name="preferred_language" id="preferred_language">
+                                    <option value="en" {% if config.preferred_language == 'en' or not config.preferred_language %}selected{% endif %}>English (en)</option>
+                                    <option value="de" {% if config.preferred_language == 'de' %}selected{% endif %}>German / Deutsch (de)</option>
+                                    <option value="fr" {% if config.preferred_language == 'fr' %}selected{% endif %}>French / Français (fr)</option>
+                                    <option value="es" {% if config.preferred_language == 'es' %}selected{% endif %}>Spanish / Español (es)</option>
+                                    <option value="it" {% if config.preferred_language == 'it' %}selected{% endif %}>Italian / Italiano (it)</option>
+                                    <option value="pt" {% if config.preferred_language == 'pt' %}selected{% endif %}>Portuguese / Português (pt)</option>
+                                    <option value="nl" {% if config.preferred_language == 'nl' %}selected{% endif %}>Dutch / Nederlands (nl)</option>
+                                    <option value="sv" {% if config.preferred_language == 'sv' %}selected{% endif %}>Swedish / Svenska (sv)</option>
+                                    <option value="ja" {% if config.preferred_language == 'ja' %}selected{% endif %}>Japanese / 日本語 (ja)</option>
+                                    <option value="zh" {% if config.preferred_language == 'zh' %}selected{% endif %}>Chinese / 中文 (zh)</option>
+                                </select>
+                            </div>
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="preserve_original_titles" id="preserve_original_titles"
+                                       {% if config.preserve_original_titles is not defined or config.preserve_original_titles %}checked{% endif %}>
+                                <label class="form-check-label" for="preserve_original_titles">
+                                    <strong>Preserve Original Titles</strong>
+                                    <br><small class="text-muted">Keep foreign language titles instead of translating</small>
+                                </label>
+                            </div>
+                            <div class="form-check form-switch mb-0">
+                                <input class="form-check-input" type="checkbox" name="detect_language_from_audio" id="detect_language_from_audio"
+                                       {% if config.detect_language_from_audio %}checked{% endif %}>
+                                <label class="form-check-label" for="detect_language_from_audio">
+                                    <strong>Detect Language from Audio</strong>
+                                    <span class="badge bg-info">BETA</span>
+                                    <br><small class="text-muted">Use Gemini to detect spoken language</small>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Error Reporting -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-send"></i> Error Reporting
+                        </div>
+                        <div class="card-body">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="anonymous_error_reporting" id="anonymous_error_reporting"
+                                       {% if config.anonymous_error_reporting %}checked{% endif %} onchange="toggleErrorReportingOptions()">
+                                <label class="form-check-label" for="anonymous_error_reporting">
+                                    <strong>Anonymous Error Reporting</strong>
+                                    <br><small class="text-muted">Help improve Library Manager by sharing anonymous error reports</small>
+                                </label>
+                            </div>
+                            <div id="error-reporting-options" class="ms-4" style="display: {% if config.anonymous_error_reporting %}block{% else %}none{% endif %};">
+                                <div class="form-check form-switch mb-2">
+                                    <input class="form-check-input" type="checkbox" name="error_reporting_include_titles" id="error_reporting_include_titles"
+                                           {% if config.error_reporting_include_titles %}checked{% endif %}>
+                                    <label class="form-check-label small" for="error_reporting_include_titles">
+                                        Include book title/author when they caused the error
+                                    </label>
+                                </div>
+                                <small class="text-muted d-block">
+                                    <strong>Never collected:</strong> File paths, API keys, usernames
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Community Contributions -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-people"></i> Community Contributions
+                        </div>
+                        <div class="card-body">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="contribute_to_community" id="contribute_to_community"
+                                       {% if config.contribute_to_community %}checked{% endif %}>
+                                <label class="form-check-label" for="contribute_to_community">
+                                    <strong>Contribute to Community Database</strong>
+                                    <br><small class="text-muted">Help others identify audiobooks by sharing metadata extracted from audio</small>
+                                </label>
+                            </div>
+                            <small class="text-muted d-block mt-2">
+                                <strong>What's shared:</strong> Author, Title, Narrator (extracted from audio credits)<br>
+                                <strong>Never shared:</strong> File paths, audio files, personal data<br>
+                                <strong>How it works:</strong> When 2+ users agree on the same book's metadata, it becomes verified for everyone.
+                            </small>
+                        </div>
+                    </div>
+
+                    <!-- Updates -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-arrow-repeat"></i> Updates
+                        </div>
+                        <div class="card-body py-2">
+                            <div class="d-flex align-items-center gap-2">
+                                <select class="form-select form-select-sm bg-dark text-light" name="update_channel" style="max-width: 150px;">
+                                    <option value="stable" {% if config.update_channel == 'stable' %}selected{% endif %}>Stable</option>
+                                    <option value="beta" {% if config.update_channel == 'beta' %}selected{% endif %}>Beta</option>
+                                    <option value="nightly" {% if config.update_channel == 'nightly' %}selected{% endif %}>Nightly</option>
+                                </select>
+                                <button type="button" class="btn btn-sm btn-outline-info" onclick="checkUpdateNow()">
+                                    <i class="bi bi-arrow-clockwise"></i> Check
+                                </button>
+                                <span id="update-status"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Deep Verification - Hail Mary Mode -->
+                    <div class="card mb-3 border-warning">
+                        <div class="card-header py-2 bg-warning bg-opacity-10">
+                            <a class="text-warning text-decoration-none d-flex justify-content-between align-items-center"
+                               data-bs-toggle="collapse" href="#deepVerifySection" role="button">
+                                <span><i class="bi bi-shield-exclamation"></i> Deep Verification Mode</span>
+                                <i class="bi bi-chevron-down"></i>
+                            </a>
+                        </div>
+                        <div class="collapse" id="deepVerifySection">
+                            <div class="card-body">
+                                <div class="alert alert-danger mb-3">
+                                    <h6 class="alert-heading"><i class="bi bi-exclamation-octagon"></i> Read Before Proceeding</h6>
+                                    <p class="mb-2">Deep Verification is a <strong>"Hail Mary"</strong> mode that re-verifies your <em>entire library</em> against APIs, even books that look correctly named.</p>
+                                    <hr class="my-2">
+                                    <p class="mb-2"><strong>Why use this?</strong></p>
+                                    <ul class="mb-2 small">
+                                        <li>You imported a sketchy collection with potentially wrong author attributions</li>
+                                        <li>Folder names look correct but might be misattributed (e.g., "Ashli St. Armant/The Burning White" when it's actually by Brent Weeks)</li>
+                                        <li>You want a complete audit of your library</li>
+                                    </ul>
+                                    <p class="mb-2"><strong>What it costs:</strong></p>
+                                    <ul class="mb-0 small">
+                                        <li><i class="bi bi-clock"></i> <strong>Time:</strong> ~30 seconds per book (500 books = ~4 hours)</li>
+                                        <li><i class="bi bi-cloud-arrow-up"></i> <strong>API Calls:</strong> 3-5 API calls per book (BookDB, OpenLibrary, Google Books, Audnexus)</li>
+                                        <li><i class="bi bi-cpu"></i> <strong>Processing:</strong> All books get re-queued and processed through Layer 1-3</li>
+                                    </ul>
+                                </div>
+                                <div id="deepVerifyStatus" class="mb-3 d-none">
+                                    <div class="alert alert-info py-2">
+                                        <i class="bi bi-hourglass-split"></i> <span id="deepVerifyMessage">Processing...</span>
+                                    </div>
+                                </div>
+                                <button type="button" class="btn btn-warning" onclick="startDeepVerification()">
+                                    <i class="bi bi-shield-check"></i> Start Deep Verification
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Danger Zone -->
                     <div class="card mb-3 border-danger">
                         <div class="card-header py-2 text-danger">
                             <i class="bi bi-exclamation-triangle"></i> Danger Zone
                         </div>
                         <div class="card-body">
-                            <p class="text-muted small mb-2">Use with caution. These actions cannot be undone.</p>
+                            <p class="text-muted small mb-2">These actions cannot be undone.</p>
                             <div class="d-flex gap-2 flex-wrap">
                                 <button type="button" class="btn btn-sm btn-outline-danger" onclick="clearHistory()">
                                     <i class="bi bi-trash"></i> Clear History
@@ -420,30 +959,13 @@
                                 <button type="button" class="btn btn-sm btn-outline-danger" onclick="resetDatabase()">
                                     <i class="bi bi-arrow-counterclockwise"></i> Reset Database
                                 </button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Bug Report -->
-                    <div class="card mb-3">
-                        <div class="card-header py-2">
-                            <i class="bi bi-bug"></i> Bug Report
-                        </div>
-                        <div class="card-body py-2">
-                            <div class="d-flex gap-2">
-                                <button type="button" class="btn btn-sm btn-outline-primary" onclick="generateBugReport()">
-                                    <i class="bi bi-clipboard"></i> Generate Report
-                                </button>
-                                <a href="https://github.com/deucebucket/library-manager/issues/new" target="_blank" class="btn btn-sm btn-outline-secondary">
-                                    <i class="bi bi-github"></i> GitHub Issues
-                                </a>
-                            </div>
-                            <div id="bug-report-output" class="mt-2 d-none">
-                                <textarea class="form-control form-control-sm bg-dark text-light" id="bug-report-text" rows="6" readonly></textarea>
-                                <button type="button" class="btn btn-sm btn-success mt-1" onclick="copyBugReport()">
-                                    <i class="bi bi-clipboard-check"></i> Copy
+                                <button type="button" class="btn btn-sm btn-danger" onclick="wipeEverything()">
+                                    <i class="bi bi-nuclear"></i> Wipe All
                                 </button>
                             </div>
+                            <small class="text-muted d-block mt-2">
+                                <strong>Wipe All</strong> clears both database AND history in one click.
+                            </small>
                         </div>
                     </div>
                 </div>
@@ -455,24 +977,55 @@
                             <i class="bi bi-cloud-arrow-down"></i> Backup & Restore
                         </div>
                         <div class="card-body">
-                            <p class="text-muted small mb-3">Backup your settings, groups, and database. Restore on a new installation or after a reset.</p>
-
                             <div class="d-flex gap-2 flex-wrap mb-3">
-                                <a href="/api/backup" class="btn btn-sm btn-outline-info" id="backup-btn">
+                                <a href="/api/backup" class="btn btn-sm btn-outline-info">
                                     <i class="bi bi-download"></i> Download Backup
                                 </a>
                                 <button type="button" class="btn btn-sm btn-outline-warning" onclick="showRestoreModal()">
                                     <i class="bi bi-upload"></i> Restore Backup
                                 </button>
                             </div>
-
                             <div id="backup-info" class="small text-muted">
                                 <i class="bi bi-hourglass-split"></i> Loading backup info...
                             </div>
                         </div>
                     </div>
 
-                    <!-- Recent Logs -->
+                    <!-- Debug -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-bug"></i> Debug & Troubleshooting
+                        </div>
+                        <div class="card-body">
+                            <div class="row small mb-2">
+                                <div class="col-6"><strong>Version:</strong> <span class="text-info">{{ version }}</span></div>
+                                <div class="col-6"><strong>AI:</strong> <span class="text-info">{{ config.ai_provider }}</span></div>
+                            </div>
+                            <hr class="my-2">
+                            <div class="mb-2">
+                                <strong class="small">API Tests</strong>
+                                <div class="d-flex flex-wrap gap-1 mt-1">
+                                    <button type="button" class="btn btn-sm btn-outline-primary py-0" onclick="testBookDB()">BookDB</button>
+                                    <button type="button" class="btn btn-sm btn-outline-primary py-0" onclick="testGemini()">Gemini</button>
+                                    <button type="button" class="btn btn-sm btn-outline-primary py-0" onclick="testOpenRouter()">OpenRouter</button>
+                                    <button type="button" class="btn btn-sm btn-outline-primary py-0" onclick="testOllamaDebug()">Ollama</button>
+                                </div>
+                                <div id="api-test-results" class="mt-1 small"></div>
+                            </div>
+                            <hr class="my-2">
+                            <div class="d-flex flex-wrap gap-1">
+                                <button type="button" class="btn btn-sm btn-outline-info py-0" onclick="generateBugReport()">Bug Report</button>
+                                <button type="button" class="btn btn-sm btn-outline-warning py-0" onclick="clearQueueFromSettings()">Clear Queue</button>
+                                <button type="button" class="btn btn-sm btn-outline-warning py-0" onclick="clearAllHistoryErrors()">Clear Errors</button>
+                            </div>
+                            <div id="bug-report-output" class="mt-2 d-none">
+                                <textarea class="form-control form-control-sm bg-dark text-light" id="bug-report-text" rows="4" readonly></textarea>
+                                <button type="button" class="btn btn-sm btn-success mt-1 py-0" onclick="copyBugReport()">Copy</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Logs -->
                     <div class="card mb-3">
                         <div class="card-header py-2">
                             <i class="bi bi-terminal"></i> Recent Logs
@@ -480,7 +1033,7 @@
                                 <i class="bi bi-arrow-clockwise"></i>
                             </button>
                         </div>
-                        <div class="card-body bg-dark p-2" style="max-height: 400px; overflow-y: auto;">
+                        <div class="card-body bg-dark p-2" style="max-height: 300px; overflow-y: auto;">
                             <pre id="log-output" class="mb-0 text-light" style="font-size: 0.7rem; white-space: pre-wrap;">Loading...</pre>
                         </div>
                     </div>
@@ -510,15 +1063,12 @@
             <div class="modal-body">
                 <div class="alert alert-warning small">
                     <i class="bi bi-exclamation-triangle"></i>
-                    <strong>Warning:</strong> Restoring will overwrite your current settings, groups, and database.
-                    A backup of your current state will be saved first.
+                    <strong>Warning:</strong> Restoring will overwrite your current settings and database.
                 </div>
-
                 <form id="restore-form" enctype="multipart/form-data">
                     <div class="mb-3">
                         <label class="form-label">Select Backup File</label>
                         <input type="file" class="form-control bg-dark text-light" name="backup" accept=".zip" required>
-                        <small class="text-muted">Upload a .zip backup file created by this app</small>
                     </div>
                 </form>
             </div>
@@ -535,54 +1085,194 @@
 
 {% block scripts %}
 <script>
-function toggleProviderFields() {
-    const provider = document.getElementById('ai_provider').value;
-    document.getElementById('openrouter-settings').style.display = provider === 'openrouter' ? 'block' : 'none';
-    document.getElementById('gemini-settings').style.display = provider === 'gemini' ? 'block' : 'none';
-}
-
-function toggleEbookOptions() {
-    const enabled = document.getElementById('ebook_management').checked;
-    document.getElementById('ebook-options').style.display = enabled ? 'block' : 'none';
-}
-
+// Check if "How It Works" banner should be hidden
 document.addEventListener('DOMContentLoaded', function() {
+    if (localStorage.getItem('hideHowItWorks') === 'true') {
+        const banner = document.getElementById('how-it-works-banner');
+        if (banner) banner.style.display = 'none';
+    }
     toggleProviderFields();
     toggleCustomNaming();
     toggleEbookOptions();
+    toggleWatchOptions();
+    toggleLayer4Settings();
     updateNamingPreview();
     refreshLogs();
 });
 
-// Custom Naming Template Builder
-const sampleData = {
-    author: 'Brandon Sanderson',
-    title: 'The Final Empire',
-    series: 'Mistborn',
-    series_num: '1',
-    narrator: 'Michael Kramer',
-    year: '2006',
-    edition: 'First Edition',
-    variant: ''
-};
+function dismissHowItWorks() {
+    localStorage.setItem('hideHowItWorks', 'true');
+}
+
+// Issue #60: Toggle password visibility
+function togglePasswordVisibility(inputId) {
+    const input = document.getElementById(inputId);
+    const btn = input.nextElementSibling;
+    const icon = btn.querySelector('i');
+    if (input.type === 'password') {
+        input.type = 'text';
+        icon.classList.remove('bi-eye');
+        icon.classList.add('bi-eye-slash');
+    } else {
+        input.type = 'password';
+        icon.classList.remove('bi-eye-slash');
+        icon.classList.add('bi-eye');
+    }
+}
+
+function toggleProviderFields() {
+    const provider = document.getElementById('ai_provider').value;
+    document.getElementById('gemini-settings').style.display = provider === 'gemini' ? 'block' : 'none';
+    document.getElementById('openrouter-settings').style.display = provider === 'openrouter' ? 'block' : 'none';
+    document.getElementById('ollama-settings').style.display = provider === 'ollama' ? 'block' : 'none';
+    if (provider === 'ollama') refreshOllamaModels();
+}
+
+function testOllamaConnection() {
+    const statusEl = document.getElementById('ollama-status');
+    const url = document.getElementById('ollama_url').value;
+    statusEl.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split"></i></span>';
+    fetch('/api/test_ollama', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ollama_url: url})
+    })
+    .then(r => r.json())
+    .then(data => {
+        statusEl.innerHTML = data.success
+            ? '<span class="text-success"><i class="bi bi-check-circle"></i> Connected</span>'
+            : '<span class="text-danger"><i class="bi bi-x-circle"></i> ' + (data.error || 'Failed') + '</span>';
+    })
+    .catch(e => { statusEl.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle"></i> Error</span>'; });
+}
+
+function refreshOllamaModels() {
+    const url = document.getElementById('ollama_url').value;
+    const select = document.getElementById('ollama_model');
+    const currentValue = select.value;
+    select.innerHTML = '<option value="">Loading...</option>';
+    select.disabled = true;
+    fetch('/api/ollama_models', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ollama_url: url})
+    })
+    .then(r => r.json())
+    .then(data => {
+        select.disabled = false;
+        if (data.success && data.models && data.models.length > 0) {
+            select.innerHTML = '';
+            data.models.forEach(model => {
+                const opt = document.createElement('option');
+                opt.value = model;
+                opt.textContent = model;
+                if (model === currentValue) opt.selected = true;
+                select.appendChild(opt);
+            });
+        } else {
+            select.innerHTML = '<option value="llama3.2:3b">llama3.2:3b</option><option value="mistral:7b">mistral:7b</option>';
+        }
+    })
+    .catch(e => {
+        select.disabled = false;
+        select.innerHTML = '<option value="llama3.2:3b">llama3.2:3b</option>';
+    });
+}
+
+function toggleEbookOptions() {
+    document.getElementById('ebook-options').style.display = document.getElementById('ebook_management').checked ? 'block' : 'none';
+}
+
+function toggleEmbeddingOptions() {
+    document.getElementById('embedding-options').style.display = document.getElementById('metadata_embedding_enabled').checked ? 'block' : 'none';
+}
+
+function toggleWatchOptions() {
+    document.getElementById('watch-options').style.display = document.getElementById('watch_mode').checked ? 'block' : 'none';
+}
+
+function toggleErrorReportingOptions() {
+    document.getElementById('error-reporting-options').style.display = document.getElementById('anonymous_error_reporting').checked ? 'block' : 'none';
+}
+
+// Layer 4 Content Analysis settings
+function toggleLayer4Settings() {
+    const settings = document.getElementById('layer4-settings');
+    const enabled = document.getElementById('enable_content_analysis').checked;
+    if (settings) {
+        settings.style.display = enabled ? 'block' : 'none';
+        if (enabled) {
+            checkWhisperStatus();
+        }
+    }
+}
+
+function checkWhisperStatus() {
+    const statusEl = document.getElementById('whisper-status');
+    if (!statusEl) return;
+
+    statusEl.className = 'badge bg-secondary';
+    statusEl.innerHTML = '<i class="bi bi-hourglass-split"></i> Checking...';
+
+    fetch('/api/whisper-status')
+        .then(r => r.json())
+        .then(data => {
+            if (data.installed) {
+                if (data.model_ready) {
+                    statusEl.className = 'badge bg-success';
+                    statusEl.innerHTML = '<i class="bi bi-check-circle"></i> Whisper ready (' + data.model + ')';
+                } else {
+                    statusEl.className = 'badge bg-warning text-dark';
+                    statusEl.innerHTML = '<i class="bi bi-download"></i> Model will download on first use';
+                }
+            } else {
+                statusEl.className = 'badge bg-danger';
+                statusEl.innerHTML = '<i class="bi bi-x-circle"></i> Whisper not installed - <a href="#" onclick="installWhisper(); return false;" class="text-white">Install now</a>';
+            }
+        })
+        .catch(err => {
+            statusEl.className = 'badge bg-danger';
+            statusEl.innerHTML = '<i class="bi bi-exclamation-triangle"></i> Error checking status';
+        });
+}
+
+function installWhisper() {
+    const statusEl = document.getElementById('whisper-status');
+    statusEl.className = 'badge bg-info';
+    statusEl.innerHTML = '<i class="bi bi-hourglass-split"></i> Installing faster-whisper...';
+
+    fetch('/api/install-whisper', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                statusEl.className = 'badge bg-success';
+                statusEl.innerHTML = '<i class="bi bi-check-circle"></i> Installed! Model downloads on first use.';
+            } else {
+                statusEl.className = 'badge bg-danger';
+                statusEl.innerHTML = '<i class="bi bi-x-circle"></i> Install failed: ' + (data.error || 'Unknown error');
+            }
+        })
+        .catch(err => {
+            statusEl.className = 'badge bg-danger';
+            statusEl.innerHTML = '<i class="bi bi-x-circle"></i> Install failed: ' + err;
+        });
+}
+
+// Custom Naming
+const sampleData = {author: 'Brandon Sanderson', title: 'The Final Empire', series: 'Mistborn', series_num: '1', narrator: 'Michael Kramer', year: '2006'};
 
 function toggleCustomNaming() {
-    const format = document.getElementById('naming_format').value;
     const builder = document.getElementById('custom-naming-builder');
     if (builder) {
-        builder.style.display = format === 'custom' ? 'block' : 'none';
-        if (format === 'custom') {
-            updateNamingPreview();
-        }
+        builder.style.display = document.getElementById('naming_format').value === 'custom' ? 'block' : 'none';
+        updateNamingPreview();
     }
 }
 
 function insertTag(tag) {
     const input = document.getElementById('custom_naming_template');
     const start = input.selectionStart;
-    const end = input.selectionEnd;
-    const text = input.value;
-    input.value = text.substring(0, start) + tag + text.substring(end);
+    input.value = input.value.substring(0, start) + tag + input.value.substring(input.selectionEnd);
     input.focus();
     input.setSelectionRange(start + tag.length, start + tag.length);
     updateNamingPreview();
@@ -594,41 +1284,23 @@ function clearNamingTemplate() {
 }
 
 function updateNamingPreview() {
-    const template = document.getElementById('custom_naming_template').value || '{author}/{title}';
-    let preview = template;
-
-    // Replace tags with sample data
-    Object.keys(sampleData).forEach(key => {
-        const regex = new RegExp(`\\{${key}\\}`, 'g');
-        preview = preview.replace(regex, sampleData[key] || '');
-    });
-
-    // Clean up empty brackets/parens from missing optional data
-    preview = preview.replace(/\(\s*\)/g, '');
-    preview = preview.replace(/\[\s*\]/g, '');
-    preview = preview.replace(/\{\s*\}/g, '');
-    preview = preview.replace(/\s+-\s+(?=-|\/|$)/g, '');  // Dangling " - " before separator
-    preview = preview.replace(/\/-\s+/g, '/');  // Leading "- " after slash
-    preview = preview.replace(/^-\s+/, '');  // Leading "- " at start
-    preview = preview.replace(/\s+-$/, '');  // Trailing " -" at end
-    preview = preview.replace(/\/+/g, '/');
-    preview = preview.replace(/\s{2,}/g, ' ');
-    preview = preview.trim();
-
+    let preview = document.getElementById('custom_naming_template').value || '{author}/{title}';
+    Object.keys(sampleData).forEach(key => { preview = preview.replace(new RegExp(`\\{${key}\\}`, 'g'), sampleData[key] || ''); });
+    preview = preview.replace(/\(\s*\)/g, '').replace(/\/+/g, '/').replace(/\s{2,}/g, ' ').trim();
     document.getElementById('preview-output').textContent = preview || '(empty)';
 }
 
+// Logs
 function refreshLogs() {
     fetch('/api/logs').then(r => r.json()).then(data => {
         const logEl = document.getElementById('log-output');
         if (data.logs && data.logs.length > 0) {
-            let html = data.logs.map(line => {
+            logEl.innerHTML = data.logs.map(line => {
                 if (line.includes('ERROR')) return `<span class="text-danger">${escapeHtml(line)}</span>`;
                 if (line.includes('WARNING')) return `<span class="text-warning">${escapeHtml(line)}</span>`;
                 if (line.includes('VERIFIED') || line.includes('Fixed:')) return `<span class="text-success">${escapeHtml(line)}</span>`;
                 return escapeHtml(line);
             }).join('\n');
-            logEl.innerHTML = html;
             logEl.parentElement.scrollTop = logEl.parentElement.scrollHeight;
         } else {
             logEl.textContent = 'No recent logs';
@@ -642,21 +1314,69 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// API Tests
+function showApiTestResult(msg, success) {
+    const el = document.getElementById('api-test-results');
+    el.innerHTML = `<span class="${success ? 'text-success' : 'text-danger'}"><i class="bi bi-${success ? 'check' : 'x'}-circle"></i> ${escapeHtml(msg)}</span>`;
+}
+
+function testBookDB() {
+    showApiTestResult('Testing...', true);
+    fetch('/api/test_bookdb', {method: 'POST'}).then(r => r.json())
+        .then(data => showApiTestResult(data.success ? 'BookDB: OK' : 'BookDB: ' + (data.error || 'Failed'), data.success))
+        .catch(e => showApiTestResult('BookDB: ' + e, false));
+}
+
+function testGemini() {
+    showApiTestResult('Testing...', true);
+    fetch('/api/test_gemini', {method: 'POST'}).then(r => r.json())
+        .then(data => showApiTestResult(data.success ? 'Gemini: OK' : 'Gemini: ' + (data.error || 'Failed'), data.success))
+        .catch(e => showApiTestResult('Gemini: ' + e, false));
+}
+
+function testOpenRouter() {
+    showApiTestResult('Testing...', true);
+    fetch('/api/test_openrouter', {method: 'POST'}).then(r => r.json())
+        .then(data => showApiTestResult(data.success ? 'OpenRouter: OK' : 'OpenRouter: ' + (data.error || 'Failed'), data.success))
+        .catch(e => showApiTestResult('OpenRouter: ' + e, false));
+}
+
+function testOllamaDebug() {
+    showApiTestResult('Testing...', true);
+    const url = document.getElementById('ollama_url')?.value || 'http://localhost:11434';
+    fetch('/api/test_ollama', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ollama_url: url})})
+        .then(r => r.json())
+        .then(data => showApiTestResult(data.success ? 'Ollama: OK' : 'Ollama: ' + (data.error || 'Failed'), data.success))
+        .catch(e => showApiTestResult('Ollama: ' + e, false));
+}
+
+// Warnings
 function warnAutoFix(checkbox) {
     if (checkbox.checked && !confirm('Auto-Fix will rename folders automatically. Make sure you have backups!\n\nEnable?')) {
         checkbox.checked = false;
     }
 }
 
+function warnTrustTheProcess(checkbox) {
+    if (checkbox.checked) {
+        if (!confirm('TRUST THE PROCESS MODE\n\nThis enables FULLY AUTOMATIC verification with AI + audio analysis.\n\nMake sure you have BACKUPS!\n\nEnable?')) {
+            checkbox.checked = false;
+            return;
+        }
+        document.getElementById('auto_fix').checked = true;
+        document.getElementById('enable_audio_analysis').checked = true;
+        document.getElementById('detect_language_from_audio').checked = true;
+    }
+}
+
+// Actions
 function checkUpdateNow() {
     const el = document.getElementById('update-status');
     el.innerHTML = '<span class="text-info small"><i class="bi bi-hourglass-split"></i></span>';
     fetch('/api/check_update').then(r => r.json()).then(data => {
-        if (data.update_available) {
-            el.innerHTML = `<a href="${data.release_url}" target="_blank" class="btn btn-sm btn-success py-0">${data.latest}</a>`;
-        } else {
-            el.innerHTML = '<span class="text-success small"><i class="bi bi-check"></i></span>';
-        }
+        el.innerHTML = data.update_available
+            ? `<a href="${data.release_url}" target="_blank" class="btn btn-sm btn-success py-0">${data.latest}</a>`
+            : '<span class="text-success small"><i class="bi bi-check"></i></span>';
     }).catch(() => { el.innerHTML = '<span class="text-danger small"><i class="bi bi-x"></i></span>'; });
 }
 
@@ -669,6 +1389,60 @@ function resetDatabase() {
     if (!confirm('Reset ENTIRE database? All data will be lost!')) return;
     if (!confirm('REALLY sure?')) return;
     fetch('/api/reset_database', {method: 'POST'}).then(() => location.reload());
+}
+
+function wipeEverything() {
+    if (!confirm('WIPE EVERYTHING?\n\nThis will clear both the database AND all history.\nAll books will need to be rescanned.')) return;
+    if (!confirm('This is DESTRUCTIVE and cannot be undone. Proceed?')) return;
+    // Clear history first, then reset database
+    fetch('/api/clear_history', {method: 'POST'})
+        .then(() => fetch('/api/reset_database', {method: 'POST'}))
+        .then(() => location.reload())
+        .catch(e => alert('Wipe failed: ' + e));
+}
+
+function startDeepVerification() {
+    if (!confirm('Start Deep Verification?\n\nThis will re-queue ALL books for API verification. This is time-consuming and uses API quota.\n\nContinue?')) return;
+
+    const statusDiv = document.getElementById('deepVerifyStatus');
+    const msgSpan = document.getElementById('deepVerifyMessage');
+    const btn = event.target.closest('button');
+
+    statusDiv.classList.remove('d-none');
+    msgSpan.textContent = 'Starting deep verification...';
+    btn.disabled = true;
+
+    fetch('/api/deep_verify', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                statusDiv.querySelector('.alert').classList.remove('alert-info');
+                statusDiv.querySelector('.alert').classList.add('alert-success');
+                msgSpan.innerHTML = `<strong>Queued ${data.queued} books</strong> for deep verification.<br>` +
+                    `<small class="text-muted">Already verified: ${data.already_verified} | Estimated time: ${data.estimated_time}</small>`;
+            } else {
+                statusDiv.querySelector('.alert').classList.remove('alert-info');
+                statusDiv.querySelector('.alert').classList.add('alert-danger');
+                msgSpan.textContent = 'Error: ' + (data.error || 'Unknown error');
+            }
+            btn.disabled = false;
+        })
+        .catch(e => {
+            statusDiv.querySelector('.alert').classList.remove('alert-info');
+            statusDiv.querySelector('.alert').classList.add('alert-danger');
+            msgSpan.textContent = 'Error: ' + e.message;
+            btn.disabled = false;
+        });
+}
+
+function clearQueueFromSettings() {
+    if (!confirm('Clear the entire queue?')) return;
+    fetch('/api/clear_queue', {method: 'POST'}).then(r => r.json()).then(data => alert(data.message || 'Done'));
+}
+
+function clearAllHistoryErrors() {
+    if (!confirm('Clear all error entries from history?')) return;
+    fetch('/api/clear_all_errors', {method: 'POST'}).then(r => r.json()).then(data => alert(data.message || 'Done'));
 }
 
 function generateBugReport() {
@@ -684,138 +1458,162 @@ function copyBugReport() {
     alert('Copied!');
 }
 
-setInterval(refreshLogs, 10000);
-
-// Backup & Restore functions
+// Backup & Restore
 let restoreModal = null;
 
 function loadBackupInfo() {
-    fetch('/api/backup/info')
-        .then(r => r.json())
-        .then(data => {
-            const el = document.getElementById('backup-info');
-            if (data.files && data.files.length > 0) {
-                let html = `<strong>Backup includes:</strong><ul class="mb-0 ps-3">`;
-                data.files.forEach(f => {
-                    html += `<li>${f.name} (${f.size_human})</li>`;
-                });
-                html += `</ul><div class="mt-1">Total: ${data.total_size_human}</div>`;
-                el.innerHTML = html;
-            } else {
-                el.innerHTML = 'No files to backup';
-            }
-        })
-        .catch(e => {
-            document.getElementById('backup-info').innerHTML = '<span class="text-danger">Error loading info</span>';
-        });
+    fetch('/api/backup/info').then(r => r.json()).then(data => {
+        const el = document.getElementById('backup-info');
+        if (data.files && data.files.length > 0) {
+            el.innerHTML = `<strong>Includes:</strong> ${data.files.map(f => f.name).join(', ')} (${data.total_size_human})`;
+        } else {
+            el.innerHTML = 'No files to backup';
+        }
+    }).catch(e => { document.getElementById('backup-info').innerHTML = '<span class="text-danger">Error</span>'; });
 }
 
 function showRestoreModal() {
-    if (!restoreModal) {
-        restoreModal = new bootstrap.Modal(document.getElementById('restoreModal'));
-    }
+    if (!restoreModal) restoreModal = new bootstrap.Modal(document.getElementById('restoreModal'));
     restoreModal.show();
 }
 
 function restoreBackup() {
-    const form = document.getElementById('restore-form');
-    const fileInput = form.querySelector('input[name="backup"]');
-
-    if (!fileInput.files || fileInput.files.length === 0) {
-        alert('Please select a backup file');
-        return;
-    }
-
-    if (!confirm('Restore from this backup? Your current settings will be backed up first.')) {
-        return;
-    }
-
+    const fileInput = document.querySelector('#restore-form input[name="backup"]');
+    if (!fileInput.files || !fileInput.files.length) { alert('Select a backup file'); return; }
+    if (!confirm('Restore from this backup?')) return;
     const formData = new FormData();
     formData.append('backup', fileInput.files[0]);
+    fetch('/api/restore', {method: 'POST', body: formData})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(data.message);
+                restoreModal.hide();
+                if (confirm('Reload page?')) location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Failed'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
 
-    fetch('/api/restore', {
+document.querySelector('[data-bs-target="#tab-advanced"]')?.addEventListener('shown.bs.tab', loadBackupInfo);
+
+// Library path test
+function testLibraryPaths() {
+    const paths = document.getElementById('library_paths').value.split('\n').map(p => p.trim()).filter(p => p);
+    const resultsDiv = document.getElementById('path-test-results');
+    if (!paths.length) { resultsDiv.innerHTML = '<div class="alert alert-warning py-2">No paths to test</div>'; resultsDiv.style.display = 'block'; return; }
+    resultsDiv.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split"></i> Testing...</div>';
+    resultsDiv.style.display = 'block';
+    let html = '', completed = 0;
+    paths.forEach(path => {
+        fetch('/api/check_path', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({path: path})})
+            .then(r => r.json())
+            .then(data => {
+                completed++;
+                html += data.success
+                    ? `<div class="alert alert-success py-2 mb-1"><i class="bi bi-check-circle"></i> <strong>${escapeHtml(path)}</strong> - OK (${data.total_entries || 0} items)</div>`
+                    : `<div class="alert alert-danger py-2 mb-1"><i class="bi bi-x-circle"></i> <strong>${escapeHtml(path)}</strong> - ${escapeHtml(data.error || 'Not accessible')}</div>`;
+                if (completed === paths.length) resultsDiv.innerHTML = html;
+            })
+            .catch(e => { completed++; html += `<div class="alert alert-danger py-2 mb-1">${escapeHtml(path)} - Error</div>`; if (completed === paths.length) resultsDiv.innerHTML = html; });
+    });
+}
+
+setInterval(refreshLogs, 10000);
+
+// Clear API key
+function clearApiKey(keyName) {
+    if (!confirm('Remove this API key? You will need to re-enter it to use this service.')) return;
+
+    fetch('/api/clear_api_key', {
         method: 'POST',
-        body: formData
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({key_name: keyName})
     })
     .then(r => r.json())
     .then(data => {
         if (data.success) {
-            alert(data.message + '\n\nRestored: ' + data.restored.join(', '));
-            restoreModal.hide();
-            // Offer to reload
-            if (confirm('Reload page to apply restored settings?')) {
-                location.reload();
-            }
+            // Reload to show updated state
+            location.reload();
         } else {
-            alert('Restore failed: ' + (data.error || 'Unknown error'));
+            alert('Error: ' + (data.error || 'Failed to clear key'));
         }
     })
-    .catch(e => {
-        alert('Restore error: ' + e);
-    });
+    .catch(e => alert('Error: ' + e));
 }
 
-// Load backup info when Advanced tab is shown
-document.querySelector('[data-bs-target="#tab-advanced"]').addEventListener('shown.bs.tab', loadBackupInfo);
+// Provider Chain Management
+function updateProviderChain(chainType) {
+    const container = document.getElementById(chainType + '-provider-chain');
+    const hiddenInput = document.getElementById(chainType + '_provider_chain');
+    const items = container.querySelectorAll('.provider-item');
 
-// Test library paths - helps debug Docker mount issues
-function testLibraryPaths() {
-    const textarea = document.getElementById('library_paths');
-    const paths = textarea.value.split('\n').map(p => p.trim()).filter(p => p);
-    const resultsDiv = document.getElementById('path-test-results');
+    const enabledProviders = [];
+    items.forEach(item => {
+        const checkbox = item.querySelector('input[type="checkbox"]');
+        if (checkbox.checked) {
+            enabledProviders.push(item.dataset.provider);
+            item.classList.remove('opacity-50');
+        } else {
+            item.classList.add('opacity-50');
+        }
+    });
 
-    if (paths.length === 0) {
-        resultsDiv.innerHTML = '<div class="alert alert-warning py-2">No paths to test. Enter at least one path above.</div>';
-        resultsDiv.style.display = 'block';
-        return;
-    }
+    hiddenInput.value = enabledProviders.join(',');
+}
 
-    resultsDiv.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split"></i> Testing paths...</div>';
-    resultsDiv.style.display = 'block';
+// Initialize provider chain checkboxes
+document.querySelectorAll('.provider-chain input[type="checkbox"]').forEach(checkbox => {
+    checkbox.addEventListener('change', function() {
+        const chain = this.dataset.chain;
+        updateProviderChain(chain);
+    });
+});
 
-    let html = '';
-    let completed = 0;
+// Simple drag and drop for provider chains
+let draggedItem = null;
 
-    paths.forEach(path => {
-        fetch('/api/check_path', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({path: path})
-        })
-        .then(r => r.json())
-        .then(data => {
-            completed++;
+document.querySelectorAll('.provider-chain .provider-item').forEach(item => {
+    const handle = item.querySelector('.drag-handle');
 
-            if (data.success) {
-                html += `<div class="alert alert-success py-2 mb-2">
-                    <i class="bi bi-check-circle"></i> <strong>${escapeHtml(path)}</strong> - OK
-                    <br><small>${data.total_entries || 0} items found</small>
-                    ${data.contents && data.contents.length > 0 ?
-                        `<br><small class="text-muted">First items: ${data.contents.slice(0,5).map(c => c.name).join(', ')}${data.total_entries > 5 ? '...' : ''}</small>` : ''}
-                </div>`;
+    handle.addEventListener('mousedown', function(e) {
+        draggedItem = item;
+        item.style.opacity = '0.5';
+    });
+});
+
+document.querySelectorAll('.provider-chain').forEach(container => {
+    container.addEventListener('mousemove', function(e) {
+        if (!draggedItem) return;
+
+        const items = [...container.querySelectorAll('.provider-item')];
+        const afterElement = items.reduce((closest, child) => {
+            const box = child.getBoundingClientRect();
+            const offset = e.clientY - box.top - box.height / 2;
+            if (offset < 0 && offset > closest.offset) {
+                return { offset: offset, element: child };
             } else {
-                html += `<div class="alert alert-danger py-2 mb-2">
-                    <i class="bi bi-x-circle"></i> <strong>${escapeHtml(path)}</strong> - NOT ACCESSIBLE
-                    <br><small>${escapeHtml(data.error || 'Unknown error')}</small>
-                    ${data.suggestion ? `<br><pre class="mt-2 p-2 bg-dark text-light small" style="white-space: pre-wrap;">${escapeHtml(data.suggestion)}</pre>` : ''}
-                    ${data.available_mounts ? `<br><small class="text-info">Try one of these instead: ${data.available_mounts.join(', ')}</small>` : ''}
-                </div>`;
+                return closest;
             }
+        }, { offset: Number.NEGATIVE_INFINITY }).element;
 
-            if (completed === paths.length) {
-                resultsDiv.innerHTML = html;
-            }
-        })
-        .catch(e => {
-            completed++;
-            html += `<div class="alert alert-danger py-2 mb-2">
-                <i class="bi bi-x-circle"></i> <strong>${escapeHtml(path)}</strong> - Error: ${e}
-            </div>`;
-            if (completed === paths.length) {
-                resultsDiv.innerHTML = html;
-            }
-        });
+        if (afterElement) {
+            container.insertBefore(draggedItem, afterElement);
+        } else {
+            container.appendChild(draggedItem);
+        }
     });
-}
+});
+
+document.addEventListener('mouseup', function() {
+    if (draggedItem) {
+        draggedItem.style.opacity = '';
+        const chain = draggedItem.querySelector('input[type="checkbox"]').dataset.chain;
+        updateProviderChain(chain);
+        draggedItem = null;
+    }
+});
 </script>
 {% endblock %}

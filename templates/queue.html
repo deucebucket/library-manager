@@ -5,6 +5,12 @@
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-list-task"></i> Processing Queue <span class="badge bg-warning" id="queue-badge">{{ queue_items|length }}</span></h2>
     <div>
+        {% if queue_items %}
+        <!-- Issue #37: Multi-edit button -->
+        <button class="btn btn-info" onclick="openMultiEdit()" title="Edit multiple books at once">
+            <i class="bi bi-pencil-square"></i> Multi-Edit
+        </button>
+        {% endif %}
         <button class="btn btn-success" onclick="processAll()" id="process-all-btn">
             <i class="bi bi-play-fill"></i> Process All
         </button>
@@ -14,6 +20,11 @@
         <button class="btn btn-outline-secondary" onclick="refreshQueue()">
             <i class="bi bi-arrow-clockwise"></i> Refresh
         </button>
+        {% if queue_items %}
+        <button class="btn btn-outline-danger" onclick="clearQueue()" title="Mark all as OK and clear queue">
+            <i class="bi bi-trash"></i> Clear Queue
+        </button>
+        {% endif %}
     </div>
 </div>
 
@@ -147,6 +158,21 @@
                     <strong>Selected:</strong> <span id="selected-match-text"></span>
                     <button type="button" class="btn-close float-end" onclick="clearSelection()"></button>
                 </div>
+
+                <!-- Series Override (shown when a match is selected) -->
+                <div id="series-override" class="d-none">
+                    <div class="row mb-2">
+                        <div class="col-md-8">
+                            <label class="form-label small text-muted">Series Name <span class="text-info" id="series-source-hint"></span></label>
+                            <input type="text" class="form-control form-control-sm bg-dark text-light" id="override-series-name" placeholder="e.g., Horus Heresy">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small text-muted">Book # in Series</label>
+                            <input type="number" class="form-control form-control-sm bg-dark text-light" id="override-series-num" placeholder="e.g., 36" min="0" max="999">
+                        </div>
+                    </div>
+                    <small class="text-muted">Edit series info if it's missing or incorrect. Leave blank if not part of a series.</small>
+                </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -235,6 +261,48 @@
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
                 <button type="button" class="btn btn-primary" onclick="useBookFromDetail()">
                     <i class="bi bi-check-lg"></i> Use This Book
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Issue #37: Multi-Edit Modal -->
+<div class="modal fade" id="multiEditModal" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-pencil-square"></i> Multi-Edit Queue Items</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" style="max-height: 70vh; overflow-y: auto;">
+                <div class="alert alert-info py-2 mb-3">
+                    <i class="bi bi-info-circle"></i> Edit multiple items at once. Changes are saved when you click "Save All Changes".
+                </div>
+                <table class="table table-sm table-dark mb-0" id="multi-edit-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 30%;">Author</th>
+                            <th style="width: 35%;">Title</th>
+                            <th style="width: 20%;">Issue</th>
+                            <th style="width: 15%;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="multi-edit-body">
+                        <!-- Rows populated by JavaScript -->
+                    </tbody>
+                </table>
+            </div>
+            <div class="modal-footer">
+                <div class="me-auto">
+                    <span id="multi-edit-count" class="text-muted">0 items</span>
+                    <span id="multi-edit-modified" class="text-warning ms-2" style="display: none;">
+                        <i class="bi bi-pencil"></i> <span id="modified-count">0</span> modified
+                    </span>
+                </div>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-success" onclick="saveAllMultiEdits()">
+                    <i class="bi bi-check-all"></i> Save All Changes
                 </button>
             </div>
         </div>
@@ -406,6 +474,23 @@ function removeFromQueue(queueId) {
         });
 }
 
+function clearQueue() {
+    if (!confirm('Clear the entire queue?\n\nAll items will be marked as OK and removed from the queue.\nNo files will be changed.')) return;
+
+    fetch('/api/clear_queue', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                log(data.message);
+                alert(data.message);
+                location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+}
+
 // Auto-refresh every 10 seconds
 setInterval(refreshQueue, 10000);
 log('Queue page loaded. Auto-refresh every 10s.');
@@ -433,12 +518,24 @@ let selectedBookDBResult = null;
 let editModal = null;
 
 function editItem(queueId, author, title) {
+    // Warn user if processing is active - items may change while they're editing
+    if (isProcessing) {
+        if (!confirm('Queue is currently processing. The item you edit might be processed before you save.\n\nEdit anyway?')) {
+            return;
+        }
+    }
+
     document.getElementById('edit-queue-id').value = queueId;
     document.getElementById('edit-author').value = author;
     document.getElementById('edit-title').value = title;
     document.getElementById('search-query').value = title;  // Pre-fill search with title
     document.getElementById('search-results').style.display = 'none';
     document.getElementById('selected-match').classList.add('d-none');
+    // Reset series override fields
+    document.getElementById('series-override').classList.add('d-none');
+    document.getElementById('override-series-name').value = '';
+    document.getElementById('override-series-num').value = '';
+    document.getElementById('series-source-hint').textContent = '';
     selectedBookDBResult = null;
 
     if (!editModal) {
@@ -567,6 +664,22 @@ function selectResult(idx) {
     matchText.textContent = `${book.author_name || 'Unknown'} - ${book.name || book.title || 'Unknown'}${series}`;
     matchDiv.classList.remove('d-none');
 
+    // Show and populate series override fields
+    const seriesOverride = document.getElementById('series-override');
+    seriesOverride.classList.remove('d-none');
+    document.getElementById('override-series-name').value = book.series_name || '';
+    document.getElementById('override-series-num').value = book.series_position || '';
+
+    // Show hint if series was extracted from query
+    const sourceHint = document.getElementById('series-source-hint');
+    if (book.series_position_source === 'extracted_from_query') {
+        sourceHint.textContent = '(extracted from your search)';
+    } else if (book.series_name || book.series_position) {
+        sourceHint.textContent = '(from database)';
+    } else {
+        sourceHint.textContent = '';
+    }
+
     // Hide search results
     document.getElementById('search-results').style.display = 'none';
 
@@ -576,6 +689,10 @@ function selectResult(idx) {
 function clearSelection() {
     selectedBookDBResult = null;
     document.getElementById('selected-match').classList.add('d-none');
+    document.getElementById('series-override').classList.add('d-none');
+    document.getElementById('override-series-name').value = '';
+    document.getElementById('override-series-num').value = '';
+    document.getElementById('series-source-hint').textContent = '';
 }
 
 function saveManualMatch() {
@@ -588,15 +705,31 @@ function saveManualMatch() {
         return;
     }
 
+    // Get series override values
+    const overrideSeriesName = document.getElementById('override-series-name').value.trim();
+    const overrideSeriesNum = document.getElementById('override-series-num').value.trim();
+
     const payload = {
         queue_id: parseInt(queueId),
         author: author,
         title: title
     };
 
-    // Include BookDB result if one was selected
+    // Include BookDB result if one was selected, with series overrides applied
     if (selectedBookDBResult) {
-        payload.bookdb_result = selectedBookDBResult;
+        // Apply user's series overrides to the result
+        const resultWithOverrides = {...selectedBookDBResult};
+        if (overrideSeriesName) {
+            resultWithOverrides.series_name = overrideSeriesName;
+        }
+        if (overrideSeriesNum) {
+            resultWithOverrides.series_position = parseInt(overrideSeriesNum);
+        }
+        payload.bookdb_result = resultWithOverrides;
+    } else if (overrideSeriesName || overrideSeriesNum) {
+        // No BookDB result but user entered series info manually
+        payload.series_name = overrideSeriesName || null;
+        payload.series_position = overrideSeriesNum ? parseInt(overrideSeriesNum) : null;
     }
 
     fetch('/api/manual_match', {
@@ -905,13 +1038,212 @@ function useBookFromDetail() {
 
         const matchDiv = document.getElementById('selected-match');
         const matchText = document.getElementById('selected-match-text');
-        const series = currentDetailBook.series_name ? ` (${currentDetailBook.series_name})` : '';
+        const series = currentDetailBook.series_name ? ` (${currentDetailBook.series_name}${currentDetailBook.series_position ? ' #' + currentDetailBook.series_position : ''})` : '';
         matchText.textContent = `${currentDetailBook.author_name || 'Unknown'} - ${currentDetailBook.name || currentDetailBook.title || 'Unknown'}${series}`;
         matchDiv.classList.remove('d-none');
+
+        // Also show and populate series override fields
+        const seriesOverride = document.getElementById('series-override');
+        seriesOverride.classList.remove('d-none');
+        document.getElementById('override-series-name').value = currentDetailBook.series_name || '';
+        document.getElementById('override-series-num').value = currentDetailBook.series_position || '';
+        document.getElementById('series-source-hint').textContent = currentDetailBook.series_name ? '(from database)' : '';
+
         document.getElementById('search-results').style.display = 'none';
     }
 
     detailModal.hide();
+}
+
+// ============================================
+// Issue #37: Multi-Edit Functions
+// ============================================
+let multiEditModal = null;
+let multiEditData = [];  // Track original and current values
+
+function openMultiEdit() {
+    // Initialize modal
+    if (!multiEditModal) {
+        multiEditModal = new bootstrap.Modal(document.getElementById('multiEditModal'));
+    }
+
+    // Get all queue items from the table
+    const rows = document.querySelectorAll('#queue-body tr');
+    multiEditData = [];
+    const tbody = document.getElementById('multi-edit-body');
+    tbody.innerHTML = '';
+
+    rows.forEach(row => {
+        const id = row.id.replace('queue-', '');
+        const authorCell = row.querySelector('td:first-child .text-warning');
+        const titleCell = row.querySelector('td:nth-child(2)');
+        const issueCell = row.querySelector('td:nth-child(3) .badge');
+
+        const author = authorCell?.textContent?.trim() || '';
+        const title = titleCell?.textContent?.trim() || '';
+        const issue = issueCell?.textContent?.trim() || '';
+
+        multiEditData.push({
+            id: id,
+            originalAuthor: author,
+            originalTitle: title,
+            currentAuthor: author,
+            currentTitle: title
+        });
+
+        const tr = document.createElement('tr');
+        tr.id = `multi-${id}`;
+        tr.innerHTML = `
+            <td>
+                <input type="text" class="form-control form-control-sm bg-dark text-light multi-author"
+                       data-id="${id}" value="${escapeHtml(author)}"
+                       oninput="trackMultiEdit(${id})">
+            </td>
+            <td>
+                <input type="text" class="form-control form-control-sm bg-dark text-light multi-title"
+                       data-id="${id}" value="${escapeHtml(title)}"
+                       oninput="trackMultiEdit(${id})">
+            </td>
+            <td><small class="badge bg-secondary">${escapeHtml(issue)}</small></td>
+            <td>
+                <button class="btn btn-sm btn-outline-info" onclick="searchForMultiItem(${id})" title="Search database">
+                    <i class="bi bi-search"></i>
+                </button>
+                <button class="btn btn-sm btn-outline-success" onclick="markMultiItemOK(${id})" title="Mark as OK (remove from queue)">
+                    <i class="bi bi-check"></i>
+                </button>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    });
+
+    document.getElementById('multi-edit-count').textContent = `${multiEditData.length} items`;
+    updateModifiedCount();
+    multiEditModal.show();
+}
+
+function trackMultiEdit(id) {
+    const item = multiEditData.find(d => d.id == id);
+    if (!item) return;
+
+    const authorInput = document.querySelector(`#multi-${id} .multi-author`);
+    const titleInput = document.querySelector(`#multi-${id} .multi-title`);
+
+    item.currentAuthor = authorInput?.value || '';
+    item.currentTitle = titleInput?.value || '';
+
+    // Check if modified
+    const row = document.getElementById(`multi-${id}`);
+    const isModified = item.currentAuthor !== item.originalAuthor || item.currentTitle !== item.originalTitle;
+    row.classList.toggle('table-warning', isModified);
+
+    updateModifiedCount();
+}
+
+function updateModifiedCount() {
+    const modified = multiEditData.filter(d =>
+        d.currentAuthor !== d.originalAuthor || d.currentTitle !== d.originalTitle
+    ).length;
+
+    document.getElementById('modified-count').textContent = modified;
+    document.getElementById('multi-edit-modified').style.display = modified > 0 ? 'inline' : 'none';
+}
+
+async function searchForMultiItem(id) {
+    const item = multiEditData.find(d => d.id == id);
+    if (!item) return;
+
+    const btn = document.querySelector(`#multi-${id} .btn-outline-info`);
+    const originalHtml = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    btn.disabled = true;
+
+    try {
+        const query = item.currentTitle || item.currentAuthor;
+        const resp = await fetch(`/api/search?q=${encodeURIComponent(query)}&limit=1`);
+        const data = await resp.json();
+
+        if (data.success && data.results?.length > 0) {
+            const result = data.results[0];
+            const authorInput = document.querySelector(`#multi-${id} .multi-author`);
+            const titleInput = document.querySelector(`#multi-${id} .multi-title`);
+
+            authorInput.value = result.author_name || result.author || '';
+            titleInput.value = result.name || result.title || '';
+
+            item.currentAuthor = authorInput.value;
+            item.currentTitle = titleInput.value;
+
+            trackMultiEdit(id);
+            log(`Found: ${result.author_name} - ${result.name || result.title}`);
+        } else {
+            log(`No results for "${query}"`);
+        }
+    } catch (e) {
+        log(`Search error: ${e}`);
+    }
+
+    btn.innerHTML = originalHtml;
+    btn.disabled = false;
+}
+
+function markMultiItemOK(id) {
+    // Remove from queue and hide row
+    fetch(`/api/queue/${id}/remove`, { method: 'POST' })
+        .then(resp => resp.json())
+        .then(data => {
+            if (data.success) {
+                const row = document.getElementById(`multi-${id}`);
+                row.remove();
+                multiEditData = multiEditData.filter(d => d.id != id);
+                document.getElementById('multi-edit-count').textContent = `${multiEditData.length} items`;
+                log(`Removed item ${id} from queue`);
+            }
+        });
+}
+
+async function saveAllMultiEdits() {
+    const modified = multiEditData.filter(d =>
+        d.currentAuthor !== d.originalAuthor || d.currentTitle !== d.originalTitle
+    );
+
+    if (modified.length === 0) {
+        multiEditModal.hide();
+        return;
+    }
+
+    const saveBtn = document.querySelector('#multiEditModal .btn-success');
+    saveBtn.disabled = true;
+    saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving...';
+
+    let saved = 0;
+    for (const item of modified) {
+        try {
+            const resp = await fetch('/api/queue/manual_match', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    queue_id: parseInt(item.id),
+                    author: item.currentAuthor,
+                    title: item.currentTitle
+                })
+            });
+            const data = await resp.json();
+            if (data.success) {
+                saved++;
+                log(`Saved: ${item.currentAuthor} - ${item.currentTitle}`);
+            }
+        } catch (e) {
+            log(`Error saving item ${item.id}: ${e}`);
+        }
+    }
+
+    saveBtn.disabled = false;
+    saveBtn.innerHTML = '<i class="bi bi-check-all"></i> Save All Changes';
+
+    log(`Saved ${saved}/${modified.length} items as pending fixes`);
+    multiEditModal.hide();
+    refreshQueue();
 }
 </script>
 {% endblock %}
