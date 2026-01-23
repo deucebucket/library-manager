@@ -10231,6 +10231,17 @@ def process_all_queue(config):
             processing_status["processed"] = total_processed
             time.sleep(2)  # Audio processing needs more time
         logger.info(f"Layer 2 complete: {layer2_processed} items processed, {layer2_resolved} resolved via AI audio")
+    else:
+        # Layer 2 is disabled - advance any items stuck at verification_layer=2 to Layer 4
+        # This ensures they get processed by the folder fallback instead of being orphaned
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('UPDATE books SET verification_layer = 4 WHERE verification_layer = 2 AND status = "pending"')
+        advanced = c.rowcount
+        conn.commit()
+        conn.close()
+        if advanced > 0:
+            logger.info(f"Layer 2 disabled - advanced {advanced} items to Layer 4 (folder fallback)")
 
     # LAYER 3: API Enrichment (NOT identification - add series, year, description, etc.)
     # At this point we should know the book - now we enrich it with metadata
