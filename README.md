@@ -17,10 +17,12 @@
 ## Recent Changes (develop)
 
 > **Unreleased** - 🔒 **Security & Stability**
+> - **Confidence Threshold** - Books only marked "verified" when confidence ≥40%, prevents false positives
 > - **API Keys Hidden** - Keys no longer exposed in HTML source, shows "Key configured" instead
 > - **Issue #59 Complete Fix** - Placeholder authors ("Unknown Author") now detected during scan
 > - **Issue #63 Fix** - Docker Whisper install permission error resolved
 > - **BookDB Stability** - Circuit breaker for rate limiting, improved multi-user fairness
+> - **Layer 2 Recovery** - Stuck items now properly advanced when Layer 2 disabled
 
 > **beta.91** - 🎧 **Audio-First Identification** (Major Feature)
 > - **Revolutionary Approach** - Now identifies books from narrator introductions FIRST
