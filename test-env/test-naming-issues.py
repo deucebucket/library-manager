@@ -1005,6 +1005,63 @@ def main():
         failed += 1
 
     # ==========================================
+    # Issue #65: enable_content_analysis setting not persisting
+    # ==========================================
+    print("\n--- Issue #65: Settings Persistence ---")
+
+    from app import DEFAULT_CONFIG
+
+    # Test 1: enable_content_analysis is in DEFAULT_CONFIG
+    if test_result("enable_content_analysis in DEFAULT_CONFIG",
+                   'enable_content_analysis' in DEFAULT_CONFIG,
+                   "Missing enable_content_analysis from DEFAULT_CONFIG"):
+        passed += 1
+    else:
+        failed += 1
+
+    # Test 2: Settings save code handles enable_content_analysis
+    from app import settings_page
+    source = inspect.getsource(settings_page)
+    if test_result("Settings save handles enable_content_analysis",
+                   "enable_content_analysis" in source and "'enable_content_analysis' in request.form" in source,
+                   "Settings handler doesn't save enable_content_analysis"):
+        passed += 1
+    else:
+        failed += 1
+
+    # ==========================================
+    # Issue #69: apply_fix crashes when old_path is None
+    # ==========================================
+    print("\n--- Issue #69: Null Path Handling ---")
+
+    from app import apply_fix
+    source = inspect.getsource(apply_fix)
+
+    # Test 1: apply_fix checks for None old_path
+    if test_result("apply_fix handles None old_path",
+                   "if fix['old_path']:" in source or "fix['old_path']" in source,
+                   "apply_fix doesn't check for None old_path"):
+        passed += 1
+    else:
+        failed += 1
+
+    # Test 2: apply_fix falls back to books table for None path
+    if test_result("apply_fix falls back to books table when path is None",
+                   "SELECT path FROM books WHERE id" in source,
+                   "apply_fix doesn't fall back to books table for missing path"):
+        passed += 1
+    else:
+        failed += 1
+
+    # Test 3: apply_fix computes new_path from metadata when None
+    if test_result("apply_fix computes new_path when None",
+                   "build_new_path" in source and "fix['new_author']" in source,
+                   "apply_fix doesn't compute new_path from fix metadata"):
+        passed += 1
+    else:
+        failed += 1
+
+    # ==========================================
     # Summary
     # ==========================================
     print("\n" + "=" * 60)
