@@ -1147,6 +1147,7 @@ DEFAULT_CONFIG = {
     "enable_api_lookups": True,           # Layer 2: API database lookups (BookDB, Audnexus, etc.)
     "enable_ai_verification": True,       # Layer 3: AI verification (uses configured provider)
     "enable_audio_analysis": False,       # Layer 4: Audio analysis (requires Gemini API key)
+    "enable_content_analysis": False,      # Layer 4 sub-option: Content analysis (deeper audio analysis)
     "use_bookdb_for_audio": True,          # Use BookDB GPU Whisper for audio identification (faster, no rate limits)
     # Provider Chains - ordered lists of providers to try (first = primary, rest = fallbacks)
     # Audio providers: "bookdb", "gemini", "openrouter", "ollama"
@@ -9942,11 +9943,52 @@ def apply_fix(history_id):
         conn.close()
         return False, "Fix not found"
 
-    old_path = Path(fix['old_path'])
-    new_path = Path(fix['new_path'])
+    # Issue #69: Handle history entries with missing paths
+    # Some older code paths created history entries without old_path/new_path
+    book_id = fix['book_id']
+
+    # Get old_path - fall back to books table if None
+    if fix['old_path']:
+        old_path = Path(fix['old_path'])
+    else:
+        c.execute('SELECT path FROM books WHERE id = ?', (book_id,))
+        book_row = c.fetchone()
+        if not book_row or not book_row['path']:
+            conn.close()
+            return False, "Cannot determine source path - book not found"
+        old_path = Path(book_row['path'])
+        logger.info(f"[APPLY FIX] old_path was None, using book path: {old_path}")
+
+    # Get new_path - compute from metadata if None
+    if fix['new_path']:
+        new_path = Path(fix['new_path'])
+    else:
+        config = load_config()
+        library_paths = config.get('library_paths', [])
+        if not library_paths:
+            conn.close()
+            return False, "Cannot determine destination - no library paths configured"
+
+        # Build new path from fix metadata
+        new_path = build_new_path(
+            Path(library_paths[0]),
+            fix['new_author'] or fix['old_author'],
+            fix['new_title'] or fix['old_title'],
+            series=fix['new_series'] if fix['new_series'] else None,
+            series_num=fix['new_series_num'] if fix['new_series_num'] else None,
+            narrator=fix['new_narrator'] if fix['new_narrator'] else None,
+            year=fix['new_year'] if fix['new_year'] else None,
+            edition=fix['new_edition'] if fix['new_edition'] else None,
+            variant=fix['new_variant'] if fix['new_variant'] else None,
+            config=config
+        )
+        if not new_path:
+            conn.close()
+            return False, "Cannot build destination path - invalid author/title"
+        new_path = Path(new_path)
+        logger.info(f"[APPLY FIX] new_path was None, computed: {new_path}")
 
     # Issue #49: Check if this is a watch folder item
-    book_id = fix['book_id']
     c.execute('SELECT source_type FROM books WHERE id = ?', (book_id,))
     book_row = c.fetchone()
     source_type = book_row['source_type'] if book_row and book_row['source_type'] else 'library'
@@ -11186,6 +11228,7 @@ def settings_page():
         config['enable_api_lookups'] = 'enable_api_lookups' in request.form
         config['enable_ai_verification'] = 'enable_ai_verification' in request.form
         config['enable_audio_analysis'] = 'enable_audio_analysis' in request.form
+        config['enable_content_analysis'] = 'enable_content_analysis' in request.form  # Issue #65: Layer 4
         config['use_bookdb_for_audio'] = 'use_bookdb_for_audio' in request.form
         config['deep_scan_mode'] = 'deep_scan_mode' in request.form
         config['profile_confidence_threshold'] = int(request.form.get('profile_confidence_threshold', 85))
