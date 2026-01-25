@@ -136,8 +136,142 @@ def clean_search_title(messy_name):
     return clean
 
 
+def standardize_initials(name):
+    """Issue #54: Normalize author initials to consistent "A. B." format.
+
+    Examples:
+        "James S A Corey" → "James S. A. Corey"
+        "James S.A. Corey" → "James S. A. Corey"
+        "J.R.R. Tolkien" → "J. R. R. Tolkien"
+        "JRR Tolkien" → "J. R. R. Tolkien"
+        "C.S. Lewis" → "C. S. Lewis"
+        "CS Lewis" → "C. S. Lewis"
+
+    Preserves:
+        - Full names: "Stephen King" (unchanged)
+        - Mc/Mac/O' prefixes: "Freida McFadden" (unchanged)
+    """
+    if not name:
+        return name
+
+    words = name.split()
+    result = []
+
+    for word in words:
+        # Skip Mc/Mac/O' prefixes - these are part of surnames, not initials
+        if re.match(r'^(Mc|Mac|O\')', word, re.IGNORECASE):
+            result.append(word)
+            continue
+
+        # Check if this word is entirely uppercase letters (initials without periods)
+        # e.g., "JRR" → "J. R. R."
+        if re.match(r'^[A-Z]{2,}$', word):
+            # Split into individual letters with periods
+            expanded = '. '.join(list(word)) + '.'
+            result.append(expanded)
+            continue
+
+        # Check if this is initials with periods stuck together
+        # e.g., "J.R.R." → "J. R. R."
+        if re.match(r'^([A-Z]\.)+$', word):
+            # Add spaces after each period
+            expanded = ' '.join(word.split('.')[:-1]) + '.'
+            expanded = '. '.join(c for c in expanded.replace(' ', '') if c != '.') + '.'
+            result.append(expanded)
+            continue
+
+        # Check if this is a single letter (initial without period)
+        # e.g., "S" in "James S A Corey" → "S."
+        if re.match(r'^[A-Z]$', word):
+            result.append(word + '.')
+            continue
+
+        # Check if this is a single initial with period
+        # e.g., "S." - already correct
+        if re.match(r'^[A-Z]\.$', word):
+            result.append(word)
+            continue
+
+        # Regular word - keep as is
+        result.append(word)
+
+    return ' '.join(result)
+
+
+def clean_author_name(author, config=None):
+    """Issue #50: Strip junk suffixes from author names.
+
+    Handles Calibre-style folder names like 'Peter F. Hamilton Bibliography'
+    which should become just 'Peter F. Hamilton'.
+
+    If config is provided and standardize_author_initials is enabled,
+    also normalizes initials to "A. B." format (Issue #54).
+    """
+    if not author:
+        return author
+
+    clean = author
+    # Common junk suffixes found in library folder names
+    junk_patterns = [
+        r'\s+bibliography\s*$',
+        r'\s+collection\s*$',
+        r'\s+anthology\s*$',
+        r'\s+complete\s+works\s*$',
+        r'\s+selected\s+works\s*$',
+        r'\s+best\s+of\s*$',
+        r'\s+works\s+of\s*$',
+        r'\s+omnibus\s*$',
+    ]
+    for pattern in junk_patterns:
+        clean = re.sub(pattern, '', clean, flags=re.IGNORECASE)
+
+    # Also strip Calibre-style IDs from author names: "Author Name (123)"
+    clean = re.sub(r'\s*\(\d+\)\s*$', '', clean)
+
+    clean = clean.strip()
+
+    # Issue #54: Standardize initials if enabled
+    if config and config.get('standardize_author_initials', False):
+        clean = standardize_initials(clean)
+
+    return clean
+
+
+def extract_author_title(messy_name, clean_author=True):
+    """Try to extract author and title from a folder name like 'Author - Title' or 'Author/Title'.
+
+    Args:
+        messy_name: The folder name to parse
+        clean_author: If True, run clean_author_name on extracted author (default True)
+    """
+    # Common separators: " - ", " / ", " _ "
+    separators = [' - ', ' / ', ' _ ', ' – ']  # includes en-dash
+
+    for sep in separators:
+        if sep in messy_name:
+            parts = messy_name.split(sep, 1)
+            if len(parts) == 2:
+                author = parts[0].strip()
+                title = parts[1].strip()
+                # Basic validation - author shouldn't be too long or look like a title/series
+                # Merijeek: "The Gentleman Bastard Sequence #3" was treated as author
+                # Check for series indicators: #N, Book N, Series, Saga, Chronicles, etc.
+                series_patterns = r'\d{4}|book\s*\d|vol\s*\d|part\s*\d|\[|#\d+|series|saga|chronicles|trilogy|quartet'
+                if len(author) < 50 and not re.search(series_patterns, author, re.IGNORECASE):
+                    # Issue #50: Clean author name (strip Bibliography, Collection, etc.)
+                    if clean_author:
+                        author = clean_author_name(author)
+                    return author, title
+
+    # No separator found - just return the whole thing as title
+    return None, messy_name
+
+
 __all__ = [
     'calculate_title_similarity',
     'extract_series_from_title',
     'clean_search_title',
+    'standardize_initials',
+    'clean_author_name',
+    'extract_author_title',
 ]
