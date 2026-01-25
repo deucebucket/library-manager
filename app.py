@@ -6248,7 +6248,7 @@ def dashboard():
                           recent_history=recent_history,
                           daily_stats=daily_stats,
                           config=config,
-                          worker_running=worker_running)
+                          worker_running=is_worker_running())
 
 
 @app.route('/setup')
