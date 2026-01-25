@@ -143,6 +143,40 @@ class BookCache:
         normalized = (transcript or "")[:500].lower().strip()
         return hashlib.sha256(normalized.encode()).hexdigest()[:32]
 
+    def _validate_p2p_result(self, result: Dict[str, Any]) -> bool:
+        """
+        Validate data received from P2P network.
+
+        Protects against:
+        - Missing required fields
+        - Excessively large strings (DoS)
+        - Obvious spam/junk data
+        """
+        if not isinstance(result, dict):
+            return False
+
+        # Must have either author or title
+        author = result.get('author', '')
+        title = result.get('title', '')
+
+        if not author and not title:
+            logger.debug("P2P validation failed: no author or title")
+            return False
+
+        # Check for excessive string lengths (max 500 chars per field)
+        MAX_FIELD_LEN = 500
+        for key, value in result.items():
+            if isinstance(value, str) and len(value) > MAX_FIELD_LEN:
+                logger.debug(f"P2P validation failed: field '{key}' too long ({len(value)} > {MAX_FIELD_LEN})")
+                return False
+
+        # Must not be obviously empty/placeholder
+        if author.lower() in ('unknown', 'n/a', 'null', '') and title.lower() in ('unknown', 'n/a', 'null', ''):
+            logger.debug("P2P validation failed: both author and title are placeholders")
+            return False
+
+        return True
+
     # ==================== LOCAL CACHE ====================
 
     def get_local(self, title: str, author: str = None) -> Optional[Dict[str, Any]]:
@@ -339,6 +373,11 @@ class BookCache:
             loop.close()
 
             if result:
+                # Validate P2P data before trusting it
+                if not self._validate_p2p_result(result):
+                    logger.warning(f"P2P cache result failed validation for: {title}")
+                    return None
+
                 result['_cache_source'] = 'p2p'
                 logger.info(f"P2P cache hit: {title}")
 

@@ -885,6 +885,29 @@
                         </div>
                     </div>
 
+                    <!-- P2P Book Cache -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-share"></i> P2P Book Cache
+                        </div>
+                        <div class="card-body">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="enable_p2p_cache" id="enable_p2p_cache"
+                                       {% if config.enable_p2p_cache %}checked{% endif %}>
+                                <label class="form-check-label" for="enable_p2p_cache">
+                                    <strong>Enable P2P Book Cache</strong>
+                                    <br><small class="text-muted">Share book lookup cache with other Library Manager users via decentralized network</small>
+                                </label>
+                            </div>
+                            <small class="text-muted d-block mt-2">
+                                <strong>How it works:</strong> Successful BookDB lookups are cached locally AND shared to a peer-to-peer network.<br>
+                                <strong>Why enable:</strong> Helps when BookDB is temporarily down - you can still get results from other users' caches.<br>
+                                <strong>Storage:</strong> ~50-100MB local cache<br>
+                                <strong>Privacy:</strong> Only book metadata is shared (title, author, series). No file paths or personal data.
+                            </small>
+                        </div>
+                    </div>
+
                     <!-- Updates -->
                     <div class="card mb-3">
                         <div class="card-header py-2">

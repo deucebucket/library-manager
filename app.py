@@ -11336,6 +11336,8 @@ def settings_page():
         config['watch_min_file_age_seconds'] = int(request.form.get('watch_min_file_age_seconds', 30))
         # Author initials setting (Issue #54)
         config['standardize_author_initials'] = 'standardize_author_initials' in request.form
+        # P2P cache setting (Issue #62)
+        config['enable_p2p_cache'] = 'enable_p2p_cache' in request.form
 
         # Provider chain settings - parse comma-separated values into lists
         audio_chain_str = request.form.get('audio_provider_chain', 'bookdb,gemini').strip()
