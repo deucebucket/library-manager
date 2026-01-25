@@ -4,6 +4,22 @@ All notable changes to Library Manager will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **P2P Book Cache** (Issue #62) - Optional decentralized cache for book lookups
+  - When enabled, successful BookDB lookups are cached locally AND shared via Gun.db P2P network
+  - Helps when BookDB is temporarily unavailable - results served from other users' caches
+  - **Opt-in only** - disabled by default, toggle in Settings → P2P Book Cache
+  - Privacy-focused: only book metadata shared (title, author, series), no file paths
+  - Data validation prevents malformed or malicious cache entries
+  - Local SQLite cache always works, P2P is an optional enhancement
+  - Requires `pygundb` package (optional dependency)
+
+- **BookDB Retry Logic** - Smarter handling of temporary BookDB outages
+  - Retries 5 times with exponential backoff when no fallback provider configured
+  - Retries 2 times when fallback available (then uses fallback)
+  - Queue items return to pending state if all retries fail (will retry later)
+
 ### Security
 
 - **API Keys No Longer Exposed in HTML** - API keys are never rendered in page source
