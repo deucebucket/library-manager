@@ -87,6 +87,14 @@ from library_manager.pipeline import (
     process_layer_1_audio as _process_layer_1_audio_raw,
     process_layer_2_ai as _process_queue_raw,
 )
+from library_manager.worker import (
+    process_all_queue as _process_all_queue_raw,
+    start_worker as _start_worker_raw,
+    stop_worker as _stop_worker_raw,
+    is_worker_running as _is_worker_running_raw,
+    get_processing_status,
+    update_processing_status,
+)
 
 # Try to import P2P cache (optional - gracefully degrades if not available)
 try:
@@ -5550,7 +5558,7 @@ If you cannot identify the book from the transcript, return:
 def process_layer_1_audio(config, limit=None):
     """Wrapper for extracted layer function - passes app-level dependencies."""
     def update_status(status_text):
-        processing_status["current"] = status_text
+        update_processing_status("current", status_text)
 
     def get_circuit_breaker(api_name):
         return API_CIRCUIT_BREAKER.get(api_name, {})
@@ -5892,247 +5900,27 @@ def apply_fix(history_id):
 
 # ============== BACKGROUND WORKER ==============
 
-worker_thread = None
-worker_running = False
-processing_status = {"active": False, "processed": 0, "total": 0, "current": "", "errors": []}
+# Worker state is managed by library_manager.worker module
+# processing_status is accessed via get_processing_status() from the module
 
 def process_all_queue(config):
-    """Process ALL items in the queue using AUDIO-FIRST identification.
+    """Wrapper for extracted orchestrator - passes app-level dependencies."""
+    def get_circuit_breaker(api_name):
+        return API_CIRCUIT_BREAKER.get(api_name, {})
 
-    NEW layered processing (audio is source of truth):
-    - Layer 1: Audio transcription + AI parsing (narrator announces the book)
-    - Layer 2: AI audio clip analysis (if transcription unclear)
-    - Layer 3: API enrichment (add series, year, etc. - NOT identification)
-    - Layer 4: Folder name fallback (last resort, low confidence)
+    return _process_all_queue_raw(
+        config=config,
+        get_db=get_db,
+        load_config=load_config,
+        is_circuit_open=is_circuit_open,
+        get_circuit_breaker=get_circuit_breaker,
+        check_rate_limit=check_rate_limit,
+        process_layer_1_audio=process_layer_1_audio,
+        process_layer_3_audio=process_layer_3_audio,
+        process_layer_1_api=process_layer_1_api,
+        process_queue=process_queue
+    )
 
-    Philosophy: The audio content IS the book. Folder names can be wrong.
-    """
-    global processing_status
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('SELECT COUNT(*) as count FROM queue')
-    total = c.fetchone()['count']
-    conn.close()
-
-    if total == 0:
-        logger.info("Queue is empty, nothing to process")
-        return 0, 0  # (total_processed, total_fixed)
-
-    # Calculate delay between batches based on rate limit
-    user_max = config.get('max_requests_per_hour', 30)
-    max_per_hour = max(10, min(user_max, 500))
-    min_delay = max(2, 3600 // max_per_hour)
-    logger.info(f"Rate limit: {max_per_hour}/hour, delay between batches: {min_delay}s")
-
-    processing_status = {"active": True, "processed": 0, "total": total, "current": "", "errors": [], "layer": 1}
-    logger.info(f"=== STARTING AUDIO-FIRST PROCESSING: {total} items in queue ===")
-
-    # Issue #62: Clean up stuck queue items (needs_attention or verified items shouldn't be in queue)
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('''DELETE FROM queue WHERE book_id IN (
-                    SELECT b.id FROM books b WHERE b.status IN ('needs_attention', 'verified', 'fixed')
-                 )''')
-    cleaned = c.rowcount
-    if cleaned > 0:
-        logger.info(f"Cleaned {cleaned} stuck items from queue (already needs_attention/verified/fixed)")
-        total -= cleaned
-    conn.commit()
-    conn.close()
-
-    # Advance any items stuck at Layer 2 from previous runs (Layer 2 disabled by default)
-    if not config.get('enable_audio_analysis', False):
-        conn = get_db()
-        c = conn.cursor()
-        # Get book IDs first so we can ensure they're in the queue
-        c.execute('SELECT id FROM books WHERE verification_layer = 2 AND status = "pending"')
-        stuck_books = [row['id'] for row in c.fetchall()]
-        if stuck_books:
-            c.execute('UPDATE books SET verification_layer = 4 WHERE verification_layer = 2 AND status = "pending"')
-            # Ensure all are in the queue for processing
-            for book_id in stuck_books:
-                c.execute('SELECT id FROM queue WHERE book_id = ?', (book_id,))
-                if not c.fetchone():
-                    c.execute('INSERT INTO queue (book_id, reason, priority) VALUES (?, ?, ?)',
-                             (book_id, 'startup_layer2_recovery', 5))
-            conn.commit()
-            logger.info(f"Advanced {len(stuck_books)} stuck items from Layer 2 to Layer 4")
-        conn.close()
-
-    total_processed = 0
-    total_fixed = 0
-
-    # NEW LAYER 1: Audio Transcription (narrator announces the book)
-    # This is now the PRIMARY identification method
-    if config.get('enable_audio_identification', True):  # New setting, defaults to True
-        logger.info("=== LAYER 1: Audio Transcription + AI Parsing ===")
-        processing_status["layer"] = 1
-        processing_status["current"] = "Layer 1: Audio transcription"
-        layer1_processed = 0
-        layer1_resolved = 0
-        while True:
-            # Issue #74: Check if BookDB circuit breaker is open - wait instead of skipping
-            if is_circuit_open('bookdb'):
-                cb = API_CIRCUIT_BREAKER.get('bookdb', {})
-                remaining = int(cb.get('circuit_open_until', 0) - time.time())
-                if remaining > 0:
-                    wait_time = min(remaining, 60)
-                    logger.info(f"[LAYER 1] BookDB circuit breaker open, waiting {wait_time}s ({remaining}s total remaining)")
-                    processing_status["current"] = f"Layer 1: Waiting for BookDB ({remaining}s)"
-                    time.sleep(wait_time)
-                    continue
-
-            processed, resolved = process_layer_1_audio(config)
-            if processed == 0:
-                break
-            layer1_processed += processed
-            layer1_resolved += resolved
-            processing_status["processed"] = layer1_processed
-            time.sleep(2)  # Audio processing needs more time
-        logger.info(f"Layer 1 complete: {layer1_processed} items processed, {layer1_resolved} resolved via audio")
-        total_processed += layer1_processed
-        total_fixed += layer1_resolved
-
-    # LAYER 2: AI Audio Clip Analysis (if transcription was unclear)
-    # Sends a longer audio sample to AI for deeper analysis
-    if config.get('enable_audio_analysis', False):
-        logger.info("=== LAYER 2: AI Audio Clip Analysis (for unclear L1 results) ===")
-        processing_status["layer"] = 2
-        processing_status["current"] = "Layer 2: AI audio analysis"
-        layer2_processed = 0
-        layer2_resolved = 0
-        circuit_wait_count = 0
-        while True:
-            # Check if Gemini circuit breaker is open - wait instead of skipping
-            if is_circuit_open('gemini'):
-                cb = API_CIRCUIT_BREAKER.get('gemini', {})
-                remaining = int(cb.get('circuit_open_until', 0) - time.time())
-                if remaining > 0:
-                    circuit_wait_count += 1
-                    wait_time = min(remaining, 60)  # Wait max 60s at a time
-                    logger.info(f"[LAYER 2] Gemini circuit breaker open, waiting {wait_time}s ({remaining}s total remaining)")
-                    processing_status["current"] = f"Layer 2: Waiting for Gemini ({remaining}s)"
-                    time.sleep(wait_time)
-                    # Issue #74: Keep waiting for circuit breaker to close - don't skip layers
-                    # The circuit breaker will close after its cooldown period (now 5 min)
-                    continue
-
-            processed, resolved = process_layer_3_audio(config, verification_layer=2)  # Process Layer 2 items
-            if processed == 0:
-                break
-            circuit_wait_count = 0  # Reset wait count on successful processing
-            layer2_processed += processed
-            layer2_resolved += resolved
-            total_processed += processed
-            total_fixed += resolved
-            processing_status["processed"] = total_processed
-            time.sleep(2)  # Audio processing needs more time
-        logger.info(f"Layer 2 complete: {layer2_processed} items processed, {layer2_resolved} resolved via AI audio")
-    else:
-        # Layer 2 is disabled - advance any items stuck at verification_layer=2 to Layer 4
-        # This ensures they get processed by the folder fallback instead of being orphaned
-        conn = get_db()
-        c = conn.cursor()
-        # Get the book IDs first so we can add them to the queue
-        c.execute('SELECT id FROM books WHERE verification_layer = 2 AND status = "pending"')
-        layer2_books = [row['id'] for row in c.fetchall()]
-        if layer2_books:
-            # Update verification_layer
-            c.execute('UPDATE books SET verification_layer = 4 WHERE verification_layer = 2 AND status = "pending"')
-            # Ensure all advanced items are in the queue
-            for book_id in layer2_books:
-                c.execute('SELECT id FROM queue WHERE book_id = ?', (book_id,))
-                if not c.fetchone():
-                    c.execute('INSERT INTO queue (book_id, reason, priority) VALUES (?, ?, ?)',
-                             (book_id, 'layer2_fallback', 5))
-            conn.commit()
-            logger.info(f"Layer 2 disabled - advanced {len(layer2_books)} items to Layer 4 (folder fallback)")
-        conn.close()
-
-    # LAYER 3: API Enrichment (NOT identification - add series, year, description, etc.)
-    # At this point we should know the book - now we enrich it with metadata
-    if config.get('enable_api_lookups', True):
-        logger.info("=== LAYER 3: API Enrichment (adding metadata to identified books) ===")
-        processing_status["layer"] = 3
-        processing_status["current"] = "Layer 3: API enrichment"
-        layer3_processed = 0
-        while True:
-            processed, resolved = process_layer_1_api(config)  # Existing API lookup
-            if processed == 0:
-                break
-            layer3_processed += processed
-            total_processed += processed
-            processing_status["processed"] = total_processed
-            time.sleep(0.5)  # APIs are fast
-        logger.info(f"Layer 3 complete: {layer3_processed} items enriched via API")
-
-    # LAYER 4: Folder Name Fallback (LAST RESORT - low confidence)
-    # Only used when audio-based identification completely failed
-    # Folder names CAN be wrong - this is why confidence is set LOW
-    logger.info("=== LAYER 4: Folder Name Fallback (last resort, low confidence) ===")
-    processing_status["layer"] = 4
-    processing_status["current"] = "Layer 4: Folder fallback"
-
-    batch_num = 0
-    rate_limit_hits = 0
-    empty_batch_count = 0
-    layer4_processed = 0
-    layer4_fixed = 0
-
-    while True:
-        config = load_config()
-
-        allowed, calls_made, max_calls = check_rate_limit(config)
-        if not allowed:
-            rate_limit_hits += 1
-            wait_time = min(300 * rate_limit_hits, 1800)
-            logger.info(f"Rate limit reached ({calls_made}/{max_calls}), waiting {wait_time//60} minutes...")
-            processing_status["current"] = f"Rate limited, waiting {wait_time//60}min..."
-            time.sleep(wait_time)
-            continue
-
-        batch_num += 1
-        logger.info(f"--- Layer 4 batch {batch_num} (API: {calls_made}/{max_calls}) ---")
-
-        # process_queue uses AI to verify folder-based guesses
-        # At this point, we're trusting folder names as a last resort
-        processed, fixed = process_queue(config, verification_layer=4)
-
-        if processed == 0:
-            conn = get_db()
-            c = conn.cursor()
-            c.execute('SELECT COUNT(*) as count FROM queue')
-            remaining = c.fetchone()['count']
-            conn.close()
-
-            if remaining == 0:
-                logger.info("Queue is now empty")
-                break
-            else:
-                empty_batch_count += 1
-                logger.warning(f"No items processed but {remaining} remain (attempt {empty_batch_count}/3)")
-                if empty_batch_count >= 3:
-                    logger.info(f"Layer 4 cannot process remaining {remaining} items")
-                    break
-                time.sleep(10)
-                continue
-
-        empty_batch_count = 0
-        layer4_processed += processed
-        layer4_fixed += fixed
-        total_processed += processed
-        total_fixed += fixed
-        processing_status["processed"] = total_processed
-        logger.info(f"Layer 4 Batch {batch_num}: {processed} processed, {fixed} fixed")
-        time.sleep(min_delay)
-
-    logger.info(f"Layer 4 complete: {layer4_processed} items processed, {layer4_fixed} fixed via folder fallback")
-
-    processing_status["active"] = False
-    processing_status["layer"] = 0
-    logger.info(f"=== LAYERED PROCESSING COMPLETE: {total_processed} processed, {total_fixed} fixed ===")
-    return total_processed, total_fixed
 
 
 # ============================================================================
@@ -6595,99 +6383,25 @@ def process_watch_folder(config: dict) -> int:
     return processed
 
 
-def background_worker():
-    """Background worker that periodically scans and processes."""
-    global worker_running
-
-    logger.info("Background worker thread started")
-
-    while worker_running:
-        config = load_config()
-
-        if config.get('enabled', True):
-            try:
-                logger.debug("Worker: Starting scan cycle")
-                # Scan library
-                scan_library(config)
-
-                # Process queue (auto_fix setting controls whether fixes are applied or sent to pending)
-                logger.debug("Worker: Processing queue")
-                process_all_queue(config)
-            except Exception as e:
-                logger.error(f"Worker error: {e}", exc_info=True)
-
-        # Sleep for scan interval
-        interval = config.get('scan_interval_hours', 6) * 3600
-        logger.debug(f"Worker: Sleeping for {interval} seconds")
-        for _ in range(int(interval / 10)):
-            if not worker_running:
-                break
-            time.sleep(10)
-
-    logger.info("Background worker thread stopped")
-
-
-# Watch folder worker - runs on its own interval
-watch_worker_thread = None
-watch_worker_running = False
-
-def watch_folder_worker():
-    """Background worker that monitors watch folder for new audiobooks."""
-    global watch_worker_running
-
-    logger.info("Watch folder worker thread started")
-
-    while watch_worker_running:
-        config = load_config()
-
-        if config.get('watch_mode', False) and config.get('watch_folder', '').strip():
-            try:
-                process_watch_folder(config)
-            except Exception as e:
-                logger.error(f"Watch folder worker error: {e}", exc_info=True)
-
-        # Sleep for watch interval (default 60 seconds)
-        interval = config.get('watch_interval_seconds', 60)
-        for _ in range(int(interval)):
-            if not watch_worker_running:
-                break
-            time.sleep(1)
-
-    logger.info("Watch folder worker thread stopped")
-
-
 def start_worker():
-    """Start the background worker."""
-    global worker_thread, worker_running, watch_worker_thread, watch_worker_running
+    """Wrapper for extracted worker start - passes app-level dependencies."""
+    _start_worker_raw(
+        load_config=load_config,
+        scan_library=scan_library,
+        process_all_queue_func=process_all_queue,
+        process_watch_folder=process_watch_folder
+    )
 
-    if worker_thread and worker_thread.is_alive():
-        logger.info("Worker already running")
-    else:
-        worker_running = True
-        worker_thread = threading.Thread(target=background_worker, daemon=True)
-        worker_thread.start()
-        logger.info("Background worker started")
-
-    # Also start watch folder worker
-    config = load_config()
-    if config.get('watch_mode', False) and config.get('watch_folder', '').strip():
-        if not (watch_worker_thread and watch_worker_thread.is_alive()):
-            watch_worker_running = True
-            watch_worker_thread = threading.Thread(target=watch_folder_worker, daemon=True)
-            watch_worker_thread.start()
-            logger.info("Watch folder worker started")
 
 def stop_worker():
     """Stop the background worker."""
-    global worker_running, watch_worker_running
-    worker_running = False
-    watch_worker_running = False
-    logger.info("Background worker stop requested")
+    _stop_worker_raw()
+
 
 def is_worker_running():
     """Check if worker is actually running."""
-    global worker_thread, worker_running
-    return worker_running and worker_thread is not None and worker_thread.is_alive()
+    return _is_worker_running_raw()
+
 
 @app.context_processor
 def inject_worker_status():
@@ -7641,7 +7355,7 @@ def api_process():
 @app.route('/api/process_status')
 def api_process_status():
     """Get current processing status."""
-    return jsonify(processing_status)
+    return jsonify(get_processing_status())
 
 @app.route('/api/apply_fix/<int:history_id>', methods=['POST'])
 def api_apply_fix(history_id):
@@ -8290,7 +8004,7 @@ def api_stats():
         'pending_fixes': pending,
         'verified': verified,
         'worker_running': is_worker_running(),
-        'processing': processing_status
+        'processing': get_processing_status()
     })
 
 @app.route('/api/queue')
