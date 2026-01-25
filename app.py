@@ -41,6 +41,16 @@ from typing import Optional, List, Dict, Any
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
 from audio_tagging import embed_tags_for_path, build_metadata_for_embedding
 
+# Try to import P2P cache (optional - gracefully degrades if not available)
+try:
+    from p2p_cache import get_cache as get_book_cache, GUNDB_AVAILABLE
+    P2P_CACHE_AVAILABLE = True
+except ImportError:
+    P2P_CACHE_AVAILABLE = False
+    GUNDB_AVAILABLE = False
+    def get_book_cache(*args, **kwargs):
+        return None
+
 # Try to import narrator detection from BookDB
 try:
     from metadata_scraper.database import (
@@ -1163,6 +1173,8 @@ DEFAULT_CONFIG = {
     "error_reporting_include_titles": True, # Include book title/author ONLY when they caused the error
     # Community contribution - crowdsourced audiobook metadata
     "contribute_to_community": False,      # Opt-in: share audio-extracted metadata (author/title/narrator) to help others
+    # P2P Cache - decentralized book lookup cache via Gun.db
+    "enable_p2p_cache": False,             # Opt-in: share book lookup cache with other Library Manager users (helps when BookDB is down)
     # Watch Folder settings - monitor a folder for new audiobooks and organize them
     "watch_mode": False,                   # Enable folder watching
     "watch_folder": "",                    # Path to monitor for new audiobooks
@@ -2318,14 +2330,31 @@ BOOKDB_API_URL = "https://bookdb.deucebucket.com"
 # Public API key for Library Manager users (no config needed)
 BOOKDB_PUBLIC_KEY = "lm-public-2024_85TbJ2lbrXGm38tBgliPAcAexLA_AeWxyqvHPbwRIrA"
 
-def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=None):
+def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=None, config=None):
     """
     Search our private BookDB metadata service.
     Uses fuzzy matching via Qdrant vectors - great for messy filenames.
     Returns series info including book position if found.
+
+    Now with local/P2P cache support - checks cache first, falls back to API.
     """
     if not api_key:
         return None
+
+    # Check cache first (local + P2P if enabled)
+    if P2P_CACHE_AVAILABLE and config:
+        try:
+            cache = get_book_cache(
+                data_dir=DATA_DIR,
+                enable_p2p=config.get('enable_p2p_cache', False)
+            )
+            if cache:
+                cached = cache.get(title, author)
+                if cached:
+                    logger.info(f"[CACHE] Hit for: {author} - {title} (source: {cached.get('_cache_source', 'local')})")
+                    return cached
+        except Exception as e:
+            logger.debug(f"Cache lookup error (continuing to API): {e}")
 
     # Check circuit breaker - skip if we've been rate limited too much
     cb = API_CIRCUIT_BREAKER.get('bookdb', {})
@@ -2427,6 +2456,22 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
             logger.info(f"BookDB found: {result['author']} - {result['title']}" +
                        (f" ({result['series']} #{result['series_num']})" if result['series'] else "") +
                        f" [confidence: {result['confidence']:.2f}]")
+
+            # Cache successful result (local + P2P if enabled)
+            if P2P_CACHE_AVAILABLE and config:
+                try:
+                    cache = get_book_cache(
+                        data_dir=DATA_DIR,
+                        enable_p2p=config.get('enable_p2p_cache', False)
+                    )
+                    if cache:
+                        cache.put(title, author, result,
+                                  source='bookdb',
+                                  confidence=result.get('confidence', 0))
+                        logger.debug(f"[CACHE] Stored: {author} - {title}")
+                except Exception as e:
+                    logger.debug(f"Cache write error (non-fatal): {e}")
+
             return result
         return None
 
@@ -3863,6 +3908,20 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
     secrets = load_secrets()
     merged_config = {**config, **secrets}
 
+    # Check if we have any viable fallback providers
+    has_fallback = False
+    for p in chain[1:]:  # Skip first provider
+        p = p.lower().strip()
+        if p == 'gemini' and merged_config.get('gemini_api_key'):
+            has_fallback = True
+            break
+        elif p == 'openrouter' and merged_config.get('openrouter_api_key'):
+            has_fallback = True
+            break
+        elif p == 'ollama':
+            has_fallback = True
+            break
+
     for provider in chain:
         provider = provider.lower().strip()
         logger.info(f"[AUDIO CHAIN] Trying audio provider: {provider}")
@@ -3870,10 +3929,31 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
         try:
             if provider == 'bookdb':
                 # BookDB has GPU Whisper - best option
-                result = identify_audio_with_bookdb(audio_file)
-                if result and result.get('title'):
-                    logger.info(f"[AUDIO CHAIN] Success with bookdb: {result.get('author')} - {result.get('title')}")
-                    return result
+                # Retry with backoff if connection fails (service might be restarting)
+                max_retries = 5 if not has_fallback else 2  # More retries if no fallback
+                retry_delay = 10  # Start with 10 seconds
+
+                for attempt in range(max_retries):
+                    result = identify_audio_with_bookdb(audio_file)
+                    if result and result.get('title'):
+                        logger.info(f"[AUDIO CHAIN] Success with bookdb: {result.get('author')} - {result.get('title')}")
+                        return result
+                    elif result and result.get('transcript'):
+                        # Got transcript but no match - still useful, return for potential AI fallback
+                        logger.info(f"[AUDIO CHAIN] BookDB returned transcript only")
+                        return result
+                    elif result is None and attempt < max_retries - 1:
+                        # Connection might be down, wait and retry
+                        wait_time = retry_delay * (attempt + 1)
+                        logger.info(f"[AUDIO CHAIN] BookDB unavailable, waiting {wait_time}s before retry ({attempt + 1}/{max_retries})")
+                        time.sleep(wait_time)
+                    else:
+                        break
+
+                if not has_fallback:
+                    # No fallback available, keep waiting for BookDB
+                    logger.warning("[AUDIO CHAIN] BookDB failed and no fallback configured - will retry on next queue cycle")
+                    return None  # Let the queue retry later
 
             elif provider == 'gemini':
                 if not merged_config.get('gemini_api_key'):
