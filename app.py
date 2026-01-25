@@ -41,6 +41,34 @@ from typing import Optional, List, Dict, Any
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
 from audio_tagging import embed_tags_for_path, build_metadata_for_embedding
 
+# Import from refactored modules
+from library_manager.config import (
+    BASE_DIR, DATA_DIR, DB_PATH, CONFIG_PATH, SECRETS_PATH,
+    DEFAULT_CONFIG, DEFAULT_SECRETS,
+    migrate_legacy_config, init_config, needs_setup,
+    load_config, save_config, save_secrets, load_secrets
+)
+from library_manager.database import init_db, get_db, set_db_path
+from library_manager.models.book_profile import (
+    SOURCE_WEIGHTS, FIELD_WEIGHTS, FieldValue, BookProfile,
+    detect_multibook_vs_chapters, save_book_profile, load_book_profile,
+    build_profile_from_sources, set_db_getter, set_narrator_saver
+)
+from library_manager.utils import (
+    # naming
+    calculate_title_similarity, extract_series_from_title, clean_search_title,
+    # validation
+    is_unsearchable_query, is_garbage_match, is_placeholder_author,
+    # audio
+    get_first_audio_file, extract_audio_sample, extract_audio_sample_from_middle,
+    # path_safety
+    sanitize_path_component, build_new_path,
+)
+from library_manager.providers import (
+    rate_limit_wait, is_circuit_open, record_api_failure, record_api_success,
+    API_RATE_LIMITS, API_CIRCUIT_BREAKER,
+)
+
 # Try to import P2P cache (optional - gracefully degrades if not available)
 try:
     from p2p_cache import get_cache as get_book_cache, GUNDB_AVAILABLE
@@ -189,465 +217,9 @@ def lookup_community_consensus(title, author=None):
 
 
 # ============== BOOK PROFILE SYSTEM ==============
-# Confidence-scored metadata profiles for comprehensive book identification
-
-# Source weights for confidence calculation (higher = more trusted)
-SOURCE_WEIGHTS = {
-    'user': 100,        # Manual override - always wins
-    'audio': 85,        # Heard directly from audiobook intro
-    'id3': 80,          # Embedded by producer/publisher
-    'json': 75,         # Explicit metadata file
-    'nfo': 70,          # Release info files
-    'bookdb': 65,       # Verified database match
-    'ai': 60,           # AI verification
-    'audnexus': 55,     # Audible data
-    'googlebooks': 50,  # Google Books API
-    'openlibrary': 45,  # OpenLibrary API
-    'hardcover': 45,    # Hardcover API
-    'path': 40          # Folder structure inference
-}
-
-# Field weights for overall confidence (must sum to 100)
-FIELD_WEIGHTS = {
-    'author': 30,
-    'title': 30,
-    'narrator': 15,
-    'series': 10,
-    'series_num': 5,
-    'language': 5,
-    'year': 3,
-    'edition': 1,
-    'variant': 1
-}
-
-
-@dataclass
-class FieldValue:
-    """A single metadata field with confidence and source tracking."""
-    value: Any = None
-    confidence: int = 0
-    sources: List[str] = field(default_factory=list)
-    raw_values: Dict[str, Any] = field(default_factory=dict)  # source -> raw value
-
-    def add_source(self, source: str, value: Any, weight: int = None):
-        """Add evidence from a source."""
-        if value is None:
-            return
-        if weight is None:
-            weight = SOURCE_WEIGHTS.get(source, 30)
-        self.raw_values[source] = value
-        if source not in self.sources:
-            self.sources.append(source)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to JSON-serializable dictionary."""
-        return {
-            'value': self.value,
-            'confidence': self.confidence,
-            'sources': self.sources
-        }
-
-
-@dataclass
-class BookProfile:
-    """Complete metadata profile for a book with per-field confidence."""
-    # Core identification
-    author: FieldValue = field(default_factory=FieldValue)
-    title: FieldValue = field(default_factory=FieldValue)
-
-    # Extended metadata
-    narrator: FieldValue = field(default_factory=FieldValue)
-    series: FieldValue = field(default_factory=FieldValue)
-    series_num: FieldValue = field(default_factory=FieldValue)
-    language: FieldValue = field(default_factory=FieldValue)
-    year: FieldValue = field(default_factory=FieldValue)
-    edition: FieldValue = field(default_factory=FieldValue)
-    variant: FieldValue = field(default_factory=FieldValue)
-
-    # Profile metadata
-    overall_confidence: int = 0
-    verification_layers_used: List[str] = field(default_factory=list)
-    needs_attention: bool = False
-    issues: List[str] = field(default_factory=list)
-    last_updated: Optional[str] = None
-
-    def calculate_field_confidence(self, fv: FieldValue) -> tuple:
-        """Calculate confidence for a field based on source agreement."""
-        if not fv.raw_values:
-            return None, 0
-
-        # Normalize values for comparison
-        def normalize(val):
-            if val is None:
-                return None
-            return str(val).lower().strip()
-
-        # Group by normalized value
-        value_groups = {}
-        for source, value in fv.raw_values.items():
-            if value is None:
-                continue
-            normalized = normalize(value)
-            if normalized not in value_groups:
-                value_groups[normalized] = []
-            weight = SOURCE_WEIGHTS.get(source, 30)
-            value_groups[normalized].append((source, value, weight))
-
-        if not value_groups:
-            return None, 0
-
-        # Find consensus value (highest total weight)
-        best_value = None
-        best_weight = 0
-        best_normalized = None
-        for normalized, sources in value_groups.items():
-            total_weight = sum(w for _, _, w in sources)
-            if total_weight > best_weight:
-                best_weight = total_weight
-                best_normalized = normalized
-                # Use original value from highest-weighted source
-                best_source = max(sources, key=lambda x: x[2])
-                best_value = best_source[1]
-
-        # Calculate confidence
-        agreeing_sources = len(value_groups.get(best_normalized, []))
-        conflicting_values = len(value_groups) - 1
-
-        base_confidence = min(best_weight, 100)
-
-        # Agreement bonus
-        if agreeing_sources >= 4:
-            base_confidence = min(base_confidence + 25, 100)
-        elif agreeing_sources >= 3:
-            base_confidence = min(base_confidence + 20, 100)
-        elif agreeing_sources >= 2:
-            base_confidence = min(base_confidence + 10, 100)
-
-        # Conflict penalty
-        base_confidence = max(base_confidence - (conflicting_values * 15), 0)
-
-        return best_value, round(base_confidence)
-
-    def finalize(self):
-        """Calculate final values and confidence for all fields."""
-        for field_name in FIELD_WEIGHTS.keys():
-            fv = getattr(self, field_name)
-            if fv.raw_values:
-                value, confidence = self.calculate_field_confidence(fv)
-                fv.value = value
-                fv.confidence = confidence
-
-        self.calculate_overall_confidence()
-        self.last_updated = datetime.now().isoformat()
-
-    def calculate_overall_confidence(self) -> int:
-        """Calculate weighted overall confidence from field confidences."""
-        total_weight = 0
-        weighted_sum = 0
-
-        for field_name, weight in FIELD_WEIGHTS.items():
-            fv = getattr(self, field_name)
-            if fv.value is not None:
-                weighted_sum += fv.confidence * weight
-                total_weight += weight
-
-        if total_weight == 0:
-            self.overall_confidence = 0
-        else:
-            self.overall_confidence = round(weighted_sum / total_weight)
-
-        return self.overall_confidence
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to JSON-serializable dictionary."""
-        result = {}
-        for field_name in FIELD_WEIGHTS.keys():
-            fv = getattr(self, field_name)
-            result[field_name] = fv.to_dict()
-        result['overall_confidence'] = self.overall_confidence
-        result['verification_layers_used'] = self.verification_layers_used
-        result['needs_attention'] = self.needs_attention
-        result['issues'] = self.issues
-        result['last_updated'] = self.last_updated
-        return result
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'BookProfile':
-        """Reconstruct from JSON dictionary."""
-        profile = cls()
-        for field_name in FIELD_WEIGHTS.keys():
-            if field_name in data:
-                fd = data[field_name]
-                fv = FieldValue(
-                    value=fd.get('value'),
-                    confidence=fd.get('confidence', 0),
-                    sources=fd.get('sources', [])
-                )
-                setattr(profile, field_name, fv)
-        profile.overall_confidence = data.get('overall_confidence', 0)
-        profile.verification_layers_used = data.get('verification_layers_used', [])
-        profile.needs_attention = data.get('needs_attention', False)
-        profile.issues = data.get('issues', [])
-        profile.last_updated = data.get('last_updated')
-        return profile
-
-
-def detect_multibook_vs_chapters(audio_files: List[Path], config: dict = None) -> dict:
-    """
-    Determine if numbered audio files are multiple books or chapter files.
-
-    Fix for Issue #29: Files like "00 - Chapter.mp3", "01 - Prologue.mp3" were
-    incorrectly flagged as multibook collections because the regex matched
-    leading numbers. Chapter files are NOT multiple books.
-
-    Returns:
-        {
-            'is_multibook': bool,
-            'confidence': 'high'|'medium'|'low',
-            'reason': str,
-            'book_numbers': set (if multibook)
-        }
-    """
-    if not audio_files or len(audio_files) < 2:
-        return {'is_multibook': False, 'confidence': 'high', 'reason': 'Less than 2 files'}
-
-    # Chapter indicators - files with these are NEVER part of a multibook collection
-    chapter_indicators = [
-        r'chapter\s*\d*',
-        r'ch\.?\s*\d+',
-        r'part\s*\d+',
-        r'prologue',
-        r'epilogue',
-        r'intro(duction)?',
-        r'outro',
-        r'disc\s*\d+',
-        r'cd\s*\d+',
-        r'track\s*\d+',
-        r'section\s*\d+',
-    ]
-
-    # Explicit book patterns - these DO indicate multiple books
-    book_patterns = [
-        (r'book\s*(\d+)', 'book'),           # "Book 1", "Book 2"
-        (r'volume\s*(\d+)', 'volume'),       # "Volume 1"
-        (r'vol\.?\s*(\d+)', 'vol'),          # "Vol 1", "Vol. 1"
-        (r'#(\d+)\s*[-–—:]', 'hashtag'),     # "#1 - Title" (with separator)
-    ]
-
-    files_with_chapter_indicator = 0
-    book_numbers_found = set()
-    leading_numbers = []
-
-    for f in audio_files:
-        stem = f.stem.lower()
-
-        # Check for chapter indicators
-        has_chapter = any(re.search(p, stem, re.IGNORECASE) for p in chapter_indicators)
-        if has_chapter:
-            files_with_chapter_indicator += 1
-            continue  # Don't check book patterns for chapter files
-
-        # Check for explicit book patterns
-        for pattern, pattern_type in book_patterns:
-            m = re.search(pattern, stem, re.IGNORECASE)
-            if m:
-                book_numbers_found.add(m.group(1))
-                break
-
-        # Track leading numbers for sequential analysis
-        leading_match = re.match(r'^(\d+)', stem)
-        if leading_match:
-            leading_numbers.append(int(leading_match.group(1)))
-
-    # Decision logic
-
-    # If majority have chapter indicators, definitely chapters
-    if files_with_chapter_indicator > len(audio_files) * 0.3:
-        return {
-            'is_multibook': False,
-            'confidence': 'high',
-            'reason': f'{files_with_chapter_indicator}/{len(audio_files)} files have chapter indicators'
-        }
-
-    # If explicit book patterns found multiple books
-    if len(book_numbers_found) >= 2:
-        return {
-            'is_multibook': True,
-            'confidence': 'high',
-            'reason': f'Found explicit book numbers: {sorted(book_numbers_found)}',
-            'book_numbers': book_numbers_found
-        }
-
-    # Check if leading numbers are sequential (suggests chapters, not books)
-    if leading_numbers:
-        leading_numbers.sort()
-        # Check if starts from 0 or 1 and is mostly sequential
-        if leading_numbers[0] in [0, 1]:
-            # Check for reasonable sequential pattern (allow small gaps)
-            is_sequential = True
-            for i in range(1, len(leading_numbers)):
-                gap = leading_numbers[i] - leading_numbers[i-1]
-                if gap > 2:  # Allow gaps up to 2 (missing chapter)
-                    is_sequential = False
-                    break
-
-            if is_sequential:
-                return {
-                    'is_multibook': False,
-                    'confidence': 'medium',
-                    'reason': f'Sequential numbering from {leading_numbers[0]} suggests chapters'
-                }
-
-    # Default: if no explicit book patterns found, assume chapters
-    return {
-        'is_multibook': False,
-        'confidence': 'medium',
-        'reason': 'No explicit book patterns found, defaulting to chapters'
-    }
-
-
-def save_book_profile(book_id: int, profile: BookProfile):
-    """Save a book profile to the database."""
-    conn = get_db()
-    c = conn.cursor()
-    try:
-        profile_json = json.dumps(profile.to_dict())
-        c.execute('''UPDATE books
-                     SET profile = ?, confidence = ?, updated_at = CURRENT_TIMESTAMP
-                     WHERE id = ?''',
-                  (profile_json, profile.overall_confidence, book_id))
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def load_book_profile(book_id: int) -> Optional[BookProfile]:
-    """Load a book profile from the database."""
-    conn = get_db()
-    c = conn.cursor()
-    try:
-        c.execute('SELECT profile FROM books WHERE id = ?', (book_id,))
-        row = c.fetchone()
-        if row and row['profile']:
-            try:
-                data = json.loads(row['profile'])
-                return BookProfile.from_dict(data)
-            except:
-                return None
-        return None
-    finally:
-        conn.close()
-
-
-def build_profile_from_sources(
-    path_info: dict = None,
-    folder_meta: dict = None,
-    api_candidates: list = None,
-    ai_result: dict = None,
-    audio_result: dict = None
-) -> BookProfile:
-    """
-    Build a BookProfile by combining data from multiple sources.
-    Each source adds evidence to the profile's fields.
-    """
-    profile = BookProfile()
-
-    # Layer 1: Path analysis
-    if path_info:
-        profile.verification_layers_used.append('local')
-        if path_info.get('detected_author'):
-            profile.author.add_source('path', path_info['detected_author'])
-        if path_info.get('detected_title'):
-            profile.title.add_source('path', path_info['detected_title'])
-        if path_info.get('detected_series'):
-            profile.series.add_source('path', path_info['detected_series'])
-        if path_info.get('issues'):
-            profile.issues.extend(path_info['issues'])
-
-    # Layer 1: Folder metadata (ID3, NFO, JSON)
-    if folder_meta:
-        if folder_meta.get('audio_author'):
-            profile.author.add_source('id3', folder_meta['audio_author'])
-        if folder_meta.get('audio_title'):
-            profile.title.add_source('id3', folder_meta['audio_title'])
-        if folder_meta.get('nfo_author'):
-            profile.author.add_source('nfo', folder_meta['nfo_author'])
-        if folder_meta.get('nfo_title'):
-            profile.title.add_source('nfo', folder_meta['nfo_title'])
-        if folder_meta.get('nfo_narrator'):
-            profile.narrator.add_source('nfo', folder_meta['nfo_narrator'])
-            auto_save_narrator(folder_meta['nfo_narrator'], source='nfo_extract')
-        if folder_meta.get('meta_author'):
-            profile.author.add_source('json', folder_meta['meta_author'])
-        if folder_meta.get('meta_title'):
-            profile.title.add_source('json', folder_meta['meta_title'])
-        if folder_meta.get('meta_narrator'):
-            profile.narrator.add_source('json', folder_meta['meta_narrator'])
-            auto_save_narrator(folder_meta['meta_narrator'], source='json_extract')
-
-    # Layer 2: API candidates
-    if api_candidates:
-        if 'api' not in profile.verification_layers_used:
-            profile.verification_layers_used.append('api')
-        for candidate in api_candidates:
-            source = candidate.get('source', 'api')
-            if candidate.get('author'):
-                profile.author.add_source(source, candidate['author'])
-            if candidate.get('title'):
-                profile.title.add_source(source, candidate['title'])
-            if candidate.get('series'):
-                profile.series.add_source(source, candidate['series'])
-            if candidate.get('series_num'):
-                profile.series_num.add_source(source, candidate['series_num'])
-            if candidate.get('year'):
-                profile.year.add_source(source, candidate['year'])
-
-    # Layer 3: AI result
-    if ai_result:
-        if 'ai' not in profile.verification_layers_used:
-            profile.verification_layers_used.append('ai')
-        if ai_result.get('author'):
-            profile.author.add_source('ai', ai_result['author'])
-        if ai_result.get('title'):
-            profile.title.add_source('ai', ai_result['title'])
-        if ai_result.get('narrator'):
-            profile.narrator.add_source('ai', ai_result['narrator'])
-        if ai_result.get('series'):
-            profile.series.add_source('ai', ai_result['series'])
-        if ai_result.get('series_num'):
-            profile.series_num.add_source('ai', ai_result['series_num'])
-        if ai_result.get('year'):
-            profile.year.add_source('ai', ai_result['year'])
-        if ai_result.get('edition'):
-            profile.edition.add_source('ai', ai_result['edition'])
-        if ai_result.get('variant'):
-            profile.variant.add_source('ai', ai_result['variant'])
-
-    # Layer 4: Audio analysis
-    if audio_result:
-        if 'audio' not in profile.verification_layers_used:
-            profile.verification_layers_used.append('audio')
-        if audio_result.get('author'):
-            profile.author.add_source('audio', audio_result['author'])
-        if audio_result.get('title'):
-            profile.title.add_source('audio', audio_result['title'])
-        if audio_result.get('narrator'):
-            profile.narrator.add_source('audio', audio_result['narrator'])
-        if audio_result.get('series'):
-            profile.series.add_source('audio', audio_result['series'])
-        if audio_result.get('language'):
-            profile.language.add_source('audio', audio_result['language'])
-
-    # Finalize - calculate consensus values and confidence
-    profile.finalize()
-
-    # Flag low confidence for attention
-    if profile.overall_confidence < 50:
-        profile.needs_attention = True
-        if 'low_confidence' not in profile.issues:
-            profile.issues.append('low_confidence')
-
-    return profile
+# Moved to library_manager/models/book_profile.py
+# Wire narrator saver now that auto_save_narrator is defined
+set_narrator_saver(auto_save_narrator)
 
 
 # ============== SEARCH QUEUE / PROGRESS TRACKING ==============
@@ -739,153 +311,6 @@ def get_bookdb_connection():
 
 
 # ============== SMART MATCHING UTILITIES ==============
-
-def calculate_title_similarity(title1, title2):
-    """
-    Calculate word overlap similarity between two titles.
-    Returns a score from 0.0 to 1.0
-    """
-    if not title1 or not title2:
-        return 0.0
-
-    # Normalize: lowercase, remove punctuation, split into words
-    def normalize(t):
-        t = t.lower()
-        t = re.sub(r'[^\w\s]', ' ', t)
-        words = set(t.split())
-        # Remove common stop words that don't help matching
-        stop_words = {'the', 'a', 'an', 'of', 'and', 'or', 'in', 'to', 'for', 'by', 'part', 'book', 'volume'}
-        return words - stop_words
-
-    words1 = normalize(title1)
-    words2 = normalize(title2)
-
-    if not words1 or not words2:
-        return 0.0
-
-    # Calculate Jaccard similarity (intersection over union)
-    intersection = words1 & words2
-    union = words1 | words2
-
-    return len(intersection) / len(union) if union else 0.0
-
-
-def extract_series_from_title(title):
-    """
-    Extract series name and number from title patterns like:
-    - "The Firefly Series, Book 8: Coup de Grâce" -> (Firefly, 8, Coup de Grâce)
-    - "The Firefly Series, Book 8꞉ Firefly꞉ Coup de Grâce" -> (Firefly, 8, Firefly: Coup de Grâce)
-    - "Mistborn Book 1: The Final Empire" -> (Mistborn, 1, The Final Empire)
-    - "The Expanse #3 - Abaddon's Gate" -> (The Expanse, 3, Abaddon's Gate)
-    """
-    # Normalize colon-like characters (Windows uses ꞉ instead of : in filenames)
-    normalized = title.replace('꞉', ':').replace('：', ':')  # U+A789 and full-width colon
-
-    # Pattern: "Series Name, Book N: Title" or "Series Name Book N: Title"
-    # Also handles "The X Series, Book N: Title"
-    match = re.search(r'^(?:The\s+)?(.+?)\s*(?:Series)?,?\s*Book\s+(\d+)\s*[:\s-]+(.+)$', normalized, re.IGNORECASE)
-    if match:
-        series = match.group(1).strip()
-        # Clean up series name (remove trailing "Series" if it got in)
-        series = re.sub(r'\s*Series\s*$', '', series, flags=re.IGNORECASE)
-        return series, int(match.group(2)), match.group(3).strip()
-
-    # Pattern: "Series #N - Title" or "Series #N: Title"
-    match = re.search(r'^(.+?)\s*#(\d+)\s*[:\s-]+(.+)$', normalized)
-    if match:
-        return match.group(1).strip(), int(match.group(2)), match.group(3).strip()
-
-    # Pattern: "Series Book N - Title"
-    match = re.search(r'^(.+?)\s+Book\s+(\d+)\s*[:\s-]+(.+)$', normalized, re.IGNORECASE)
-    if match:
-        return match.group(1).strip(), int(match.group(2)), match.group(3).strip()
-
-    # Pattern: "Series Book N" at END (no subtitle) - e.g., "Dark One Book 1"
-    # Series name = title before "Book N", actual title = same as series
-    match = re.search(r'^(.+?)\s+Book\s+(\d+)\s*$', normalized, re.IGNORECASE)
-    if match:
-        series = match.group(1).strip()
-        return series, int(match.group(2)), series  # Title = series name
-
-    # Pattern: "Series #N" at END (no subtitle) - e.g., "Mistborn #1"
-    match = re.search(r'^(.+?)\s*#(\d+)\s*$', normalized)
-    if match:
-        series = match.group(1).strip()
-        return series, int(match.group(2)), series
-
-    # Pattern: "Title (Book N)" - book number in parentheses at end
-    # e.g., "Ivypool's Heart (Book 17)" -> extract number, title stays same
-    match = re.search(r'^(.+?)\s*\(Book\s+(\d+)\)\s*$', normalized, re.IGNORECASE)
-    if match:
-        title_clean = match.group(1).strip()
-        return None, int(match.group(2)), title_clean  # Series unknown, just got number
-
-    return None, None, title
-
-
-def is_unsearchable_query(title):
-    """
-    Check if a title is clearly not a book title and shouldn't be searched.
-    Returns True for things like:
-    - chapter1, chapter2, Chapter 19
-    - 01.mp3, track_05
-    - audiobook, full audiobook
-    - disc1, cd2, part3
-    """
-    if not title:
-        return True
-
-    title_lower = title.lower().strip()
-
-    # Just numbers (01, 001, 1)
-    if re.match(r'^\d+$', title_lower):
-        return True
-
-    # Chapter + number patterns (chapter1, chapter 5, ch01)
-    if re.match(r'^(?:chapter|ch|chap)\s*\d+$', title_lower):
-        return True
-
-    # Track/disc/part patterns (track01, disc2, part 3, cd1)
-    if re.match(r'^(?:track|disc|cd|part|pt)\s*\d+$', title_lower):
-        return True
-
-    # Just "audiobook" or "full audiobook"
-    if re.match(r'^(?:full\s+)?audiobook$', title_lower):
-        return True
-
-    # Very short titles (1-2 chars) are usually garbage
-    if len(title_lower) <= 2:
-        return True
-
-    return False
-
-
-def is_garbage_match(original_title, suggested_title, threshold=0.3):
-    """
-    Check if an API suggestion is garbage (very low title similarity).
-    Returns True if the match should be rejected.
-
-    Examples that should be rejected:
-    - "Chapter 19" -> "College Accounting, Chapters 1-9" (only matches "chapter")
-    - "Death Genesis" -> "The Darkborn AfterLife Genesis" (only matches "genesis")
-    - "Mr. Murder" -> "Frankenstein" (no overlap)
-
-    Threshold of 0.3 means at least 30% word overlap required.
-    """
-    similarity = calculate_title_similarity(original_title, suggested_title)
-
-    # If original is very short (1-2 words), be more lenient
-    orig_words = len([w for w in original_title.lower().split() if len(w) > 2])
-    if orig_words <= 2 and similarity >= 0.2:
-        return False
-
-    if similarity < threshold:
-        logger.info(f"Garbage match rejected: '{original_title}' vs '{suggested_title}' (similarity: {similarity:.2f})")
-        return True
-
-    return False
-
-
 def extract_folder_metadata(folder_path):
     """
     Extract metadata clues from files in the book folder.
@@ -1060,54 +485,14 @@ logging.getLogger('werkzeug').setLevel(logging.ERROR)
 app = Flask(__name__)
 app.secret_key = 'library-manager-secret-key-2024'
 
-# ============== CONFIGURATION ==============
+# ============== MODULE WIRING ==============
+# Wire up the refactored modules with their dependencies
 
-BASE_DIR = Path(__file__).parent
+# Set database path for the database module
+set_db_path(DB_PATH)
 
-# Support DATA_DIR env var for Docker persistence
-# Auto-detect common Docker mount points if not explicitly set
-# UnRaid uses /config, our default is /data
-def _detect_data_dir():
-    """Auto-detect the data directory for Docker persistence.
-
-    Priority:
-    1. Explicit DATA_DIR env var (user override)
-    2. Directory with existing config files (preserves user settings)
-    3. Mounted volume (detects actual Docker mounts vs container dirs)
-    4. /data for fresh installs (our documented default)
-    5. /config if /data doesn't exist (UnRaid fallback)
-    6. App directory (local development)
-    """
-    # If explicitly set via env var, use that
-    if 'DATA_DIR' in os.environ:
-        return Path(os.environ['DATA_DIR'])
-
-    # Check for existing config files - NEVER lose user settings
-    # Check both locations, prefer whichever has config
-    for mount_point in ['/data', '/config']:
-        mount_path = Path(mount_point)
-        if mount_path.exists() and mount_path.is_dir():
-            if (mount_path / 'config.json').exists() or (mount_path / 'library.db').exists():
-                return mount_path
-
-    # Fresh install: detect which is actually mounted (persistent storage)
-    # os.path.ismount() returns True for Docker volume mounts
-    if os.path.ismount('/data'):
-        return Path('/data')
-    if os.path.ismount('/config'):
-        return Path('/config')
-
-    # Fallback: prefer /data (our documented default), then /config
-    if Path('/data').exists():
-        return Path('/data')
-    if Path('/config').exists():
-        return Path('/config')
-
-    # Fall back to app directory (local development)
-    return BASE_DIR
-
-DATA_DIR = _detect_data_dir()
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+# Wire book profile module to use our database getter and narrator saver
+set_db_getter(get_db)
 
 # Add file handler now that we know DATA_DIR (log to persistent storage)
 LOG_FILE = DATA_DIR / 'app.log'
@@ -1119,343 +504,11 @@ logging.getLogger().addHandler(_file_handler)
 _startup_logger = logging.getLogger(__name__)
 _startup_logger.info(f"Data directory: {DATA_DIR} (config persistence location)")
 
-DB_PATH = DATA_DIR / 'library.db'
-CONFIG_PATH = DATA_DIR / 'config.json'
-SECRETS_PATH = DATA_DIR / 'secrets.json'
+# Note: set_narrator_saver is called below after auto_save_narrator is defined
 
-DEFAULT_CONFIG = {
-    "library_paths": [],  # Empty by default - user configures via Settings
-    "ai_provider": "gemini",  # "gemini", "openrouter", or "ollama"
-    "openrouter_model": "xiaomi/mimo-v2-flash:free",  # Best free model: 262K context
-    "gemini_model": "gemma-3-27b-it",  # Gemma 3 - unlimited free tier
-    "ollama_url": "http://localhost:11434",  # Ollama server URL
-    "ollama_model": "llama3.2:3b",  # Default model - good for 8-12GB VRAM
-    "scan_interval_hours": 6,
-    "batch_size": 10,
-    "max_requests_per_hour": 200,
-    "auto_fix": False,
-    "protect_author_changes": True,  # Require manual approval when author changes completely
-    "enabled": True,
-    "series_grouping": False,  # Group series: Author/Series/1 - Title (Audiobookshelf compatible)
-    "ebook_management": False,  # Enable ebook organization (Beta)
-    "ebook_library_mode": "merge",  # "merge" = same folder as audiobooks, "separate" = own library
-    "update_channel": "beta",  # "stable", "beta", or "nightly"
-    "naming_format": "author/title",  # "author/title", "author - title", "custom"
-    "custom_naming_template": "{author}/{title}",  # Custom template with {author}, {title}, {series}, etc.
-    "standardize_author_initials": False,  # Normalize initials: "James S A Corey" → "James S. A. Corey" (Issue #54)
-    # Metadata embedding settings
-    "metadata_embedding_enabled": False,  # Embed tags into audio files when fixes are applied
-    "metadata_embedding_overwrite_managed": True,  # Overwrite managed fields (title/author/series/etc)
-    "metadata_embedding_backup_sidecar": True,  # Create .library-manager.tags.json backup before modifying
-    # Language preference settings (Issue #17)
-    "preferred_language": "en",  # ISO 639-1 code for metadata lookups
-    "preserve_original_titles": True,  # Don't replace foreign language titles with English translations
-    "detect_language_from_audio": False,  # Use Gemini audio analysis to detect spoken language
-    # Trust the Process mode - fully automatic verification chain
-    "trust_the_process": False,  # Auto-verify drastic changes, use audio analysis as tie-breaker, only flag truly unidentifiable
-    # Book Profile System settings - progressive verification with confidence scoring
-    "enable_api_lookups": True,           # Layer 2: API database lookups (BookDB, Audnexus, etc.)
-    "enable_ai_verification": True,       # Layer 3: AI verification (uses configured provider)
-    "enable_audio_analysis": False,       # Layer 4: Audio analysis (requires Gemini API key)
-    "enable_content_analysis": False,      # Layer 4 sub-option: Content analysis (deeper audio analysis)
-    "use_bookdb_for_audio": True,          # Use BookDB GPU Whisper for audio identification (faster, no rate limits)
-    # Provider Chains - ordered lists of providers to try (first = primary, rest = fallbacks)
-    # Audio providers: "bookdb", "gemini", "openrouter", "ollama"
-    # Text providers: "gemini", "openrouter", "ollama"
-    "audio_provider_chain": ["bookdb", "gemini"],  # Order to try audio identification
-    "text_provider_chain": ["gemini", "openrouter"],  # Order to try text-based AI
-    "deep_scan_mode": False,              # Always use all enabled layers regardless of confidence
-    "profile_confidence_threshold": 85,   # Minimum confidence to skip remaining layers (0-100)
-    "multibook_ai_fallback": True,         # Use AI for ambiguous chapter/multibook detection
-    "skip_confirmations": False,           # Skip confirmation dialogs in Library view for faster workflow
-    # Anonymous error reporting - helps improve the app
-    "anonymous_error_reporting": False,    # Opt-in: send anonymous error reports to help fix bugs
-    "error_reporting_include_titles": True, # Include book title/author ONLY when they caused the error
-    # Community contribution - crowdsourced audiobook metadata
-    "contribute_to_community": False,      # Opt-in: share audio-extracted metadata (author/title/narrator) to help others
-    # P2P Cache - decentralized book lookup cache via Gun.db
-    "enable_p2p_cache": False,             # Opt-in: share book lookup cache with other Library Manager users (helps when BookDB is down)
-    # Watch Folder settings - monitor a folder for new audiobooks and organize them
-    "watch_mode": False,                   # Enable folder watching
-    "watch_folder": "",                    # Path to monitor for new audiobooks
-    "watch_output_folder": "",             # Where to move organized books (empty = same as library_paths[0])
-    "watch_use_hard_links": False,         # Hard link instead of move (saves space, same filesystem only)
-    "watch_interval_seconds": 60,          # How often to check for new files
-    "watch_delete_empty_folders": True,    # Remove empty source folders after moving
-    "watch_min_file_age_seconds": 30       # Minimum file age before processing (wait for downloads to complete)
-}
-
-DEFAULT_SECRETS = {
-    "openrouter_api_key": "",
-    "gemini_api_key": "",
-    "bookdb_api_key": "",  # Optional API key for BookDB (not required for public endpoints)
-    "abs_api_token": ""
-}
-
-
-def migrate_legacy_config():
-    """Migrate config files from old locations to DATA_DIR.
-
-    Issue #23: In beta.23 we fixed config paths to use DATA_DIR instead of BASE_DIR,
-    but didn't migrate existing configs. Users updating from older versions would
-    lose their config because the app looked in the new location.
-
-    Also checks /config and /data for UnRaid vs standard Docker setups.
-    """
-    if DATA_DIR == BASE_DIR:
-        return  # Not running with separate data dir, nothing to migrate
-
-    import shutil
-    migrate_files = ['config.json', 'secrets.json', 'library.db', 'user_groups.json']
-
-    # Check multiple possible legacy locations
-    # - BASE_DIR: old versions stored in app directory
-    # - /data: our default Docker mount (user might have switched to /config)
-    # - /config: UnRaid default (user might have switched to /data)
-    legacy_locations = [BASE_DIR]
-    if DATA_DIR != Path('/data') and Path('/data').exists():
-        legacy_locations.append(Path('/data'))
-    if DATA_DIR != Path('/config') and Path('/config').exists():
-        legacy_locations.append(Path('/config'))
-
-    for filename in migrate_files:
-        new_path = DATA_DIR / filename
-
-        # Skip if already exists in target location
-        if new_path.exists():
-            continue
-
-        # Try to find file in legacy locations
-        for legacy_dir in legacy_locations:
-            old_path = legacy_dir / filename
-            if old_path.exists():
-                try:
-                    shutil.copy2(old_path, new_path)
-                    logger.info(f"Migrated {filename} from {old_path} to {new_path}")
-                    break  # Found and migrated, stop looking
-                except Exception as e:
-                    logger.warning(f"Failed to migrate {filename} from {old_path}: {e}")
-
-
-def init_config():
-    """Create default config files if they don't exist."""
-    if not CONFIG_PATH.exists():
-        with open(CONFIG_PATH, 'w') as f:
-            json.dump(DEFAULT_CONFIG, f, indent=2)
-        logger.info(f"Created default config at {CONFIG_PATH}")
-
-    if not SECRETS_PATH.exists():
-        with open(SECRETS_PATH, 'w') as f:
-            json.dump(DEFAULT_SECRETS, f, indent=2)
-        logger.info(f"Created default secrets at {SECRETS_PATH}")
-
-
-def needs_setup(config):
-    """Check if app needs initial setup wizard.
-
-    Returns True only for fresh installs that haven't been configured.
-    Existing users who update will NOT see the wizard.
-
-    Logic:
-    - If user already has library_paths configured -> skip wizard
-    - If setup_completed flag is set -> skip wizard
-    - Otherwise (fresh install with no paths) -> show wizard
-    """
-    # Existing users already have library_paths - don't show wizard
-    paths = config.get('library_paths', [])
-    if paths and len(paths) > 0:
-        return False  # Already configured = skip wizard
-
-    # New flag for explicit wizard completion
-    if config.get('setup_completed', False):
-        return False
-
-    # Fresh install with no paths = show wizard
-    return True
-
-
-# ============== DATABASE ==============
-
-def init_db():
-    """Initialize SQLite database."""
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    c = conn.cursor()
-
-    # Books table - tracks all scanned books
-    c.execute('''CREATE TABLE IF NOT EXISTS books (
-        id INTEGER PRIMARY KEY,
-        path TEXT UNIQUE,
-        current_author TEXT,
-        current_title TEXT,
-        status TEXT DEFAULT 'pending',
-        error_message TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-
-    # Add error_message column if it doesn't exist (migration)
-    try:
-        c.execute('ALTER TABLE books ADD COLUMN error_message TEXT')
-    except:
-        pass  # Column already exists
-
-    # Add user_locked column - when True, user has manually set metadata and it should not be changed
-    try:
-        c.execute('ALTER TABLE books ADD COLUMN user_locked INTEGER DEFAULT 0')
-    except:
-        pass  # Column already exists
-
-    # Add source_type column - tracks where the book came from ('library' or 'watch_folder')
-    # Used to handle watch folder items that failed to move and need special processing
-    try:
-        c.execute("ALTER TABLE books ADD COLUMN source_type TEXT DEFAULT 'library'")
-    except:
-        pass  # Column already exists
-
-    # Add media_type column - tracks what formats exist ('audiobook', 'ebook', 'both')
-    # Issue #53: Used for filtering library by format
-    try:
-        c.execute("ALTER TABLE books ADD COLUMN media_type TEXT DEFAULT 'audiobook'")
-    except:
-        pass  # Column already exists
-
-    # Queue table - books needing AI analysis
-    c.execute('''CREATE TABLE IF NOT EXISTS queue (
-        id INTEGER PRIMARY KEY,
-        book_id INTEGER,
-        priority INTEGER DEFAULT 5,
-        reason TEXT,
-        added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (book_id) REFERENCES books(id)
-    )''')
-
-    # History table - all fixes made
-    c.execute('''CREATE TABLE IF NOT EXISTS history (
-        id INTEGER PRIMARY KEY,
-        book_id INTEGER,
-        old_author TEXT,
-        old_title TEXT,
-        new_author TEXT,
-        new_title TEXT,
-        old_path TEXT,
-        new_path TEXT,
-        status TEXT DEFAULT 'pending_fix',
-        error_message TEXT,
-        fixed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (book_id) REFERENCES books(id)
-    )''')
-
-    # Add status and error_message columns if they don't exist (migration)
-    try:
-        c.execute("ALTER TABLE history ADD COLUMN status TEXT DEFAULT 'pending_fix'")
-    except:
-        pass
-    try:
-        c.execute('ALTER TABLE history ADD COLUMN error_message TEXT')
-    except:
-        pass
-
-    # Add metadata columns for embedding (migration)
-    metadata_columns = [
-        'new_narrator TEXT',
-        'new_series TEXT',
-        'new_series_num TEXT',
-        'new_year TEXT',
-        'new_edition TEXT',
-        'new_variant TEXT',
-        'embed_status TEXT',
-        'embed_error TEXT'
-    ]
-    for col_def in metadata_columns:
-        try:
-            c.execute(f'ALTER TABLE history ADD COLUMN {col_def}')
-        except:
-            pass  # Column already exists
-
-    # Add profile columns for Book Profile system (migration)
-    profile_columns = [
-        ('books', 'profile TEXT'),          # Full JSON profile
-        ('books', 'confidence INTEGER DEFAULT 0'),  # Overall confidence score
-        ('books', 'verification_layer INTEGER DEFAULT 0')  # 0=pending, 1=API, 2=AI, 3=audio, 4=complete
-    ]
-    for table, col_def in profile_columns:
-        try:
-            c.execute(f'ALTER TABLE {table} ADD COLUMN {col_def}')
-        except:
-            pass  # Column already exists
-
-    # Stats table - daily stats
-    c.execute('''CREATE TABLE IF NOT EXISTS stats (
-        id INTEGER PRIMARY KEY,
-        date TEXT UNIQUE,
-        scanned INTEGER DEFAULT 0,
-        queued INTEGER DEFAULT 0,
-        fixed INTEGER DEFAULT 0,
-        verified INTEGER DEFAULT 0,
-        api_calls INTEGER DEFAULT 0
-    )''')
-
-    conn.commit()
-    conn.close()
-
-def get_db():
-    """Get database connection with timeout to avoid lock issues."""
-    conn = sqlite3.connect(DB_PATH, timeout=30)  # Wait up to 30 seconds for lock
-    conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA journal_mode=WAL')  # Better concurrent access
-    conn.execute('PRAGMA busy_timeout=30000')  # 30s SQLite-level busy wait
-    return conn
-
-# ============== CONFIG ==============
-
-def load_config():
-    """Load configuration and secrets from files."""
-    config = DEFAULT_CONFIG.copy()
-
-    # Load main config
-    if CONFIG_PATH.exists():
-        try:
-            with open(CONFIG_PATH) as f:
-                file_config = json.load(f)
-                config.update(file_config)
-        except Exception as e:
-            logger.warning(f"Error loading config: {e}")
-
-    # Load secrets (API keys)
-    if SECRETS_PATH.exists():
-        try:
-            with open(SECRETS_PATH) as f:
-                secrets = json.load(f)
-                config.update(secrets)
-        except Exception as e:
-            logger.warning(f"Error loading secrets: {e}")
-
-    return config
-
-def save_config(config):
-    """Save configuration to file (excludes secrets)."""
-    # Separate secrets from config
-    secrets_keys = ['openrouter_api_key', 'gemini_api_key', 'google_books_api_key', 'abs_api_token']
-    config_only = {k: v for k, v in config.items() if k not in secrets_keys}
-
-    with open(CONFIG_PATH, 'w') as f:
-        json.dump(config_only, f, indent=2)
-
-
-def save_secrets(secrets):
-    """Save API keys to secrets file."""
-    with open(SECRETS_PATH, 'w') as f:
-        json.dump(secrets, f, indent=2)
-
-def load_secrets():
-    """Load API keys from secrets file."""
-    if SECRETS_PATH.exists():
-        try:
-            with open(SECRETS_PATH) as f:
-                return json.load(f)
-        except Exception as e:
-            logger.warning(f"Error loading secrets: {e}")
-    return {}
+# ============== LEGACY CONFIGURATION REMOVED ==============
+# Configuration code has been moved to library_manager/config.py
+# Database code has been moved to library_manager/database.py
 
 # ============== ANONYMOUS ERROR REPORTING ==============
 
@@ -1744,21 +797,6 @@ def is_drastic_author_change(old_author, new_author):
 
     return False
 
-
-def is_placeholder_author(name):
-    """Check if an author name is a placeholder/system name that should be replaced."""
-    if not name:
-        return True
-    name_lower = name.lower().strip()
-    placeholder_authors = {'unknown', 'unknown author', 'various', 'various authors', 'va', 'n/a', 'none',
-                           'audiobook', 'audiobooks', 'ebook', 'ebooks', 'book', 'books',
-                           'author', 'authors', 'narrator', 'untitled', 'no author',
-                           'metadata', 'tmp', 'temp', 'streams', 'cache', 'data', 'log', 'logs',
-                           'audio', 'media', 'files', 'downloads', 'torrents',
-                           # Issue #46: Common watch/import folder names
-                           'watch', 'incoming', 'new', 'import', 'imports', 'inbox', 'input', 'drop'}
-    return name_lower in placeholder_authors
-
 # ============== LANGUAGE DETECTION ==============
 
 def detect_title_language(text):
@@ -2005,326 +1043,9 @@ def _call_ollama_simple(prompt, config):
 
 # ============== BOOK METADATA APIs ==============
 
-# Rate limiting for each API (last call timestamp)
-# Tuned to 80-90% of actual limits for maximum throughput:
-# - BookDB: Our API, 750/hr with key - can burst heavily
-# - Audnexus: Community API ~100/hr, be reasonable
-# - OpenLibrary: Docs say max 1 req/sec
-# - Google Books: 1000/day with API key, no per-second limit
-# - Hardcover: Beta GraphQL API
-API_RATE_LIMITS = {
-    'bookdb': {'last_call': 0, 'min_delay': 1.0},        # Our API - 750/hr, increased to prevent self-banning
-    'audnexus': {'last_call': 0, 'min_delay': 2.0},      # ~100/hr community API - be nice
-    'openlibrary': {'last_call': 0, 'min_delay': 1.5},   # They request max 1/sec, add buffer
-    'googlebooks': {'last_call': 0, 'min_delay': 1.0},   # 1000/day, no per-sec limit but be safe
-    'hardcover': {'last_call': 0, 'min_delay': 1.5},     # Beta API - be cautious
-    'openrouter': {'last_call': 0, 'min_delay': 5.0},    # Free tier: 20 req/min + daily limits - be conservative
-    'gemini': {'last_call': 0, 'min_delay': 7.0},        # Free tier: 10 RPM (Jan 2026), 250 RPD for Flash
-}
-API_RATE_LOCK = threading.Lock()
-
-# Circuit breaker for APIs that are timing out/failing
-# After X consecutive failures, skip the API for a cooldown period
-# Issue #74: Reduced cooldowns to prevent queue from stalling too long
-API_CIRCUIT_BREAKER = {
-    'audnexus': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 3, 'cooldown': 300},   # 5 min cooldown after 3 failures
-    'bookdb': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 5, 'cooldown': 120},     # 2 min cooldown after 5 rate limits
-    'openrouter': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 3, 'cooldown': 600}, # 10 min cooldown after 3 failures (was 1hr)
-    'gemini': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 3, 'cooldown': 300},     # 5 min cooldown after 3 quota errors (was 30min)
-}
-
 # Issue #61: Scan lock to prevent concurrent scans causing SQLite errors
 SCAN_LOCK = threading.Lock()
 scan_in_progress = False
-
-def rate_limit_wait(api_name):
-    """Wait if needed to respect rate limits for the given API."""
-    with API_RATE_LOCK:
-        if api_name not in API_RATE_LIMITS:
-            return
-
-        limit_info = API_RATE_LIMITS[api_name]
-        now = time.time()
-        elapsed = now - limit_info['last_call']
-        wait_time = limit_info['min_delay'] - elapsed
-
-        if wait_time > 0:
-            logger.debug(f"Rate limiting {api_name}: waiting {wait_time:.1f}s")
-            time.sleep(wait_time)
-
-        API_RATE_LIMITS[api_name]['last_call'] = time.time()
-
-
-def is_circuit_open(api_name):
-    """Check if the circuit breaker is open for the given API."""
-    cb = API_CIRCUIT_BREAKER.get(api_name, {})
-    if cb.get('circuit_open_until', 0) > time.time():
-        remaining = int(cb['circuit_open_until'] - time.time())
-        logger.debug(f"[CIRCUIT BREAKER] {api_name} is open, {remaining}s remaining")
-        return True
-    return False
-
-
-def record_api_failure(api_name):
-    """Record an API failure and potentially trip the circuit breaker."""
-    if api_name not in API_CIRCUIT_BREAKER:
-        return
-    cb = API_CIRCUIT_BREAKER[api_name]
-    cb['failures'] = cb.get('failures', 0) + 1
-    if cb['failures'] >= cb.get('max_failures', 3):
-        cb['circuit_open_until'] = time.time() + cb.get('cooldown', 300)
-        logger.warning(f"[CIRCUIT BREAKER] {api_name} tripped - cooling down for {cb.get('cooldown', 300)}s")
-
-
-def record_api_success(api_name):
-    """Record an API success and reset the circuit breaker."""
-    if api_name in API_CIRCUIT_BREAKER:
-        API_CIRCUIT_BREAKER[api_name]['failures'] = 0
-
-
-def sanitize_path_component(name):
-    """Sanitize a path component to prevent directory traversal and invalid chars.
-
-    CRITICAL SAFETY FUNCTION - prevents catastrophic file moves.
-    """
-    if not name or not isinstance(name, str):
-        return None
-
-    # Strip whitespace
-    name = name.strip()
-
-    # Block empty strings
-    if not name:
-        return None
-
-    # Block directory traversal attempts
-    if '..' in name or name.startswith('/') or name.startswith('\\'):
-        logger.warning(f"BLOCKED dangerous path component: {name}")
-        return None
-
-    # Remove/replace dangerous characters
-    # Windows: < > : " / \ | ? *
-    # Also remove control characters
-    dangerous_chars = '<>:"/\\|?*\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f'
-    for char in dangerous_chars:
-        name = name.replace(char, '')
-
-    # Final strip and check
-    name = name.strip('. ')  # Windows doesn't like trailing dots/spaces
-    if not name or len(name) < 2:
-        return None
-
-    return name
-
-
-def build_new_path(lib_path, author, title, series=None, series_num=None, narrator=None, year=None,
-                   edition=None, variant=None, config=None):
-    """Build a new path based on the naming format configuration.
-
-    Audiobookshelf-compatible format (when series_grouping enabled):
-    - Narrator in curly braces: {Ray Porter}
-    - Series number prefix: "1 - Title"
-    - Year in parentheses: (2003)
-    - Edition in brackets: [30th Anniversary Edition]
-    - Variant in brackets: [Graphic Audio]
-
-    SAFETY: Returns None if path would be invalid/dangerous.
-    """
-    naming_format = config.get('naming_format', 'author/title') if config else 'author/title'
-    series_grouping = config.get('series_grouping', False) if config else False
-
-    # CRITICAL SAFETY: Sanitize all path components
-    safe_author = sanitize_path_component(author)
-    safe_title = sanitize_path_component(title)
-    safe_series = sanitize_path_component(series) if series else None
-
-    # CRITICAL: Reject if author or title are invalid
-    if not safe_author or not safe_title:
-        logger.error(f"BLOCKED: Invalid author '{author}' or title '{title}' - would create dangerous path")
-        return None
-
-    # Build title folder name
-    title_folder = safe_title
-
-    # Add series number prefix if series grouping enabled and we have series info
-    # Merijeek: ABS compatibility - pad single-digit numbers for better sorting/detection
-    if series_grouping and safe_series and series_num:
-        # Normalize series_num to string and zero-pad if single digit
-        try:
-            num = float(str(series_num).replace(',', '.'))  # Handle "1,5" -> 1.5
-            if num == int(num):
-                # Whole number - pad to 2 digits (e.g., 1 -> "01", 10 -> "10")
-                formatted_num = f"{int(num):02d}"
-            else:
-                # Decimal number (e.g., 1.5) - keep as-is
-                formatted_num = str(series_num)
-        except (ValueError, TypeError):
-            formatted_num = str(series_num)
-        title_folder = f"{formatted_num} - {safe_title}"
-
-    # Add edition/variant in brackets (e.g., [30th Anniversary Edition], [Graphic Audio])
-    # These distinguish different versions of the same book
-    if variant:
-        safe_variant = sanitize_path_component(variant)
-        if safe_variant:
-            title_folder = f"{title_folder} [{safe_variant}]"
-    elif edition:
-        safe_edition = sanitize_path_component(edition)
-        if safe_edition:
-            title_folder = f"{title_folder} [{safe_edition}]"
-
-    # Add year if present (and no edition/variant already added for version distinction)
-    if year and not edition and not variant:
-        title_folder = f"{title_folder} ({year})"
-
-    # Add narrator - curly braces for ABS format, parentheses otherwise
-    if narrator:
-        safe_narrator = sanitize_path_component(narrator)
-        if safe_narrator:
-            if series_grouping:
-                # ABS format uses curly braces for narrator
-                title_folder = f"{title_folder} {{{safe_narrator}}}"
-            else:
-                # Legacy format uses parentheses
-                title_folder = f"{title_folder} ({safe_narrator})"
-
-    if naming_format == 'custom':
-        # Custom template: parse and replace tags
-        custom_template = config.get('custom_naming_template', '{author}/{title}') if config else '{author}/{title}'
-
-        # Prepare all available data for replacement
-        safe_narrator = sanitize_path_component(narrator) if narrator else ''
-        safe_year = str(year) if year else ''
-        safe_edition = sanitize_path_component(edition) if edition else ''
-        safe_variant = sanitize_path_component(variant) if variant else ''
-        # Issue #57 (Merijeek): Zero-pad series numbers for ABS compatibility
-        if series_num:
-            try:
-                num = float(str(series_num).replace(',', '.'))
-                if num == int(num):
-                    safe_series_num = f"{int(num):02d}"  # 1 -> "01", 10 -> "10"
-                else:
-                    safe_series_num = str(series_num)  # Keep decimals as-is
-            except (ValueError, TypeError):
-                safe_series_num = str(series_num)
-        else:
-            safe_series_num = ''
-
-        # Build the path from template
-        path_str = custom_template
-        path_str = path_str.replace('{author}', safe_author)
-        path_str = path_str.replace('{title}', safe_title)
-        path_str = path_str.replace('{series}', safe_series or '')
-        path_str = path_str.replace('{series_num}', safe_series_num)
-        path_str = path_str.replace('{narrator}', safe_narrator)
-        path_str = path_str.replace('{year}', safe_year)
-        path_str = path_str.replace('{edition}', safe_edition)
-        path_str = path_str.replace('{variant}', safe_variant)
-
-        # Clean up empty brackets/parens from missing optional data
-        import re
-        path_str = re.sub(r'\(\s*\)', '', path_str)  # Empty ()
-        path_str = re.sub(r'\[\s*\]', '', path_str)  # Empty []
-        path_str = re.sub(r'\{\s*\}', '', path_str)  # Empty {} (literal, not tags)
-        path_str = re.sub(r'\s+-\s+(?=-|/|$)', '', path_str)  # Dangling " - " before separator
-        path_str = re.sub(r'/\s*-\s+', '/', path_str)  # Leading "- " or " - " after slash (Issue #16, #22)
-        path_str = re.sub(r'^-\s+', '', path_str)  # Leading "- " at start
-        path_str = re.sub(r'^\s*-\s+', '', path_str)  # Leading " - " at start (with space)
-        path_str = re.sub(r'\s+-$', '', path_str)  # Trailing " -" at end
-        path_str = re.sub(r'/+', '/', path_str)  # Multiple slashes
-        path_str = re.sub(r'\s{2,}', ' ', path_str)  # Multiple spaces
-        path_str = path_str.strip(' /')
-
-        # Split by / to create path components
-        parts = [p.strip() for p in path_str.split('/') if p.strip()]
-        if not parts:
-            logger.error(f"BLOCKED: Custom template resulted in empty path")
-            return None
-
-        result_path = lib_path
-        for part in parts:
-            result_path = result_path / part
-    elif naming_format == 'author - title':
-        # Flat structure: Author - Title (single folder)
-        folder_name = f"{safe_author} - {title_folder}"
-        result_path = lib_path / folder_name
-    elif series_grouping and safe_series:
-        # Series grouping enabled AND book has series: Author/Series/Title
-        result_path = lib_path / safe_author / safe_series / title_folder
-    else:
-        # Default: Author/Title (two-level)
-        result_path = lib_path / safe_author / title_folder
-
-    # CRITICAL SAFETY: Verify path is within library and has minimum depth
-    try:
-        # Resolve to absolute path
-        result_path = result_path.resolve()
-        lib_path_resolved = Path(lib_path).resolve()
-
-        # Ensure result is within library path
-        result_path.relative_to(lib_path_resolved)
-
-        # Ensure minimum depth (at least 1 folder below library root)
-        relative = result_path.relative_to(lib_path_resolved)
-        if len(relative.parts) < 1:
-            logger.error(f"BLOCKED: Path too shallow - would dump files at library root: {result_path}")
-            return None
-
-    except ValueError:
-        logger.error(f"BLOCKED: Path escapes library! lib={lib_path}, result={result_path}")
-        return None
-
-    return result_path
-
-
-def clean_search_title(messy_name):
-    """Clean up a messy filename to extract searchable title."""
-    import re
-    # Remove common junk patterns
-    clean = messy_name
-
-    # Convert underscores to spaces first (common in filenames)
-    clean = clean.replace('_', ' ')
-
-    # Remove bracketed content like [bitsearch.to], [64k], [r1.1]
-    clean = re.sub(r'\[.*?\]', '', clean)
-    # Remove parenthetical junk like (Unabridged), (2019) - but keep series info like (Book 1)
-    clean = re.sub(r'\((?:Unabridged|Abridged|MP3|M4B|EPUB|PDF|64k|128k|192k|256k|320k|VBR|r\d+\.\d+|multi|mono|stereo).*?\)', '', clean, flags=re.IGNORECASE)
-    # Issue #50: Remove Calibre-style IDs - just bare numbers in parens at end like "(123)"
-    # These are Calibre's internal book IDs, not series info. Must NOT match "(Book 1)" etc.
-    clean = re.sub(r'\s*\(\d+\)$', '', clean)
-    # Remove curly brace junk like {465mb}, {narrator}, {128k}
-    clean = re.sub(r'\{[^}]*\}', '', clean)
-    # Issue #48: Remove standalone encoding info (bitrates, file sizes, channel info)
-    clean = re.sub(r'\b\d+k(?:bps)?\b', '', clean, flags=re.IGNORECASE)  # 128k, 64kbps
-    clean = re.sub(r'\b\d+(?:\.\d+)?(?:mb|gb|kb)\b', '', clean, flags=re.IGNORECASE)  # 463mb, 1.2gb
-    clean = re.sub(r'\b(?:mono|stereo|multi)\b', '', clean, flags=re.IGNORECASE)  # audio channels
-    clean = re.sub(r'\b(?:vbr|cbr|aac|lame|opus)\b', '', clean, flags=re.IGNORECASE)  # codec info
-    # Remove file extensions
-    clean = re.sub(r'\.(mp3|m4b|m4a|epub|pdf|mobi|webm|opus)$', '', clean, flags=re.IGNORECASE)
-    # Remove "by Author" at the end temporarily for searching
-    clean = re.sub(r'\s+by\s+[\w\s]+$', '', clean, flags=re.IGNORECASE)
-    # Remove audiobook-related junk (YouTube rip artifacts)
-    clean = re.sub(r'\b(full\s+)?audiobook\b', '', clean, flags=re.IGNORECASE)
-    clean = re.sub(r'\b(complete|unabridged|abridged)\b', '', clean, flags=re.IGNORECASE)
-    clean = re.sub(r'\b(audio\s*book|audio)\b', '', clean, flags=re.IGNORECASE)
-    clean = re.sub(r'\b(free|download|hd|hq)\b', '', clean, flags=re.IGNORECASE)
-    # NOTE: We intentionally DON'T strip date/timestamp patterns here
-    # Books like "11/22/63" by Stephen King have dates AS titles
-    # The layered verification system (API + AI + Audio) will determine the real title
-    # This function just cleans obvious junk for searching - title verification is separate
-
-    # Strip leading track/chapter numbers like "06 - Title", "01. Title", "Track 05 - Title"
-    # Also handles "02 Night" (number + space, no separator) which is common in downloads
-    # These are common in audiobook folders but mess up search
-    clean = re.sub(r'^(?:track\s*)?\d+\s*[-–—:.]?\s+', '', clean, flags=re.IGNORECASE)
-
-    # Remove extra whitespace
-    clean = re.sub(r'\s+', ' ', clean)
-    # Remove leading/trailing junk
-    clean = clean.strip(' -_.')
-    return clean
-
 
 # BookDB API endpoint (our private metadata service)
 BOOKDB_API_URL = "https://bookdb.deucebucket.com"
@@ -4058,35 +2779,6 @@ def transcribe_audio_local(audio_file, duration=90):
         logger.debug(f"Local transcription failed: {e}")
         return None
 
-
-def get_first_audio_file(folder_path):
-    """
-    Get the audio file that sorts first in a folder (usually contains credits).
-    Audiobook credits (title/author/narrator) are typically announced in the
-    first 30-60 seconds of the first file.
-    """
-    import glob
-
-    # Get all audio files
-    audio_extensions = ['*.mp3', '*.m4b', '*.m4a', '*.flac', '*.ogg', '*.opus']
-    audio_files = []
-    for ext in audio_extensions:
-        audio_files.extend(glob.glob(os.path.join(folder_path, ext)))
-        audio_files.extend(glob.glob(os.path.join(folder_path, ext.upper())))
-
-    if not audio_files:
-        return None
-
-    # Sort naturally (so "2" comes before "10")
-    def natural_sort_key(s):
-        import re
-        return [int(text) if text.isdigit() else text.lower()
-                for text in re.split('([0-9]+)', os.path.basename(s))]
-
-    audio_files.sort(key=natural_sort_key)
-    return audio_files[0]
-
-
 def analyze_audio_for_credits(folder_path, config):
     """
     Analyze the FIRST audio file in a folder for opening credits.
@@ -4119,72 +2811,6 @@ def analyze_orphan_audio_file(audio_file, config):
     """
     logger.info(f"[AUDIO] Analyzing orphan file: {os.path.basename(audio_file)}")
     return call_audio_provider_chain(audio_file, config, mode='identify', duration=45)
-
-
-def extract_audio_sample_from_middle(audio_file, duration_seconds=60, output_format='mp3'):
-    """
-    Extract audio from the MIDDLE of the file (for content-based identification).
-    This avoids intro music/credits and gets actual story content.
-    Returns path to temp file or None on failure.
-    """
-    import subprocess
-    import tempfile
-
-    try:
-        # First, get the total duration of the file
-        probe_cmd = [
-            'ffprobe', '-v', 'error',
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            audio_file
-        ]
-        result = subprocess.run(probe_cmd, capture_output=True, timeout=30)
-        if result.returncode != 0:
-            return None
-
-        total_duration = float(result.stdout.decode().strip())
-
-        # Start at 10% into the file, or 5 minutes, whichever is less
-        # This skips intros, music, and credits
-        start_time = min(total_duration * 0.1, 300)  # 5 minutes max skip
-
-        # Make sure we have enough content left
-        if start_time + duration_seconds > total_duration:
-            start_time = max(0, total_duration - duration_seconds - 10)
-
-        # Create temp file for the sample
-        temp_file = tempfile.NamedTemporaryFile(suffix=f'.{output_format}', delete=False)
-        temp_path = temp_file.name
-        temp_file.close()
-
-        # Extract sample from middle
-        cmd = [
-            'ffmpeg', '-y',
-            '-ss', str(int(start_time)),  # Start time
-            '-i', audio_file,
-            '-t', str(duration_seconds),  # Duration
-            '-vn',  # No video
-            '-acodec', 'libmp3lame' if output_format == 'mp3' else 'aac',
-            '-b:a', '64k',
-            '-ar', '16000',
-            '-ac', '1',
-            temp_path
-        ]
-
-        result = subprocess.run(cmd, capture_output=True, timeout=120)
-
-        if result.returncode == 0 and os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
-            logger.debug(f"Extracted middle sample from {start_time:.0f}s into file")
-            return temp_path
-        else:
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
-            return None
-
-    except Exception as e:
-        logger.debug(f"Middle extraction error: {e}")
-        return None
-
 
 # Global whisper model cache
 _whisper_model = None
@@ -4646,52 +3272,6 @@ def analyze_audio_for_content(folder_path, config):
 
     logger.info(f"[LAYER 4] Analyzing story content: {os.path.basename(first_file)}")
     return transcribe_and_identify_content(first_file, config)
-
-
-def extract_audio_sample(audio_file, duration_seconds=90, output_format='mp3'):
-    """
-    Extract first N seconds of audio file for analysis.
-    Returns path to temp file or None on failure.
-    """
-    import subprocess
-    import tempfile
-
-    try:
-        # Create temp file for the sample
-        temp_file = tempfile.NamedTemporaryFile(suffix=f'.{output_format}', delete=False)
-        temp_path = temp_file.name
-        temp_file.close()
-
-        # Use ffmpeg to extract sample
-        cmd = [
-            'ffmpeg', '-y',
-            '-i', audio_file,
-            '-t', str(duration_seconds),  # Duration
-            '-vn',  # No video
-            '-acodec', 'libmp3lame' if output_format == 'mp3' else 'aac',
-            '-b:a', '64k',  # Low bitrate for smaller file
-            '-ar', '16000',  # 16kHz sample rate (good for speech)
-            '-ac', '1',  # Mono
-            temp_path
-        ]
-
-        result = subprocess.run(cmd, capture_output=True, timeout=60)
-
-        if result.returncode == 0 and os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
-            return temp_path
-        else:
-            logger.debug(f"Audio extraction failed: {result.stderr.decode()[:200]}")
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
-            return None
-
-    except subprocess.TimeoutExpired:
-        logger.debug("Audio extraction timed out")
-        return None
-    except Exception as e:
-        logger.debug(f"Audio extraction error: {e}")
-        return None
-
 
 def analyze_audio_with_gemini(audio_file, config, duration=90, mode='credits'):
     """
@@ -10437,6 +9017,17 @@ def process_all_queue(config):
         layer1_processed = 0
         layer1_resolved = 0
         while True:
+            # Issue #74: Check if BookDB circuit breaker is open - wait instead of skipping
+            if is_circuit_open('bookdb'):
+                cb = API_CIRCUIT_BREAKER.get('bookdb', {})
+                remaining = int(cb.get('circuit_open_until', 0) - time.time())
+                if remaining > 0:
+                    wait_time = min(remaining, 60)
+                    logger.info(f"[LAYER 1] BookDB circuit breaker open, waiting {wait_time}s ({remaining}s total remaining)")
+                    processing_status["current"] = f"Layer 1: Waiting for BookDB ({remaining}s)"
+                    time.sleep(wait_time)
+                    continue
+
             processed, resolved = process_layer_1_audio(config)
             if processed == 0:
                 break
@@ -11629,16 +10220,16 @@ def api_install_whisper():
     import sys
 
     try:
-        # Issue #63: Use DATA_DIR for pip install directories
-        # Docker containers mount /data with write permissions, not /app
+        # Issue #63: Use DATA_DIR for pip install since /app may not be writable in Docker
+        # DATA_DIR is the mounted volume (/data or /config) that's always writable
         pip_cache = os.path.join(str(DATA_DIR), '.cache', 'pip')
         pip_local = os.path.join(str(DATA_DIR), '.local')
         os.makedirs(pip_cache, exist_ok=True)
         os.makedirs(pip_local, exist_ok=True)
 
-        # Set up environment for pip to use our directories
+        # Set up environment for pip to use our writable directories
         env = os.environ.copy()
-        env['HOME'] = str(DATA_DIR)  # Use data dir which has write permissions
+        env['HOME'] = str(DATA_DIR)  # Use writable data directory
         env['PIP_CACHE_DIR'] = pip_cache
         env['PYTHONUSERBASE'] = pip_local
 
@@ -15488,11 +14079,16 @@ def api_backup_info():
 def _setup_user_packages():
     """Add user site-packages to path for runtime-installed packages (like Whisper)."""
     # This allows packages installed via /api/install-whisper to be found
-    pip_local = os.path.join(os.path.dirname(__file__), '.local')
-    user_site = os.path.join(pip_local, 'lib', f'python{sys.version_info.major}.{sys.version_info.minor}', 'site-packages')
-    if os.path.isdir(user_site) and user_site not in sys.path:
-        sys.path.insert(0, user_site)
-        logger.debug(f"Added user site-packages to path: {user_site}")
+    # Issue #63: Check both old location (/app/.local) and new location (DATA_DIR/.local)
+    locations = [
+        os.path.join(str(DATA_DIR), '.local'),  # New location (writable in Docker)
+        os.path.join(os.path.dirname(__file__), '.local'),  # Legacy location
+    ]
+    for pip_local in locations:
+        user_site = os.path.join(pip_local, 'lib', f'python{sys.version_info.major}.{sys.version_info.minor}', 'site-packages')
+        if os.path.isdir(user_site) and user_site not in sys.path:
+            sys.path.insert(0, user_site)
+            logger.debug(f"Added user site-packages to path: {user_site}")
 
 
 if __name__ == '__main__':
