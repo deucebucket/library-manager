@@ -452,7 +452,7 @@
                                     <label class="form-label">Gemini API Key</label>
                                     <div class="input-group">
                                         <input type="password" class="form-control bg-dark text-light" name="gemini_api_key" id="gemini_api_key"
-                                               value="" placeholder="{% if config.gemini_api_key %}Key configured (enter new to replace){% else %}AIza...{% endif %}"
+                                               value="{{ config.gemini_api_key or '' }}" placeholder="AIza..."
                                                data-has-key="{{ 'true' if config.gemini_api_key else 'false' }}">
                                         <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('gemini_api_key')" title="Show/hide key">
                                             <i class="bi bi-eye"></i>
@@ -482,7 +482,7 @@
                                     <label class="form-label">OpenRouter API Key</label>
                                     <div class="input-group">
                                         <input type="password" class="form-control bg-dark text-light" name="openrouter_api_key" id="openrouter_api_key"
-                                               value="" placeholder="{% if config.openrouter_api_key %}Key configured (enter new to replace){% else %}sk-or-v1-...{% endif %}"
+                                               value="{{ config.openrouter_api_key or '' }}" placeholder="sk-or-v1-..."
                                                data-has-key="{{ 'true' if config.openrouter_api_key else 'false' }}">
                                         <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('openrouter_api_key')" title="Show/hide key">
                                             <i class="bi bi-eye"></i>
@@ -556,7 +556,7 @@
                                 <label class="form-label small">Google Books API Key <span class="text-muted">(optional)</span></label>
                                 <div class="input-group input-group-sm">
                                     <input type="password" class="form-control bg-dark text-light" name="google_books_api_key" id="google_books_api_key"
-                                           value="" placeholder="{% if config.google_books_api_key %}Key configured{% else %}For higher rate limits{% endif %}"
+                                           value="{{ config.google_books_api_key or '' }}" placeholder="For higher rate limits"
                                            data-has-key="{{ 'true' if config.google_books_api_key else 'false' }}">
                                     <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('google_books_api_key')" title="Show/hide key">
                                         <i class="bi bi-eye"></i>

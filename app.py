@@ -5033,10 +5033,14 @@ DISC_CHAPTER_PATTERNS = [
     r'.+\s*-\s*(disc|disk|cd)\s*\d+$',  # "Book Name - Disc 01"
 ]
 
-# Junk patterns to clean from titles
+# Junk patterns to clean from titles (Issue #64: expanded for torrent naming conventions)
 JUNK_PATTERNS = [
+    # Torrent site markers
     r'\[bitsearch\.to\]',
     r'\[rarbg\]',
+    r'\[EN\]',
+    r'\[\d+\]',  # [64420]
+    # Audio format markers
     r'\(unabridged\)',
     r'\(abridged\)',
     r'\(audiobook\)',
@@ -5044,14 +5048,27 @@ JUNK_PATTERNS = [
     r'\(graphicaudio\)',
     r'\(uk version\)',
     r'\(us version\)',
-    r'\[EN\]',
-    r'\(r\d+\.\d+\)',  # (r1.0), (r1.1)
-    r'\[\d+\]',  # [64420]
+    r'\(uk\)',
+    r'\(us\)',
+    r'\(multi\)',  # multi-file indicator
+    r'\(r\d+\.\d+\)',  # (r1.0), (r1.1) - revision markers
+    r'\([A-Z]\)',  # (V), (A), etc. - single letter version markers
+    # Bitrates - expanded
+    r'\b\d{2,3}k\b',  # 62k, 64k, 128k, 192k, 320k
+    # Duration timestamps: 01.10.42, 23.35.16, 69.35.47
+    r'\b\d{1,2}\.\d{2}\.\d{2}\b',
+    # File sizes
+    r'\{mb\}',  # {mb} without number
     r'\{\d+mb\}',  # {388mb}
     r'\{\d+\.\d+gb\}',  # {1.29gb}
-    r'\d+k\s+\d+\.\d+\.\d+',  # 64k 13.31.36
-    r'128k|64k|192k|320k',  # bitrate
-    r'\.epub$|\.pdf$|\.mobi$',  # file extensions in folder names
+    # Version numbers
+    r'\bv\d+\b',  # v01, v02
+    # Editor/narrator names in brackets: [Dozois,Strahan], [Cramer,Hartwell]
+    r'\[[A-Z][a-z]+(?:,\s*[A-Z][a-z]+)+\]',
+    # Narrator names in parentheses at end: (Thorne), (Bennett), (Linton)
+    r'\s+\([A-Z][a-z]+\)\s*$',
+    # File extensions in folder names
+    r'\.epub$|\.pdf$|\.mobi$',
 ]
 
 # Patterns that indicate author name in title
@@ -6167,6 +6184,18 @@ def clean_title(title):
     issues = []
     cleaned = title
 
+    # Issue #64: Strip year prefix like "2007 - Title" (common in torrent naming)
+    year_prefix_match = re.match(r'^(19|20)\d{2}\s*[-–]\s*', cleaned)
+    if year_prefix_match:
+        issues.append(f"year_prefix: {year_prefix_match.group(0).strip()}")
+        cleaned = cleaned[year_prefix_match.end():]
+
+    # Issue #64: Strip series prefix like "DM-08 - Title" or "01 - Title"
+    series_prefix_match = re.match(r'^[A-Z]{1,3}[-.]?\d{1,2}\s*[-–]\s*', cleaned)
+    if series_prefix_match:
+        issues.append(f"series_prefix: {series_prefix_match.group(0).strip()}")
+        cleaned = cleaned[series_prefix_match.end():]
+
     for pattern in JUNK_PATTERNS:
         if re.search(pattern, cleaned, re.IGNORECASE):
             issues.append(f"junk: {pattern}")
@@ -6483,6 +6512,13 @@ def analyze_full_path(audio_file_path, library_root):
         confidence = 'medium'
     else:
         confidence = 'low'
+
+    # Issue #64: Clean junk from detected title (torrent naming, bitrates, timestamps, etc.)
+    if detected_title:
+        cleaned_title, title_issues = clean_title(detected_title)
+        if title_issues:
+            issues.extend(title_issues)
+        detected_title = cleaned_title
 
     return {
         'book_folder': str(book_folder),
@@ -8261,12 +8297,28 @@ def process_layer_1_audio(config, limit=None):
                                 WHERE id = ?''',
                               (json.dumps(profile), 80 if confidence == 'high' else 50, row['book_id']))
 
-                    # Add to history as pending fix
+                    # Compute paths for history entry (Issue #64: prevent stale path errors)
+                    old_path_str = book_path
+                    config = load_config()
+                    library_paths = config.get('library_paths', [])
+                    new_path_str = None
+                    if library_paths:
+                        computed_path = build_new_path(
+                            Path(library_paths[0]), author, title,
+                            series=ebook_result.get('series'),
+                            series_num=ebook_result.get('series_num'),
+                            config=config
+                        )
+                        if computed_path:
+                            new_path_str = str(computed_path)
+
+                    # Add to history as pending fix (with paths to prevent stale references)
                     c.execute('''INSERT INTO history
-                                (book_id, old_author, old_title, new_author, new_title, new_series, new_series_num, status)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
+                                (book_id, old_author, old_title, new_author, new_title, new_series, new_series_num, old_path, new_path, status)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
                              (row['book_id'], row['current_author'], row['current_title'],
-                              author, title, ebook_result.get('series'), ebook_result.get('series_num')))
+                              author, title, ebook_result.get('series'), ebook_result.get('series_num'),
+                              old_path_str, new_path_str))
 
                     # Remove from queue
                     c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
@@ -8381,12 +8433,27 @@ def process_layer_1_audio(config, limit=None):
                          (author, title, json.dumps(profile),
                           85 if confidence == 'high' else 70, row['book_id']))
 
-                # Add to history
+                # Compute paths for history entry (Issue #64: prevent stale path errors)
+                old_path_str = book_path
+                audio_config = load_config()
+                library_paths = audio_config.get('library_paths', [])
+                new_path_str = None
+                if library_paths:
+                    computed_path = build_new_path(
+                        Path(library_paths[0]), author, title,
+                        series=series, series_num=series_num, narrator=narrator,
+                        config=audio_config
+                    )
+                    if computed_path:
+                        new_path_str = str(computed_path)
+
+                # Add to history (with paths to prevent stale references)
                 c.execute('''INSERT INTO history
-                            (book_id, old_author, old_title, new_author, new_title, new_narrator, new_series, new_series_num, status)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
+                            (book_id, old_author, old_title, new_author, new_title, new_narrator, new_series, new_series_num, old_path, new_path, status)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
                          (row['book_id'], row['current_author'], row['current_title'],
-                          author, title, narrator, series, series_num))
+                          author, title, narrator, series, series_num,
+                          old_path_str, new_path_str))
 
                 # Remove from queue
                 c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
@@ -10137,12 +10204,26 @@ def apply_fix(history_id):
             continue
 
     if not old_path.exists():
-        error_msg = f"Source no longer exists: {old_path}"
-        c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
-                 ('error', error_msg, history_id))
-        conn.commit()
-        conn.close()
-        return False, error_msg
+        # Issue #64: Try current book path as fallback (book may have been moved)
+        c.execute('SELECT path FROM books WHERE id = ?', (book_id,))
+        current_book = c.fetchone()
+        fallback_found = False
+        if current_book and current_book['path'] and Path(current_book['path']).exists():
+            fallback_path = Path(current_book['path'])
+            if fallback_path != old_path:
+                logger.warning(f"[APPLY FIX] old_path {old_path} missing, using current book path: {fallback_path}")
+                old_path = fallback_path
+                # Update history with the correct old_path for future reference
+                c.execute('UPDATE history SET old_path = ? WHERE id = ?', (str(old_path), history_id))
+                fallback_found = True
+
+        if not fallback_found:
+            error_msg = f"Source no longer exists: {old_path}"
+            c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
+                     ('error', error_msg, history_id))
+            conn.commit()
+            conn.close()
+            return False, error_msg
 
     try:
         import shutil
@@ -11067,8 +11148,8 @@ def dashboard():
     conn = get_db()
     c = conn.cursor()
 
-    # Get counts
-    c.execute('SELECT COUNT(*) as count FROM books')
+    # Get counts (Issue #64: exclude series_folder and multi_book_files containers)
+    c.execute("SELECT COUNT(*) as count FROM books WHERE status NOT IN ('series_folder', 'multi_book_files')")
     total_books = c.fetchone()['count']
 
     c.execute('SELECT COUNT(*) as count FROM queue')
@@ -11368,11 +11449,11 @@ def settings_page():
 
     config = load_config()
     secrets = load_secrets()
-    # Pass key existence flags (not actual values) to template for UI indicators
-    # SECURITY: Never pass actual API keys to templates - only boolean existence flags
-    config['gemini_api_key'] = bool(secrets.get('gemini_api_key', ''))
-    config['openrouter_api_key'] = bool(secrets.get('openrouter_api_key', ''))
-    config['google_books_api_key'] = bool(secrets.get('google_books_api_key', ''))
+    # Pass actual API key values to template (hidden by default, eye toggle to reveal)
+    # This is a local/self-hosted app - users need to verify their keys were saved correctly
+    config['gemini_api_key'] = secrets.get('gemini_api_key', '')
+    config['openrouter_api_key'] = secrets.get('openrouter_api_key', '')
+    config['google_books_api_key'] = secrets.get('google_books_api_key', '')
     return render_template('settings.html', config=config, version=APP_VERSION)
 
 
@@ -12936,8 +13017,8 @@ def api_library():
     # Get media type filter (Issue #53)
     media_filter = request.args.get('media', 'all')  # 'all', 'audiobook', 'ebook', 'both'
 
-    # Count books by status
-    c.execute("SELECT COUNT(*) FROM books")
+    # Count books by status (Issue #64: exclude series_folder and multi_book_files containers)
+    c.execute("SELECT COUNT(*) FROM books WHERE status NOT IN ('series_folder', 'multi_book_files')")
     counts['all'] = c.fetchone()[0]
 
     # Issue #53: Count by media type
