@@ -2025,11 +2025,12 @@ API_RATE_LOCK = threading.Lock()
 
 # Circuit breaker for APIs that are timing out/failing
 # After X consecutive failures, skip the API for a cooldown period
+# Issue #74: Reduced cooldowns to prevent queue from stalling too long
 API_CIRCUIT_BREAKER = {
-    'audnexus': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 3, 'cooldown': 300},  # 5 min cooldown after 3 failures
-    'bookdb': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 5, 'cooldown': 120},    # 2 min cooldown after 5 rate limits
-    'openrouter': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 2, 'cooldown': 3600},  # 1 hour after daily limit hit
-    'gemini': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 2, 'cooldown': 1800},   # 30 min cooldown after 2 quota errors
+    'audnexus': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 3, 'cooldown': 300},   # 5 min cooldown after 3 failures
+    'bookdb': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 5, 'cooldown': 120},     # 2 min cooldown after 5 rate limits
+    'openrouter': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 3, 'cooldown': 600}, # 10 min cooldown after 3 failures (was 1hr)
+    'gemini': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 3, 'cooldown': 300},     # 5 min cooldown after 3 quota errors (was 30min)
 }
 
 # Issue #61: Scan lock to prevent concurrent scans causing SQLite errors
@@ -8361,6 +8362,19 @@ def process_layer_1_audio(config, limit=None):
         transcript = None
 
         if config.get('use_bookdb_for_audio', True):
+            # Issue #74: Check if BookDB circuit breaker is open - wait instead of skipping
+            if is_circuit_open('bookdb'):
+                cb = API_CIRCUIT_BREAKER.get('bookdb', {})
+                remaining = int(cb.get('circuit_open_until', 0) - time.time())
+                if remaining > 0:
+                    wait_time = min(remaining, 60)  # Wait up to 60s at a time
+                    logger.info(f"[LAYER 1/AUDIO] BookDB circuit breaker open, waiting {wait_time}s ({remaining}s total remaining)")
+                    processing_status["current"] = f"Layer 1: Waiting for BookDB ({remaining}s)"
+                    time.sleep(wait_time)
+                    # After waiting, continue to next item - circuit breaker may have closed
+                    processed += 1
+                    continue
+
             result = identify_audio_with_bookdb(audio_file)
             if result and result.get('author') and result.get('title'):
                 # BookDB got a full identification - use it!
@@ -10454,9 +10468,8 @@ def process_all_queue(config):
                     logger.info(f"[LAYER 2] Gemini circuit breaker open, waiting {wait_time}s ({remaining}s total remaining)")
                     processing_status["current"] = f"Layer 2: Waiting for Gemini ({remaining}s)"
                     time.sleep(wait_time)
-                    if circuit_wait_count > 30:  # Give up after ~30 minutes of waiting
-                        logger.warning("[LAYER 2] Gemini unavailable too long, moving to next layer")
-                        break
+                    # Issue #74: Keep waiting for circuit breaker to close - don't skip layers
+                    # The circuit breaker will close after its cooldown period (now 5 min)
                     continue
 
             processed, resolved = process_layer_3_audio(config, verification_layer=2)  # Process Layer 2 items
@@ -11616,16 +11629,16 @@ def api_install_whisper():
     import sys
 
     try:
-        # Ensure pip cache and user install directories exist and are writable
-        # This handles Docker containers where /app/.local may not exist
-        pip_cache = os.path.join(os.path.dirname(__file__), '.cache', 'pip')
-        pip_local = os.path.join(os.path.dirname(__file__), '.local')
+        # Issue #63: Use DATA_DIR for pip install directories
+        # Docker containers mount /data with write permissions, not /app
+        pip_cache = os.path.join(str(DATA_DIR), '.cache', 'pip')
+        pip_local = os.path.join(str(DATA_DIR), '.local')
         os.makedirs(pip_cache, exist_ok=True)
         os.makedirs(pip_local, exist_ok=True)
 
         # Set up environment for pip to use our directories
         env = os.environ.copy()
-        env['HOME'] = os.path.dirname(__file__)  # /app
+        env['HOME'] = str(DATA_DIR)  # Use data dir which has write permissions
         env['PIP_CACHE_DIR'] = pip_cache
         env['PYTHONUSERBASE'] = pip_local
 
