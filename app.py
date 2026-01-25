@@ -61,7 +61,9 @@ from library_manager.utils import (
     # validation
     is_unsearchable_query, is_garbage_match, is_placeholder_author, is_drastic_author_change,
     # audio
+    AUDIO_EXTENSIONS, EBOOK_EXTENSIONS,
     get_first_audio_file, extract_audio_sample, extract_audio_sample_from_middle,
+    find_audio_files, find_ebook_files,
     # path_safety
     sanitize_path_component, build_new_path,
 )
@@ -2133,11 +2135,6 @@ def get_audio_metadata_hints(book_path, config=None):
 import re
 import hashlib
 
-# Audio file extensions we care about
-AUDIO_EXTENSIONS = {'.m4b', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.wma', '.aac'}
-EBOOK_EXTENSIONS = {'.epub', '.pdf', '.mobi', '.azw3'}
-
-
 def detect_media_type(path):
     """Issue #53: Detect what media types exist in a book folder.
 
@@ -3987,27 +3984,6 @@ def analyze_title(title, author):
 
     return issues
 
-
-def find_audio_files(directory):
-    """Recursively find all audio files in directory."""
-    audio_files = []
-    for root, dirs, files in os.walk(directory, followlinks=True):
-        for f in files:
-            ext = os.path.splitext(f)[1].lower()
-            if ext in AUDIO_EXTENSIONS:
-                audio_files.append(os.path.join(root, f))
-    return audio_files
-
-
-def find_ebook_files(directory):
-    """Recursively find all ebook files in directory."""
-    ebook_files = []
-    for root, dirs, files in os.walk(directory, followlinks=True):
-        for f in files:
-            ext = os.path.splitext(f)[1].lower()
-            if ext in EBOOK_EXTENSIONS:
-                ebook_files.append(os.path.join(root, f))
-    return ebook_files
 
 
 def check_audio_file_health(file_path):

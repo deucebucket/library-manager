@@ -15,9 +15,13 @@ from library_manager.utils.validation import (
     is_drastic_author_change,
 )
 from library_manager.utils.audio import (
+    AUDIO_EXTENSIONS,
+    EBOOK_EXTENSIONS,
     get_first_audio_file,
     extract_audio_sample,
     extract_audio_sample_from_middle,
+    find_audio_files,
+    find_ebook_files,
 )
 from library_manager.utils.path_safety import (
     sanitize_path_component,
@@ -38,9 +42,13 @@ __all__ = [
     'is_placeholder_author',
     'is_drastic_author_change',
     # audio
+    'AUDIO_EXTENSIONS',
+    'EBOOK_EXTENSIONS',
     'get_first_audio_file',
     'extract_audio_sample',
     'extract_audio_sample_from_middle',
+    'find_audio_files',
+    'find_ebook_files',
     # path_safety
     'sanitize_path_component',
     'build_new_path',

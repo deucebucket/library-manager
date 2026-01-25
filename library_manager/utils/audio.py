@@ -1,4 +1,4 @@
-"""Audio file utilities for sample extraction."""
+"""Audio file utilities for sample extraction and discovery."""
 import os
 import re
 import glob
@@ -7,6 +7,10 @@ import tempfile
 import logging
 
 logger = logging.getLogger(__name__)
+
+# File extension constants
+AUDIO_EXTENSIONS = {'.m4b', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.wma', '.aac'}
+EBOOK_EXTENSIONS = {'.epub', '.pdf', '.mobi', '.azw3'}
 
 
 def get_first_audio_file(folder_path):
@@ -141,8 +145,34 @@ def extract_audio_sample_from_middle(audio_file, duration_seconds=60, output_for
         return None
 
 
+def find_audio_files(directory):
+    """Recursively find all audio files in directory."""
+    audio_files = []
+    for root, dirs, files in os.walk(directory, followlinks=True):
+        for f in files:
+            ext = os.path.splitext(f)[1].lower()
+            if ext in AUDIO_EXTENSIONS:
+                audio_files.append(os.path.join(root, f))
+    return audio_files
+
+
+def find_ebook_files(directory):
+    """Recursively find all ebook files in directory."""
+    ebook_files = []
+    for root, dirs, files in os.walk(directory, followlinks=True):
+        for f in files:
+            ext = os.path.splitext(f)[1].lower()
+            if ext in EBOOK_EXTENSIONS:
+                ebook_files.append(os.path.join(root, f))
+    return ebook_files
+
+
 __all__ = [
+    'AUDIO_EXTENSIONS',
+    'EBOOK_EXTENSIONS',
     'get_first_audio_file',
     'extract_audio_sample',
     'extract_audio_sample_from_middle',
+    'find_audio_files',
+    'find_ebook_files',
 ]
