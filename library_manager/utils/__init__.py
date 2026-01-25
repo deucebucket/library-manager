@@ -12,6 +12,7 @@ from library_manager.utils.validation import (
     is_unsearchable_query,
     is_garbage_match,
     is_placeholder_author,
+    is_drastic_author_change,
 )
 from library_manager.utils.audio import (
     get_first_audio_file,
@@ -35,6 +36,7 @@ __all__ = [
     'is_unsearchable_query',
     'is_garbage_match',
     'is_placeholder_author',
+    'is_drastic_author_change',
     # audio
     'get_first_audio_file',
     'extract_audio_sample',

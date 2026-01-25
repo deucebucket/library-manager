@@ -59,7 +59,7 @@ from library_manager.utils import (
     calculate_title_similarity, extract_series_from_title, clean_search_title,
     standardize_initials, clean_author_name, extract_author_title,
     # validation
-    is_unsearchable_query, is_garbage_match, is_placeholder_author,
+    is_unsearchable_query, is_garbage_match, is_placeholder_author, is_drastic_author_change,
     # audio
     get_first_audio_file, extract_audio_sample, extract_audio_sample_from_middle,
     # path_safety
@@ -762,68 +762,6 @@ def send_error_report_email(reports: list, user_message: str = None) -> dict:
             'email_error': email_error
         }
 
-
-# ============== DRASTIC CHANGE DETECTION ==============
-
-def is_drastic_author_change(old_author, new_author):
-    """
-    Check if an author change is "drastic" (completely different person)
-    vs just formatting (case change, initials expanded, etc.)
-
-    Returns True if the change is drastic and should require approval.
-    """
-    if not old_author or not new_author:
-        return False
-
-    # Normalize for comparison
-    old_norm = old_author.lower().strip()
-    new_norm = new_author.lower().strip()
-
-    # Placeholder authors - going FROM these to a real author is NOT drastic
-    placeholder_authors = {'unknown', 'various', 'various authors', 'va', 'n/a', 'none',
-                           'audiobook', 'audiobooks', 'ebook', 'ebooks', 'book', 'books',
-                           'author', 'authors', 'narrator', 'untitled', 'no author',
-                           'metadata', 'tmp', 'temp', 'streams', 'cache'}  # System folders too
-    if old_norm in placeholder_authors:
-        return False  # Finding the real author is always good
-
-
-    # If they're the same after normalization, not drastic
-    if old_norm == new_norm:
-        return False
-
-    # Extract key words (remove common prefixes/suffixes)
-    def get_name_parts(name):
-        # Remove punctuation and split
-        import re
-        clean = re.sub(r'[^\w\s]', ' ', name.lower())
-        parts = [p for p in clean.split() if len(p) > 1]
-        return set(parts)
-
-    old_parts = get_name_parts(old_author)
-    new_parts = get_name_parts(new_author)
-
-    # If no overlap at all, definitely drastic
-    if not old_parts.intersection(new_parts):
-        # Check for initials match (e.g., "J.R.R. Tolkien" vs "Tolkien")
-        # Get last names (usually the longest word or last word)
-        old_last = max(old_parts, key=len) if old_parts else ""
-        new_last = max(new_parts, key=len) if new_parts else ""
-
-        if old_last and new_last and (old_last in new_last or new_last in old_last):
-            return False  # Probably same person
-
-        return True  # Completely different
-
-    # Some overlap - check how much
-    overlap = len(old_parts.intersection(new_parts))
-    total = max(len(old_parts), len(new_parts))
-
-    # If less than 30% overlap, consider it drastic
-    if total > 0 and overlap / total < 0.3:
-        return True
-
-    return False
 
 # ============== LANGUAGE DETECTION ==============
 
