@@ -7,3 +7,8 @@ langdetect>=1.0.9
 # Install with: pip install faster-whisper
 # Requires ~150MB download for 'base' model on first use
 # faster-whisper>=1.0.0
+
+# Optional: P2P book cache via Gun.db (Issue #62)
+# Enables decentralized sharing of book lookup results
+# Install with: pip install pygundb
+# pygundb>=0.2.0

@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.92-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.94-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,19 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.94** - 🐛 **Bug Fixes** (Issue #64)
+> - **API Key Visibility** - Keys now shown in settings (hidden by default, eye toggle reveals)
+> - **Apply All Fix** - History entries now store paths to prevent "Source no longer exists" errors
+> - **Dashboard Counts** - Fixed inflated counts by excluding series folders from totals
+> - **Title Cleaning** - Strips torrent naming junk (bitrates, timestamps, editor names, year prefixes)
+
+> **beta.93** - 🌐 **P2P Cache & Resilience** (Issue #62)
+> - **P2P Book Cache** - Optional decentralized cache shares BookDB results with other users
+> - **Helps During Outages** - Get results from P2P network when BookDB is temporarily down
+> - **Opt-in & Private** - Disabled by default, only metadata shared (no file paths)
+> - **BookDB Retry Logic** - 5 retries with backoff when no fallback configured
+> - **Data Validation** - Rejects malformed/malicious P2P cache entries
 
 > **beta.92** - 🔒 **Security & Stability**
 > - **Confidence Threshold** - Books only marked "verified" when confidence ≥40%, prevents false positives

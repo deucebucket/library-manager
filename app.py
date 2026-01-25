@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.90"
+APP_VERSION = "0.9.0-beta.94"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -40,6 +40,16 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
 from audio_tagging import embed_tags_for_path, build_metadata_for_embedding
+
+# Try to import P2P cache (optional - gracefully degrades if not available)
+try:
+    from p2p_cache import get_cache as get_book_cache, GUNDB_AVAILABLE
+    P2P_CACHE_AVAILABLE = True
+except ImportError:
+    P2P_CACHE_AVAILABLE = False
+    GUNDB_AVAILABLE = False
+    def get_book_cache(*args, **kwargs):
+        return None
 
 # Try to import narrator detection from BookDB
 try:
@@ -1163,6 +1173,8 @@ DEFAULT_CONFIG = {
     "error_reporting_include_titles": True, # Include book title/author ONLY when they caused the error
     # Community contribution - crowdsourced audiobook metadata
     "contribute_to_community": False,      # Opt-in: share audio-extracted metadata (author/title/narrator) to help others
+    # P2P Cache - decentralized book lookup cache via Gun.db
+    "enable_p2p_cache": False,             # Opt-in: share book lookup cache with other Library Manager users (helps when BookDB is down)
     # Watch Folder settings - monitor a folder for new audiobooks and organize them
     "watch_mode": False,                   # Enable folder watching
     "watch_folder": "",                    # Path to monitor for new audiobooks
@@ -2318,14 +2330,31 @@ BOOKDB_API_URL = "https://bookdb.deucebucket.com"
 # Public API key for Library Manager users (no config needed)
 BOOKDB_PUBLIC_KEY = "lm-public-2024_85TbJ2lbrXGm38tBgliPAcAexLA_AeWxyqvHPbwRIrA"
 
-def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=None):
+def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=None, config=None):
     """
     Search our private BookDB metadata service.
     Uses fuzzy matching via Qdrant vectors - great for messy filenames.
     Returns series info including book position if found.
+
+    Now with local/P2P cache support - checks cache first, falls back to API.
     """
     if not api_key:
         return None
+
+    # Check cache first (local + P2P if enabled)
+    if P2P_CACHE_AVAILABLE and config:
+        try:
+            cache = get_book_cache(
+                data_dir=DATA_DIR,
+                enable_p2p=config.get('enable_p2p_cache', False)
+            )
+            if cache:
+                cached = cache.get(title, author)
+                if cached:
+                    logger.info(f"[CACHE] Hit for: {author} - {title} (source: {cached.get('_cache_source', 'local')})")
+                    return cached
+        except Exception as e:
+            logger.debug(f"Cache lookup error (continuing to API): {e}")
 
     # Check circuit breaker - skip if we've been rate limited too much
     cb = API_CIRCUIT_BREAKER.get('bookdb', {})
@@ -2427,6 +2456,22 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
             logger.info(f"BookDB found: {result['author']} - {result['title']}" +
                        (f" ({result['series']} #{result['series_num']})" if result['series'] else "") +
                        f" [confidence: {result['confidence']:.2f}]")
+
+            # Cache successful result (local + P2P if enabled)
+            if P2P_CACHE_AVAILABLE and config:
+                try:
+                    cache = get_book_cache(
+                        data_dir=DATA_DIR,
+                        enable_p2p=config.get('enable_p2p_cache', False)
+                    )
+                    if cache:
+                        cache.put(title, author, result,
+                                  source='bookdb',
+                                  confidence=result.get('confidence', 0))
+                        logger.debug(f"[CACHE] Stored: {author} - {title}")
+                except Exception as e:
+                    logger.debug(f"Cache write error (non-fatal): {e}")
+
             return result
         return None
 
@@ -3863,6 +3908,20 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
     secrets = load_secrets()
     merged_config = {**config, **secrets}
 
+    # Check if we have any viable fallback providers
+    has_fallback = False
+    for p in chain[1:]:  # Skip first provider
+        p = p.lower().strip()
+        if p == 'gemini' and merged_config.get('gemini_api_key'):
+            has_fallback = True
+            break
+        elif p == 'openrouter' and merged_config.get('openrouter_api_key'):
+            has_fallback = True
+            break
+        elif p == 'ollama':
+            has_fallback = True
+            break
+
     for provider in chain:
         provider = provider.lower().strip()
         logger.info(f"[AUDIO CHAIN] Trying audio provider: {provider}")
@@ -3870,10 +3929,31 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
         try:
             if provider == 'bookdb':
                 # BookDB has GPU Whisper - best option
-                result = identify_audio_with_bookdb(audio_file)
-                if result and result.get('title'):
-                    logger.info(f"[AUDIO CHAIN] Success with bookdb: {result.get('author')} - {result.get('title')}")
-                    return result
+                # Retry with backoff if connection fails (service might be restarting)
+                max_retries = 5 if not has_fallback else 2  # More retries if no fallback
+                retry_delay = 10  # Start with 10 seconds
+
+                for attempt in range(max_retries):
+                    result = identify_audio_with_bookdb(audio_file)
+                    if result and result.get('title'):
+                        logger.info(f"[AUDIO CHAIN] Success with bookdb: {result.get('author')} - {result.get('title')}")
+                        return result
+                    elif result and result.get('transcript'):
+                        # Got transcript but no match - still useful, return for potential AI fallback
+                        logger.info(f"[AUDIO CHAIN] BookDB returned transcript only")
+                        return result
+                    elif result is None and attempt < max_retries - 1:
+                        # Connection might be down, wait and retry
+                        wait_time = retry_delay * (attempt + 1)
+                        logger.info(f"[AUDIO CHAIN] BookDB unavailable, waiting {wait_time}s before retry ({attempt + 1}/{max_retries})")
+                        time.sleep(wait_time)
+                    else:
+                        break
+
+                if not has_fallback:
+                    # No fallback available, keep waiting for BookDB
+                    logger.warning("[AUDIO CHAIN] BookDB failed and no fallback configured - will retry on next queue cycle")
+                    return None  # Let the queue retry later
 
             elif provider == 'gemini':
                 if not merged_config.get('gemini_api_key'):
@@ -4953,10 +5033,14 @@ DISC_CHAPTER_PATTERNS = [
     r'.+\s*-\s*(disc|disk|cd)\s*\d+$',  # "Book Name - Disc 01"
 ]
 
-# Junk patterns to clean from titles
+# Junk patterns to clean from titles (Issue #64: expanded for torrent naming conventions)
 JUNK_PATTERNS = [
+    # Torrent site markers
     r'\[bitsearch\.to\]',
     r'\[rarbg\]',
+    r'\[EN\]',
+    r'\[\d+\]',  # [64420]
+    # Audio format markers
     r'\(unabridged\)',
     r'\(abridged\)',
     r'\(audiobook\)',
@@ -4964,14 +5048,27 @@ JUNK_PATTERNS = [
     r'\(graphicaudio\)',
     r'\(uk version\)',
     r'\(us version\)',
-    r'\[EN\]',
-    r'\(r\d+\.\d+\)',  # (r1.0), (r1.1)
-    r'\[\d+\]',  # [64420]
+    r'\(uk\)',
+    r'\(us\)',
+    r'\(multi\)',  # multi-file indicator
+    r'\(r\d+\.\d+\)',  # (r1.0), (r1.1) - revision markers
+    r'\([A-Z]\)',  # (V), (A), etc. - single letter version markers
+    # Bitrates - expanded
+    r'\b\d{2,3}k\b',  # 62k, 64k, 128k, 192k, 320k
+    # Duration timestamps: 01.10.42, 23.35.16, 69.35.47
+    r'\b\d{1,2}\.\d{2}\.\d{2}\b',
+    # File sizes
+    r'\{mb\}',  # {mb} without number
     r'\{\d+mb\}',  # {388mb}
     r'\{\d+\.\d+gb\}',  # {1.29gb}
-    r'\d+k\s+\d+\.\d+\.\d+',  # 64k 13.31.36
-    r'128k|64k|192k|320k',  # bitrate
-    r'\.epub$|\.pdf$|\.mobi$',  # file extensions in folder names
+    # Version numbers
+    r'\bv\d+\b',  # v01, v02
+    # Editor/narrator names in brackets: [Dozois,Strahan], [Cramer,Hartwell]
+    r'\[[A-Z][a-z]+(?:,\s*[A-Z][a-z]+)+\]',
+    # Narrator names in parentheses at end: (Thorne), (Bennett), (Linton)
+    r'\s+\([A-Z][a-z]+\)\s*$',
+    # File extensions in folder names
+    r'\.epub$|\.pdf$|\.mobi$',
 ]
 
 # Patterns that indicate author name in title
@@ -6087,6 +6184,18 @@ def clean_title(title):
     issues = []
     cleaned = title
 
+    # Issue #64: Strip year prefix like "2007 - Title" (common in torrent naming)
+    year_prefix_match = re.match(r'^(19|20)\d{2}\s*[-–]\s*', cleaned)
+    if year_prefix_match:
+        issues.append(f"year_prefix: {year_prefix_match.group(0).strip()}")
+        cleaned = cleaned[year_prefix_match.end():]
+
+    # Issue #64: Strip series prefix like "DM-08 - Title" or "01 - Title"
+    series_prefix_match = re.match(r'^[A-Z]{1,3}[-.]?\d{1,2}\s*[-–]\s*', cleaned)
+    if series_prefix_match:
+        issues.append(f"series_prefix: {series_prefix_match.group(0).strip()}")
+        cleaned = cleaned[series_prefix_match.end():]
+
     for pattern in JUNK_PATTERNS:
         if re.search(pattern, cleaned, re.IGNORECASE):
             issues.append(f"junk: {pattern}")
@@ -6403,6 +6512,13 @@ def analyze_full_path(audio_file_path, library_root):
         confidence = 'medium'
     else:
         confidence = 'low'
+
+    # Issue #64: Clean junk from detected title (torrent naming, bitrates, timestamps, etc.)
+    if detected_title:
+        cleaned_title, title_issues = clean_title(detected_title)
+        if title_issues:
+            issues.extend(title_issues)
+        detected_title = cleaned_title
 
     return {
         'book_folder': str(book_folder),
@@ -8181,12 +8297,28 @@ def process_layer_1_audio(config, limit=None):
                                 WHERE id = ?''',
                               (json.dumps(profile), 80 if confidence == 'high' else 50, row['book_id']))
 
-                    # Add to history as pending fix
+                    # Compute paths for history entry (Issue #64: prevent stale path errors)
+                    old_path_str = book_path
+                    config = load_config()
+                    library_paths = config.get('library_paths', [])
+                    new_path_str = None
+                    if library_paths:
+                        computed_path = build_new_path(
+                            Path(library_paths[0]), author, title,
+                            series=ebook_result.get('series'),
+                            series_num=ebook_result.get('series_num'),
+                            config=config
+                        )
+                        if computed_path:
+                            new_path_str = str(computed_path)
+
+                    # Add to history as pending fix (with paths to prevent stale references)
                     c.execute('''INSERT INTO history
-                                (book_id, old_author, old_title, new_author, new_title, new_series, new_series_num, status)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
+                                (book_id, old_author, old_title, new_author, new_title, new_series, new_series_num, old_path, new_path, status)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
                              (row['book_id'], row['current_author'], row['current_title'],
-                              author, title, ebook_result.get('series'), ebook_result.get('series_num')))
+                              author, title, ebook_result.get('series'), ebook_result.get('series_num'),
+                              old_path_str, new_path_str))
 
                     # Remove from queue
                     c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
@@ -8301,12 +8433,27 @@ def process_layer_1_audio(config, limit=None):
                          (author, title, json.dumps(profile),
                           85 if confidence == 'high' else 70, row['book_id']))
 
-                # Add to history
+                # Compute paths for history entry (Issue #64: prevent stale path errors)
+                old_path_str = book_path
+                audio_config = load_config()
+                library_paths = audio_config.get('library_paths', [])
+                new_path_str = None
+                if library_paths:
+                    computed_path = build_new_path(
+                        Path(library_paths[0]), author, title,
+                        series=series, series_num=series_num, narrator=narrator,
+                        config=audio_config
+                    )
+                    if computed_path:
+                        new_path_str = str(computed_path)
+
+                # Add to history (with paths to prevent stale references)
                 c.execute('''INSERT INTO history
-                            (book_id, old_author, old_title, new_author, new_title, new_narrator, new_series, new_series_num, status)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
+                            (book_id, old_author, old_title, new_author, new_title, new_narrator, new_series, new_series_num, old_path, new_path, status)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
                          (row['book_id'], row['current_author'], row['current_title'],
-                          author, title, narrator, series, series_num))
+                          author, title, narrator, series, series_num,
+                          old_path_str, new_path_str))
 
                 # Remove from queue
                 c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
@@ -10057,12 +10204,26 @@ def apply_fix(history_id):
             continue
 
     if not old_path.exists():
-        error_msg = f"Source no longer exists: {old_path}"
-        c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
-                 ('error', error_msg, history_id))
-        conn.commit()
-        conn.close()
-        return False, error_msg
+        # Issue #64: Try current book path as fallback (book may have been moved)
+        c.execute('SELECT path FROM books WHERE id = ?', (book_id,))
+        current_book = c.fetchone()
+        fallback_found = False
+        if current_book and current_book['path'] and Path(current_book['path']).exists():
+            fallback_path = Path(current_book['path'])
+            if fallback_path != old_path:
+                logger.warning(f"[APPLY FIX] old_path {old_path} missing, using current book path: {fallback_path}")
+                old_path = fallback_path
+                # Update history with the correct old_path for future reference
+                c.execute('UPDATE history SET old_path = ? WHERE id = ?', (str(old_path), history_id))
+                fallback_found = True
+
+        if not fallback_found:
+            error_msg = f"Source no longer exists: {old_path}"
+            c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
+                     ('error', error_msg, history_id))
+            conn.commit()
+            conn.close()
+            return False, error_msg
 
     try:
         import shutil
@@ -10987,8 +11148,8 @@ def dashboard():
     conn = get_db()
     c = conn.cursor()
 
-    # Get counts
-    c.execute('SELECT COUNT(*) as count FROM books')
+    # Get counts (Issue #64: exclude series_folder and multi_book_files containers)
+    c.execute("SELECT COUNT(*) as count FROM books WHERE status NOT IN ('series_folder', 'multi_book_files')")
     total_books = c.fetchone()['count']
 
     c.execute('SELECT COUNT(*) as count FROM queue')
@@ -11256,6 +11417,8 @@ def settings_page():
         config['watch_min_file_age_seconds'] = int(request.form.get('watch_min_file_age_seconds', 30))
         # Author initials setting (Issue #54)
         config['standardize_author_initials'] = 'standardize_author_initials' in request.form
+        # P2P cache setting (Issue #62)
+        config['enable_p2p_cache'] = 'enable_p2p_cache' in request.form
 
         # Provider chain settings - parse comma-separated values into lists
         audio_chain_str = request.form.get('audio_provider_chain', 'bookdb,gemini').strip()
@@ -11286,11 +11449,11 @@ def settings_page():
 
     config = load_config()
     secrets = load_secrets()
-    # Pass key existence flags (not actual values) to template for UI indicators
-    # SECURITY: Never pass actual API keys to templates - only boolean existence flags
-    config['gemini_api_key'] = bool(secrets.get('gemini_api_key', ''))
-    config['openrouter_api_key'] = bool(secrets.get('openrouter_api_key', ''))
-    config['google_books_api_key'] = bool(secrets.get('google_books_api_key', ''))
+    # Pass actual API key values to template (hidden by default, eye toggle to reveal)
+    # This is a local/self-hosted app - users need to verify their keys were saved correctly
+    config['gemini_api_key'] = secrets.get('gemini_api_key', '')
+    config['openrouter_api_key'] = secrets.get('openrouter_api_key', '')
+    config['google_books_api_key'] = secrets.get('google_books_api_key', '')
     return render_template('settings.html', config=config, version=APP_VERSION)
 
 
@@ -12854,8 +13017,8 @@ def api_library():
     # Get media type filter (Issue #53)
     media_filter = request.args.get('media', 'all')  # 'all', 'audiobook', 'ebook', 'both'
 
-    # Count books by status
-    c.execute("SELECT COUNT(*) FROM books")
+    # Count books by status (Issue #64: exclude series_folder and multi_book_files containers)
+    c.execute("SELECT COUNT(*) FROM books WHERE status NOT IN ('series_folder', 'multi_book_files')")
     counts['all'] = c.fetchone()[0]
 
     # Issue #53: Count by media type

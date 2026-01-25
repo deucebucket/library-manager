@@ -2,7 +2,41 @@
 
 All notable changes to Library Manager will be documented in this file.
 
-## [Unreleased]
+## [0.9.0-beta.94] - 2026-01-25
+
+### Fixed
+
+- **Issue #64: Multiple Bug Fixes** (Merijeek's reported issues)
+  - **API Key Visibility** - Keys now shown in settings (hidden by default, eye toggle reveals actual value)
+  - **"Source no longer exists" Errors** - History entries now store old_path/new_path at creation time
+  - **apply_fix() Fallback** - When stored path doesn't exist, tries current book path as fallback
+  - **Dashboard Counts** - Fixed inflated counts by excluding series_folder/multi_book_files entries
+  - **Title Cleaning** - Expanded JUNK_PATTERNS for torrent naming conventions:
+    - Year prefixes (2007 - Title)
+    - Series prefixes (DM-08 - Title)
+    - Bitrates (62k, 128k), timestamps (23.35.16), file sizes ({1.27gb})
+    - Editor/narrator names in brackets/parentheses ([Dozois,Strahan], (Thorne))
+    - Version markers ((V), v01)
+
+---
+
+## [0.9.0-beta.93] - 2026-01-24
+
+### Added
+
+- **P2P Book Cache** (Issue #62) - Optional decentralized cache for book lookups
+  - When enabled, successful BookDB lookups are cached locally AND shared via Gun.db P2P network
+  - Helps when BookDB is temporarily unavailable - results served from other users' caches
+  - **Opt-in only** - disabled by default, toggle in Settings → P2P Book Cache
+  - Privacy-focused: only book metadata shared (title, author, series), no file paths
+  - Data validation prevents malformed or malicious cache entries
+  - Local SQLite cache always works, P2P is an optional enhancement
+  - Requires `pygundb` package (optional dependency)
+
+- **BookDB Retry Logic** - Smarter handling of temporary BookDB outages
+  - Retries 5 times with exponential backoff when no fallback provider configured
+  - Retries 2 times when fallback available (then uses fallback)
+  - Queue items return to pending state if all retries fail (will retry later)
 
 ### Security
 
