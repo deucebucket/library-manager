@@ -67,6 +67,19 @@ from library_manager.utils import (
 from library_manager.providers import (
     rate_limit_wait, is_circuit_open, record_api_failure, record_api_success,
     API_RATE_LIMITS, API_CIRCUIT_BREAKER,
+    search_audnexus, search_openlibrary, search_google_books, search_hardcover,
+    BOOKDB_API_URL, BOOKDB_PUBLIC_KEY,
+    search_bookdb as _search_bookdb_raw, identify_audio_with_bookdb,
+    call_ollama as _call_ollama_raw, call_ollama_simple as _call_ollama_simple_raw,
+    get_ollama_models, test_ollama_connection,
+    call_openrouter, call_openrouter_simple, identify_book_from_transcript,
+    test_openrouter_connection,
+    # Gemini provider
+    call_gemini as _call_gemini_raw,
+    _call_gemini_simple as _call_gemini_simple_raw,
+    analyze_audio_with_gemini as _analyze_audio_with_gemini_raw,
+    detect_audio_language as _detect_audio_language_raw,
+    try_gemini_content_identification as _try_gemini_content_identification_raw,
 )
 
 # Try to import P2P cache (optional - gracefully degrades if not available)
@@ -953,7 +966,7 @@ If you're not certain, return: {{"localized_title": "{title}", "is_translation":
         elif provider == 'gemini' and config.get('gemini_api_key'):
             result = _call_gemini_simple(prompt, config)
         elif config.get('openrouter_api_key'):
-            result = _call_openrouter_simple(prompt, config)
+            result = call_openrouter_simple(prompt, config)
         else:
             return None
 
@@ -966,79 +979,20 @@ If you're not certain, return: {{"localized_title": "{title}", "is_translation":
     return None
 
 
-def _call_openrouter_simple(prompt, config):
-    """Simple OpenRouter call for localization queries."""
-    rate_limit_wait('openrouter')  # Respect free tier limits
-    try:
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {config['openrouter_api_key']}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": config.get('openrouter_model', 'google/gemma-3n-e4b-it:free'),
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.1
-            },
-            timeout=30
-        )
-        if resp.status_code == 200:
-            text = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-            return parse_json_response(text) if text else None
-    except Exception as e:
-        logger.debug(f"OpenRouter localization error: {e}")
-    return None
-
-
 def _call_gemini_simple(prompt, config):
-    """Simple Gemini call for localization queries."""
-    # Check circuit breaker
-    if is_circuit_open('gemini'):
-        return None
-    rate_limit_wait('gemini')
+    """Simple Gemini call for localization queries.
 
-    try:
-        api_key = config.get('gemini_api_key')
-        model = config.get('gemini_model', 'gemini-2.0-flash')
-        resp = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
-            headers={"Content-Type": "application/json"},
-            json={
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.1}
-            },
-            timeout=30
-        )
-        if resp.status_code == 200:
-            text = resp.json().get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-            return parse_json_response(text) if text else None
-    except Exception as e:
-        logger.debug(f"Gemini localization error: {e}")
-    return None
+    Wrapper that passes app-level dependencies to the extracted module.
+    """
+    return _call_gemini_simple_raw(prompt, config, parse_json_response_fn=parse_json_response)
 
 
 def _call_ollama_simple(prompt, config):
-    """Simple Ollama call for localization queries."""
-    try:
-        ollama_url = config.get('ollama_url', 'http://localhost:11434')
-        model = config.get('ollama_model', 'llama3.2:3b')
-        resp = requests.post(
-            f"{ollama_url}/api/generate",
-            json={
-                "model": model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.1}
-            },
-            timeout=60
-        )
-        if resp.status_code == 200:
-            text = resp.json().get("response", "")
-            return parse_json_response(text) if text else None
-    except Exception as e:
-        logger.debug(f"Ollama localization error: {e}")
-    return None
+    """Simple Ollama call for localization queries.
+
+    Wrapper that passes app-level dependencies to the extracted module.
+    """
+    return _call_ollama_simple_raw(prompt, config, parse_json_fn=parse_json_response)
 
 
 # ============== BOOK METADATA APIs ==============
@@ -1047,633 +1001,25 @@ def _call_ollama_simple(prompt, config):
 SCAN_LOCK = threading.Lock()
 scan_in_progress = False
 
-# BookDB API endpoint (our private metadata service)
-BOOKDB_API_URL = "https://bookdb.deucebucket.com"
-# Public API key for Library Manager users (no config needed)
-BOOKDB_PUBLIC_KEY = "lm-public-2024_85TbJ2lbrXGm38tBgliPAcAexLA_AeWxyqvHPbwRIrA"
-
+# BookDB wrapper function - provides app-level dependencies to the extracted module
 def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=None, config=None):
     """
-    Search our private BookDB metadata service.
-    Uses fuzzy matching via Qdrant vectors - great for messy filenames.
-    Returns series info including book position if found.
-
-    Now with local/P2P cache support - checks cache first, falls back to API.
+    Search BookDB metadata service.
+    Wrapper that provides app-level dependencies (DATA_DIR, cache) to the provider module.
     """
-    if not api_key:
-        return None
+    # Provide cache_getter only if P2P cache is available
+    cache_getter = get_book_cache if P2P_CACHE_AVAILABLE else None
+    return _search_bookdb_raw(
+        title=title,
+        author=author,
+        api_key=api_key,
+        retry_count=retry_count,
+        bookdb_url=bookdb_url,
+        config=config,
+        data_dir=DATA_DIR,
+        cache_getter=cache_getter
+    )
 
-    # Check cache first (local + P2P if enabled)
-    if P2P_CACHE_AVAILABLE and config:
-        try:
-            cache = get_book_cache(
-                data_dir=DATA_DIR,
-                enable_p2p=config.get('enable_p2p_cache', False)
-            )
-            if cache:
-                cached = cache.get(title, author)
-                if cached:
-                    logger.info(f"[CACHE] Hit for: {author} - {title} (source: {cached.get('_cache_source', 'local')})")
-                    return cached
-        except Exception as e:
-            logger.debug(f"Cache lookup error (continuing to API): {e}")
-
-    # Check circuit breaker - skip if we've been rate limited too much
-    cb = API_CIRCUIT_BREAKER.get('bookdb', {})
-    if cb.get('circuit_open_until', 0) > time.time():
-        remaining = int(cb['circuit_open_until'] - time.time())
-        logger.debug(f"BookDB: Circuit open, skipping ({remaining}s remaining)")
-        return None
-
-    rate_limit_wait('bookdb')
-
-    # Use configured URL or fall back to default cloud URL
-    base_url = bookdb_url or BOOKDB_API_URL
-
-    try:
-        # Build the filename to match - include author if we have it
-        filename = f"{author} - {title}" if author else title
-
-        resp = requests.post(
-            f"{base_url}/match",
-            json={"filename": filename},
-            headers={"X-API-Key": api_key},
-            timeout=10
-        )
-
-        # Handle rate limiting - respect Retry-After header from server
-        if resp.status_code == 429:
-            # Increment circuit breaker failures
-            if 'bookdb' in API_CIRCUIT_BREAKER:
-                cb = API_CIRCUIT_BREAKER['bookdb']
-                cb['failures'] = cb.get('failures', 0) + 1
-                if cb['failures'] >= cb.get('max_failures', 5):
-                    cb['circuit_open_until'] = time.time() + cb.get('cooldown', 120)
-                    logger.warning(f"BookDB: Circuit OPEN after {cb['failures']} rate limits, backing off for {cb['cooldown']}s")
-                    return None
-
-            if retry_count < 2:  # Reduced retries since we have circuit breaker now
-                retry_after = resp.headers.get('Retry-After', '60')
-                try:
-                    wait_time = min(int(retry_after), 120)  # Cap at 2 minutes
-                except ValueError:
-                    wait_time = 30 * (retry_count + 1)  # Fallback: 30s, 60s
-                logger.info(f"BookDB rate limited, waiting {wait_time}s (Retry-After: {retry_after})...")
-                time.sleep(wait_time)
-                return search_bookdb(title, author, api_key, retry_count + 1, bookdb_url)
-            else:
-                logger.warning("BookDB rate limited, max retries reached")
-                return None
-
-        if resp.status_code != 200:
-            logger.debug(f"BookDB returned status {resp.status_code}")
-            return None
-
-        # Success - reset circuit breaker failures
-        if 'bookdb' in API_CIRCUIT_BREAKER:
-            API_CIRCUIT_BREAKER['bookdb']['failures'] = 0
-
-        data = resp.json()
-
-        # Check confidence threshold
-        if data.get('confidence', 0) < 0.5:
-            logger.debug(f"BookDB match below confidence threshold: {data.get('confidence')}")
-            return None
-
-        series = data.get('series')
-        books = data.get('books', [])
-
-        # Need either series or books to return a result
-        if not series and not books:
-            return None
-
-        # Find the best matching book
-        best_book = None
-        if books:
-            # Try to match title to a specific book
-            title_lower = title.lower()
-            for book in books:
-                book_title = book.get('title', '').lower()
-                if title_lower in book_title or book_title in title_lower:
-                    best_book = book
-                    break
-            # If no specific match, use first book
-            if not best_book:
-                best_book = books[0]
-
-        # Build result - handle standalone books (no series) and series books
-        result = {
-            'title': best_book.get('title') if best_book else (series.get('name') if series else None),
-            'author': best_book.get('author_name') if best_book else (series.get('author_name', '') if series else ''),
-            'year': best_book.get('year_published') if best_book else None,
-            'series': series.get('name') if series else None,
-            'series_num': best_book.get('series_position') if best_book else None,
-            'variant': series.get('variant') if series else None,
-            'edition': best_book.get('edition') if best_book else None,
-            'source': 'bookdb',
-            'confidence': data.get('confidence', 0)
-        }
-
-        if result['title'] and result['author']:
-            logger.info(f"BookDB found: {result['author']} - {result['title']}" +
-                       (f" ({result['series']} #{result['series_num']})" if result['series'] else "") +
-                       f" [confidence: {result['confidence']:.2f}]")
-
-            # Cache successful result (local + P2P if enabled)
-            if P2P_CACHE_AVAILABLE and config:
-                try:
-                    cache = get_book_cache(
-                        data_dir=DATA_DIR,
-                        enable_p2p=config.get('enable_p2p_cache', False)
-                    )
-                    if cache:
-                        cache.put(title, author, result,
-                                  source='bookdb',
-                                  confidence=result.get('confidence', 0))
-                        logger.debug(f"[CACHE] Stored: {author} - {title}")
-                except Exception as e:
-                    logger.debug(f"Cache write error (non-fatal): {e}")
-
-            return result
-        return None
-
-    except Exception as e:
-        logger.debug(f"BookDB search failed: {e}")
-        return None
-
-
-def identify_audio_with_bookdb(audio_file, extract_seconds=90):
-    """
-    Use BookDB's GPU-powered Whisper API to identify a book from audio.
-
-    This uses a fair round-robin queue system:
-    1. Submit audio, get ticket + queue position
-    2. Poll for result (shows queue progress to user)
-    3. Return result when complete
-
-    This is PREFERRED over local transcription + Gemini because:
-    1. BookDB has a GTX 1080 running Whisper (faster)
-    2. No Gemini rate limits
-    3. BookDB cross-references against its 50M+ book database
-    4. Fair multi-user access via round-robin queue
-
-    Args:
-        audio_file: Path to the audio file
-        extract_seconds: How many seconds to extract (default 90)
-
-    Returns:
-        dict with author, title, narrator, series, etc. or None
-    """
-    import subprocess
-    import tempfile
-
-    bookdb_url = os.environ.get('BOOKDB_URL', 'https://bookdb.deucebucket.com')
-    logger.info(f"[BOOKDB AUDIO] Starting identification for: {audio_file}")
-    logger.debug(f"[BOOKDB AUDIO] Using API URL: {bookdb_url}")
-
-    try:
-        audio_path = Path(audio_file)
-        if not audio_path.exists():
-            logger.warning(f"[BOOKDB AUDIO] File not found: {audio_file}")
-            return None
-
-        # Extract first N seconds to a temp file
-        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
-            tmp_path = tmp.name
-
-        try:
-            # Use ffmpeg to extract the intro - use fast seek for large files
-            logger.debug(f"[BOOKDB AUDIO] Extracting {extract_seconds}s from {audio_path.name}")
-            cmd = [
-                'ffmpeg', '-y',
-                '-ss', '0',  # Fast input seek
-                '-i', str(audio_path),
-                '-t', str(extract_seconds),
-                '-vn',  # No video (faster)
-                '-acodec', 'libmp3lame', '-q:a', '5',
-                '-loglevel', 'error',
-                tmp_path
-            ]
-            result = subprocess.run(cmd, capture_output=True, timeout=60)
-
-            if result.returncode != 0:
-                logger.warning(f"[BOOKDB AUDIO] ffmpeg extraction failed: {result.stderr.decode()[:200]}")
-                return None
-
-            # Check file size to ensure it's valid
-            tmp_size = os.path.getsize(tmp_path)
-            logger.debug(f"[BOOKDB AUDIO] Extracted file size: {tmp_size} bytes")
-            if tmp_size < 1000:
-                logger.warning(f"[BOOKDB AUDIO] Extracted file too small ({tmp_size} bytes), likely invalid audio")
-                return None
-
-            # Submit to BookDB queue
-            logger.info(f"[BOOKDB AUDIO] Submitting to queue: {bookdb_url}/api/identify_audio")
-            with open(tmp_path, 'rb') as f:
-                response = requests.post(
-                    f"{bookdb_url}/api/identify_audio",
-                    files={'audio': (audio_path.name, f, 'audio/mpeg')},
-                    timeout=30  # Just submitting, should be fast
-                )
-
-            if response.status_code != 200:
-                logger.warning(f"[BOOKDB AUDIO] API returned {response.status_code}: {response.text[:200]}")
-                return None
-
-            submit_data = response.json()
-
-            # Check if it's the new queue system (has ticket_id) or old sync system
-            if 'ticket_id' in submit_data:
-                # New queue system - poll for result
-                ticket_id = submit_data['ticket_id']
-                queue_position = submit_data.get('queue_position', '?')
-                estimated_seconds = submit_data.get('estimated_seconds', '?')
-
-                logger.info(f"[BOOKDB AUDIO] Queued! Position: {queue_position}, ETA: ~{estimated_seconds}s (ticket: {ticket_id})")
-
-                # Poll for result
-                poll_url = f"{bookdb_url}/api/identify_audio/{ticket_id}"
-                max_wait = 300  # 5 minutes max
-                poll_interval = 2  # Poll every 2 seconds
-                waited = 0
-                last_position = queue_position
-
-                while waited < max_wait:
-                    time.sleep(poll_interval)
-                    waited += poll_interval
-
-                    try:
-                        poll_response = requests.get(poll_url, timeout=10)
-                        if poll_response.status_code != 200:
-                            continue
-
-                        status_data = poll_response.json()
-                        status = status_data.get('status')
-
-                        # Update user on queue position changes
-                        new_position = status_data.get('queue_position')
-                        if new_position and new_position != last_position:
-                            logger.info(f"[BOOKDB AUDIO] Queue position: {new_position}")
-                            last_position = new_position
-
-                        if status == 'processing':
-                            logger.info(f"[BOOKDB AUDIO] Processing audio...")
-
-                        elif status == 'complete':
-                            # Got result!
-                            data = status_data.get('result', {})
-                            logger.info(f"[BOOKDB AUDIO] Complete! Processing result...")
-                            break
-
-                        elif status == 'error':
-                            logger.warning(f"[BOOKDB AUDIO] Job failed: {status_data.get('error')}")
-                            return None
-
-                    except Exception as poll_err:
-                        logger.debug(f"[BOOKDB AUDIO] Poll error (will retry): {poll_err}")
-                        continue
-
-                else:
-                    logger.warning(f"[BOOKDB AUDIO] Timed out waiting for result after {max_wait}s")
-                    return None
-
-            else:
-                # Old sync system - response has result directly
-                data = submit_data
-
-            # Process result (same for both systems)
-            transcript = data.get('transcript') or ''
-            matched_books = data.get('matched_books') or []
-            logger.info(f"[BOOKDB AUDIO] Result received - transcript: {len(transcript)} chars, matches: {len(matched_books)}")
-
-            if data.get('error'):
-                logger.warning(f"[BOOKDB AUDIO] API error: {data['error']}")
-                return None
-
-            best_match = matched_books[0] if matched_books else None
-
-            result = {
-                'author': data.get('author') or (best_match.get('author_name') if best_match else None),
-                'title': data.get('title') or (best_match.get('title') if best_match else None),
-                'narrator': data.get('narrator'),
-                'series': best_match.get('series_name') if best_match else None,
-                'series_num': best_match.get('series_position') if best_match else None,
-                'source': 'bookdb_audio',
-                'confidence': 'high' if best_match else 'medium',
-                'transcript': transcript[:500],
-            }
-
-            if result['author'] and result['title']:
-                logger.info(f"[BOOKDB AUDIO] Identified: {result['author']} - {result['title']}" +
-                           (f" ({result['series']} #{result['series_num']})" if result.get('series') else ""))
-                return result
-
-            if transcript:
-                logger.info(f"[BOOKDB AUDIO] No match but got transcript ({len(transcript)} chars) - returning for AI fallback")
-                return {'transcript': transcript, 'source': 'bookdb_audio'}
-
-            logger.warning(f"[BOOKDB AUDIO] No identification and no transcript returned")
-            return None
-
-        finally:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-
-    except requests.exceptions.Timeout:
-        logger.warning("[BOOKDB AUDIO] Request timed out")
-        return None
-    except Exception as e:
-        logger.warning(f"[BOOKDB AUDIO] Error: {e}")
-        return None
-
-
-def search_openlibrary(title, author=None, lang=None):
-    """Search OpenLibrary for book metadata. Free, no API key needed.
-
-    Args:
-        title: Book title to search for
-        author: Optional author name
-        lang: Optional ISO 639-1 language code to filter results
-    """
-    rate_limit_wait('openlibrary')
-    try:
-        import urllib.parse
-        query = urllib.parse.quote(title)
-        url = f"https://openlibrary.org/search.json?title={query}&limit=5"
-        if author:
-            url += f"&author={urllib.parse.quote(author)}"
-        if lang and lang != 'en':
-            # OpenLibrary supports language filtering
-            url += f"&language={lang}"
-
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200:
-            return None
-
-        data = resp.json()
-        docs = data.get('docs', [])
-
-        if not docs:
-            return None
-
-        # Get the best match (first result usually best)
-        best = docs[0]
-        result = {
-            'title': best.get('title', ''),
-            'author': best.get('author_name', [''])[0] if best.get('author_name') else '',
-            'year': best.get('first_publish_year'),
-            'source': 'openlibrary'
-        }
-
-        # Only return if we got useful data
-        if result['title'] and result['author']:
-            logger.info(f"OpenLibrary found: {result['author']} - {result['title']}")
-            return result
-        return None
-    except Exception as e:
-        logger.debug(f"OpenLibrary search failed: {e}")
-        return None
-
-def search_google_books(title, author=None, api_key=None, lang=None):
-    """Search Google Books for book metadata.
-
-    Args:
-        title: Book title to search for
-        author: Optional author name
-        api_key: Optional Google API key for higher rate limits
-        lang: Optional ISO 639-1 language code to restrict results (e.g., 'de' for German)
-    """
-    rate_limit_wait('googlebooks')
-    try:
-        import urllib.parse
-        query = title
-        if author:
-            query += f" inauthor:{author}"
-
-        url = f"https://www.googleapis.com/books/v1/volumes?q={urllib.parse.quote(query)}&maxResults=5"
-        if api_key:
-            url += f"&key={api_key}"
-        if lang and lang != 'en':
-            # langRestrict filters results to books in this language
-            url += f"&langRestrict={lang}"
-
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200:
-            return None
-
-        data = resp.json()
-        items = data.get('items', [])
-
-        if not items:
-            return None
-
-        # Get best match
-        best = items[0].get('volumeInfo', {})
-        authors = best.get('authors', [])
-
-        # Try to extract series from subtitle (e.g., "A Mistborn Novel", "Book 2 of The Expanse")
-        series_name = None
-        series_num = None
-        subtitle = best.get('subtitle', '')
-        if subtitle:
-            # "A Mistborn Novel" -> Mistborn
-            match = re.search(r'^A\s+(.+?)\s+Novel$', subtitle, re.IGNORECASE)
-            if match:
-                series_name = match.group(1)
-            # "Book 2 of The Expanse" -> The Expanse, 2
-            match = re.search(r'Book\s+(\d+)\s+of\s+(.+)', subtitle, re.IGNORECASE)
-            if match:
-                series_num = int(match.group(1))
-                series_name = match.group(2)
-            # "The Expanse Book 2" or "Mistborn #1"
-            match = re.search(r'(.+?)\s+(?:Book|#)\s*(\d+)', subtitle, re.IGNORECASE)
-            if match:
-                series_name = match.group(1)
-                series_num = int(match.group(2))
-
-        result = {
-            'title': best.get('title', ''),
-            'author': authors[0] if authors else '',
-            'year': best.get('publishedDate', '')[:4] if best.get('publishedDate') else None,
-            'series': series_name,
-            'series_num': series_num,
-            'source': 'googlebooks'
-        }
-
-        if result['title'] and result['author']:
-            logger.info(f"Google Books found: {result['author']} - {result['title']}" +
-                       (f" (Series: {series_name})" if series_name else ""))
-            return result
-        return None
-    except Exception as e:
-        logger.debug(f"Google Books search failed: {e}")
-        return None
-
-def search_audnexus(title, author=None, region=None):
-    """Search Audnexus API for audiobook metadata. Pulls from Audible.
-
-    Audnexus is a community-maintained API that provides Audible metadata.
-    It's useful for narrator info and audiobook-specific details but can
-    be slow or unavailable at times. Circuit breaker skips it temporarily
-    after repeated timeouts.
-
-    Args:
-        title: Book title to search for
-        author: Optional author name
-        region: Optional Audible region code (us, de, fr, it, es, jp, etc.)
-    """
-    # Circuit breaker: skip if API has been failing
-    cb = API_CIRCUIT_BREAKER.get('audnexus', {})
-    if cb.get('circuit_open_until', 0) > time.time():
-        remaining = int(cb['circuit_open_until'] - time.time())
-        logger.debug(f"Audnexus: Circuit open, skipping ({remaining}s remaining)")
-        return None
-
-    rate_limit_wait('audnexus')
-    try:
-        import urllib.parse
-        # Audnexus search endpoint
-        query = title
-        if author:
-            query = f"{title} {author}"
-
-        url = f"https://api.audnex.us/books?title={urllib.parse.quote(query)}"
-        # Add region parameter for localized results
-        if region and region != 'us':
-            url += f"&region={region}"
-
-        logger.debug(f"Audnexus: Searching for '{query}'")
-        resp = requests.get(url, timeout=10, headers={'Accept': 'application/json'})
-
-        # Success - reset circuit breaker
-        if 'audnexus' in API_CIRCUIT_BREAKER:
-            API_CIRCUIT_BREAKER['audnexus']['failures'] = 0
-
-        if resp.status_code != 200:
-            logger.debug(f"Audnexus: API returned status {resp.status_code}")
-            return None
-
-        data = resp.json()
-        if not data or not isinstance(data, list) or len(data) == 0:
-            logger.debug(f"Audnexus: No results for '{query}'")
-            return None
-
-        # Get best match
-        best = data[0]
-
-        # Extract series info - Audnexus returns series as object or seriesName/seriesPosition fields
-        series_name = None
-        series_num = None
-        if best.get('series'):
-            # Series can be an object with name field
-            if isinstance(best['series'], dict):
-                series_name = best['series'].get('name')
-                series_num = best['series'].get('position')
-            elif isinstance(best['series'], str):
-                series_name = best['series']
-        # Also check flat fields (some Audnexus responses use these)
-        if not series_name:
-            series_name = best.get('seriesName') or best.get('series_name')
-        if not series_num:
-            series_num = best.get('seriesPosition') or best.get('series_position')
-
-        result = {
-            'title': best.get('title', ''),
-            'author': best.get('authors', [{}])[0].get('name', '') if best.get('authors') else '',
-            'year': best.get('releaseDate', '')[:4] if best.get('releaseDate') else None,
-            'narrator': best.get('narrators', [{}])[0].get('name', '') if best.get('narrators') else None,
-            'series': series_name,
-            'series_num': series_num,
-            'source': 'audnexus'
-        }
-
-        if result['title'] and result['author']:
-            logger.info(f"Audnexus found: {result['author']} - {result['title']}")
-            return result
-        logger.debug(f"Audnexus: Result missing title or author for '{query}'")
-        return None
-    except requests.exceptions.Timeout:
-        # Timeout - increment circuit breaker
-        if 'audnexus' in API_CIRCUIT_BREAKER:
-            cb = API_CIRCUIT_BREAKER['audnexus']
-            cb['failures'] = cb.get('failures', 0) + 1
-            if cb['failures'] >= cb.get('max_failures', 3):
-                cb['circuit_open_until'] = time.time() + cb.get('cooldown', 300)
-                logger.warning(f"Audnexus: Circuit OPEN after {cb['failures']} timeouts, skipping for {cb['cooldown']}s")
-        logger.warning(f"Audnexus search timed out for '{title}'")
-        return None
-    except Exception as e:
-        logger.warning(f"Audnexus search failed for '{title}': {e}")
-        return None
-
-def search_hardcover(title, author=None):
-    """Search Hardcover.app API for book metadata."""
-    rate_limit_wait('hardcover')
-    try:
-        import urllib.parse
-        # Hardcover GraphQL API
-        query = title
-        if author:
-            query = f"{title} {author}"
-
-        # Hardcover uses GraphQL - request series info too
-        graphql_query = {
-            "query": """
-                query SearchBooks($query: String!) {
-                    search(query: $query, limit: 5) {
-                        books {
-                            title
-                            contributions { author { name } }
-                            releaseYear
-                            series { name position }
-                        }
-                    }
-                }
-            """,
-            "variables": {"query": query}
-        }
-
-        resp = requests.post(
-            "https://api.hardcover.app/v1/graphql",
-            json=graphql_query,
-            headers={'Content-Type': 'application/json'},
-            timeout=10
-        )
-
-        if resp.status_code != 200:
-            return None
-
-        data = resp.json()
-        books = data.get('data', {}).get('search', {}).get('books', [])
-
-        if not books:
-            return None
-
-        best = books[0]
-        contributions = best.get('contributions', [])
-        author_name = contributions[0].get('author', {}).get('name', '') if contributions else ''
-
-        # Extract series info from Hardcover response
-        series_info = best.get('series', {}) or {}
-        series_name = series_info.get('name') if isinstance(series_info, dict) else None
-        series_num = series_info.get('position') if isinstance(series_info, dict) else None
-
-        result = {
-            'title': best.get('title', ''),
-            'author': author_name,
-            'year': best.get('releaseYear'),
-            'series': series_name,
-            'series_num': series_num,
-            'source': 'hardcover'
-        }
-
-        if result['title'] and result['author']:
-            logger.info(f"Hardcover found: {result['author']} - {result['title']}")
-            return result
-        return None
-    except Exception as e:
-        logger.debug(f"Hardcover search failed: {e}")
-        return None
 
 def standardize_initials(name):
     """Issue #54: Normalize author initials to consistent "A. B." format.
@@ -2298,255 +1644,35 @@ def explain_http_error(status_code, provider):
     return errors.get(status_code, f"Unknown error (HTTP {status_code})")
 
 
-def call_openrouter(prompt, config):
-    """Call OpenRouter API with circuit breaker for daily limits."""
-    # Check circuit breaker - skip if we've hit daily limits
-    cb = API_CIRCUIT_BREAKER.get('openrouter', {})
-    if cb.get('circuit_open_until', 0) > time.time():
-        remaining = int(cb['circuit_open_until'] - time.time())
-        logger.debug(f"OpenRouter: Circuit OPEN, skipping (cooldown: {remaining}s remaining)")
-        return None
-
-    rate_limit_wait('openrouter')  # Respect free tier limits
-    try:
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {config['openrouter_api_key']}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/deucebucket/library-manager",
-                "X-Title": "Library Metadata Manager"
-            },
-            json={
-                "model": config.get('openrouter_model', 'xiaomi/mimo-v2-flash:free'),
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.1
-            },
-            timeout=90
-        )
-
-        if resp.status_code == 200:
-            # Reset circuit breaker on success
-            if 'openrouter' in API_CIRCUIT_BREAKER:
-                API_CIRCUIT_BREAKER['openrouter']['failures'] = 0
-            result = resp.json()
-            text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-            if text:
-                # Issue #57: Log AI response for debugging hallucinations
-                logger.debug(f"OpenRouter raw response: {text[:500]}{'...' if len(text) > 500 else ''}")
-                parsed = parse_json_response(text)
-                if parsed:
-                    # Log the parsed author/title for traceability
-                    if isinstance(parsed, list):
-                        for item in parsed[:3]:  # Log first 3 items
-                            logger.info(f"OpenRouter parsed: {item.get('author', '?')} - {item.get('title', '?')}")
-                    elif isinstance(parsed, dict):
-                        logger.info(f"OpenRouter parsed: {parsed.get('author', parsed.get('recommended_author', '?'))} - {parsed.get('title', parsed.get('recommended_title', '?'))}")
-                return parsed
-        elif resp.status_code == 429:
-            # Rate limit - check if it's daily limit
-            try:
-                detail = resp.json().get('error', {}).get('message', '')
-                if 'free-models-per-day' in detail.lower() or 'daily' in detail.lower():
-                    # Daily limit hit - open circuit breaker for 1 hour
-                    logger.warning(f"OpenRouter: Daily limit reached, backing off for 1 hour")
-                    API_CIRCUIT_BREAKER['openrouter']['failures'] = cb.get('max_failures', 2)
-                    API_CIRCUIT_BREAKER['openrouter']['circuit_open_until'] = time.time() + cb.get('cooldown', 3600)
-                else:
-                    logger.warning(f"OpenRouter: Rate limited - {detail}")
-            except:
-                logger.warning("OpenRouter: Rate limited")
-        else:
-            error_msg = explain_http_error(resp.status_code, "OpenRouter")
-            logger.warning(f"OpenRouter: {error_msg}")
-            # Try to get more detail from response
-            try:
-                detail = resp.json().get('error', {}).get('message', '')
-                if detail:
-                    logger.warning(f"OpenRouter detail: {detail}")
-            except:
-                pass
-    except requests.exceptions.Timeout:
-        logger.error("OpenRouter: Request timed out after 90 seconds")
-        report_anonymous_error("OpenRouter timeout after 90 seconds", context="openrouter_api")
-    except requests.exceptions.ConnectionError:
-        logger.error("OpenRouter: Connection failed - check your internet")
-        report_anonymous_error("OpenRouter connection failed", context="openrouter_api")
-    except Exception as e:
-        logger.error(f"OpenRouter: {e}")
-        report_anonymous_error(f"OpenRouter error: {e}", context="openrouter_api")
-    return None
-
-
 def call_gemini(prompt, config, retry_count=0):
-    """Call Google Gemini API directly with automatic retry on rate limit."""
-    # Check circuit breaker
-    if is_circuit_open('gemini'):
-        logger.debug("[GEMINI] Circuit breaker open, skipping")
-        return None
+    """Call Google Gemini API directly with automatic retry on rate limit.
 
-    # Respect rate limits (10 RPM free tier as of Jan 2026)
-    rate_limit_wait('gemini')
-
-    try:
-        api_key = config.get('gemini_api_key')
-        model = config.get('gemini_model', 'gemini-2.0-flash')
-
-        resp = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
-            headers={"Content-Type": "application/json"},
-            json={
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.1}
-            },
-            timeout=90
-        )
-
-        if resp.status_code == 200:
-            result = resp.json()
-            text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-            if text:
-                # Issue #57: Log AI response for debugging hallucinations
-                logger.debug(f"Gemini raw response: {text[:500]}{'...' if len(text) > 500 else ''}")
-                parsed = parse_json_response(text)
-                if parsed:
-                    # Log the parsed author/title for traceability
-                    if isinstance(parsed, list):
-                        for item in parsed[:3]:  # Log first 3 items
-                            logger.info(f"Gemini parsed: {item.get('author', '?')} - {item.get('title', '?')}")
-                    elif isinstance(parsed, dict):
-                        logger.info(f"Gemini parsed: {parsed.get('author', parsed.get('recommended_author', '?'))} - {parsed.get('title', parsed.get('recommended_title', '?'))}")
-                return parsed
-        elif resp.status_code == 429 and retry_count < 3:
-            # Rate limit - parse retry time and wait
-            error_msg = explain_http_error(resp.status_code, "Gemini")
-            logger.warning(f"Gemini: {error_msg}")
-            try:
-                detail = resp.json().get('error', {}).get('message', '')
-                if detail:
-                    logger.warning(f"Gemini detail: {detail}")
-                    # Check if this is a daily quota exceeded (not just per-minute rate limit)
-                    if 'quota' in detail.lower() and ('limit: 0' in detail or 'exceeded' in detail.lower()):
-                        logger.warning("[GEMINI] Daily quota exhausted - tripping circuit breaker")
-                        record_api_failure('gemini')
-                        record_api_failure('gemini')  # Trip immediately
-                        return None
-                    # Try to parse "Please retry in X.XXXs" from message
-                    import re
-                    match = re.search(r'retry in (\d+\.?\d*)s', detail)
-                    if match:
-                        wait_time = float(match.group(1)) + 5  # Add 5 sec buffer
-                        logger.info(f"Gemini: Waiting {wait_time:.0f} seconds before retry...")
-                        time.sleep(wait_time)
-                        return call_gemini(prompt, config, retry_count + 1)
-            except:
-                pass
-            # Default wait if we can't parse the time
-            wait_time = 45 * (retry_count + 1)
-            logger.info(f"Gemini: Waiting {wait_time} seconds before retry...")
-            time.sleep(wait_time)
-            return call_gemini(prompt, config, retry_count + 1)
-        else:
-            error_msg = explain_http_error(resp.status_code, "Gemini")
-            logger.warning(f"Gemini: {error_msg}")
-            try:
-                detail = resp.json().get('error', {}).get('message', '')
-                if detail:
-                    logger.warning(f"Gemini detail: {detail}")
-            except:
-                pass
-    except requests.exceptions.Timeout:
-        logger.error("Gemini: Request timed out after 90 seconds")
-        report_anonymous_error("Gemini timeout after 90 seconds", context="gemini_api")
-    except requests.exceptions.ConnectionError:
-        logger.error("Gemini: Connection failed - check your internet")
-        report_anonymous_error("Gemini connection failed", context="gemini_api")
-    except Exception as e:
-        logger.error(f"Gemini: {e}")
-        report_anonymous_error(f"Gemini error: {e}", context="gemini_api")
-    return None
+    Wrapper that passes app-level dependencies to the extracted module.
+    """
+    return _call_gemini_raw(
+        prompt=prompt,
+        config=config,
+        retry_count=retry_count,
+        parse_json_response_fn=parse_json_response,
+        explain_http_error_fn=explain_http_error,
+        report_anonymous_error_fn=report_anonymous_error
+    )
 
 
 def call_ollama(prompt, config):
-    """Call local Ollama API for fully self-hosted AI."""
-    try:
-        ollama_url = config.get('ollama_url', 'http://localhost:11434')
-        model = config.get('ollama_model', 'llama3.2:3b')
+    """Call local Ollama API for fully self-hosted AI.
 
-        # Ollama's generate endpoint
-        resp = requests.post(
-            f"{ollama_url}/api/generate",
-            json={
-                "model": model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0.1
-                }
-            },
-            timeout=120  # Local models can be slower, especially on first load
-        )
-
-        if resp.status_code == 200:
-            result = resp.json()
-            text = result.get('response', '')
-            if text:
-                return parse_json_response(text)
-        elif resp.status_code == 404:
-            logger.error(f"Ollama: Model '{model}' not found. Run: ollama pull {model}")
-        else:
-            error_msg = explain_http_error(resp.status_code, "Ollama")
-            logger.warning(f"Ollama: {error_msg}")
-            try:
-                detail = resp.json().get('error', '')
-                if detail:
-                    logger.warning(f"Ollama detail: {detail}")
-            except:
-                pass
-    except requests.exceptions.Timeout:
-        logger.error("Ollama: Request timed out after 120 seconds - model may still be loading")
-        report_anonymous_error("Ollama timeout after 120 seconds", context="ollama_api")
-    except requests.exceptions.ConnectionError:
-        logger.error(f"Ollama: Connection failed - is Ollama running at {config.get('ollama_url', 'http://localhost:11434')}?")
-        report_anonymous_error("Ollama connection failed", context="ollama_api")
-    except Exception as e:
-        logger.error(f"Ollama: {e}")
-        report_anonymous_error(f"Ollama error: {e}", context="ollama_api")
-    return None
+    Wrapper that passes app-level dependencies to the extracted module.
+    """
+    return _call_ollama_raw(
+        prompt, config,
+        parse_json_fn=parse_json_response,
+        explain_error_fn=explain_http_error,
+        report_error_fn=report_anonymous_error
+    )
 
 
-def get_ollama_models(config):
-    """Fetch list of available models from Ollama server."""
-    try:
-        ollama_url = config.get('ollama_url', 'http://localhost:11434')
-        resp = requests.get(f"{ollama_url}/api/tags", timeout=10)
-        if resp.status_code == 200:
-            models = resp.json().get('models', [])
-            return [m.get('name', '') for m in models if m.get('name')]
-        return []
-    except:
-        return []
-
-
-def test_ollama_connection(config):
-    """Test connection to Ollama server."""
-    try:
-        ollama_url = config.get('ollama_url', 'http://localhost:11434')
-        resp = requests.get(f"{ollama_url}/api/tags", timeout=10)
-        if resp.status_code == 200:
-            models = resp.json().get('models', [])
-            return {
-                'success': True,
-                'models': [m.get('name', '') for m in models],
-                'model_count': len(models)
-            }
-        return {'success': False, 'error': f'HTTP {resp.status_code}'}
-    except requests.exceptions.ConnectionError:
-        return {'success': False, 'error': f'Cannot connect to {ollama_url}'}
-    except requests.exceptions.Timeout:
-        return {'success': False, 'error': 'Connection timed out'}
-    except Exception as e:
-        return {'success': False, 'error': str(e)}
+# get_ollama_models and test_ollama_connection are imported directly from library_manager.providers
 
 
 # ============== PROVIDER CHAIN SYSTEM ==============
@@ -2998,90 +2124,6 @@ def identify_ebook_from_filename(filename, folder_path, config):
     return None
 
 
-def identify_book_from_transcript(transcript, config):
-    """
-    Use OpenRouter to identify a book from transcribed text.
-    This is the fallback when Gemini audio API is unavailable.
-    """
-    api_key = config.get('openrouter_api_key')
-    if not api_key:
-        logger.warning("[LAYER 4] No OpenRouter API key for transcript identification")
-        return None
-
-    # Respect free tier rate limits (20 req/min + daily limits)
-    rate_limit_wait('openrouter')
-
-    # Use a capable free model for book identification
-    # Options: xiaomi/mimo-v2-flash:free (262K ctx), allenai/molmo-2-8b:free, mistralai/devstral-2512:free
-    model = config.get('layer4_openrouter_model', 'xiaomi/mimo-v2-flash:free')
-
-    prompt = f"""You are a literary expert. Based on this audiobook transcript excerpt, identify the book.
-
-TRANSCRIPT:
-"{transcript[:2000]}"
-
-Analyze:
-1. Character names mentioned
-2. Plot elements and events
-3. Writing style and genre markers
-4. Setting details
-5. Any unique phrases or dialogue
-
-Return ONLY valid JSON (no markdown):
-{{
-    "title": "identified book title (or best guess)",
-    "author": "identified author name (or best guess)",
-    "series": "series name if applicable, or null",
-    "series_num": "book number if known, or null",
-    "narrator": null,
-    "genre": "detected genre",
-    "confidence": "high/medium/low",
-    "reasoning": "brief explanation of how you identified the book"
-}}"""
-
-    try:
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/deucebucket/library-manager",
-                "X-Title": "Library Manager"
-            },
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.2,
-                "max_tokens": 1024
-            },
-            timeout=60
-        )
-
-        if resp.status_code != 200:
-            logger.warning(f"[LAYER 4] OpenRouter failed: {resp.status_code} - {resp.text[:200]}")
-            return None
-
-        data = resp.json()
-        text = data['choices'][0]['message']['content']
-
-        # Parse JSON from response
-        json_match = re.search(r'\{[\s\S]*\}', text)
-        if json_match:
-            result = json.loads(json_match.group())
-
-            if result.get('title') and result.get('author'):
-                logger.info(f"[LAYER 4] OpenRouter identified: {result.get('author')}/{result.get('title')} "
-                           f"(confidence: {result.get('confidence')})")
-            return result
-        else:
-            logger.warning(f"[LAYER 4] No JSON in OpenRouter response: {text[:200]}")
-            return None
-
-    except Exception as e:
-        logger.warning(f"[LAYER 4] OpenRouter identification error: {e}")
-        return None
-
-
 def transcribe_and_identify_content(audio_file, config):
     """
     Layer 4: Content-based identification.
@@ -3132,126 +2174,15 @@ def transcribe_and_identify_content(audio_file, config):
 
 
 def _try_gemini_content_identification(sample_path, api_key):
-    """Try Gemini Audio API for content identification. Returns result or None."""
-    import base64
+    """Try Gemini Audio API for content identification. Returns result or None.
 
-    # Check circuit breaker
-    if is_circuit_open('gemini'):
-        logger.debug("[LAYER 4] Gemini circuit breaker open, skipping")
-        return None
-
-    # Respect rate limits
-    rate_limit_wait('gemini')
-
-    try:
-        with open(sample_path, 'rb') as f:
-            audio_data = base64.b64encode(f.read()).decode('utf-8')
-
-        model = 'gemini-2.5-flash'
-
-        prompt = """Listen to this audiobook excerpt and perform these tasks:
-
-1. TRANSCRIBE: Write out exactly what you hear - the actual story text being narrated.
-   Get at least 2-3 sentences of the actual story content.
-
-2. IDENTIFY: Based on the transcribed content, identify what book this is from.
-   Look for:
-   - Character names (protagonists, antagonists, places)
-   - Plot elements and events
-   - Writing style and genre
-   - Any unique phrases or dialogue
-   - Setting details
-
-3. SEARCH YOUR KNOWLEDGE: Match the content against known books.
-   Consider:
-   - Famous novels and their scenes
-   - Popular audiobook series
-   - Genre conventions (fantasy names, sci-fi terminology, etc.)
-
-Return in JSON format:
-{
-    "transcription": "The exact text you heard from the audiobook (2-3 sentences minimum)",
-    "title": "identified book title (or best guess)",
-    "author": "identified author name (or best guess)",
-    "series": "series name if applicable",
-    "series_num": "book number in series if known",
-    "narrator": "narrator if you can identify their voice style",
-    "genre": "detected genre (fantasy, sci-fi, thriller, romance, etc.)",
-    "confidence": "high/medium/low",
-    "reasoning": "brief explanation of how you identified the book"
-}
-
-Even if you're not 100% certain, provide your best guess with appropriate confidence level.
-Use character names, plot elements, and writing style as clues."""
-
-        resp = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
-            headers={"Content-Type": "application/json"},
-            json={
-                "contents": [{
-                    "parts": [
-                        {"text": prompt},
-                        {
-                            "inline_data": {
-                                "mime_type": "audio/mp3",
-                                "data": audio_data
-                            }
-                        }
-                    ]
-                }],
-                "generationConfig": {
-                    "temperature": 0.2,
-                    "maxOutputTokens": 1024
-                }
-            },
-            timeout=90
-        )
-
-        if resp.status_code == 429:
-            detail = resp.text[:500]
-            logger.warning(f"[LAYER 4] Gemini rate limited (429): {detail}")
-            # Check if daily quota is exhausted
-            if 'quota' in detail.lower() and ('limit: 0' in detail or 'exceeded' in detail.lower()):
-                logger.warning("[LAYER 4] Gemini daily quota exhausted - tripping circuit breaker")
-                record_api_failure('gemini')
-                record_api_failure('gemini')
-            return None
-
-        if resp.status_code != 200:
-            logger.warning(f"[LAYER 4] Gemini API failed: {resp.status_code} - {resp.text[:200]}")
-            return None
-
-        data = resp.json()
-        logger.debug(f"[LAYER 4] Gemini response received")
-
-        # Extract the text response
-        try:
-            text = data['candidates'][0]['content']['parts'][0]['text']
-            logger.debug(f"[LAYER 4] Gemini text response: {text[:200]}")
-            # Parse JSON from response
-            import re
-            json_match = re.search(r'\{[\s\S]*\}', text)
-            if json_match:
-                result = json.loads(json_match.group())
-
-                # Log what we found
-                if result.get('title') and result.get('author'):
-                    logger.info(f"[LAYER 4] Content identified: {result.get('author')}/{result.get('title')} "
-                               f"(confidence: {result.get('confidence')}, reason: {result.get('reasoning', 'N/A')[:50]})")
-
-                return result
-            else:
-                logger.warning(f"[LAYER 4] No JSON found in Gemini response: {text[:200]}")
-                return None
-        except Exception as e:
-            logger.warning(f"[LAYER 4] Failed to parse Gemini content response: {e} - text: {text[:100] if 'text' in dir() else 'N/A'}")
-            return None
-
-    except Exception as e:
-        logger.warning(f"[LAYER 4] Content identification error: {e}")
-        return None
-
-    return None
+    Wrapper that passes app-level dependencies to the extracted module.
+    """
+    return _try_gemini_content_identification_raw(
+        sample_path=sample_path,
+        api_key=api_key,
+        parse_json_response_fn=parse_json_response
+    )
 
 
 def analyze_audio_for_content(folder_path, config):
@@ -3277,6 +2208,8 @@ def analyze_audio_with_gemini(audio_file, config, duration=90, mode='credits'):
     """
     Send audio sample to Gemini for analysis.
 
+    Wrapper that passes app-level dependencies to the extracted module.
+
     Modes:
     - 'credits': Optimized for first file with opening credits (title/author/narrator announcement)
     - 'identify': For any chapter file - extracts chapter info and any identifying details
@@ -3289,145 +2222,22 @@ def analyze_audio_with_gemini(audio_file, config, duration=90, mode='credits'):
 
     Returns dict with extracted info or None on failure.
     """
-    import base64
-
-    # Check circuit breaker
-    if is_circuit_open('gemini'):
-        logger.debug("[GEMINI AUDIO] Circuit breaker open, skipping")
-        return None
-
-    api_key = config.get('gemini_api_key')
-    if not api_key:
-        return None
-
-    # Extract audio sample
-    sample_path = extract_audio_sample(audio_file, duration_seconds=duration)
-    if not sample_path:
-        logger.debug(f"Could not extract audio sample from {audio_file}")
-        return None
-
-    try:
-        # Read and encode audio
-        with open(sample_path, 'rb') as f:
-            audio_data = base64.b64encode(f.read()).decode('utf-8')
-
-        # Clean up temp file
-        os.unlink(sample_path)
-
-        # Use gemini-2.5-flash for audio (separate quota from text analysis model)
-        model = 'gemini-2.5-flash'
-
-        # Different prompts for different analysis modes
-        if mode == 'identify':
-            # For orphan/misplaced files - need to identify what book this chapter belongs to
-            prompt = """Listen to this audiobook chapter and extract ANY identifying information.
-This may be a chapter from the middle of an audiobook, not necessarily the beginning.
-
-Narrators often announce the chapter number at the start of each chapter.
-Listen carefully for:
-- Chapter number or part number ("Chapter 12", "Part 3")
-- Book title (sometimes mentioned even in middle chapters)
-- Author name (sometimes mentioned)
-- Narrator name (sometimes mentioned)
-- Series name (e.g., "Book 3 of the Hunger Games series")
-- Character names (can help identify the book)
-- Any other identifying context clues
-
-Return in JSON format:
-{
-    "title": "book title if mentioned anywhere",
-    "author": "author name if mentioned",
-    "narrator": "narrator name if mentioned",
-    "series": "series name if mentioned",
-    "chapter_number": "chapter or part number if announced (e.g., '12', '3.5')",
-    "chapter_title": "chapter title if announced (e.g., 'The Battle Begins')",
-    "language": "ISO 639-1 code of spoken language (en, de, fr, es, etc.)",
-    "character_names": ["list", "of", "character", "names", "heard"],
-    "context_clues": "any other identifying info that could help identify the book",
-    "confidence": "high/medium/low"
-}
-
-If information is not clearly stated, use null. Do not guess - only report what you hear."""
-        else:
-            # Default 'credits' mode - for first file with opening credits
-            prompt = """Listen to this audiobook intro and extract the following information.
-Audiobooks typically start with an announcement like "This is [Title] by [Author], read by [Narrator]".
-This announcement is usually in the first 30-60 seconds.
-
-Extract and return in JSON format:
-{
-    "title": "book title if mentioned",
-    "author": "author name if mentioned",
-    "narrator": "narrator name if mentioned",
-    "series": "series name if mentioned",
-    "language": "ISO 639-1 code of the spoken language (e.g., en, de, fr, es)",
-    "confidence": "high/medium/low based on how clearly the info was stated"
-}
-
-For the language field:
-- Listen to what language the narrator is speaking
-- Use the ISO 639-1 two-letter code (en=English, de=German, fr=French, es=Spanish, etc.)
-- This should reflect the SPOKEN language, not the original book language
-
-If information is not clearly stated in the audio, use null for that field.
-Only include information you actually heard - do not guess."""
-
-        # Respect rate limits before making the call
-        rate_limit_wait('gemini')
-
-        resp = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
-            headers={"Content-Type": "application/json"},
-            json={
-                "contents": [{
-                    "parts": [
-                        {"text": prompt},
-                        {
-                            "inline_data": {
-                                "mime_type": "audio/mp3",
-                                "data": audio_data
-                            }
-                        }
-                    ]
-                }],
-                "generationConfig": {"temperature": 0.1}
-            },
-            timeout=120  # Audio processing can take longer
-        )
-
-        if resp.status_code == 200:
-            result = resp.json()
-            text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-            if text:
-                parsed = parse_json_response(text)
-                if parsed:
-                    logger.info(f"Audio analysis extracted: {parsed}")
-                    record_api_success('gemini')
-                    return parsed
-        elif resp.status_code == 429:
-            # Rate limit or quota exceeded
-            detail = resp.text[:500]
-            logger.warning(f"Gemini audio API rate limited: {detail}")
-            if 'quota' in detail.lower() and ('limit: 0' in detail or 'exceeded' in detail.lower()):
-                logger.warning("[GEMINI AUDIO] Daily quota exhausted - tripping circuit breaker")
-                record_api_failure('gemini')
-                record_api_failure('gemini')
-        else:
-            logger.debug(f"Gemini audio API error {resp.status_code}: {resp.text[:200]}")
-
-    except Exception as e:
-        logger.debug(f"Audio analysis error: {e}")
-        # Clean up temp file if it exists
-        if sample_path and os.path.exists(sample_path):
-            os.unlink(sample_path)
-
-    return None
+    return _analyze_audio_with_gemini_raw(
+        audio_file=audio_file,
+        config=config,
+        duration=duration,
+        mode=mode,
+        extract_audio_sample_fn=extract_audio_sample,
+        parse_json_response_fn=parse_json_response
+    )
 
 
 def detect_audio_language(audio_file, config):
     """
     Detect the spoken language from an audio file using Gemini.
     This is a lightweight version of analyze_audio_with_gemini focused only on language.
+
+    Wrapper that passes app-level dependencies to the extracted module.
 
     Args:
         audio_file: Path to audio file
@@ -3436,70 +2246,12 @@ def detect_audio_language(audio_file, config):
     Returns:
         dict with 'language' (ISO 639-1 code), 'language_name', and 'confidence', or None
     """
-    import base64
-
-    api_key = config.get('gemini_api_key')
-    if not api_key:
-        logger.debug("No Gemini API key for audio language detection")
-        return None
-
-    # Extract shorter audio sample (30 seconds is enough for language detection)
-    sample_path = extract_audio_sample(audio_file, duration_seconds=30)
-    if not sample_path:
-        logger.debug(f"Could not extract audio sample from {audio_file}")
-        return None
-
-    try:
-        with open(sample_path, 'rb') as f:
-            audio_data = base64.b64encode(f.read()).decode('utf-8')
-
-        os.unlink(sample_path)
-
-        model = 'gemini-2.5-flash'
-
-        prompt = """Listen to this audiobook sample and identify the spoken language.
-
-Return JSON only:
-{
-    "language": "ISO 639-1 two-letter code (en, de, fr, es, it, pt, nl, sv, no, da, fi, pl, ru, ja, zh, ko, etc.)",
-    "language_name": "Full language name (English, German, French, etc.)",
-    "confidence": "high/medium/low"
-}
-
-Focus on the SPOKEN language you hear in the narration, not any background music or sound effects."""
-
-        resp = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
-            headers={"Content-Type": "application/json"},
-            json={
-                "contents": [{
-                    "parts": [
-                        {"text": prompt},
-                        {"inline_data": {"mime_type": "audio/mp3", "data": audio_data}}
-                    ]
-                }],
-                "generationConfig": {"temperature": 0.1}
-            },
-            timeout=60
-        )
-
-        if resp.status_code == 200:
-            result = resp.json()
-            text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-            if text:
-                parsed = parse_json_response(text)
-                if parsed and parsed.get('language'):
-                    logger.info(f"Audio language detected: {parsed.get('language_name', parsed['language'])} ({parsed.get('confidence', 'unknown')} confidence)")
-                    return parsed
-        else:
-            logger.debug(f"Gemini audio language API error {resp.status_code}")
-
-    except Exception as e:
-        logger.debug(f"Audio language detection error: {e}")
-        if sample_path and os.path.exists(sample_path):
-            os.unlink(sample_path)
-
-    return None
+    return _detect_audio_language_raw(
+        audio_file=audio_file,
+        config=config,
+        extract_audio_sample_fn=extract_audio_sample,
+        parse_json_response_fn=parse_json_response
+    )
 
 
 def get_audio_metadata_hints(book_path, config=None):
@@ -12705,47 +11457,9 @@ def api_test_openrouter():
     """Test OpenRouter API connection."""
     config = load_config()
     api_key = config.get('openrouter_api_key', '')
-
-    if not api_key:
-        return jsonify({
-            'success': False,
-            'error': 'No OpenRouter API key configured'
-        })
-
-    try:
-        model = config.get('openrouter_model', 'google/gemma-3n-e4b-it:free')
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": "Reply with just the word 'connected'"}],
-                "max_tokens": 10
-            },
-            timeout=10
-        )
-
-        if resp.status_code == 200:
-            return jsonify({
-                'success': True,
-                'model': model,
-                'message': 'OpenRouter API connected'
-            })
-        else:
-            error_data = resp.json()
-            error_msg = error_data.get('error', {}).get('message', f'Status {resp.status_code}')
-            return jsonify({
-                'success': False,
-                'error': error_msg
-            })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        })
+    model = config.get('openrouter_model', 'google/gemma-3n-e4b-it:free')
+    result = test_openrouter_connection(api_key, model)
+    return jsonify(result)
 
 
 @app.route('/api/reset_database', methods=['POST'])
