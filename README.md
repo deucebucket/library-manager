@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.94-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.95-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,11 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.95** - 🔧 **Major Code Refactoring**
+> - **32% Code Reduction** - `app.py` reduced from 15,491 to 10,519 lines
+> - **Modular Architecture** - New `library_manager/` package with organized modules
+> - **No User-Facing Changes** - Same functionality, cleaner codebase for future development
 
 > **beta.94** - 🐛 **Bug Fixes** (Issue #64)
 > - **API Key Visibility** - Keys now shown in settings (hidden by default, eye toggle reveals)

@@ -2,6 +2,31 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.95] - 2026-01-25
+
+### Changed
+
+- **Major Code Refactoring** - Modular pipeline architecture (32% code reduction)
+  - Extracted `app.py` from 15,491 lines to 10,519 lines
+  - Created `library_manager/` package with organized modules:
+    - `config.py` - Configuration loading/saving
+    - `database.py` - SQLite operations
+    - `worker.py` - Background worker thread
+    - `naming.py` - Title cleaning, series extraction
+    - `validation.py` - Garbage detection, placeholder checks
+    - `audio.py` - Audio file utilities
+    - `path_safety.py` - Path sanitization
+    - `providers/` - API provider modules (BookDB, Audnexus, OpenLibrary, Google Books, Hardcover)
+    - `pipeline/` - Processing layer framework
+  - No user-facing changes - same functionality, cleaner codebase
+  - Improves maintainability and future development
+
+### Fixed
+
+- **Dashboard Route Error** - Fixed `worker_running` NameError when worker module imported
+
+---
+
 ## [0.9.0-beta.94] - 2026-01-25
 
 ### Fixed
