@@ -79,7 +79,7 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
         logger.debug(f"BookDB: Circuit open, skipping ({remaining}s remaining)")
         return None
 
-    rate_limit_wait('bookdb')
+    rate_limit_wait('bookdb')  # 3.6s delay = max 1000/hr, never skips
 
     # Use configured URL or fall back to default cloud URL
     base_url = bookdb_url or BOOKDB_API_URL
@@ -380,9 +380,138 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
         return None
 
 
+def contribute_to_bookdb(title, author=None, narrator=None, series=None,
+                         series_position=None, source='unknown', confidence='medium',
+                         bookdb_url=None):
+    """
+    Contribute book metadata to the BookDB community database.
+
+    This allows users who identify books via Gemini, OpenRouter, local Whisper,
+    or other methods to contribute back to the community database. Even users
+    who don't use BookDB for identification can help enrich it.
+
+    Args:
+        title: Book title (required)
+        author: Author name
+        narrator: Narrator name (for audiobooks)
+        series: Series name
+        series_position: Position in series (float, e.g., 1.0, 2.5)
+        source: How this book was identified (gemini, openrouter, whisper, folder_parse, manual, etc.)
+        confidence: How confident we are (low, medium, high)
+        bookdb_url: Custom BookDB URL (uses default if not provided)
+
+    Returns:
+        dict with status, is_new, consensus_count or None on failure
+    """
+    if not title or len(title.strip()) < 2:
+        logger.debug("[BOOKDB CONTRIBUTE] Title too short, skipping")
+        return None
+
+    # Check circuit breaker - don't spam if rate limited
+    cb = API_CIRCUIT_BREAKER.get('bookdb', {})
+    if cb.get('circuit_open_until', 0) > time.time():
+        logger.debug("[BOOKDB CONTRIBUTE] Circuit open, skipping")
+        return None
+
+    url = bookdb_url or BOOKDB_API_URL
+
+    try:
+        payload = {
+            "title": title.strip(),
+            "author": author.strip() if author else None,
+            "narrator": narrator.strip() if narrator else None,
+            "series": series.strip() if series else None,
+            "series_position": series_position,
+            "source": source,
+            "confidence": confidence,
+        }
+
+        response = requests.post(
+            f"{url}/api/contribute",
+            json=payload,
+            timeout=10
+        )
+
+        if response.status_code == 429:
+            logger.debug("[BOOKDB CONTRIBUTE] Rate limited, skipping")
+            return None
+
+        if response.status_code != 200:
+            logger.debug(f"[BOOKDB CONTRIBUTE] API returned {response.status_code}")
+            return None
+
+        data = response.json()
+
+        if data.get('status') == 'accepted':
+            is_new = data.get('is_new', False)
+            consensus = data.get('consensus_count', 1)
+            logger.info(f"[BOOKDB CONTRIBUTE] {'New' if is_new else 'Existing'} contribution accepted: "
+                       f"{author} - {title} (source: {source}, consensus: {consensus})")
+            return data
+
+        return None
+
+    except requests.exceptions.Timeout:
+        logger.debug("[BOOKDB CONTRIBUTE] Request timed out")
+        return None
+    except Exception as e:
+        logger.debug(f"[BOOKDB CONTRIBUTE] Error: {e}")
+        return None
+
+
+def lookup_community_consensus(title, author=None, bookdb_url=None):
+    """
+    Look up community consensus for a book.
+
+    This checks if other users have contributed metadata for this book.
+    Useful as a fallback when BookDB's main database doesn't have a match.
+
+    Args:
+        title: Book title (required)
+        author: Optional author name for better matching
+        bookdb_url: Custom BookDB URL (uses default if not provided)
+
+    Returns:
+        dict with book metadata if found, None otherwise
+    """
+    if not title or len(title.strip()) < 2:
+        return None
+
+    url = bookdb_url or BOOKDB_API_URL
+
+    try:
+        params = {"title": title.strip()}
+        if author:
+            params["author"] = author.strip()
+
+        response = requests.get(
+            f"{url}/api/community/lookup",
+            params=params,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            return None
+
+        data = response.json()
+
+        if data.get('found'):
+            logger.info(f"[BOOKDB COMMUNITY] Found consensus for {title}: "
+                       f"{data.get('author')} (contributors: {data.get('contributor_count', 1)})")
+            return data
+
+        return None
+
+    except Exception as e:
+        logger.debug(f"[BOOKDB COMMUNITY] Lookup error: {e}")
+        return None
+
+
 __all__ = [
     'BOOKDB_API_URL',
     'BOOKDB_PUBLIC_KEY',
     'search_bookdb',
     'identify_audio_with_bookdb',
+    'contribute_to_bookdb',
+    'lookup_community_consensus',
 ]

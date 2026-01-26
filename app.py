@@ -109,21 +109,32 @@ except ImportError:
     def get_book_cache(*args, **kwargs):
         return None
 
-# Try to import narrator detection from BookDB
+# Try to import narrator detection from BookDB local database
 try:
     from metadata_scraper.database import (
         is_known_narrator as _is_known_narrator,
         add_narrator as _add_narrator,
-        add_community_contribution as _add_contribution,
-        get_consensus as _get_consensus
     )
-    BOOKDB_AVAILABLE = True
+    BOOKDB_LOCAL_AVAILABLE = True
 except ImportError:
-    BOOKDB_AVAILABLE = False
+    BOOKDB_LOCAL_AVAILABLE = False
     _is_known_narrator = None
     _add_narrator = None
-    _add_contribution = None
-    _get_consensus = None
+
+# Import BookDB API client for community contributions
+try:
+    from library_manager.providers.bookdb import (
+        contribute_to_bookdb as _contribute_to_bookdb_api,
+        lookup_community_consensus as _lookup_community_api,
+    )
+    BOOKDB_API_AVAILABLE = True
+except ImportError:
+    BOOKDB_API_AVAILABLE = False
+    _contribute_to_bookdb_api = None
+    _lookup_community_api = None
+
+# Combined availability flag
+BOOKDB_AVAILABLE = BOOKDB_LOCAL_AVAILABLE or BOOKDB_API_AVAILABLE
 
 def check_if_narrator(name):
     """
@@ -170,20 +181,34 @@ def auto_save_narrator(name, source='auto_extract'):
         logging.debug(f"Could not auto-add narrator {name}: {e}")
         return False
 
-def contribute_audio_extraction(title, author=None, narrator=None, series=None,
-                                  series_position=None, language=None, confidence='medium'):
+def contribute_to_community(title, author=None, narrator=None, series=None,
+                            series_position=None, source='unknown', confidence='medium'):
     """
-    Contribute audio-extracted metadata to the community database.
+    Contribute book metadata to the BookDB community database.
     Requires opt-in via 'contribute_to_community' config setting.
 
-    This builds a crowdsourced database where:
-    - 1 user = suggestion (weight 1)
-    - 2 users agreeing = likely correct (weight 3)
-    - 3+ users agreeing = verified (weight 5+)
+    This allows users who identify books via Gemini, OpenRouter, local Whisper,
+    or any other method to contribute back. Even users who don't use BookDB
+    for identification can help enrich the database.
+
+    The contribution system builds consensus:
+    - 1 contributor = low confidence
+    - 2 contributors agreeing = medium confidence
+    - 3+ contributors agreeing = high confidence
+
+    Args:
+        title: Book title (required)
+        author: Author name
+        narrator: Narrator name (for audiobooks)
+        series: Series name
+        series_position: Position in series
+        source: How this was identified (gemini, openrouter, whisper, folder_parse, manual, etc.)
+        confidence: How confident we are (low, medium, high)
 
     Returns True if contributed, False otherwise.
     """
-    if not BOOKDB_AVAILABLE or not _add_contribution:
+    if not BOOKDB_API_AVAILABLE or not _contribute_to_bookdb_api:
+        logger.debug("[COMMUNITY] BookDB API not available, skipping contribution")
         return False
 
     if not title:
@@ -192,55 +217,53 @@ def contribute_audio_extraction(title, author=None, narrator=None, series=None,
     # Get config to check opt-in
     config = load_config()
     if not config.get('contribute_to_community', False):
+        logger.debug("[COMMUNITY] Contribution disabled in config")
         return False
 
-    # Generate a machine ID for deduplication (privacy-safe hash)
-    import hashlib
-    import uuid
     try:
-        # Use machine-id if available (Linux)
-        with open('/etc/machine-id', 'r') as f:
-            machine_id = f.read().strip()
-    except Exception:
-        # Fallback to a generated ID stored in config
-        machine_id = config.get('instance_id') or str(uuid.uuid4())
-
-    contributor_id = hashlib.sha256(machine_id.encode()).hexdigest()[:16]
-
-    try:
-        result = _add_contribution(
+        result = _contribute_to_bookdb_api(
             title=title,
             author=author,
             narrator=narrator,
             series=series,
             series_position=series_position,
-            language=language,
-            contributor_id=contributor_id,
-            source='audio_credits',
+            source=source,
             confidence=confidence
         )
         if result:
-            logger.info(f"[COMMUNITY] Contributed: {author}/{title} (narrator: {narrator})")
+            logger.info(f"[COMMUNITY] Contributed: {author}/{title} (source: {source})")
             return True
         return False
     except Exception as e:
         logger.debug(f"Could not contribute to community: {e}")
         return False
 
+
+# Keep old function name for backwards compatibility
+def contribute_audio_extraction(title, author=None, narrator=None, series=None,
+                                series_position=None, language=None, confidence='medium'):
+    """Legacy wrapper - use contribute_to_community instead."""
+    return contribute_to_community(
+        title=title, author=author, narrator=narrator,
+        series=series, series_position=series_position,
+        source='audio_credits', confidence=confidence
+    )
+
 def lookup_community_consensus(title, author=None):
     """
     Look up community consensus for a book.
     Returns metadata if found with sufficient confidence.
+    Uses the BookDB API to check the community consensus database.
     """
-    if not BOOKDB_AVAILABLE or not _get_consensus:
+    if not BOOKDB_API_AVAILABLE or not _lookup_community_api:
         return None
 
     try:
-        # Require at least 2 contributors (weight >= 3) for narrator data
-        consensus = _get_consensus(title, author, min_weight=3)
-        if consensus:
-            logger.debug(f"[COMMUNITY] Found consensus for {title}: {consensus.get('narrator')} ({consensus.get('confidence')})")
-        return consensus
+        consensus = _lookup_community_api(title, author)
+        if consensus and consensus.get('found'):
+            logger.debug(f"[COMMUNITY] Found consensus for {title}: {consensus.get('author')} ({consensus.get('confidence')})")
+            return consensus
+        return None
     except Exception as e:
         logger.debug(f"Could not lookup community consensus: {e}")
         return None
@@ -2680,7 +2703,7 @@ def search_bookdb_api(title, retry_count=0):
         logger.debug(f"BookDB API: Skipping unsearchable query '{search_title}'")
         return None
 
-    rate_limit_wait('bookdb')
+    rate_limit_wait('bookdb')  # 3.6s delay = max 1000/hr, never skips
 
     try:
         # Use longer timeout for cold start (embedding model can take 45-60s to load)
@@ -3027,6 +3050,21 @@ Only if the title is truly unrecognizable, return:
             ai_result['confidence'] = adjusted_confidence
             if reason != 'validated':
                 ai_result['validation_note'] = reason
+
+            # Contribute to community database if we got a valid identification
+            # This helps other users even if they don't use the same AI provider
+            if ai_result.get('title') and ai_result.get('author'):
+                try:
+                    contribute_to_community(
+                        title=ai_result.get('title'),
+                        author=ai_result.get('author'),
+                        series=ai_result.get('series'),
+                        series_position=ai_result.get('series_num'),
+                        source=ai_result.get('provider', 'ai'),  # gemini, openrouter, ollama, etc.
+                        confidence=adjusted_confidence
+                    )
+                except Exception as contrib_err:
+                    logger.debug(f"[COMMUNITY] Contribution failed (non-fatal): {contrib_err}")
 
             return ai_result
 

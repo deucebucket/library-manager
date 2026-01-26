@@ -11,8 +11,9 @@ logger = logging.getLogger(__name__)
 
 # Rate limiting to stay under API limits
 # Format: api_name -> {last_call, min_delay}
+# BookDB: 3.6 sec delay = 1000 requests/hour max, spread evenly (never hits limit)
 API_RATE_LIMITS = {
-    'bookdb': {'last_call': 0, 'min_delay': 1.0},        # Our API - 750/hr, increased to prevent self-banning
+    'bookdb': {'last_call': 0, 'min_delay': 3.6},        # 3600s / 1000 = 3.6s between calls = exactly 1000/hr
     'audnexus': {'last_call': 0, 'min_delay': 2.0},      # ~100/hr community API - be nice
     'openlibrary': {'last_call': 0, 'min_delay': 1.5},   # They request max 1/sec, add buffer
     'googlebooks': {'last_call': 0, 'min_delay': 1.0},   # 1000/day, no per-sec limit but be safe
@@ -34,10 +35,15 @@ API_CIRCUIT_BREAKER = {
 
 
 def rate_limit_wait(api_name):
-    """Wait if needed to respect rate limits for the given API."""
+    """
+    Wait if needed to respect rate limits for the given API.
+
+    For BookDB: 3.6s delay ensures exactly 1000 requests/hour max.
+    All requests go through - no skipping, just proper pacing.
+    """
     with API_RATE_LOCK:
         if api_name not in API_RATE_LIMITS:
-            return
+            return True  # Unknown API, allow
 
         limit_info = API_RATE_LIMITS[api_name]
         now = time.time()
@@ -49,6 +55,7 @@ def rate_limit_wait(api_name):
             time.sleep(wait_time)
 
         API_RATE_LIMITS[api_name]['last_call'] = time.time()
+        return True  # Always succeeds - we just pace, never skip
 
 
 def is_circuit_open(api_name):
