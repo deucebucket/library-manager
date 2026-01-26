@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.97-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.94-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,22 +15,6 @@
 ---
 
 ## Recent Changes (stable)
-
-> **beta.97** - 🔍 **Series Mismatch Detection & SearXNG Fallback** (Issues #76, #77)
-> - **Series Mismatch Fix** - Books with series info now correctly reject wrong matches
-> - **SearXNG Fallback** - New web search provider when APIs fail (Amazon, Audible, Goodreads parsing)
-> - **Whisper Setting Fix** - Speech-to-Text model selection now saves correctly
-> - **External API Updates** - Audnexus adapter updated for Jan 2026 API changes (now ASIN-only)
-
-> **beta.96** - 🐛 **Watch Folder Duplicates Fix** (Issue #76)
-> - **Atomic Directory Move** - Prevents partial moves creating "Version B" folders
-> - **Partial Move Detection** - Completes interrupted moves instead of duplicating
-> - **Edit Persistence Fix** - Multiple edits to pending_fix items now preserve original metadata
-
-> **beta.95** - 🔧 **Major Code Refactoring**
-> - **32% Code Reduction** - `app.py` reduced from 15,491 to 10,519 lines
-> - **Modular Architecture** - New `library_manager/` package with organized modules
-> - **No User-Facing Changes** - Same functionality, cleaner codebase for future development
 
 > **beta.94** - 🐛 **Bug Fixes** (Issues #64, #71, #74)
 > - **Queue Hanging Fix** - Circuit breaker now properly advances queue when providers fail (#74)
