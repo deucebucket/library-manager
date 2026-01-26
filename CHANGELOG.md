@@ -2,6 +2,19 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.97] - 2026-01-26
+
+### Fixed
+
+- **Issue #76: Series Mismatch Detection** - Books with series info now correctly reject wrong matches
+  - AI verification prompt now extracts series context from folder names
+  - When input has explicit series (e.g., "Expeditionary Force Book 14"), mismatched results are rejected
+  - Example: "Expeditionary Force Book 14 - Match Game" no longer misidentified as "Doc Raymond - Match Game"
+
+- **Issue #77: Whisper Model Setting Not Saving** - Added missing `whisper_model` to settings handler
+
+---
+
 ## [0.9.0-beta.96] - 2026-01-26
 
 ### Fixed

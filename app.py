@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.96"
+APP_VERSION = "0.9.0-beta.97"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -3229,13 +3229,40 @@ def gather_all_api_candidates(title, author=None, config=None):
 def build_verification_prompt(original_input, original_author, original_title, proposed_author, proposed_title, candidates):
     """
     Build a verification prompt that shows ALL API candidates and asks AI to vote.
+    Issue #76: Now includes series context extraction for better matching.
     """
     candidate_list = ""
     for i, c in enumerate(candidates, 1):
-        candidate_list += f"  CANDIDATE_{i}: {c.get('author', 'Unknown')} - {c.get('title', 'Unknown')} (from {c.get('source', 'Unknown')})\n"
+        # Include series info if available
+        series_info = ""
+        if c.get('series'):
+            series_info = f" [Series: {c.get('series')}"
+            if c.get('series_num'):
+                series_info += f" #{c.get('series_num')}"
+            series_info += "]"
+        candidate_list += f"  CANDIDATE_{i}: {c.get('author', 'Unknown')} - {c.get('title', 'Unknown')}{series_info} (from {c.get('source', 'Unknown')})\n"
 
     if not candidate_list:
         candidate_list = "  No API results found.\n"
+
+    # Issue #76: Extract series info from original input for better matching
+    series_context = ""
+    extracted = extract_series_from_title(original_input)
+    if extracted[0]:  # Has series name
+        series_name, series_num, standalone_title = extracted
+        series_context = f"""
+DETECTED SERIES CONTEXT:
+  - Series Name: {series_name}
+  - Book Number: {series_num if series_num else 'Unknown'}
+  - Standalone Title: {standalone_title}
+
+CRITICAL SERIES RULE:
+The original input contains EXPLICIT series information "{series_name}".
+If a candidate does NOT match this series, it is almost certainly WRONG!
+- "Expeditionary Force Book 14 - Match Game" -> "Doc Raymond - Match Game" = WRONG (different series/author!)
+- "Expeditionary Force Book 14 - Match Game" -> "Craig Alanson - Match Game" = CORRECT (if Craig Alanson writes Expeditionary Force)
+- Series name in input MUST match the candidate's known series.
+"""
 
     return f"""You are a book metadata verification expert. A drastic author change was detected and needs your verification.
 
@@ -3249,7 +3276,7 @@ PROPOSED CHANGE:
 
 ALL API SEARCH RESULTS:
 {candidate_list}
-
+{series_context}
 CRITICAL RULE - REJECT GARBAGE MATCHES:
 The API sometimes returns COMPLETELY UNRELATED books that share one word. These are ALWAYS WRONG:
 - "Chapter 19" -> "College Accounting, Chapters 1-9" = WRONG (different book!)
@@ -11483,6 +11510,9 @@ def settings_page():
         config['audio_provider_chain'] = [p.strip() for p in audio_chain_str.split(',') if p.strip()]
         text_chain_str = request.form.get('text_provider_chain', 'gemini,openrouter').strip()
         config['text_provider_chain'] = [p.strip() for p in text_chain_str.split(',') if p.strip()]
+
+        # Whisper model setting (Issue #77)
+        config['whisper_model'] = request.form.get('whisper_model', 'large-v3').strip()
 
         # Save config (without secrets)
         save_config(config)
