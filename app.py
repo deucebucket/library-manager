@@ -10263,6 +10263,17 @@ def api_edit_book():
             old_title = item['current_title']
             history_status = None
 
+            # Issue #75: If there's an existing pending_fix entry, preserve its original old_author/old_title
+            # This ensures multiple edits show "Original → Latest" not "Previous edit → Latest"
+            c.execute('''SELECT old_author, old_title, old_path FROM history
+                         WHERE book_id = ? AND status = 'pending_fix'
+                         ORDER BY id DESC LIMIT 1''', (book_id,))
+            existing_pending = c.fetchone()
+            if existing_pending:
+                old_author = existing_pending['old_author'] or old_author
+                old_title = existing_pending['old_title'] or old_title
+                old_path = existing_pending['old_path'] or old_path
+
         # Determine new values from BookDB result if provided
         new_series = None
         new_series_num = None
