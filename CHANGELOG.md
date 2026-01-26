@@ -31,6 +31,13 @@ All notable changes to Library Manager will be documented in this file.
 
 ### Fixed
 
+- **Issue #74: Queue Hanging** - Fixed queue getting stuck waiting for providers
+  - Circuit breaker now properly trips when providers fail repeatedly
+  - Queue advances to next layer instead of stalling indefinitely
+
+- **Issue #71: Community Contributions Toggle** - Setting now persists correctly
+  - Added missing `contribute_to_community` to settings save handler
+
 - **Issue #64: Multiple Bug Fixes** (Merijeek's reported issues)
   - **API Key Visibility** - Keys now shown in settings (hidden by default, eye toggle reveals actual value)
   - **"Source no longer exists" Errors** - History entries now store old_path/new_path at creation time
@@ -42,6 +49,9 @@ All notable changes to Library Manager will be documented in this file.
     - Bitrates (62k, 128k), timestamps (23.35.16), file sizes ({1.27gb})
     - Editor/narrator names in brackets/parentheses ([Dozois,Strahan], (Thorne))
     - Version markers ((V), v01)
+
+- **Issue #63: Whisper Install Permission Error** - Fixed in Docker entrypoint
+  - Creates required directories with proper ownership before app starts
 
 ---
 
