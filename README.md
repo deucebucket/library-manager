@@ -16,7 +16,10 @@
 
 ## Recent Changes (stable)
 
-> **beta.94** - 🐛 **Bug Fixes** (Issue #64)
+> **beta.94** - 🐛 **Bug Fixes** (Issues #64, #71, #74)
+> - **Queue Hanging Fix** - Circuit breaker now properly advances queue when providers fail (#74)
+> - **Community Toggle** - "Contribute to Community" setting now saves correctly (#71)
+> - **Whisper Install** - Docker permission error fixed (#63)
 > - **API Key Visibility** - Keys now shown in settings (hidden by default, eye toggle reveals)
 > - **Apply All Fix** - History entries now store paths to prevent "Source no longer exists" errors
 > - **Dashboard Counts** - Fixed inflated counts by excluding series folders from totals
