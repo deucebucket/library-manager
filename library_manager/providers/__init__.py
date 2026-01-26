@@ -6,6 +6,7 @@ This package contains the API providers used for book metadata lookups:
 - OpenLibrary (open source)
 - Google Books
 - Hardcover
+- SearXNG (fallback web search)
 
 And AI providers for book identification:
 - Gemini
@@ -57,6 +58,11 @@ from library_manager.providers.gemini import (
     detect_audio_language,
     try_gemini_content_identification,
 )
+from library_manager.providers.searxng import (
+    DEFAULT_SEARXNG_URL,
+    search_searxng,
+    test_searxng_connection,
+)
 
 __all__ = [
     # Rate limiting
@@ -99,4 +105,8 @@ __all__ = [
     'analyze_audio_with_gemini',
     'detect_audio_language',
     'try_gemini_content_identification',
+    # SearXNG (fallback)
+    'DEFAULT_SEARXNG_URL',
+    'search_searxng',
+    'test_searxng_connection',
 ]

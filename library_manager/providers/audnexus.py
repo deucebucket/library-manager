@@ -1,9 +1,15 @@
 """Audnexus API provider for audiobook metadata.
 
 Audnexus is a community-maintained API that provides Audible metadata.
-It's useful for narrator info and audiobook-specific details but can
-be slow or unavailable at times. Circuit breaker skips it temporarily
-after repeated timeouts.
+
+NOTE (Jan 2026): Audnexus API has changed significantly:
+- Title search endpoint (/books?title=...) has been REMOVED
+- API is now ASIN-only: /books/{ASIN}?region=us
+- Author search still works: /authors?name=...
+- This provider now tries author search as a workaround but has limited discovery ability
+
+The API is now primarily useful for ENRICHMENT (when you already have an ASIN)
+rather than DISCOVERY (finding books by title).
 """
 import logging
 import time
@@ -24,14 +30,16 @@ logger = logging.getLogger(__name__)
 def search_audnexus(title, author=None, region=None):
     """Search Audnexus API for audiobook metadata. Pulls from Audible.
 
-    Audnexus is a community-maintained API that provides Audible metadata.
-    It's useful for narrator info and audiobook-specific details but can
-    be slow or unavailable at times. Circuit breaker skips it temporarily
-    after repeated timeouts.
+    NOTE: As of Jan 2026, Audnexus has removed title search. This function
+    now tries an author-based search approach which has limited effectiveness.
+
+    The API now requires ASIN for direct book lookups:
+    - /books/{ASIN}?region=us - Full book details (requires known ASIN)
+    - /authors?name=... - Find author ASINs (still works)
 
     Args:
         title: Book title to search for
-        author: Optional author name
+        author: Optional author name (required for any chance of finding results)
         region: Optional Audible region code (us, de, fr, it, es, jp, etc.)
 
     Returns:
@@ -43,76 +51,148 @@ def search_audnexus(title, author=None, region=None):
         return None
 
     rate_limit_wait('audnexus')
+
+    # Default region to 'us' (required parameter for Audnexus API)
+    if not region:
+        region = 'us'
+
     try:
-        # Audnexus search endpoint
-        query = title
-        if author:
-            query = f"{title} {author}"
+        # Strategy: Try author search if author provided, otherwise skip
+        # (Title search no longer exists in Audnexus API)
 
-        url = f"https://api.audnex.us/books?title={urllib.parse.quote(query)}"
-        # Add region parameter for localized results
-        if region and region != 'us':
-            url += f"&region={region}"
+        if not author:
+            logger.debug(f"Audnexus: Skipping - no author provided (title search removed from API)")
+            return None
 
-        logger.debug(f"Audnexus: Searching for '{query}'")
-        resp = requests.get(url, timeout=10, headers={'Accept': 'application/json'})
+        # Step 1: Search for author by name
+        author_url = f"https://api.audnex.us/authors?name={urllib.parse.quote(author)}"
+        logger.debug(f"Audnexus: Searching authors for '{author}'")
 
-        # Success - reset circuit breaker
-        record_api_success('audnexus')
+        resp = requests.get(author_url, timeout=10, headers={'Accept': 'application/json'})
+
+        if resp.status_code == 404:
+            # API endpoint may have changed - log and skip
+            logger.debug(f"Audnexus: Author search endpoint returned 404 - API may have changed")
+            return None
 
         if resp.status_code != 200:
-            logger.debug(f"Audnexus: API returned status {resp.status_code}")
+            logger.debug(f"Audnexus: Author search returned status {resp.status_code}")
             return None
 
-        data = resp.json()
-        if not data or not isinstance(data, list) or len(data) == 0:
-            logger.debug(f"Audnexus: No results for '{query}'")
+        authors_data = resp.json()
+        if not authors_data or not isinstance(authors_data, list):
+            logger.debug(f"Audnexus: No authors found for '{author}'")
             return None
 
-        # Get best match
-        best = data[0]
+        # Find best matching author (exact match preferred)
+        author_lower = author.lower()
+        best_author = None
+        for a in authors_data:
+            if a.get('name', '').lower() == author_lower:
+                best_author = a
+                break
+        if not best_author and authors_data:
+            best_author = authors_data[0]  # Fall back to first result
 
-        # Extract series info - Audnexus returns series as object or seriesName/seriesPosition fields
-        series_name = None
-        series_num = None
-        if best.get('series'):
-            # Series can be an object with name field
-            if isinstance(best['series'], dict):
-                series_name = best['series'].get('name')
-                series_num = best['series'].get('position')
-            elif isinstance(best['series'], str):
-                series_name = best['series']
-        # Also check flat fields (some Audnexus responses use these)
-        if not series_name:
-            series_name = best.get('seriesName') or best.get('series_name')
-        if not series_num:
-            series_num = best.get('seriesPosition') or best.get('series_position')
+        if not best_author or not best_author.get('asin'):
+            logger.debug(f"Audnexus: No author ASIN found for '{author}'")
+            return None
 
-        result = {
-            'title': best.get('title', ''),
-            'author': best.get('authors', [{}])[0].get('name', '') if best.get('authors') else '',
-            'year': best.get('releaseDate', '')[:4] if best.get('releaseDate') else None,
-            'narrator': best.get('narrators', [{}])[0].get('name', '') if best.get('narrators') else None,
-            'series': series_name,
-            'series_num': series_num,
-            'source': 'audnexus'
-        }
+        author_asin = best_author['asin']
+        author_name = best_author.get('name', author)
 
-        if result['title'] and result['author']:
-            logger.info(f"Audnexus found: {result['author']} - {result['title']}")
-            return result
-        logger.debug(f"Audnexus: Result missing title or author for '{query}'")
+        # Note: Unfortunately, Audnexus doesn't provide a way to get an author's books
+        # The /authors/{asin} endpoint only returns author info, not their book list
+        # Without ASINs, we can't look up specific books
+
+        # For now, return author info so at least we validate the author exists
+        # This is limited but better than nothing
+        logger.debug(f"Audnexus: Found author '{author_name}' (ASIN: {author_asin}) but cannot search books without ASIN")
+
+        # Success - reset circuit breaker (API is responding)
+        record_api_success('audnexus')
+
+        # We can't return a full book result without ASIN-based lookup
+        # Return None to let other APIs handle discovery
         return None
+
     except requests.exceptions.Timeout:
         # Timeout - increment circuit breaker
         record_api_failure('audnexus')
         logger.warning(f"Audnexus search timed out for '{title}'")
         return None
     except Exception as e:
-        logger.warning(f"Audnexus search failed for '{title}': {e}")
+        logger.debug(f"Audnexus search failed: {e}")
+        return None
+
+
+def lookup_audnexus_by_asin(asin, region='us'):
+    """Look up a specific audiobook by ASIN.
+
+    This is the recommended way to use Audnexus as of Jan 2026.
+    Use when you already have an ASIN from another source.
+
+    Args:
+        asin: Audible ASIN (e.g., 'B01N48VJFJ')
+        region: Audible region code (default: 'us')
+
+    Returns:
+        dict with full audiobook metadata or None if not found
+    """
+    if is_circuit_open('audnexus'):
+        return None
+
+    rate_limit_wait('audnexus')
+
+    try:
+        url = f"https://api.audnex.us/books/{asin}?region={region}"
+        logger.debug(f"Audnexus: Looking up ASIN {asin}")
+
+        resp = requests.get(url, timeout=10, headers={'Accept': 'application/json'})
+
+        record_api_success('audnexus')
+
+        if resp.status_code != 200:
+            logger.debug(f"Audnexus: ASIN lookup returned status {resp.status_code}")
+            return None
+
+        data = resp.json()
+        if not data or not data.get('title'):
+            return None
+
+        # Extract series info from seriesPrimary field
+        series_name = None
+        series_num = None
+        if data.get('seriesPrimary'):
+            series_name = data['seriesPrimary'].get('name')
+            series_num = data['seriesPrimary'].get('position')
+
+        result = {
+            'asin': asin,
+            'title': data.get('title', ''),
+            'author': data.get('authors', [{}])[0].get('name', '') if data.get('authors') else '',
+            'year': data.get('releaseDate', '')[:4] if data.get('releaseDate') else None,
+            'narrator': data.get('narrators', [{}])[0].get('name', '') if data.get('narrators') else None,
+            'series': series_name,
+            'series_num': series_num,
+            'description': data.get('description', ''),
+            'runtime_minutes': data.get('runtimeLengthMin'),
+            'source': 'audnexus'
+        }
+
+        logger.info(f"Audnexus found: {result['author']} - {result['title']}")
+        return result
+
+    except requests.exceptions.Timeout:
+        record_api_failure('audnexus')
+        logger.warning(f"Audnexus ASIN lookup timed out for '{asin}'")
+        return None
+    except Exception as e:
+        logger.debug(f"Audnexus ASIN lookup failed: {e}")
         return None
 
 
 __all__ = [
     'search_audnexus',
+    'lookup_audnexus_by_asin',
 ]

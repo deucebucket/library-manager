@@ -2,6 +2,45 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.97] - 2026-01-26
+
+### Fixed
+
+- **Issue #76: Series Mismatch Detection** - Books with series info now correctly reject wrong matches
+  - Watch folder extracts series name/number from folder names (e.g., "Expeditionary Force Book 14")
+  - When API returns a result without matching series, triggers AI verification
+  - AI verification prompt now includes explicit series matching rules
+  - Example: "Expeditionary Force Book 14 - Match Game" no longer misidentified as "Doc Raymond - Match Game"
+  - Unmatched books go to `Unknown/` for user review instead of being filed incorrectly
+
+- **Issue #77: Whisper Model Setting Not Saving** - Added missing `whisper_model` to settings handler
+
+### Added
+
+- **SearXNG Fallback Provider** - Web search fallback when APIs fail
+  - New provider searches the web via SearXNG for book metadata
+  - Parses results from Amazon, Audible, Goodreads, FantasticFiction
+  - Extracts author, title, series, and ASIN from search results
+  - Requires SearXNG running locally (default: `http://localhost:8888`)
+  - Use as fallback when primary APIs (BookDB, Audnexus) can't find a book
+
+### Changed
+
+- **Audnexus Provider Updated** - Adapted to API changes (Jan 2026)
+  - Title search endpoint (`/books?title=...`) has been removed from Audnexus API
+  - API is now ASIN-only: requires `/books/{ASIN}?region=us` format
+  - Author search still works: `/authors?name=...`
+  - Added `lookup_audnexus_by_asin()` function for direct ASIN lookups
+  - Provider now gracefully returns None instead of 404 errors
+
+### Known Issues (External APIs)
+
+- **Audnexus**: Title search removed - API now requires ASIN for book lookups. Author search still works.
+- **Hardcover**: Now behind Cloudflare protection, GraphQL API requires authentication token.
+- **Recommendation**: BookDB remains the primary discovery API. Use audio identification (BookDB Whisper) for best results on unknown books.
+
+---
+
 ## [0.9.0-beta.96] - 2026-01-26
 
 ### Fixed

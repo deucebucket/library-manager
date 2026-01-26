@@ -54,15 +54,46 @@ def is_garbage_match(original_title, suggested_title, threshold=0.3):
     - "Chapter 19" -> "College Accounting, Chapters 1-9" (only matches "chapter")
     - "Death Genesis" -> "The Darkborn AfterLife Genesis" (only matches "genesis")
     - "Mr. Murder" -> "Frankenstein" (no overlap)
+    - "Expeditionary Force Book 14 - Match Game" -> "Match Game" (lost series context!)
 
     Threshold of 0.3 means at least 30% word overlap required.
     """
     similarity = calculate_title_similarity(original_title, suggested_title)
 
+    # Count significant words (3+ chars)
+    orig_words = [w for w in original_title.lower().split() if len(w) > 2]
+    sugg_words = [w for w in suggested_title.lower().split() if len(w) > 2]
+    orig_count = len(orig_words)
+    sugg_count = len(sugg_words)
+
     # If original is very short (1-2 words), be more lenient
-    orig_words = len([w for w in original_title.lower().split() if len(w) > 2])
-    if orig_words <= 2 and similarity >= 0.2:
+    if orig_count <= 2 and similarity >= 0.2:
         return False
+
+    # Issue #76: If original has MANY words (like series info) but suggested is much shorter,
+    # the match likely lost important context (series name, book number, etc.)
+    # "Expeditionary Force Book 14 - Match Game" (7 words) -> "Match Game" (2 words) = suspicious
+    # BUT: If suggested is contained in original, it might be correct (just the standalone title)
+    sugg_in_orig = suggested_title.lower() in original_title.lower()
+    if orig_count >= 5 and sugg_count <= 2 and not sugg_in_orig:
+        # Suggested title is tiny compared to original - require higher similarity
+        if similarity < 0.5:
+            logger.info(f"Garbage match rejected (context loss): '{original_title}' -> '{suggested_title}' "
+                       f"(similarity: {similarity:.2f}, {orig_count} words -> {sugg_count} words)")
+            return True
+
+    # Issue #76: Also check if series indicators are lost
+    # If original contains "Book X", "Series", "#X" but suggested doesn't, be suspicious
+    # BUT: If suggested title is contained in original (like "Storm Front" in "Dresden Files Book 1 Storm Front"),
+    # that's likely correct - the API just returned the standalone title
+    series_indicators = ['book', 'series', 'volume', 'vol', 'part', 'chapter']
+    orig_has_series = any(ind in original_title.lower() for ind in series_indicators)
+    sugg_has_series = any(ind in suggested_title.lower() for ind in series_indicators)
+
+    if orig_has_series and not sugg_has_series and similarity < 0.5 and not sugg_in_orig:
+        logger.info(f"Garbage match rejected (series context lost): '{original_title}' -> '{suggested_title}' "
+                   f"(similarity: {similarity:.2f})")
+        return True
 
     if similarity < threshold:
         logger.info(f"Garbage match rejected: '{original_title}' vs '{suggested_title}' (similarity: {similarity:.2f})")

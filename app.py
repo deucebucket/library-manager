@@ -1146,20 +1146,46 @@ def gather_all_api_candidates(title, author=None, config=None):
 def build_verification_prompt(original_input, original_author, original_title, proposed_author, proposed_title, candidates):
     """
     Build a verification prompt that shows ALL API candidates and asks AI to vote.
+    Issue #76: Now includes series context extraction for better matching.
     """
     candidate_list = ""
     for i, c in enumerate(candidates, 1):
-        candidate_list += f"  CANDIDATE_{i}: {c.get('author', 'Unknown')} - {c.get('title', 'Unknown')} (from {c.get('source', 'Unknown')})\n"
+        series_info = ""
+        if c.get('series'):
+            series_info = f" [Series: {c.get('series')}"
+            if c.get('series_num'):
+                series_info += f" #{c.get('series_num')}"
+            series_info += "]"
+        candidate_list += f"  CANDIDATE_{i}: {c.get('author', 'Unknown')} - {c.get('title', 'Unknown')}{series_info} (from {c.get('source', 'Unknown')})\n"
 
     if not candidate_list:
         candidate_list = "  No API results found.\n"
+
+    # Issue #76: Extract series info from original input for better matching
+    series_context = ""
+    extracted = extract_series_from_title(original_input)
+    if extracted[0]:  # Has series name
+        series_name, series_num, standalone_title = extracted
+        series_context = f"""
+DETECTED SERIES CONTEXT:
+  - Series Name: {series_name}
+  - Book Number: {series_num if series_num else 'Unknown'}
+  - Standalone Title: {standalone_title}
+
+CRITICAL SERIES RULE:
+The original input contains EXPLICIT series information "{series_name}".
+If a candidate does NOT match this series, it is almost certainly WRONG!
+- "Expeditionary Force Book 14 - Match Game" -> "Doc Raymond - Match Game" = WRONG (different series/author!)
+- "Dresden Files 1 - Storm Front" -> "Harry Dresden - Storm Front" = Could be CORRECT (same series character)
+- Candidates that share a common word but are from DIFFERENT series are WRONG.
+"""
 
     return f"""You are a book metadata verification expert. A drastic author change was detected and needs your verification.
 
 ORIGINAL INPUT: {original_input}
   - Current Author: {original_author}
   - Current Title: {original_title}
-
+{series_context}
 PROPOSED CHANGE:
   - New Author: {proposed_author}
   - New Title: {proposed_title}
@@ -1173,18 +1199,25 @@ The API sometimes returns COMPLETELY UNRELATED books that share one word. These 
 - "Death Genesis" -> "The Darkborn AfterLife Genesis" = WRONG (matching on "genesis" only)
 - "Mr. Murder" -> "Frankenstein" = WRONG (no title overlap at all!)
 - "Mortal Coils" -> "The Life and Letters of Thomas Huxley" = WRONG (completely different book)
+- "Expeditionary Force Book 14 - Match Game" -> "Doc Raymond - Match Game" = WRONG (DIFFERENT SERIES!)
 
 If the proposed title shares LESS THAN HALF of its significant words with the original title, it is WRONG.
+If the original has SERIES INFO and the proposed book is from a DIFFERENT series, it is WRONG.
 
 YOUR TASK:
 Analyze whether the proposed change is CORRECT or WRONG. Consider:
 
-1. TITLE MATCHING FIRST - Is this even the same book?
+1. SERIES MATCHING FIRST (if applicable) - Does the series match?
+   - If original has series info like "Expeditionary Force Book 14", candidates MUST be from that series
+   - A book with matching title but WRONG SERIES is WRONG
+   - "Expeditionary Force Book 14 - Match Game" should NOT match "Doc Raymond - Match Game" (wrong author/series!)
+
+2. TITLE MATCHING - Is this even the same book?
    - At least 50% of significant words must match
    - "Mr. Murder" and "Dean Koontz's Frankenstein" = WRONG (0% match!)
    - "Midnight Texas 3" and "Night Shift" = CORRECT if Night Shift is book 3 of Midnight Texas
 
-2. RECOGNIZE FAMOUS BOOKS: Some titles are so famous they have a KNOWN author:
+3. RECOGNIZE FAMOUS BOOKS: Some titles are so famous they have a KNOWN author:
    - "Le Petit Prince" / "The Little Prince" = Antoine de Saint-Exupéry (ALWAYS)
    - "Преступление и наказание" / "Crime and Punishment" = Fyodor Dostoevsky (ALWAYS)
    - "الحب في زمن الكوليرا" / "Love in the Time of Cholera" = Gabriel García Márquez (ALWAYS)
@@ -1194,12 +1227,13 @@ Analyze whether the proposed change is CORRECT or WRONG. Consider:
    - If the input says "Stephen King - الحب في زمن الكوليرا", this is WRONG - return Gabriel García Márquez.
    - Return the CORRECT author for famous works, ignoring the wrong input author.
 
-3. AUTHOR MATCHING for non-famous works: Does the original author name match or partially match any candidate?
+4. AUTHOR MATCHING for non-famous works: Does the original author name match or partially match any candidate?
    - "Boyett" matches "Steven Boyett" (same person, use full name)
    - "Boyett" does NOT match "John Dickson Carr" (different person!)
    - "A.C. Crispin" matches "A. C. Crispin" or "Ann C. Crispin" (same person)
 
-4. FIND THE BEST MATCH: Pick the candidate that is the CORRECT book with the CORRECT author.
+5. FIND THE BEST MATCH: Pick the candidate that is the CORRECT book with the CORRECT author.
+   - If NO candidates match the series, say UNCERTAIN and recommend using the original series info
 
 RESPOND WITH JSON ONLY:
 {{
@@ -1211,6 +1245,7 @@ RESPOND WITH JSON ONLY:
 }}
 
 DECISION RULES:
+- If original has series info but NO candidates match that series = UNCERTAIN (not enough data!)
 - If titles are completely different books = WRONG (don't just keyword match!)
 - If original author matches a candidate (like Boyett -> Steven Boyett) = CORRECT
 - For FAMOUS books (Le Petit Prince, Crime and Punishment, etc.): Return the REAL author, even if original is different
@@ -6111,6 +6146,31 @@ def process_watch_folder(config: dict) -> int:
                                 logger.info(f"Watch folder: API author '{api_author}' differs from hint '{original_author}' - verifying...")
                                 needs_verification = True
 
+                        # Issue #76: Extract and match series info properly
+                        # "Expeditionary Force Book 14 - Match Game" should match "Expeditionary Force" series
+                        if not needs_verification:
+                            # Use proper series extraction
+                            extracted = extract_series_from_title(item.name)
+                            query_series_name, query_series_num, query_title = extracted
+
+                            if query_series_name:
+                                # Query has series info - check if API result matches
+                                if api_series:
+                                    # Both have series - check if they match
+                                    series_similarity = calculate_title_similarity(
+                                        query_series_name.lower(),
+                                        api_series.lower()
+                                    )
+                                    if series_similarity < 0.5:
+                                        logger.warning(f"Watch folder: Series mismatch - query has '{query_series_name}', result has '{api_series}'")
+                                        needs_verification = True
+                                else:
+                                    # Query has series but result doesn't - suspicious
+                                    logger.warning(f"Watch folder: Query has series '{query_series_name}' #{query_series_num} but result has no series")
+                                    logger.warning(f"  Query: '{item.name}' -> series={query_series_name}, num={query_series_num}, title={query_title}")
+                                    logger.warning(f"  Result: '{api_author} - {api_title}' (no series info)")
+                                    needs_verification = True
+
                         # Issue #57: Same-title-different-author detection
                         # If we have NO author hint and multiple APIs returned different authors
                         # for similar titles, this could be a common title with multiple books
@@ -6529,6 +6589,8 @@ def settings_page():
         config['enable_ai_verification'] = 'enable_ai_verification' in request.form
         config['enable_audio_analysis'] = 'enable_audio_analysis' in request.form
         config['enable_content_analysis'] = 'enable_content_analysis' in request.form  # Issue #65: Layer 4
+        config['whisper_model'] = request.form.get('whisper_model', 'base')  # Issue #77: was missing
+        config['layer4_openrouter_model'] = request.form.get('layer4_openrouter_model', 'google/gemma-3n-e4b-it:free')
         config['use_bookdb_for_audio'] = 'use_bookdb_for_audio' in request.form
         config['deep_scan_mode'] = 'deep_scan_mode' in request.form
         config['profile_confidence_threshold'] = int(request.form.get('profile_confidence_threshold', 85))

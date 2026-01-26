@@ -20,6 +20,7 @@ API_RATE_LIMITS = {
     'hardcover': {'last_call': 0, 'min_delay': 1.5},     # Beta API - be cautious
     'openrouter': {'last_call': 0, 'min_delay': 5.0},    # Free tier: 20 req/min + daily limits - be conservative
     'gemini': {'last_call': 0, 'min_delay': 7.0},        # Free tier: 10 RPM (Jan 2026), 250 RPD for Flash
+    'searxng': {'last_call': 0, 'min_delay': 0.5},       # Local service, minimal delay
 }
 API_RATE_LOCK = threading.Lock()
 
