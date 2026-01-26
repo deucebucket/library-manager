@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.95"
+APP_VERSION = "0.9.0-beta.96"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -5864,33 +5864,68 @@ def move_to_output_folder(source_path: str, output_folder: str, author: str, tit
         dest_folder = output / safe_author / safe_title
 
     # Check for existing destination
+    partial_move_detected = False
     if dest_folder.exists():
-        # Add version suffix - handle series path structure
-        version = 2
-        while True:
-            if safe_series:
-                if series_num:
-                    versioned_title = f"{series_num} - {safe_title} [Version {chr(64+version)}]"
+        # Issue #76: Check if this is a partial/interrupted move before creating Version B
+        # If destination files are a subset of source files, complete the move instead
+        if source.is_dir():
+            source_files = {f.name for f in source.rglob('*') if f.is_file()}
+            dest_files = {f.name for f in dest_folder.rglob('*') if f.is_file()}
+
+            if dest_files and source_files and dest_files.issubset(source_files):
+                # Destination is a partial move - complete it instead of creating Version B
+                missing_files = source_files - dest_files
+                if missing_files:
+                    logger.info(f"[WATCH] Partial move detected: {len(dest_files)} files at dest, {len(missing_files)} remaining in source")
+                    partial_move_detected = True
+                    # Don't create Version B - we'll complete the move below
+
+        if not partial_move_detected:
+            # Add version suffix - handle series path structure
+            version = 2
+            while True:
+                if safe_series:
+                    if series_num:
+                        versioned_title = f"{series_num} - {safe_title} [Version {chr(64+version)}]"
+                    else:
+                        versioned_title = f"{safe_title} [Version {chr(64+version)}]"
+                    versioned = output / safe_author / safe_series / versioned_title
                 else:
-                    versioned_title = f"{safe_title} [Version {chr(64+version)}]"
-                versioned = output / safe_author / safe_series / versioned_title
-            else:
-                versioned = output / safe_author / f"{safe_title} [Version {chr(64+version)}]"
-            if not versioned.exists():
-                dest_folder = versioned
-                break
-            version += 1
-            if version > 26:
-                return False, None, f"Too many versions exist for {safe_author}/{safe_title}"
+                    versioned = output / safe_author / f"{safe_title} [Version {chr(64+version)}]"
+                if not versioned.exists():
+                    dest_folder = versioned
+                    break
+                version += 1
+                if version > 26:
+                    return False, None, f"Too many versions exist for {safe_author}/{safe_title}"
 
     try:
-        dest_folder.mkdir(parents=True, exist_ok=True)
+        # Issue #76: Try atomic directory move first (prevents partial moves on interruption)
+        # Only works on same filesystem and when not using hard links and destination doesn't exist
+        atomic_move_done = False
+        if not use_hard_links and not dest_folder.exists() and source.is_dir():
+            try:
+                # Ensure parent exists
+                dest_folder.parent.mkdir(parents=True, exist_ok=True)
+                # Atomic move - uses os.rename internally on same filesystem
+                shutil.move(str(source), str(dest_folder))
+                atomic_move_done = True
+                logger.debug(f"[WATCH] Atomic directory move: {source.name} -> {dest_folder}")
+            except OSError as e:
+                # Cross-filesystem or other error - fall back to file-by-file
+                logger.debug(f"[WATCH] Atomic move failed ({e}), using file-by-file")
+
+        if not atomic_move_done:
+            dest_folder.mkdir(parents=True, exist_ok=True)
 
         # Track if we fell back to copy (need to delete originals afterward)
         used_copy_fallback = False
         files_to_delete = []
 
-        if source.is_file():
+        if atomic_move_done:
+            # Atomic move succeeded - nothing more to do for the files
+            pass
+        elif source.is_file():
             # Single file - move/link to destination folder
             dest_file = dest_folder / source.name
             if use_hard_links:
@@ -5913,6 +5948,12 @@ def move_to_output_folder(source_path: str, output_folder: str, author: str, tit
                 if src_file.is_file():
                     rel_path = src_file.relative_to(source)
                     dest_file = dest_folder / rel_path
+
+                    # Issue #76: Skip files that already exist at destination (partial move completion)
+                    if dest_file.exists():
+                        logger.debug(f"[WATCH] Skipping already-moved file: {src_file.name}")
+                        continue
+
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
 
                     if use_hard_links:

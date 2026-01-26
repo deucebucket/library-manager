@@ -2,6 +2,23 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.96] - 2026-01-26
+
+### Fixed
+
+- **Issue #76: Watch Folder Creates Duplicate "Version B" Folders** - Fixed interrupted moves causing split audiobooks
+  - Watch folder now uses atomic directory move when possible (same filesystem, no hard links)
+  - Detects partial/interrupted moves by checking if destination files are a subset of source
+  - When partial move detected, completes the move instead of creating "Version B"
+  - Files already at destination are skipped during completion
+
+- **Issue #75: Book Edits Not Persisting** - Fixed edit_book losing changes on multiple edits
+  - When editing a pending_fix item multiple times, original metadata was being overwritten
+  - Now preserves the original old_author/old_title from the first pending_fix entry
+  - Ensures "Original → Latest" is shown, not "Previous edit → Latest"
+
+---
+
 ## [0.9.0-beta.95] - 2026-01-25
 
 ### Changed
