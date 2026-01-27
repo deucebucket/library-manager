@@ -63,6 +63,13 @@ from library_manager.providers.searxng import (
     search_searxng,
     test_searxng_connection,
 )
+from library_manager.providers.fingerprint import (
+    is_fpcalc_available,
+    generate_fingerprint,
+    lookup_fingerprint,
+    contribute_fingerprint,
+    identify_by_fingerprint,
+)
 
 __all__ = [
     # Rate limiting
@@ -109,4 +116,10 @@ __all__ = [
     'DEFAULT_SEARXNG_URL',
     'search_searxng',
     'test_searxng_connection',
+    # Fingerprinting (Issue #78)
+    'is_fpcalc_available',
+    'generate_fingerprint',
+    'lookup_fingerprint',
+    'contribute_fingerprint',
+    'identify_by_fingerprint',
 ]
