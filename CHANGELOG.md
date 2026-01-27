@@ -2,6 +2,23 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.98] - 2026-01-27
+
+### Improved
+
+- **Issue #73: API Keys Always Visible** - Restructured Settings → AI Setup tab
+  - All API keys now in dedicated "API Keys" card that's always visible
+  - No longer need to select a provider to see/enter its API key
+  - Clear labels: "Recommended", "Fallback / Whisper", "Optional"
+  - Added BookDB API Key field (was missing from UI)
+  - System automatically falls back through configured providers
+
+### Fixed
+
+- **BookDB API Key Not Saving** - Added missing save/load for `bookdb_api_key` in settings handler
+
+---
+
 ## [0.9.0-beta.97] - 2026-01-26
 
 ### Fixed

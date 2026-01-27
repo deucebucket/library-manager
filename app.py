@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.96"
+APP_VERSION = "0.9.0-beta.98"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -6638,6 +6638,7 @@ def settings_page():
         new_openrouter_key = request.form.get('openrouter_api_key', '').strip()
         new_gemini_key = request.form.get('gemini_api_key', '').strip()
         new_google_books_key = request.form.get('google_books_api_key', '').strip()
+        new_bookdb_key = request.form.get('bookdb_api_key', '').strip()
 
         # Only overwrite existing keys if user entered a new value
         if new_openrouter_key:
@@ -6646,6 +6647,8 @@ def settings_page():
             secrets['gemini_api_key'] = new_gemini_key
         if new_google_books_key:
             secrets['google_books_api_key'] = new_google_books_key
+        if new_bookdb_key:
+            secrets['bookdb_api_key'] = new_bookdb_key
         save_secrets(secrets)
 
         return redirect(url_for('settings_page'))
@@ -6657,6 +6660,7 @@ def settings_page():
     config['gemini_api_key'] = secrets.get('gemini_api_key', '')
     config['openrouter_api_key'] = secrets.get('openrouter_api_key', '')
     config['google_books_api_key'] = secrets.get('google_books_api_key', '')
+    config['bookdb_api_key'] = secrets.get('bookdb_api_key', '')
     return render_template('settings.html', config=config, version=APP_VERSION)
 
 
