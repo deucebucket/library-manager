@@ -88,6 +88,13 @@ class BookProfile:
     issues: List[str] = field(default_factory=list)
     last_updated: Optional[str] = None
 
+    # Skaldleita identification IDs - for instant lookup and tracking
+    audio_fingerprint: Optional[str] = None      # Chromaprint fingerprint
+    narrator_id: Optional[str] = None            # Narrator voice ID (TBD_xxx or known name)
+    book_id: Optional[str] = None                # Book ID (ISBN, ASIN, internal)
+    version_id: Optional[str] = None             # Unique recording version ID
+    voice_cluster_id: Optional[str] = None       # Voice cluster for unknown narrators
+
     def calculate_field_confidence(self, fv: FieldValue) -> tuple:
         """Calculate confidence for a field based on source agreement."""
         if not fv.raw_values:
@@ -186,6 +193,12 @@ class BookProfile:
         result['needs_attention'] = self.needs_attention
         result['issues'] = self.issues
         result['last_updated'] = self.last_updated
+        # Skaldleita IDs
+        result['audio_fingerprint'] = self.audio_fingerprint
+        result['narrator_id'] = self.narrator_id
+        result['book_id'] = self.book_id
+        result['version_id'] = self.version_id
+        result['voice_cluster_id'] = self.voice_cluster_id
         return result
 
     @classmethod
@@ -206,6 +219,12 @@ class BookProfile:
         profile.needs_attention = data.get('needs_attention', False)
         profile.issues = data.get('issues', [])
         profile.last_updated = data.get('last_updated')
+        # Skaldleita IDs
+        profile.audio_fingerprint = data.get('audio_fingerprint')
+        profile.narrator_id = data.get('narrator_id')
+        profile.book_id = data.get('book_id')
+        profile.version_id = data.get('version_id')
+        profile.voice_cluster_id = data.get('voice_cluster_id')
         return profile
 
 
@@ -384,7 +403,8 @@ def build_profile_from_sources(
     folder_meta: dict = None,
     api_candidates: list = None,
     ai_result: dict = None,
-    audio_result: dict = None
+    audio_result: dict = None,
+    fingerprint_data: dict = None
 ) -> BookProfile:
     """
     Build a BookProfile by combining data from multiple sources.
@@ -479,6 +499,21 @@ def build_profile_from_sources(
             profile.series.add_source('audio', audio_result['series'])
         if audio_result.get('language'):
             profile.language.add_source('audio', audio_result['language'])
+
+    # Skaldleita fingerprint/voice data
+    if fingerprint_data:
+        if 'fingerprint' not in profile.verification_layers_used:
+            profile.verification_layers_used.append('fingerprint')
+        if fingerprint_data.get('audio_fingerprint'):
+            profile.audio_fingerprint = fingerprint_data['audio_fingerprint']
+        if fingerprint_data.get('narrator_id'):
+            profile.narrator_id = fingerprint_data['narrator_id']
+        if fingerprint_data.get('voice_cluster_id'):
+            profile.voice_cluster_id = fingerprint_data['voice_cluster_id']
+        if fingerprint_data.get('book_id'):
+            profile.book_id = fingerprint_data['book_id']
+        if fingerprint_data.get('version_id'):
+            profile.version_id = fingerprint_data['version_id']
 
     # Finalize - calculate consensus values and confidence
     profile.finalize()

@@ -263,6 +263,157 @@
             background: rgba(0, 217, 255, 0.1) !important;
             border-color: rgba(0, 217, 255, 0.3) !important;
         }
+
+        /* ===== Live Status Bar ===== */
+        .status-bar {
+            background: linear-gradient(90deg, rgba(15, 52, 96, 0.95) 0%, rgba(22, 33, 62, 0.95) 100%);
+            border-bottom: 1px solid rgba(0, 217, 255, 0.2);
+            padding: 8px 0;
+            margin-bottom: 1rem;
+            backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
+        }
+        .status-bar.processing {
+            background: linear-gradient(90deg, rgba(233, 69, 96, 0.15) 0%, rgba(15, 52, 96, 0.95) 50%, rgba(0, 217, 255, 0.15) 100%);
+            border-bottom-color: rgba(233, 69, 96, 0.4);
+        }
+        .status-bar.idle {
+            opacity: 0.7;
+        }
+        .status-bar.idle:hover {
+            opacity: 1;
+        }
+        .status-bar-content {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .status-main {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex: 1;
+            min-width: 0;
+        }
+        .status-icon {
+            font-size: 1.2rem;
+            width: 28px;
+            text-align: center;
+        }
+        .status-icon.processing {
+            color: #e94560;
+            animation: pulse-icon 1.5s ease-in-out infinite;
+        }
+        .status-icon.idle {
+            color: #00d9ff;
+        }
+        .status-icon.stopped {
+            color: #6c757d;
+        }
+        @keyframes pulse-icon {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(0.95); }
+        }
+        .status-text {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            flex: 1;
+        }
+        .status-primary {
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: #fff;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .status-secondary {
+            font-size: 0.75rem;
+            color: rgba(255, 255, 255, 0.6);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .status-book {
+            color: #00d9ff;
+            font-weight: 500;
+        }
+        .status-author {
+            color: #ffc107;
+        }
+        .status-layer {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            background: rgba(233, 69, 96, 0.2);
+            color: #e94560;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .status-meta {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            flex-shrink: 0;
+        }
+        .status-stat {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 0 10px;
+            border-left: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .status-stat:first-child {
+            border-left: none;
+        }
+        .status-stat-value {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #00d9ff;
+            line-height: 1;
+        }
+        .status-stat-label {
+            font-size: 0.65rem;
+            color: rgba(255, 255, 255, 0.5);
+            text-transform: uppercase;
+        }
+        .status-progress {
+            height: 3px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 4px;
+            width: 100%;
+            max-width: 200px;
+        }
+        .status-progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #e94560, #00d9ff);
+            border-radius: 2px;
+            transition: width 0.5s ease;
+        }
+        @media (max-width: 768px) {
+            .status-bar-content {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            .status-meta {
+                width: 100%;
+                justify-content: space-around;
+                padding-top: 8px;
+                border-top: 1px solid rgba(255, 255, 255, 0.1);
+                margin-top: 4px;
+            }
+            .status-stat {
+                border-left: none;
+            }
+        }
     </style>
 </head>
 <body>
@@ -315,6 +466,48 @@
             </div>
         </div>
     </nav>
+
+    <!-- Live Status Bar -->
+    <div class="status-bar" id="live-status-bar">
+        <div class="container">
+            <div class="status-bar-content">
+                <div class="status-main">
+                    <div class="status-icon" id="status-icon">
+                        <i class="bi bi-hourglass-split"></i>
+                    </div>
+                    <div class="status-text">
+                        <div class="status-primary">
+                            <span id="status-primary-text">Loading...</span>
+                            <span class="status-layer" id="status-layer" style="display: none;">
+                                <i class="bi bi-layers"></i>
+                                <span id="status-layer-text">Layer 1</span>
+                            </span>
+                        </div>
+                        <div class="status-secondary" id="status-secondary">
+                            <span id="status-book-info"></span>
+                        </div>
+                    </div>
+                </div>
+                <div class="status-meta">
+                    <div class="status-stat">
+                        <div class="status-stat-value" id="status-queue">0</div>
+                        <div class="status-stat-label">Queue</div>
+                    </div>
+                    <div class="status-stat">
+                        <div class="status-stat-value" id="status-pending">0</div>
+                        <div class="status-stat-label">Pending</div>
+                    </div>
+                    <div class="status-stat" id="status-progress-container" style="display: none;">
+                        <div class="status-stat-value"><span id="status-processed">0</span>/<span id="status-total">0</span></div>
+                        <div class="status-stat-label">Progress</div>
+                        <div class="status-progress">
+                            <div class="status-progress-bar" id="status-progress-bar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <div class="container">
         {% block content %}{% endblock %}
@@ -372,6 +565,138 @@
                 });
         }
         setInterval(refreshStats, 30000);
+
+        // ===== Live Status Bar =====
+        let lastStatusState = null;
+        let statusPollInterval = 3000; // Default 3s, faster when processing
+
+        function updateLiveStatus() {
+            fetch('/api/live_status')
+                .then(r => r.json())
+                .then(data => {
+                    const statusBar = document.getElementById('live-status-bar');
+                    const statusIcon = document.getElementById('status-icon');
+                    const statusPrimary = document.getElementById('status-primary-text');
+                    const statusLayer = document.getElementById('status-layer');
+                    const statusLayerText = document.getElementById('status-layer-text');
+                    const statusBookInfo = document.getElementById('status-book-info');
+                    const statusQueue = document.getElementById('status-queue');
+                    const statusPending = document.getElementById('status-pending');
+                    const statusProgressContainer = document.getElementById('status-progress-container');
+                    const statusProcessed = document.getElementById('status-processed');
+                    const statusTotal = document.getElementById('status-total');
+                    const statusProgressBar = document.getElementById('status-progress-bar');
+
+                    // Update queue and pending counts
+                    statusQueue.textContent = data.queue.count;
+                    statusPending.textContent = data.queue.pending_fixes;
+
+                    // Update based on state
+                    statusBar.classList.remove('processing', 'idle', 'stopped');
+
+                    if (data.state === 'processing') {
+                        statusBar.classList.add('processing');
+                        statusIcon.innerHTML = '<i class="bi bi-arrow-repeat"></i>';
+                        statusIcon.className = 'status-icon processing';
+
+                        // Show layer badge
+                        statusLayer.style.display = 'inline-flex';
+                        statusLayerText.textContent = data.processing.layer_name;
+
+                        // Build primary text - show book title prominently
+                        if (data.processing.current_book) {
+                            // Primary: "Identifying: Book Title"
+                            statusPrimary.innerHTML = '<span style="color: #00d9ff;">' + escapeHtml(data.processing.current_book) + '</span>';
+                            // Secondary: "by Author Name" + stage
+                            let bookInfo = '';
+                            if (data.processing.current_author && data.processing.current_author !== 'Unknown') {
+                                bookInfo = 'by <span class="status-author">' + escapeHtml(data.processing.current_author) + '</span>';
+                            }
+                            if (data.processing.current_stage) {
+                                bookInfo += (bookInfo ? ' &bull; ' : '') + '<span style="opacity: 0.7;">' + escapeHtml(data.processing.current_stage) + '</span>';
+                            }
+                            statusBookInfo.innerHTML = bookInfo || data.processing.current_stage || '';
+                        } else {
+                            statusPrimary.textContent = data.processing.current_stage || 'Processing...';
+                            statusBookInfo.innerHTML = data.last_activity || 'Starting...';
+                        }
+
+                        // Show progress
+                        if (data.processing.total > 0) {
+                            statusProgressContainer.style.display = 'block';
+                            statusProcessed.textContent = data.processing.processed;
+                            statusTotal.textContent = data.processing.total;
+                            const pct = Math.round((data.processing.processed / data.processing.total) * 100);
+                            statusProgressBar.style.width = pct + '%';
+                        } else {
+                            statusProgressContainer.style.display = 'none';
+                        }
+
+                        // Poll faster when processing
+                        statusPollInterval = 2000;
+
+                    } else if (data.state === 'idle') {
+                        statusBar.classList.add('idle');
+                        statusIcon.innerHTML = '<i class="bi bi-check-circle"></i>';
+                        statusIcon.className = 'status-icon idle';
+                        statusLayer.style.display = 'none';
+                        statusProgressContainer.style.display = 'none';
+
+                        if (data.queue.count > 0) {
+                            statusPrimary.textContent = 'Ready to process';
+                            statusBookInfo.innerHTML = data.queue.count + ' items in queue';
+                        } else if (data.queue.pending_fixes > 0) {
+                            statusPrimary.textContent = 'Fixes pending review';
+                            statusBookInfo.innerHTML = data.queue.pending_fixes + ' fixes awaiting approval';
+                        } else {
+                            statusPrimary.textContent = 'All caught up';
+                            if (data.last_activity) {
+                                statusBookInfo.innerHTML = data.last_activity + (data.last_activity_time_ago ? ' <small>(' + data.last_activity_time_ago + ')</small>' : '');
+                            } else {
+                                statusBookInfo.innerHTML = 'No pending items';
+                            }
+                        }
+
+                        // Poll slower when idle
+                        statusPollInterval = 5000;
+
+                    } else {
+                        // Stopped
+                        statusBar.classList.add('idle');
+                        statusIcon.innerHTML = '<i class="bi bi-pause-circle"></i>';
+                        statusIcon.className = 'status-icon stopped';
+                        statusLayer.style.display = 'none';
+                        statusProgressContainer.style.display = 'none';
+                        statusPrimary.textContent = 'Worker stopped';
+                        statusBookInfo.innerHTML = 'Start worker from Settings to process queue';
+                        statusPollInterval = 10000;
+                    }
+
+                    lastStatusState = data.state;
+                })
+                .catch(e => {
+                    console.error('Status fetch error:', e);
+                });
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Start status polling
+        updateLiveStatus();
+        setInterval(() => {
+            updateLiveStatus();
+        }, statusPollInterval);
+
+        // Also update when tab becomes visible
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) {
+                updateLiveStatus();
+            }
+        });
 
         // Get current version on page load
         fetch('/api/version')

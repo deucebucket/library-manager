@@ -20,7 +20,8 @@ def process_layer_1_api(
     config: Dict,
     get_db: Callable,
     gather_all_api_candidates: Callable,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    set_current_book: Optional[Callable] = None
 ) -> Tuple[int, int]:
     """
     Layer 1: API Database Lookups
@@ -82,6 +83,10 @@ def process_layer_1_api(
     for row in batch:
         current_author = row['current_author']
         current_title = row['current_title']
+
+        # Update status bar with current book
+        if set_current_book:
+            set_current_book(current_author or 'Unknown', current_title or 'Unknown', "API lookup...")
 
         # Use existing API candidate gathering function (EXTERNAL CALLS HAPPEN HERE)
         candidates = gather_all_api_candidates(current_title, current_author, config)

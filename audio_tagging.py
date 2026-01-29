@@ -202,8 +202,13 @@ def embed_tags_mp3(file_path: Path, metadata: Dict[str, Any], overwrite: bool = 
             ('series', 'SERIES'),
             ('series_num', 'SERIESNUMBER'),
             ('narrator', 'NARRATOR'),
+            ('narrator_id', 'NARRATORID'),
             ('edition', 'EDITION'),
             ('variant', 'VARIANT'),
+            ('book_id', 'BOOKID'),
+            ('audio_fingerprint', 'AUDIOFINGERPRINT'),
+            ('version_id', 'VERSIONID'),
+            ('libman_processed', 'LIBMANPROCESSED'),
         ]
 
         for meta_key, txxx_desc in custom_tags:
@@ -258,8 +263,13 @@ def embed_tags_mp4(file_path: Path, metadata: Dict[str, Any], overwrite: bool = 
             ('series', 'SERIES'),
             ('series_num', 'SERIESNUMBER'),
             ('narrator', 'NARRATOR'),
+            ('narrator_id', 'NARRATORID'),
             ('edition', 'EDITION'),
             ('variant', 'VARIANT'),
+            ('book_id', 'BOOKID'),
+            ('audio_fingerprint', 'AUDIOFINGERPRINT'),
+            ('version_id', 'VERSIONID'),
+            ('libman_processed', 'LIBMANPROCESSED'),
         ]
 
         for meta_key, tag_name in custom_tags:
@@ -317,8 +327,13 @@ def embed_tags_vorbis(file_path: Path, metadata: Dict[str, Any], overwrite: bool
             ('series', 'SERIES'),
             ('series_num', 'SERIESNUMBER'),
             ('narrator', 'NARRATOR'),
+            ('narrator_id', 'NARRATORID'),
             ('edition', 'EDITION'),
             ('variant', 'VARIANT'),
+            ('book_id', 'BOOKID'),
+            ('audio_fingerprint', 'AUDIOFINGERPRINT'),
+            ('version_id', 'VERSIONID'),
+            ('libman_processed', 'LIBMANPROCESSED'),
         ]
 
         for meta_key, vorbis_key in custom_tags:
@@ -367,8 +382,13 @@ def embed_tags_asf(file_path: Path, metadata: Dict[str, Any], overwrite: bool = 
             ('series', 'WM/Series'),
             ('series_num', 'WM/SeriesNumber'),
             ('narrator', 'WM/Narrator'),
+            ('narrator_id', 'WM/NarratorId'),
             ('edition', 'WM/Edition'),
             ('variant', 'WM/Variant'),
+            ('book_id', 'WM/BookId'),
+            ('audio_fingerprint', 'WM/AudioFingerprint'),
+            ('version_id', 'WM/VersionId'),
+            ('libman_processed', 'WM/LibmanProcessed'),
         ]
 
         for meta_key, asf_key in custom_tags:
@@ -428,13 +448,25 @@ def build_metadata_for_embedding(
     series: Optional[str] = None,
     series_num: Optional[str] = None,
     narrator: Optional[str] = None,
+    narrator_id: Optional[str] = None,
     year: Optional[str] = None,
     edition: Optional[str] = None,
-    variant: Optional[str] = None
+    variant: Optional[str] = None,
+    book_id: Optional[str] = None,
+    audio_fingerprint: Optional[str] = None,
+    version_id: Optional[str] = None,
+    libman_processed: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Build a metadata dict suitable for embed_tags() from book info.
     Maps audiobook concepts to standard audio tag fields.
+
+    Extended fields for tracking:
+    - narrator_id: Unique narrator identifier (Audnexus ASIN, internal ID, etc.)
+    - book_id: Book identifier (ISBN, ASIN, internal ID)
+    - audio_fingerprint: Audio fingerprint hash (AcoustID, Chromaprint)
+    - version_id: Unique version identifier for this specific recording
+    - libman_processed: Timestamp when Library Manager processed this file
     """
     metadata = {
         'title': title,          # Track title (for single-file books) / Album title
@@ -451,10 +483,20 @@ def build_metadata_for_embedding(
         metadata['series_num'] = str(series_num)
     if narrator:
         metadata['narrator'] = narrator
+    if narrator_id:
+        metadata['narrator_id'] = narrator_id
     if edition:
         metadata['edition'] = edition
     if variant:
         metadata['variant'] = variant
+    if book_id:
+        metadata['book_id'] = book_id
+    if audio_fingerprint:
+        metadata['audio_fingerprint'] = audio_fingerprint
+    if version_id:
+        metadata['version_id'] = version_id
+    if libman_processed:
+        metadata['libman_processed'] = libman_processed
 
     return metadata
 

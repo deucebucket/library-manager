@@ -16,18 +16,63 @@ _worker_thread = None
 _worker_running = False
 _watch_worker_thread = None
 _watch_worker_running = False
-_processing_status = {"active": False, "processed": 0, "total": 0, "current": "", "errors": [], "layer": 0}
+_processing_status = {
+    "active": False,
+    "processed": 0,
+    "total": 0,
+    "current": "",  # Stage description
+    "current_book": "",  # Book title being processed
+    "current_author": "",  # Author of current book
+    "errors": [],
+    "layer": 0,
+    "layer_name": "",  # Human-readable layer name
+    "queue_remaining": 0,
+    "last_activity": "",  # Last significant event
+    "last_activity_time": 0  # Timestamp of last activity
+}
+
+# Layer name mapping for human-readable display
+LAYER_NAMES = {
+    0: "Idle",
+    1: "Audio ID",
+    2: "AI Analysis",
+    3: "API Lookup",
+    4: "AI Verify"
+}
 
 
 def get_processing_status() -> Dict:
     """Get the current processing status."""
-    return _processing_status.copy()
+    status = _processing_status.copy()
+    # Add computed fields
+    status["layer_name"] = LAYER_NAMES.get(status.get("layer", 0), "Unknown")
+    return status
 
 
 def update_processing_status(key: str, value) -> None:
     """Update a field in the processing status."""
     global _processing_status
     _processing_status[key] = value
+    # Auto-update timestamp on activity changes
+    if key in ("current", "current_book", "last_activity"):
+        _processing_status["last_activity_time"] = time.time()
+
+
+def set_current_book(author: str, title: str, stage: str = "") -> None:
+    """Set the currently processing book for status display."""
+    global _processing_status
+    _processing_status["current_book"] = title or ""
+    _processing_status["current_author"] = author or ""
+    if stage:
+        _processing_status["current"] = stage
+    _processing_status["last_activity_time"] = time.time()
+
+
+def clear_current_book() -> None:
+    """Clear the current book (processing finished)."""
+    global _processing_status
+    _processing_status["current_book"] = ""
+    _processing_status["current_author"] = ""
 
 
 def process_all_queue(
@@ -85,7 +130,20 @@ def process_all_queue(
     min_delay = max(2, 3600 // max_per_hour)
     logger.info(f"Rate limit: {max_per_hour}/hour, delay between batches: {min_delay}s")
 
-    _processing_status = {"active": True, "processed": 0, "total": total, "current": "", "errors": [], "layer": 1}
+    _processing_status = {
+        "active": True,
+        "processed": 0,
+        "total": total,
+        "current": "Starting processing...",
+        "current_book": "",
+        "current_author": "",
+        "errors": [],
+        "layer": 1,
+        "layer_name": LAYER_NAMES[1],
+        "queue_remaining": total,
+        "last_activity": f"Starting processing of {total} items",
+        "last_activity_time": time.time()
+    }
     logger.info(f"=== STARTING AUDIO-FIRST PROCESSING: {total} items in queue ===")
 
     # Issue #62: Clean up stuck queue items (needs_attention or verified items shouldn't be in queue)
@@ -128,7 +186,10 @@ def process_all_queue(
     if config.get('enable_audio_identification', True):  # New setting, defaults to True
         logger.info("=== LAYER 1: Audio Transcription + AI Parsing ===")
         _processing_status["layer"] = 1
-        _processing_status["current"] = "Layer 1: Audio transcription"
+        _processing_status["layer_name"] = LAYER_NAMES[1]
+        _processing_status["current"] = "Transcribing audio intro via BookDB..."
+        _processing_status["last_activity"] = "Started audio identification"
+        _processing_status["last_activity_time"] = time.time()
         layer1_processed = 0
         layer1_resolved = 0
         while True:
@@ -159,7 +220,10 @@ def process_all_queue(
     if config.get('enable_audio_analysis', False):
         logger.info("=== LAYER 2: AI Audio Clip Analysis (for unclear L1 results) ===")
         _processing_status["layer"] = 2
-        _processing_status["current"] = "Layer 2: AI audio analysis"
+        _processing_status["layer_name"] = LAYER_NAMES[2]
+        _processing_status["current"] = "Sending audio clip to Gemini AI..."
+        _processing_status["last_activity"] = "Started AI audio analysis"
+        _processing_status["last_activity_time"] = time.time()
         layer2_processed = 0
         layer2_resolved = 0
         circuit_wait_count = 0
@@ -215,7 +279,10 @@ def process_all_queue(
     if config.get('enable_api_lookups', True):
         logger.info("=== LAYER 3: API Enrichment (adding metadata to identified books) ===")
         _processing_status["layer"] = 3
-        _processing_status["current"] = "Layer 3: API enrichment"
+        _processing_status["layer_name"] = LAYER_NAMES[3]
+        _processing_status["current"] = "Looking up metadata from BookDB/Audnexus..."
+        _processing_status["last_activity"] = "Started API metadata lookup"
+        _processing_status["last_activity_time"] = time.time()
         layer3_processed = 0
         while True:
             processed, resolved = process_layer_1_api(config)  # Existing API lookup
@@ -232,7 +299,10 @@ def process_all_queue(
     # Folder names CAN be wrong - this is why confidence is set LOW
     logger.info("=== LAYER 4: Folder Name Fallback (last resort, low confidence) ===")
     _processing_status["layer"] = 4
-    _processing_status["current"] = "Layer 4: Folder fallback"
+    _processing_status["layer_name"] = LAYER_NAMES[4]
+    _processing_status["current"] = "Verifying identification with AI..."
+    _processing_status["last_activity"] = "Started AI verification of folder names"
+    _processing_status["last_activity_time"] = time.time()
 
     batch_num = 0
     rate_limit_hits = 0
@@ -289,8 +359,16 @@ def process_all_queue(
 
     logger.info(f"Layer 4 complete: {layer4_processed} items processed, {layer4_fixed} fixed via folder fallback")
 
+    # Reset status to idle
     _processing_status["active"] = False
     _processing_status["layer"] = 0
+    _processing_status["layer_name"] = "Idle"
+    _processing_status["current"] = "Processing complete"
+    _processing_status["current_book"] = ""
+    _processing_status["current_author"] = ""
+    _processing_status["queue_remaining"] = 0
+    _processing_status["last_activity"] = f"Completed: {total_processed} processed, {total_fixed} fixed"
+    _processing_status["last_activity_time"] = time.time()
     logger.info(f"=== LAYERED PROCESSING COMPLETE: {total_processed} processed, {total_fixed} fixed ===")
     return total_processed, total_fixed
 
@@ -435,4 +513,7 @@ __all__ = [
     'is_worker_running',
     'get_processing_status',
     'update_processing_status',
+    'set_current_book',
+    'clear_current_book',
+    'LAYER_NAMES',
 ]

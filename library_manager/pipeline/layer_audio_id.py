@@ -1,12 +1,14 @@
-"""Layer 1: Audio Transcription + AI Parsing
+"""Layer 1: Audio Transcription + AI Parsing + Voice ID
 
 Philosophy: Audio is the source of truth. Narrators announce the book.
 1. Transcribe first 90 seconds (the intro)
 2. AI extracts: author, title, narrator, series
-3. High confidence → identified
-4. Low confidence → advance to Layer 2
+3. Voice fingerprint identifies narrator even when not mentioned
+4. High confidence → identified
+5. Low confidence → advance to Layer 2
 
 This replaces the old "trust folder names" approach.
+Part of the Skaldleita voice ID system - "Shazam for audiobook narrators"
 """
 
 import json
@@ -17,6 +19,147 @@ from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Voice ID integration - lazy imported to avoid startup penalty
+_voice_id_available = None
+
+
+def _check_voice_id() -> bool:
+    """Check if voice ID is available (pyannote installed)."""
+    global _voice_id_available
+    if _voice_id_available is None:
+        try:
+            from library_manager.providers.fingerprint import extract_voice_embedding
+            _voice_id_available = True
+            logger.info("[VOICE] Voice ID module available")
+        except ImportError:
+            _voice_id_available = False
+            logger.debug("[VOICE] Voice ID not available (pyannote not installed)")
+    return _voice_id_available
+
+
+def _store_voice_and_identify_narrator(
+    audio_path: str,
+    result: Dict,
+    config: Dict
+) -> Optional[str]:
+    """
+    Store voice signature and try to identify narrator by voice.
+
+    This is the Skaldleita integration - every audiobook gets its voice
+    fingerprinted. If the narrator isn't in the transcript, we might
+    still identify them by matching their voice to known narrators.
+
+    Returns:
+        Narrator name if identified by voice, None otherwise
+    """
+    if not _check_voice_id():
+        return None
+
+    try:
+        from library_manager.providers.fingerprint import (
+            store_voice_after_identification,
+            identify_narrator_by_voice
+        )
+
+        api_key = config.get('bookdb_api_key', '')
+
+        # First, try to identify narrator by voice alone
+        identified_narrator = None
+        if not result.get('narrator'):
+            identified_narrator = identify_narrator_by_voice(
+                str(audio_path),
+                threshold=0.6,
+                api_key=api_key
+            )
+            if identified_narrator:
+                logger.info(f"[VOICE] Identified narrator by voice: {identified_narrator}")
+
+        # Always store the voice signature for future matching
+        # Include narrator from either transcript or voice match
+        store_result = result.copy()
+        if identified_narrator and not store_result.get('narrator'):
+            store_result['narrator'] = identified_narrator
+
+        stored = store_voice_after_identification(
+            str(audio_path),
+            store_result,
+            api_key=api_key
+        )
+
+        if stored:
+            logger.debug(f"[VOICE] Stored voice signature for: {result.get('title', 'Unknown')}")
+
+        return identified_narrator
+
+    except Exception as e:
+        logger.warning(f"[VOICE] Voice ID error (non-fatal): {e}")
+        return None
+
+
+def _validate_ai_result_against_path(result: Dict, folder_hint: str, book_path: str) -> Dict:
+    """
+    Sanity check: Compare AI result against path/folder information.
+
+    If the AI returned something completely different from what the path suggests,
+    reduce confidence. This catches cases like:
+    - Path: "ANNIE JACOBSEN/Operation Paperclip"
+    - AI: Author="And Charles R", Title="Allen, Jr"  (completely wrong)
+
+    Returns the result with potentially modified confidence.
+    """
+    if not result or not folder_hint:
+        return result
+
+    ai_author = (result.get('author') or '').lower()
+    ai_title = (result.get('title') or '').lower()
+
+    # Extract path components for comparison
+    path_parts = book_path.lower() if book_path else folder_hint.lower()
+    hint_parts = folder_hint.lower()
+
+    # Clean up - remove common noise
+    def clean_text(text):
+        import re
+        # Remove brackets, hashes, special chars
+        text = re.sub(r'\[[^\]]*\]', ' ', text)
+        text = re.sub(r'[^a-z0-9\s]', ' ', text)
+        return set(text.split())
+
+    path_words = clean_text(path_parts)
+    hint_words = clean_text(hint_parts)
+    ai_author_words = clean_text(ai_author)
+    ai_title_words = clean_text(ai_title)
+
+    # Check if ANY significant word from AI matches path/hint
+    significant_ai_words = {w for w in (ai_author_words | ai_title_words) if len(w) > 3}
+    path_hint_words = {w for w in (path_words | hint_words) if len(w) > 3}
+
+    overlap = significant_ai_words & path_hint_words
+
+    # If no overlap at all and we have significant words from both, this is suspicious
+    if len(significant_ai_words) >= 2 and len(path_hint_words) >= 2 and not overlap:
+        logger.warning(f"[SANITY CHECK] AI result has NO overlap with path info!")
+        logger.warning(f"  AI: {result.get('author')} - {result.get('title')}")
+        logger.warning(f"  Path hint: {folder_hint}")
+
+        # Severely reduce confidence - this is likely a misparse
+        result['confidence'] = 'none'
+        result['sanity_failed'] = True
+        result['sanity_reason'] = 'AI result completely mismatched path info'
+        return result
+
+    # If only partial overlap (less than 50% of AI words match), reduce confidence
+    if len(significant_ai_words) > 0:
+        match_ratio = len(overlap) / len(significant_ai_words)
+        if match_ratio < 0.3:  # Less than 30% match
+            logger.info(f"[SANITY CHECK] Low overlap ({match_ratio:.0%}) - reducing confidence")
+            if result.get('confidence') == 'high':
+                result['confidence'] = 'medium'
+            elif result.get('confidence') == 'medium':
+                result['confidence'] = 'low'
+
+    return result
 
 
 def process_layer_1_audio(
@@ -31,6 +174,7 @@ def process_layer_1_audio(
     load_config: Callable,
     build_new_path: Callable,
     update_processing_status: Optional[Callable] = None,
+    set_current_book: Optional[Callable] = None,
     limit: Optional[int] = None
 ) -> Tuple[int, int]:
     """
@@ -88,6 +232,14 @@ def process_layer_1_audio(
     for row in batch:
         book_path = row['path']
         folder_hint = f"{row['current_author']} - {row['current_title']}"
+
+        # Update status bar with current book
+        if set_current_book:
+            set_current_book(
+                row['current_author'] or 'Unknown',
+                row['current_title'] or 'Unknown',
+                "Identifying via audio intro..."
+            )
 
         # Find first audio file
         audio_file = None
@@ -212,13 +364,21 @@ def process_layer_1_audio(
                     processed += 1
                     continue
 
-            result = identify_audio_with_bookdb(audio_file)
-            if result and result.get('author') and result.get('title'):
-                # BookDB got a full identification - use it!
-                logger.info(f"[LAYER 1/AUDIO] BookDB identified: {result['author']} - {result['title']}")
+            bookdb_result = identify_audio_with_bookdb(audio_file)
+            if bookdb_result and bookdb_result.get('author') and bookdb_result.get('title'):
+                # BookDB got a full identification - validate against path first
+                logger.info(f"[LAYER 1/AUDIO] BookDB identified: {bookdb_result['author']} - {bookdb_result['title']}")
+                # Sanity check: validate against path info to catch misparses
+                bookdb_result = _validate_ai_result_against_path(bookdb_result, folder_hint, book_path)
+                if bookdb_result.get('sanity_failed'):
+                    logger.warning(f"[LAYER 1/AUDIO] BookDB result failed sanity check - will try AI fallback")
+                    transcript = bookdb_result.get('transcript')  # Keep transcript for AI
+                    result = None  # Clear to trigger AI fallback
+                else:
+                    result = bookdb_result  # Passed sanity check
             else:
                 # BookDB didn't get a full match - might have a transcript though
-                transcript = result.get('transcript') if result else None
+                transcript = bookdb_result.get('transcript') if bookdb_result else None
                 result = None  # Clear partial result to trigger AI fallback
         else:
             logger.info(f"[LAYER 1/AUDIO] BookDB audio disabled, using local transcription + AI")
@@ -245,6 +405,11 @@ def process_layer_1_audio(
             # Parse with AI (fallback path - when BookDB disabled or didn't identify)
             result = parse_transcript_with_ai(transcript, folder_hint, config)
 
+            # Sanity check: validate AI result against path info
+            # This catches cases where AI completely misparses (e.g., narrator name as author)
+            if result:
+                result = _validate_ai_result_against_path(result, folder_hint, book_path)
+
         if result and result.get('author') and result.get('title') and result.get('confidence') != 'none':
             # Got identification from audio!
             author = result.get('author')
@@ -255,6 +420,18 @@ def process_layer_1_audio(
             confidence = result.get('confidence', 'medium')
 
             logger.info(f"[LAYER 1/AUDIO] Identified from audio: {author} - {title} ({confidence})")
+
+            # === SKALDLEITA VOICE ID ===
+            # Store voice signature and try to identify narrator by voice
+            # This builds the narrator voice library and fills in missing narrator info
+            if audio_file and config.get('enable_voice_id', True):
+                voice_narrator = _store_voice_and_identify_narrator(
+                    str(audio_file), result, config
+                )
+                if voice_narrator and not narrator:
+                    narrator = voice_narrator
+                    result['narrator'] = narrator
+                    logger.info(f"[LAYER 1/AUDIO] Narrator identified by voice: {narrator}")
 
             # Check if different from current (handle None values)
             current_author = row['current_author'] or ''
@@ -315,6 +492,12 @@ def process_layer_1_audio(
             else:
                 # Already correct - but update confidence since we did identify via audio
                 audio_confidence = 85 if confidence == 'high' else 70
+
+                # Store voice signature for correctly-named books too
+                # This builds the narrator library from verified audiobooks
+                if audio_file and config.get('enable_voice_id', True):
+                    _store_voice_and_identify_narrator(str(audio_file), result, config)
+
                 conn = get_db()
                 c = conn.cursor()
                 c.execute('UPDATE books SET status = ?, verification_layer = 3, confidence = ? WHERE id = ?',

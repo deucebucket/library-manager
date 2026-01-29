@@ -87,6 +87,7 @@ DEFAULT_CONFIG = {
     "preferred_language": "en",  # ISO 639-1 code for metadata lookups
     "preserve_original_titles": True,  # Don't replace foreign language titles with English translations
     "detect_language_from_audio": False,  # Use Gemini audio analysis to detect spoken language
+    "strict_language_matching": True,  # Only match books in preferred language (prevents cross-language mismatches, Issue #81)
     # Trust the Process mode - fully automatic verification chain
     "trust_the_process": False,  # Auto-verify drastic changes, use audio analysis as tie-breaker, only flag truly unidentifiable
     # Book Profile System settings - progressive verification with confidence scoring

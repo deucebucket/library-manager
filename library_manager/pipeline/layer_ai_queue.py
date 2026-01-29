@@ -38,7 +38,8 @@ def process_queue(
     BookProfile: Type,
     audio_extensions: Set[str],
     limit: Optional[int] = None,
-    verification_layer: int = 2
+    verification_layer: int = 2,
+    set_current_book: Optional[Callable] = None
 ) -> Tuple[int, int]:
     """
     Process items in the queue using AI verification.
@@ -161,6 +162,14 @@ def process_queue(
     processed = 0
     fixed = 0
     for row, result in zip(batch, results):
+        # Update status bar with current book
+        if set_current_book:
+            set_current_book(
+                row.get('current_author') or 'Unknown',
+                row.get('current_title') or 'Unknown',
+                "Verifying with AI..."
+            )
+
         # SAFETY CHECK: Before processing, verify this isn't a multi-book collection
         # that slipped through (items already in queue before detection was added)
         old_path = Path(row['path'])
@@ -211,6 +220,20 @@ def process_queue(
         if new_author.lower() in null_strings:
             logger.warning(f"AI returned invalid author '{new_author}' - treating as empty")
             new_author = ''
+
+        # CRITICAL: Prevent title shortening - if AI returns a substring of the original title,
+        # keep the original (more specific) title. Example: "Double Cross" -> "Cross" is WRONG
+        # This catches the case where API finds a shorter-titled book in the same series
+        current_title = row.get('current_title', '')
+        if new_title and current_title:
+            new_title_lower = new_title.lower().strip()
+            current_title_lower = current_title.lower().strip()
+            # If new title is shorter AND is contained in the original title, keep original
+            if (len(new_title_lower) < len(current_title_lower) and
+                new_title_lower in current_title_lower and
+                len(new_title_lower) >= 3):  # Avoid very short matches
+                logger.warning(f"AI shortened title '{current_title}' to '{new_title}' - keeping original")
+                new_title = current_title
 
         # CRITICAL: Detect when AI swaps author/title (common when folder has title first)
         # If new_title looks like current_author and new_author looks like current_title, swap them

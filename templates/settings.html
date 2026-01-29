@@ -131,9 +131,11 @@
                                         <button type="button" class="btn btn-sm btn-outline-info naming-tag" onclick="insertTag('{title}')">{title}</button>
                                         <button type="button" class="btn btn-sm btn-outline-warning naming-tag" onclick="insertTag('{series}')">{series}</button>
                                         <button type="button" class="btn btn-sm btn-outline-warning naming-tag" onclick="insertTag('{series_num}')">{series_num}</button>
+                                        <button type="button" class="btn btn-sm btn-outline-warning naming-tag" onclick="insertTag('{series_num.pad(2)}')" title="Zero-pad to 2 digits: 1→01, 10→10">{series_num.pad(2)}</button>
                                         <button type="button" class="btn btn-sm btn-outline-success naming-tag" onclick="insertTag('{narrator}')">{narrator}</button>
                                         <button type="button" class="btn btn-sm btn-outline-secondary naming-tag" onclick="insertTag('{year}')">{year}</button>
                                     </div>
+                                    <small class="text-muted d-block mt-1"><i class="bi bi-info-circle"></i> Use <code>.pad(N)</code> for zero-padding: <code>{series_num.pad(2)}</code> → 01, 02... 10</small>
                                 </div>
 
                                 <div class="alert alert-dark small py-2 mb-0">
@@ -381,6 +383,17 @@
                                 </label>
                             </div>
 
+                            <!-- Skaldleita Voice ID -->
+                            <div class="form-check form-switch mb-2 ms-4">
+                                <input class="form-check-input" type="checkbox" name="enable_voice_id"
+                                       id="enable_voice_id" {% if config.enable_voice_id is not defined or config.enable_voice_id %}checked{% endif %}>
+                                <label class="form-check-label" for="enable_voice_id">
+                                    <i class="bi bi-person-badge text-success"></i> Voice ID (Skaldleita)
+                                    <span class="badge bg-info text-dark">NEW</span>
+                                    <br><small class="text-muted">Identify narrators by voice fingerprint - like Shazam for audiobooks. Builds community narrator library.</small>
+                                </label>
+                            </div>
+
                             <div class="form-check form-switch mb-0">
                                 <input class="form-check-input" type="checkbox" name="enable_content_analysis"
                                        id="enable_content_analysis" {% if config.enable_content_analysis %}checked{% endif %}
@@ -500,7 +513,7 @@
                                     </button>
                                     {% endif %}
                                 </div>
-                                <small class="text-muted">Higher rate limits (2000/hr) - <a href="https://bookdb.deucebucket.com/api/request-key" target="_blank">Request free key</a></small>
+                                <small class="text-muted">Higher rate limits (2000/hr) - <a href="https://skaldleita.com/api/request-key" target="_blank">Request free key</a></small>
                             </div>
 
                             <!-- Google Books API Key -->
@@ -885,7 +898,19 @@
                                     <option value="sv" {% if config.preferred_language == 'sv' %}selected{% endif %}>Swedish / Svenska (sv)</option>
                                     <option value="ja" {% if config.preferred_language == 'ja' %}selected{% endif %}>Japanese / 日本語 (ja)</option>
                                     <option value="zh" {% if config.preferred_language == 'zh' %}selected{% endif %}>Chinese / 中文 (zh)</option>
+                                    <option value="pl" {% if config.preferred_language == 'pl' %}selected{% endif %}>Polish / Polski (pl)</option>
+                                    <option value="ru" {% if config.preferred_language == 'ru' %}selected{% endif %}>Russian / Русский (ru)</option>
+                                    <option value="cs" {% if config.preferred_language == 'cs' %}selected{% endif %}>Czech / Čeština (cs)</option>
+                                    <option value="ko" {% if config.preferred_language == 'ko' %}selected{% endif %}>Korean / 한국어 (ko)</option>
                                 </select>
+                            </div>
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="strict_language_matching" id="strict_language_matching"
+                                       {% if config.strict_language_matching is not defined or config.strict_language_matching %}checked{% endif %}>
+                                <label class="form-check-label" for="strict_language_matching">
+                                    <strong>Strict Language Matching</strong>
+                                    <br><small class="text-muted">Only match books in your preferred language (prevents cross-language mismatches)</small>
+                                </label>
                             </div>
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" name="preserve_original_titles" id="preserve_original_titles"
@@ -1381,6 +1406,11 @@ function clearNamingTemplate() {
 
 function updateNamingPreview() {
     let preview = document.getElementById('custom_naming_template').value || '{author}/{title}';
+    // Issue #80: Handle .pad(N) modifier for series_num
+    preview = preview.replace(/\{series_num\.pad\((\d+)\)\}/g, (match, width) => {
+        const num = parseInt(sampleData.series_num || '0');
+        return String(num).padStart(parseInt(width), '0');
+    });
     Object.keys(sampleData).forEach(key => { preview = preview.replace(new RegExp(`\\{${key}\\}`, 'g'), sampleData[key] || ''); });
     preview = preview.replace(/\(\s*\)/g, '').replace(/\/+/g, '/').replace(/\s{2,}/g, ' ').trim();
     document.getElementById('preview-output').textContent = preview || '(empty)';

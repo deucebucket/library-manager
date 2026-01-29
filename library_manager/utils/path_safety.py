@@ -6,6 +6,45 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def _apply_template_modifiers(template: str, field: str, value: str) -> str:
+    """Apply modifiers like .pad(N) to template fields.
+
+    Supports FileBot-style modifiers:
+    - {series_num.pad(2)} -> zero-pad to 2 digits (1 -> 01, 10 -> 10)
+    - {series_num.pad(3)} -> zero-pad to 3 digits (1 -> 001, 10 -> 010)
+
+    Issue #80: Feature request by derp90
+    """
+    # Pattern: {field.pad(N)} where N is 1-9
+    pad_pattern = re.compile(r'\{' + re.escape(field) + r'\.pad\((\d+)\)\}')
+
+    match = pad_pattern.search(template)
+    while match:
+        pad_width = int(match.group(1))
+
+        # Try to pad the value
+        try:
+            num = float(str(value).replace(',', '.')) if value else 0
+            if num == int(num):
+                padded = str(int(num)).zfill(pad_width)
+            else:
+                # Decimal: pad the integer part only
+                int_part = int(num)
+                decimal_part = str(num).split('.')[-1]
+                padded = f"{str(int_part).zfill(pad_width)}.{decimal_part}"
+        except (ValueError, TypeError):
+            # Can't parse as number, use original
+            padded = str(value) if value else ''
+
+        # Replace this specific match
+        template = template[:match.start()] + padded + template[match.end():]
+
+        # Find next match (position shifted, search again)
+        match = pad_pattern.search(template)
+
+    return template
+
+
 def sanitize_path_component(name):
     """Sanitize a path component to prevent directory traversal and invalid chars.
 
@@ -136,6 +175,11 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
 
         # Build the path from template
         path_str = custom_template
+
+        # Issue #80: Apply .pad(N) modifiers before standard replacements
+        # This allows {series_num.pad(2)} -> "01", {series_num.pad(3)} -> "001"
+        path_str = _apply_template_modifiers(path_str, 'series_num', series_num or '')
+
         path_str = path_str.replace('{author}', safe_author)
         path_str = path_str.replace('{title}', safe_title)
         path_str = path_str.replace('{series}', safe_series or '')

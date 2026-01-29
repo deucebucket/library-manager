@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.98"
+APP_VERSION = "0.9.0-beta.99"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -97,6 +97,9 @@ from library_manager.worker import (
     is_worker_running as _is_worker_running_raw,
     get_processing_status,
     update_processing_status,
+    set_current_book,
+    clear_current_book,
+    LAYER_NAMES,
 )
 
 # Try to import P2P cache (optional - gracefully degrades if not available)
@@ -1140,6 +1143,24 @@ def gather_all_api_candidates(title, author=None, config=None):
             seen.add(key)
             unique_candidates.append(c)
 
+    # Issue #81: Strict language filtering - remove candidates that don't match preferred language
+    if config and config.get('strict_language_matching', True) and preferred_lang != 'en':
+        filtered_candidates = []
+        for c in unique_candidates:
+            title_lang = detect_title_language(c.get('title', ''))
+            # Accept if language matches preference OR if detection is uncertain (short titles, mixed content)
+            if title_lang == preferred_lang or title_lang == 'en':
+                # Accept English as fallback since many databases only have English metadata
+                filtered_candidates.append(c)
+            else:
+                logger.info(f"[LAYER 1] Filtered out {title_lang} result for {preferred_lang} user: {c.get('title')}")
+
+        if filtered_candidates:
+            unique_candidates = filtered_candidates
+        else:
+            # Don't filter everything out - keep original if no matches
+            logger.info(f"[LAYER 1] No {preferred_lang} results found, keeping all candidates")
+
     return unique_candidates
 
 
@@ -1396,6 +1417,15 @@ API RESULTS WARNING - CRITICAL:
 - Same title can exist by different authors - if API author differs, keep INPUT author
 - Only use API if input has NO author OR the titles closely match
 
+TITLE PRESERVATION - VERY IMPORTANT:
+- If input title is MORE SPECIFIC than API title, KEEP THE INPUT TITLE
+- "Double Cross" is more specific than "Cross" - keep "Double Cross"!
+- "Triple Cross" is more specific than "Cross" - keep "Triple Cross"!
+- Input "Double Cross" + API "Cross" = Output MUST be "Double Cross" (not "Cross")
+- NEVER shorten a specific title to a shorter/more generic one
+- The API found the SERIES (Alex Cross) but matched the WRONG BOOK in that series
+- Always prefer the longer, more specific title from the input
+
 LANGUAGE/CHARACTER RULES:
 - ALWAYS use Latin/English characters for author and title names
 - If input is "Dmitry Glukhovsky", output "Dmitry Glukhovsky" (NOT "Дмитрий Глуховский" in Cyrillic)
@@ -1629,6 +1659,9 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
 
     Note: openrouter and ollama require transcription first (slower).
 
+    FINGERPRINT FAST PATH: Before trying any providers, we attempt fingerprint
+    lookup which is instant if the book is already in the database.
+
     Args:
         audio_file: Path to audio file to analyze
         config: App config
@@ -1640,6 +1673,33 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
     chain = config.get('audio_provider_chain', ['bookdb', 'gemini'])
     secrets = load_secrets()
     merged_config = {**config, **secrets}
+
+    # ========== FINGERPRINT FAST PATH ==========
+    # Try fingerprint lookup FIRST - instant if book is already known
+    fingerprint_data = None
+    if config.get('enable_fingerprinting', True):  # Enabled by default
+        try:
+            from library_manager.providers.fingerprint import try_fingerprint_identification, contribute_after_identification
+            api_key = merged_config.get('bookdb_api_key')
+
+            logger.info("[AUDIO CHAIN] Trying fingerprint lookup (fast path)...")
+            fingerprint_data = try_fingerprint_identification(audio_file, api_key=api_key, duration=120)
+
+            if fingerprint_data and not fingerprint_data.get('_no_match'):
+                # Fingerprint matched! Use the result directly
+                logger.info(f"[AUDIO CHAIN] FINGERPRINT MATCH: {fingerprint_data.get('author')} - {fingerprint_data.get('title')}")
+                fingerprint_data['_source'] = 'fingerprint'
+                return fingerprint_data
+
+            if fingerprint_data and fingerprint_data.get('_no_match'):
+                logger.debug("[AUDIO CHAIN] No fingerprint match - continuing to providers")
+                # Keep fingerprint_data for later contribution
+
+        except ImportError:
+            logger.debug("[AUDIO CHAIN] Fingerprint module not available")
+        except Exception as e:
+            logger.warning(f"[AUDIO CHAIN] Fingerprint lookup error: {e}")
+    # ========== END FINGERPRINT FAST PATH ==========
 
     # Check if we have any viable fallback providers
     has_fallback = False
@@ -1670,6 +1730,10 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
                     result = identify_audio_with_bookdb(audio_file)
                     if result and result.get('title'):
                         logger.info(f"[AUDIO CHAIN] Success with bookdb: {result.get('author')} - {result.get('title')}")
+                        # Contribute fingerprint - BookDB Whisper ID is different from fingerprint
+                        _contribute_fingerprint_async(fingerprint_data, result, merged_config)
+                        # Verify/correct narrator using voice matching
+                        result = _verify_and_correct_narrator(audio_file, result, merged_config)
                         return result
                     elif result and result.get('transcript'):
                         # Got transcript but no match - still useful, return for potential AI fallback
@@ -1696,6 +1760,10 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
                 result = analyze_audio_with_gemini(audio_file, merged_config, duration=duration, mode=mode)
                 if result and (result.get('title') or result.get('author')):
                     logger.info(f"[AUDIO CHAIN] Success with gemini: {result.get('author')} - {result.get('title')}")
+                    # Contribute fingerprint for future instant matches
+                    _contribute_fingerprint_async(fingerprint_data, result, merged_config)
+                    # Verify/correct narrator using voice matching
+                    result = _verify_and_correct_narrator(audio_file, result, merged_config)
                     return result
 
             elif provider == 'openrouter':
@@ -1708,6 +1776,8 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
                     result = identify_book_from_transcript(transcript, merged_config)
                     if result and result.get('title'):
                         logger.info(f"[AUDIO CHAIN] Success with openrouter: {result.get('author')} - {result.get('title')}")
+                        _contribute_fingerprint_async(fingerprint_data, result, merged_config)
+                        result = _verify_and_correct_narrator(audio_file, result, merged_config)
                         return result
                 else:
                     logger.debug("[AUDIO CHAIN] openrouter - no transcript available")
@@ -1726,6 +1796,8 @@ Return JSON with: author, title, narrator (if mentioned), series (if mentioned),
                     result = call_ollama(prompt, merged_config)
                     if result and result.get('title'):
                         logger.info(f"[AUDIO CHAIN] Success with ollama: {result.get('author')} - {result.get('title')}")
+                        _contribute_fingerprint_async(fingerprint_data, result, merged_config)
+                        result = _verify_and_correct_narrator(audio_file, result, merged_config)
                         return result
                 else:
                     logger.debug("[AUDIO CHAIN] ollama - no transcript available")
@@ -1739,6 +1811,132 @@ Return JSON with: author, title, narrator (if mentioned), series (if mentioned),
 
     logger.warning("[AUDIO CHAIN] All audio providers failed")
     return None
+
+
+def _contribute_fingerprint_async(fingerprint_data, result, config):
+    """
+    Contribute fingerprint to BookDB after successful identification.
+    This runs quickly and doesn't block the main flow.
+    """
+    if not fingerprint_data or not fingerprint_data.get('_fingerprint'):
+        return
+
+    if not result or not result.get('title'):
+        return
+
+    try:
+        from library_manager.providers.fingerprint import contribute_after_identification
+        api_key = config.get('bookdb_api_key')
+
+        success = contribute_after_identification(
+            fingerprint_data,
+            {
+                'author': result.get('author', ''),
+                'title': result.get('title', ''),
+                'narrator': result.get('narrator', ''),
+                'series': result.get('series', ''),
+                'series_position': result.get('series_position')
+            },
+            api_key=api_key
+        )
+
+        if success:
+            logger.info(f"[FINGERPRINT] Contributed fingerprint for: {result.get('title')}")
+        else:
+            logger.debug("[FINGERPRINT] Fingerprint contribution skipped or failed")
+
+    except Exception as e:
+        logger.debug(f"[FINGERPRINT] Contribution error (non-fatal): {e}")
+
+
+def _verify_and_correct_narrator(audio_file, result, config):
+    """
+    Verify narrator using voice matching and correct if mismatch detected.
+    Also stores the voice signature for future matching.
+
+    This catches metadata errors where the wrong narrator is tagged.
+
+    Args:
+        audio_file: Path to the audio file
+        result: Dict with author, title, narrator, etc.
+        config: App configuration
+
+    Returns:
+        Updated result dict with narrator verification
+    """
+    if not config.get('enable_narrator_verification', True):
+        return result
+
+    # ALWAYS store voice signature (even if narrator unknown)
+    # This builds the voice database for future matching
+    try:
+        from library_manager.providers.fingerprint import store_voice_after_identification
+        api_key = config.get('bookdb_api_key')
+        store_voice_after_identification(audio_file, result, api_key=api_key)
+    except Exception as e:
+        logger.debug(f"[VOICE] Storage error (non-fatal): {e}")
+
+    tagged_narrator = result.get('narrator', '')
+    if not tagged_narrator:
+        # No narrator to verify - try to identify by voice alone
+        try:
+            from library_manager.providers.fingerprint import identify_narrator_by_voice
+            api_key = config.get('bookdb_api_key')
+
+            identified = identify_narrator_by_voice(audio_file, threshold=0.6, api_key=api_key)
+            if identified:
+                logger.info(f"[NARRATOR] Identified by voice: {identified}")
+                result['narrator'] = identified
+                result['_narrator_source'] = 'voice_id'
+        except Exception as e:
+            logger.debug(f"[NARRATOR] Voice identification unavailable: {e}")
+        return result
+
+    try:
+        from library_manager.providers.fingerprint import verify_narrator, contribute_narrator, extract_voice_embedding
+        api_key = config.get('bookdb_api_key')
+
+        verification = verify_narrator(audio_file, tagged_narrator, threshold=0.5, api_key=api_key)
+
+        if verification.get('recommendation') == 'correct':
+            # Voice matches tagged narrator
+            result['_narrator_verified'] = True
+            logger.debug(f"[NARRATOR] Verified: {tagged_narrator}")
+
+        elif verification.get('recommendation') == 'mismatch':
+            # Voice doesn't match - use voice-matched narrator
+            matched = verification.get('matched_narrator', '')
+            confidence = verification.get('confidence', 0)
+
+            logger.warning(f"[NARRATOR] MISMATCH: Tagged '{tagged_narrator}' but voice is '{matched}' ({confidence:.2f})")
+
+            # Store the mismatch info for user review
+            result['_narrator_mismatch'] = {
+                'tagged': tagged_narrator,
+                'voice_matched': matched,
+                'confidence': confidence
+            }
+
+            # Use the voice-matched narrator if confident enough
+            if confidence >= 0.7:
+                result['narrator'] = matched
+                result['_narrator_source'] = 'voice_correction'
+                logger.info(f"[NARRATOR] Auto-corrected to: {matched}")
+            else:
+                # Lower confidence - flag for review but keep original
+                result['_narrator_needs_review'] = True
+
+        elif verification.get('recommendation') == 'no_profile':
+            # No voice profile exists - the tagged narrator gets contributed
+            result['_narrator_contributed'] = True
+            logger.debug(f"[NARRATOR] Contributed new profile: {tagged_narrator}")
+
+    except ImportError:
+        logger.debug("[NARRATOR] Narrator verification module not available")
+    except Exception as e:
+        logger.debug(f"[NARRATOR] Verification error (non-fatal): {e}")
+
+    return result
 
 
 def transcribe_audio_local(audio_file, duration=90):
@@ -3085,6 +3283,15 @@ Only if the title is truly unrecognizable, return:
             ai_result['confidence'] = adjusted_confidence
             if reason != 'validated':
                 ai_result['validation_note'] = reason
+
+            # Issue #81: Strict language matching - reject cross-language AI results
+            preferred_lang = config.get('preferred_language', 'en') if config else 'en'
+            if config and config.get('strict_language_matching', True) and preferred_lang != 'en':
+                result_lang = detect_title_language(ai_result.get('title', ''))
+                # Reject if result is clearly in a different non-English language
+                if result_lang not in (preferred_lang, 'en'):
+                    logger.warning(f"AI returned {result_lang} result, user prefers {preferred_lang}: {ai_result.get('title')}")
+                    return {'author': None, 'title': None, 'confidence': 'none', 'reason': f'language_mismatch ({result_lang} vs {preferred_lang})'}
 
             # Contribute to community database if we got a valid identification
             # This helps other users even if they don't use the same AI provider
@@ -5340,6 +5547,9 @@ def parse_transcript_with_ai(transcript, folder_hint=None, config=None):
         return None
 
     config = config or load_config()
+    # Merge secrets to get API keys
+    secrets = load_secrets()
+    config = {**config, **secrets}
 
     prompt = f"""You are extracting audiobook metadata from a transcription of the book's intro.
 
@@ -5368,7 +5578,34 @@ If you cannot identify the book from the transcript, return:
 {{"title": null, "author": null, "narrator": null, "series": null, "series_num": null, "confidence": "none", "reason": "why"}}"""
 
     try:
-        # Try Gemini first
+        # Try local Ollama FIRST (no cold starts, no rate limits)
+        ollama_url = config.get('ollama_url', 'http://localhost:11434')
+        ollama_model = config.get('ollama_model', 'qwen2.5:0.5b')  # Tiny model (912MB VRAM)
+
+        try:
+            ollama_response = requests.post(
+                f"{ollama_url}/api/generate",
+                json={
+                    'model': ollama_model,
+                    'prompt': prompt,
+                    'stream': False,
+                    'options': {'temperature': 0.1}
+                },
+                timeout=60
+            )
+
+            if ollama_response.status_code == 200:
+                ollama_text = ollama_response.json().get('response', '')
+                result = parse_json_response(ollama_text)
+                if result and result.get('author') and result.get('title'):
+                    logger.info(f"[LAYER 1/AUDIO] Local LLM parsed: {result.get('author', '?')} - {result.get('title', '?')}")
+                    return result
+                else:
+                    logger.debug(f"[LAYER 1/AUDIO] Local LLM returned incomplete result, trying external APIs")
+        except requests.exceptions.RequestException as e:
+            logger.debug(f"[LAYER 1/AUDIO] Local Ollama not available: {e}")
+
+        # Fallback to Gemini
         if config.get('gemini_api_key'):
             api_key = config.get('gemini_api_key')
             model = config.get('gemini_model', 'gemini-2.0-flash')
@@ -5384,7 +5621,7 @@ If you cannot identify the book from the transcript, return:
                 text = response.json().get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
                 result = parse_json_response(text)
                 if result:
-                    logger.info(f"[LAYER 1/AUDIO] AI parsed: {result.get('author', '?')} - {result.get('title', '?')}")
+                    logger.info(f"[LAYER 1/AUDIO] Gemini parsed: {result.get('author', '?')} - {result.get('title', '?')}")
                     return result
 
         # Fallback to OpenRouter
@@ -5420,6 +5657,9 @@ def process_layer_1_audio(config, limit=None):
     def update_status(status_text):
         update_processing_status("current", status_text)
 
+    def set_book(author, title, stage=""):
+        set_current_book(author, title, stage)
+
     def get_circuit_breaker(api_name):
         return API_CIRCUIT_BREAKER.get(api_name, {})
 
@@ -5435,22 +5675,30 @@ def process_layer_1_audio(config, limit=None):
         load_config=load_config,
         build_new_path=build_new_path,
         update_processing_status=update_status,
+        set_current_book=set_book,
         limit=limit
     )
 
 
 def process_layer_1_api(config, limit=None):
     """Wrapper for extracted layer function - passes app-level dependencies."""
+    def set_book(author, title, stage=""):
+        set_current_book(author, title, stage)
+
     return _process_layer_1_api_raw(
         config=config,
         get_db=get_db,
         gather_all_api_candidates=gather_all_api_candidates,
-        limit=limit
+        limit=limit,
+        set_current_book=set_book
     )
 
 
 def process_queue(config, limit=None, verification_layer=2):
     """Wrapper for extracted layer function - passes app-level dependencies."""
+    def set_book(author, title, stage=""):
+        set_current_book(author, title, stage)
+
     return _process_queue_raw(
         config=config,
         get_db=get_db,
@@ -5473,7 +5721,8 @@ def process_queue(config, limit=None, verification_layer=2):
         BookProfile=BookProfile,
         audio_extensions=AUDIO_EXTENSIONS,
         limit=limit,
-        verification_layer=verification_layer
+        verification_layer=verification_layer,
+        set_current_book=set_book
     )
 
 
@@ -5709,6 +5958,9 @@ def apply_fix(history_id):
 
         # Update history status
         c.execute('UPDATE history SET status = ? WHERE id = ?', ('fixed', history_id))
+
+        # Issue #79: Remove from queue - this was missing, causing stuck queue items
+        c.execute('DELETE FROM queue WHERE book_id = ?', (fix['book_id'],))
 
         # Embed metadata tags if enabled
         embed_status = None
@@ -6592,6 +6844,7 @@ def settings_page():
         config['whisper_model'] = request.form.get('whisper_model', 'base')  # Issue #77: was missing
         config['layer4_openrouter_model'] = request.form.get('layer4_openrouter_model', 'google/gemma-3n-e4b-it:free')
         config['use_bookdb_for_audio'] = 'use_bookdb_for_audio' in request.form
+        config['enable_voice_id'] = 'enable_voice_id' in request.form  # Skaldleita narrator voice ID
         config['deep_scan_mode'] = 'deep_scan_mode' in request.form
         config['profile_confidence_threshold'] = int(request.form.get('profile_confidence_threshold', 85))
         config['skip_confirmations'] = 'skip_confirmations' in request.form
@@ -6602,6 +6855,7 @@ def settings_page():
         config['metadata_embedding_backup_sidecar'] = 'metadata_embedding_backup_sidecar' in request.form
         # Language settings
         config['preferred_language'] = request.form.get('preferred_language', 'en')
+        config['strict_language_matching'] = 'strict_language_matching' in request.form
         config['preserve_original_titles'] = 'preserve_original_titles' in request.form
         config['detect_language_from_audio'] = 'detect_language_from_audio' in request.form
         # google_books_api_key is now stored in secrets only (security fix)
@@ -7228,6 +7482,9 @@ def api_process():
 
     logger.info(f"API process called: all={process_all}, limit={limit}")
 
+    # Update status to show we're processing
+    update_processing_status('active', True)
+
     if process_all:
         # Process entire queue in batches
         processed, fixed = process_all_queue(config)
@@ -7266,6 +7523,10 @@ def api_process():
     remaining = c.fetchone()[0]
     conn.close()
 
+    # Clear active status when done
+    update_processing_status('active', False)
+    clear_current_book()
+
     # Build helpful status message
     if remaining == 0:
         status = 'complete'
@@ -7284,10 +7545,176 @@ def api_process():
         'message': message
     })
 
+
+# Background processing thread state
+_bg_processing_thread = None
+_bg_processing_active = False
+
+@app.route('/api/process_background', methods=['POST'])
+def api_process_background():
+    """Start background processing that updates status in real-time.
+
+    Unlike /api/process which blocks, this returns immediately and
+    processes in a background thread so the status bar can update live.
+    """
+    global _bg_processing_thread, _bg_processing_active
+
+    # Check if already processing
+    if _bg_processing_active:
+        return jsonify({
+            'success': False,
+            'message': 'Background processing already running'
+        })
+
+    def process_in_background():
+        global _bg_processing_active
+        _bg_processing_active = True
+        try:
+            config = load_config()
+            update_processing_status('active', True)
+
+            # Get queue count for progress tracking
+            conn = get_db()
+            c = conn.cursor()
+            c.execute('SELECT COUNT(*) FROM queue')
+            total_queue = c.fetchone()[0]
+            conn.close()
+
+            update_processing_status('total', total_queue)
+            processed_count = 0
+
+            # Process in batches until queue is empty or we hit a limit
+            max_batches = 100  # Safety limit
+            for batch in range(max_batches):
+                # Check remaining
+                conn = get_db()
+                c = conn.cursor()
+                c.execute('SELECT COUNT(*) FROM queue')
+                remaining = c.fetchone()[0]
+                conn.close()
+
+                if remaining == 0:
+                    break
+
+                update_processing_status('queue_remaining', remaining)
+
+                # Process one batch (Layer 1 + Layer 2)
+                if config.get('enable_api_lookups', True):
+                    update_processing_status('layer', 3)  # API Lookup
+                    l1_processed, l1_resolved = process_layer_1_api(config, limit=3)
+                    processed_count += l1_processed
+
+                if config.get('enable_ai_verification', True):
+                    update_processing_status('layer', 4)  # AI Verify
+                    l2_processed, l2_fixed = process_queue(config, limit=3)
+                    processed_count += l2_processed
+
+                update_processing_status('processed', processed_count)
+
+                # Brief pause to allow status polling
+                import time
+                time.sleep(0.1)
+
+        except Exception as e:
+            logger.error(f"Background processing error: {e}")
+        finally:
+            update_processing_status('active', False)
+            update_processing_status('layer', 0)
+            clear_current_book()
+            _bg_processing_active = False
+
+    import threading
+    _bg_processing_thread = threading.Thread(target=process_in_background, daemon=True)
+    _bg_processing_thread.start()
+
+    return jsonify({
+        'success': True,
+        'message': 'Background processing started. Watch the status bar for updates.'
+    })
+
+
 @app.route('/api/process_status')
 def api_process_status():
     """Get current processing status."""
     return jsonify(get_processing_status())
+
+
+@app.route('/api/live_status')
+def api_live_status():
+    """Get comprehensive live status for the status bar.
+
+    Returns worker state, processing status, queue depth, and recent activity
+    all in one efficient call for the persistent status bar.
+    """
+    import time as time_module
+
+    # Get processing status
+    status = get_processing_status()
+
+    # Get queue depth
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) as count FROM queue')
+    queue_count = c.fetchone()['count']
+
+    # Get pending fixes count
+    c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'pending_fix'")
+    pending_fixes = c.fetchone()['count']
+
+    # Get recent activity (last 5 processed books)
+    c.execute('''SELECT new_author, new_title, status, fixed_at
+                 FROM history
+                 ORDER BY fixed_at DESC
+                 LIMIT 5''')
+    recent = [dict(row) for row in c.fetchall()]
+    conn.close()
+
+    # Build response
+    worker_running = is_worker_running()
+
+    # Determine the display state
+    if status.get('active'):
+        state = 'processing'
+    elif worker_running:
+        state = 'idle'
+    else:
+        state = 'stopped'
+
+    # Calculate time since last activity
+    last_activity_time = status.get('last_activity_time', 0)
+    if last_activity_time:
+        seconds_ago = int(time_module.time() - last_activity_time)
+        if seconds_ago < 60:
+            time_ago = f"{seconds_ago}s ago"
+        elif seconds_ago < 3600:
+            time_ago = f"{seconds_ago // 60}m ago"
+        else:
+            time_ago = f"{seconds_ago // 3600}h ago"
+    else:
+        time_ago = ""
+
+    return jsonify({
+        'state': state,
+        'worker_running': worker_running,
+        'processing': {
+            'active': status.get('active', False),
+            'layer': status.get('layer', 0),
+            'layer_name': status.get('layer_name', 'Idle'),
+            'current_stage': status.get('current', ''),
+            'current_book': status.get('current_book', ''),
+            'current_author': status.get('current_author', ''),
+            'processed': status.get('processed', 0),
+            'total': status.get('total', 0),
+        },
+        'queue': {
+            'count': queue_count,
+            'pending_fixes': pending_fixes,
+        },
+        'last_activity': status.get('last_activity', ''),
+        'last_activity_time_ago': time_ago,
+        'recent': recent[:3],  # Last 3 for the dropdown
+    })
+
 
 @app.route('/api/apply_fix/<int:history_id>', methods=['POST'])
 def api_apply_fix(history_id):
@@ -8095,6 +8522,113 @@ def api_recent_history():
                  ORDER BY h.fixed_at DESC LIMIT 15''')
     items = [dict(row) for row in c.fetchall()]
     conn.close()
+    return jsonify({'items': items})
+
+
+@app.route('/api/recent_activity')
+def api_recent_activity():
+    """Get last 15 processed books with full info including series.
+    Shows ALL recently processed books - including pending items that have been touched.
+    Excludes series_folder, loose_file, needs_split - users want to see actual book processing."""
+    conn = get_db()
+    c = conn.cursor()
+    # Show all recently updated books (excluding folder/file markers)
+    # This shows books AS they're being processed, not just when complete
+    c.execute('''SELECT id, current_author, current_title, status, profile, updated_at, verification_layer
+                 FROM books
+                 WHERE status NOT IN ('series_folder', 'loose_file', 'needs_split', 'skipped')
+                 AND verification_layer > 0
+                 ORDER BY updated_at DESC
+                 LIMIT 15''')
+    rows = c.fetchall()
+    conn.close()
+
+    items = []
+    for row in rows:
+        profile_data = {}
+        if row['profile']:
+            try:
+                profile_data = json.loads(row['profile'])
+            except:
+                pass
+
+        # Extract series info from profile
+        series = profile_data.get('series', {}).get('value', '') or ''
+        series_num = profile_data.get('series_num', {}).get('value', '')
+        narrator = profile_data.get('narrator', {}).get('value', '') or ''
+        confidence = profile_data.get('overall_confidence', 0)
+        author = row['current_author'] or ''
+
+        # Format book number (B1, B2, etc.) - strip .0 from whole numbers
+        book_num_str = ''
+        if series_num:
+            try:
+                num = float(series_num)
+                if num == int(num):
+                    book_num_str = f"B{int(num)}"
+                else:
+                    book_num_str = f"B{series_num}"
+            except (ValueError, TypeError):
+                book_num_str = f"B{series_num}"
+
+        # Check if author-narrated (compare normalized names)
+        is_author_narrated = False
+        narrator_display = narrator
+        if narrator and author:
+            # Normalize for comparison: lowercase, remove common suffixes
+            def normalize_name(name):
+                n = name.lower().strip()
+                for suffix in [' jr', ' jr.', ' sr', ' sr.', ' iii', ' ii', ' phd', ' ph.d.']:
+                    n = n.replace(suffix, '')
+                return n
+
+            author_norm = normalize_name(author)
+            narrator_norm = normalize_name(narrator)
+
+            # Check if narrator contains author name or vice versa
+            if author_norm in narrator_norm or narrator_norm in author_norm:
+                is_author_narrated = True
+                narrator_display = "📖 Author"
+            # Check last name match for "FirstName LastName" patterns
+            elif ' ' in author and ' ' in narrator:
+                author_last = author_norm.split()[-1]
+                narrator_last = narrator_norm.split()[-1]
+                if author_last == narrator_last and len(author_last) > 2:
+                    is_author_narrated = True
+                    narrator_display = "📖 Author"
+
+        # Map status to user-friendly display
+        layer = row['verification_layer'] if 'verification_layer' in row.keys() else 0
+        if row['status'] == 'verified':
+            status_display = "✅ OK"
+        elif row['status'] == 'needs_fix':
+            status_display = "🔧 Rename"
+        elif row['status'] == 'needs_attention':
+            status_display = "⚠️ Review"
+        elif row['status'] == 'error':
+            status_display = "❌ Error"
+        elif row['status'] == 'pending':
+            # Show which layer it's at
+            layer_names = {1: "🎤 Audio", 2: "🤖 AI", 3: "📚 API", 4: "📁 Folder"}
+            status_display = layer_names.get(layer, f"⏳ L{layer}")
+        else:
+            status_display = row['status']
+
+        items.append({
+            'id': row['id'],
+            'author': author or 'Unknown',
+            'title': row['current_title'] or 'Unknown',
+            'series': series,
+            'book_num': book_num_str,
+            'narrator': narrator,
+            'narrator_display': narrator_display,
+            'is_author_narrated': is_author_narrated,
+            'status': row['status'],
+            'status_display': status_display,
+            'confidence': confidence,
+            'updated_at': row['updated_at']
+        })
+
     return jsonify({'items': items})
 
 
