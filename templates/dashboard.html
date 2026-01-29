@@ -1,50 +1,50 @@
 {% extends "base.html" %}
-{% block title %}Dashboard - Library Manager{% endblock %}
+{% block title %}{{ _('Dashboard') }} - {{ _('Library Manager') }}{% endblock %}
 
 {% block content %}
 <div class="row mb-4">
     <div class="col-md-3">
-        <div class="card stat-card h-100" title="All audiobook folders found in your library">
+        <div class="card stat-card h-100" title="{{ _('All audiobook folders found in your library') }}">
             <div class="card-body text-center">
                 <i class="bi bi-collection text-info" style="font-size: 2rem;"></i>
                 <div class="stat-number" id="total-books">{{ total_books }}</div>
-                <div class="text-muted">Total Books</div>
-                <small class="text-muted" style="font-size: 0.7rem;">in library</small>
+                <div class="text-muted">{{ _('Total Books') }}</div>
+                <small class="text-muted" style="font-size: 0.7rem;">{{ _('in library') }}</small>
             </div>
         </div>
     </div>
     <div class="col-md-3">
         <a href="/queue" class="text-decoration-none">
-            <div class="card stat-card h-100" title="Books waiting to be analyzed by AI" style="cursor: pointer;">
+            <div class="card stat-card h-100" title="{{ _('Books waiting to be analyzed by AI') }}" style="cursor: pointer;">
                 <div class="card-body text-center">
                     <i class="bi bi-list-task text-warning" style="font-size: 2rem;"></i>
                     <div class="stat-number" id="queue-count">{{ queue_size }}</div>
-                    <div class="text-muted">In Queue</div>
-                    <small class="text-muted" style="font-size: 0.7rem;">awaiting AI analysis</small>
+                    <div class="text-muted">{{ _('In Queue') }}</div>
+                    <small class="text-muted" style="font-size: 0.7rem;">{{ _('awaiting AI analysis') }}</small>
                 </div>
             </div>
         </a>
     </div>
     <div class="col-md-3">
         <a href="/history" class="text-decoration-none">
-            <div class="card stat-card h-100" title="Books that have been renamed/corrected" style="cursor: pointer;">
+            <div class="card stat-card h-100" title="{{ _('Books that have been renamed/corrected') }}" style="cursor: pointer;">
                 <div class="card-body text-center">
                     <i class="bi bi-check-circle text-success" style="font-size: 2rem;"></i>
                     <div class="stat-number" id="fixed-count">{{ fixed_count }}</div>
-                    <div class="text-muted">Fixed</div>
-                    <small class="text-muted" style="font-size: 0.7rem;">renamed successfully</small>
+                    <div class="text-muted">{{ _('Fixed') }}</div>
+                    <small class="text-muted" style="font-size: 0.7rem;">{{ _('renamed successfully') }}</small>
                 </div>
             </div>
         </a>
     </div>
     <div class="col-md-3">
         <a href="/history?status=pending" class="text-decoration-none">
-            <div class="card stat-card h-100" title="AI suggested fixes waiting to be applied to files" style="cursor: pointer;">
+            <div class="card stat-card h-100" title="{{ _('AI suggested fixes waiting to be applied to files') }}" style="cursor: pointer;">
                 <div class="card-body text-center">
                     <i class="bi bi-hourglass-split text-danger" style="font-size: 2rem;"></i>
                     <div class="stat-number" id="pending-fixes">{{ pending_fixes }}</div>
-                    <div class="text-muted">Pending Fixes</div>
-                    <small class="text-muted" style="font-size: 0.7rem;">ready to apply</small>
+                    <div class="text-muted">{{ _('Pending Fixes') }}</div>
+                    <small class="text-muted" style="font-size: 0.7rem;">{{ _('ready to apply') }}</small>
                 </div>
             </div>
         </a>
@@ -58,30 +58,30 @@
             <i class="bi bi-lightning-fill fs-4"></i>
         </button>
         <ul class="dropdown-menu dropdown-menu-end shadow mb-2" style="min-width: 200px;">
-            <li><h6 class="dropdown-header">Quick Actions</h6></li>
+            <li><h6 class="dropdown-header">{{ _('Quick Actions') }}</h6></li>
             <li><a class="dropdown-item" href="#" onclick="triggerScan(); return false;" id="scan-btn">
-                <i class="bi bi-search text-primary"></i> Scan Library
+                <i class="bi bi-search text-primary"></i> {{ _('Scan Library') }}
             </a></li>
             <li><a class="dropdown-item" href="#" onclick="deepRescan(); return false;" id="deep-scan-btn">
-                <i class="bi bi-arrow-repeat text-info"></i> Deep Re-scan
+                <i class="bi bi-arrow-repeat text-info"></i> {{ _('Deep Re-scan') }}
             </a></li>
             <li><a class="dropdown-item" href="#" onclick="processQueue(); return false;" id="process-btn">
-                <i class="bi bi-play-fill text-success"></i> Process Queue
+                <i class="bi bi-play-fill text-success"></i> {{ _('Process Queue') }}
             </a></li>
             {% if pending_fixes > 0 %}
             <li><hr class="dropdown-divider"></li>
             <li><a class="dropdown-item" href="#" onclick="applyAllPending(); return false;" id="apply-pending-btn">
-                <i class="bi bi-check-all text-warning"></i> Apply {{ pending_fixes }} Pending
+                <i class="bi bi-check-all text-warning"></i> {{ _('Apply %(count)s Pending', count=pending_fixes) }}
             </a></li>
             {% endif %}
             <li><hr class="dropdown-divider"></li>
             {% if worker_running %}
             <li><a class="dropdown-item" href="#" onclick="stopWorker(); return false;">
-                <i class="bi bi-stop-fill text-danger"></i> Stop Worker
+                <i class="bi bi-stop-fill text-danger"></i> {{ _('Stop Worker') }}
             </a></li>
             {% else %}
             <li><a class="dropdown-item" href="#" onclick="startWorker(); return false;">
-                <i class="bi bi-play-fill text-success"></i> Start Worker
+                <i class="bi bi-play-fill text-success"></i> {{ _('Start Worker') }}
             </a></li>
             {% endif %}
         </ul>

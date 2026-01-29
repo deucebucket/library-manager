@@ -1,7 +1,7 @@
 """API providers for Library Manager.
 
 This package contains the API providers used for book metadata lookups:
-- BookDB (primary, our API)
+- Skaldleita (primary, our API - internally still called 'bookdb')
 - Audnexus (audiobook specialist)
 - OpenLibrary (open source)
 - Google Books
@@ -84,7 +84,7 @@ __all__ = [
     'search_openlibrary',
     'search_google_books',
     'search_hardcover',
-    # BookDB
+    # Skaldleita (legacy name: BookDB)
     'BOOKDB_API_URL',
     'BOOKDB_PUBLIC_KEY',
     'search_bookdb',

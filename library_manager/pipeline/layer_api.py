@@ -1,12 +1,13 @@
 """Layer 1: API Database Lookups
 
-Processes items using API databases (BookDB, Audnexus, OpenLibrary, etc.)
+Processes items using API databases (Skaldleita, Audnexus, OpenLibrary, etc.)
 This is faster and cheaper than AI verification, so we try it first.
 """
 
 import json
 import logging
 from collections import Counter
+from datetime import datetime
 from typing import Callable, Dict, List, Optional, Tuple
 
 from library_manager.models.book_profile import BookProfile
@@ -26,7 +27,7 @@ def process_layer_1_api(
     """
     Layer 1: API Database Lookups
 
-    Processes items at verification_layer=1 using API databases (BookDB, Audnexus, etc.)
+    Processes items at verification_layer=1 using API databases (Skaldleita, Audnexus, etc.)
     Items that get a confident match are marked complete.
     Items that fail are advanced to layer 2 (AI verification).
 
@@ -58,8 +59,10 @@ def process_layer_1_api(
 
     # Get items awaiting API lookup (layer 1) or new items (layer 0)
     # Skip user-locked books - user has manually set metadata
+    # Include profile and confidence for SL trust mode checks
     c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
-                        b.path, b.current_author, b.current_title, b.verification_layer
+                        b.path, b.current_author, b.current_title, b.verification_layer,
+                        b.profile, b.confidence
                  FROM queue q
                  JOIN books b ON q.book_id = b.id
                  WHERE b.verification_layer IN (0, 1)
@@ -80,9 +83,41 @@ def process_layer_1_api(
     # Collect all actions to perform, then apply them in phase 3
     actions = []  # List of action dicts describing what to do for each item
 
+    # Get SL trust mode settings
+    sl_trust_mode = config.get('sl_trust_mode', 'full')
+    sl_threshold = config.get('sl_confidence_threshold', 80)
+
     for row in batch:
         current_author = row['current_author']
         current_title = row['current_title']
+
+        # === SL TRUST MODE CHECK ===
+        # If book already identified by SL audio with high confidence, trust it
+        book_profile = row.get('profile')
+        book_confidence = row.get('confidence', 0) or 0
+
+        if sl_trust_mode in ('full', 'boost') and book_profile and book_confidence >= sl_threshold:
+            try:
+                profile_data = json.loads(book_profile) if isinstance(book_profile, str) else book_profile
+                author_data = profile_data.get('author', {})
+                author_source = author_data.get('source', '')
+
+                # Only trust audio-based sources (not folder-derived)
+                audio_sources = ('audio_transcription', 'bookdb', 'bookdb_audio', 'audio')
+                if author_source in audio_sources:
+                    # Book was identified by SL audio - trust it completely
+                    action = {
+                        'book_id': row['book_id'],
+                        'queue_id': row['queue_id'],
+                        'type': 'trust_sl',
+                        'profile_json': None,
+                        'confidence': book_confidence,
+                        'log_message': f"[LAYER 1] Trusting SL audio ID (conf={book_confidence}%): {current_author}/{current_title}"
+                    }
+                    actions.append(action)
+                    continue  # Skip API lookups entirely - will be counted in Phase 3
+            except (json.JSONDecodeError, TypeError):
+                pass  # Invalid profile, proceed with normal flow
 
         # Update status bar with current book
         if set_current_book:
@@ -201,21 +236,46 @@ def process_layer_1_api(
                             action['profile_json'] = json.dumps(profile.to_dict())
                             action['confidence'] = profile.overall_confidence
                         else:
-                            # API found the book but current values differ - let Layer 2 handle the fix
-                            action['type'] = 'advance_to_layer2'
-                            action['log_message'] = f"[LAYER 1] API match needs fix ({avg_confidence:.0%}, title={title_sim:.0%}, author={author_sim:.0%}): {current_author}/{current_title} -> {match_author}/{match_title}"
+                            # API found the book but current values differ
+                            # Respect SL trust mode: in full/boost mode, skip AI
+                            if sl_trust_mode == 'full':
+                                action['type'] = 'advance_to_layer4'
+                                action['log_message'] = f"[LAYER 1] API match needs fix, trust mode=full, skipping AI: {current_author}/{current_title} -> {match_author}/{match_title}"
+                            elif sl_trust_mode == 'boost':
+                                # In boost mode, use API confidence to decide
+                                if avg_confidence >= 0.7:  # 70%+ = trust API, skip AI
+                                    action['type'] = 'advance_to_layer4'
+                                    action['log_message'] = f"[LAYER 1] API match ({avg_confidence:.0%}), boost mode, skipping AI: {current_author}/{current_title}"
+                                else:
+                                    action['type'] = 'advance_to_layer2'
+                                    action['log_message'] = f"[LAYER 1] API match low ({avg_confidence:.0%}), boost mode, using AI: {current_author}/{current_title}"
+                            else:  # legacy mode
+                                action['type'] = 'advance_to_layer2'
+                                action['log_message'] = f"[LAYER 1] API match needs fix ({avg_confidence:.0%}), legacy mode: {current_author}/{current_title} -> {match_author}/{match_title}"
                     else:
-                        # Low confidence - advance to AI layer
-                        action['type'] = 'advance_to_layer2'
-                        action['log_message'] = f"[LAYER 1] API match low confidence ({avg_confidence:.0f}%), advancing to AI: {current_author}/{current_title}"
+                        # Low confidence - respect trust mode
+                        if sl_trust_mode in ('full', 'boost'):
+                            action['type'] = 'advance_to_layer4'
+                            action['log_message'] = f"[LAYER 1] API match low confidence ({avg_confidence:.0f}%), trust mode={sl_trust_mode}, skipping AI: {current_author}/{current_title}"
+                        else:
+                            action['type'] = 'advance_to_layer2'
+                            action['log_message'] = f"[LAYER 1] API match low confidence ({avg_confidence:.0f}%), advancing to AI: {current_author}/{current_title}"
             else:
-                # No good match found - advance to AI
-                action['type'] = 'advance_to_layer2'
-                action['log_message'] = f"[LAYER 1] No API match, advancing to AI: {current_author}/{current_title}"
+                # No good match found - respect trust mode
+                if sl_trust_mode in ('full', 'boost'):
+                    action['type'] = 'advance_to_layer4'
+                    action['log_message'] = f"[LAYER 1] No API match, trust mode={sl_trust_mode}, skipping AI: {current_author}/{current_title}"
+                else:
+                    action['type'] = 'advance_to_layer2'
+                    action['log_message'] = f"[LAYER 1] No API match, advancing to AI: {current_author}/{current_title}"
         else:
-            # No candidates at all - advance to AI
-            action['type'] = 'advance_to_layer2'
-            action['log_message'] = f"[LAYER 1] No API candidates, advancing to AI: {current_author}/{current_title}"
+            # No candidates at all - respect trust mode
+            if sl_trust_mode in ('full', 'boost'):
+                action['type'] = 'advance_to_layer4'
+                action['log_message'] = f"[LAYER 1] No API candidates, trust mode={sl_trust_mode}, skipping AI: {current_author}/{current_title}"
+            else:
+                action['type'] = 'advance_to_layer2'
+                action['log_message'] = f"[LAYER 1] No API candidates, advancing to AI: {current_author}/{current_title}"
 
         actions.append(action)
 
@@ -231,12 +291,21 @@ def process_layer_1_api(
         if action['log_message']:
             logger.info(action['log_message'])
 
-        if action['type'] == 'verified':
+        if action['type'] == 'trust_sl':
+            # SL audio ID was high confidence - mark as resolved, skip Layer 2 (AI)
+            # Advance to Layer 4 for final verification/fix application
+            c.execute('UPDATE books SET verification_layer = 4 WHERE id = ?', (action['book_id'],))
+            c.execute('DELETE FROM queue WHERE id = ?', (action['queue_id'],))
+            resolved += 1
+        elif action['type'] == 'verified':
             # Save profile and mark as verified
             c.execute('UPDATE books SET status = ?, verification_layer = 4, profile = ?, confidence = ? WHERE id = ?',
                      ('verified', action['profile_json'], action['confidence'], action['book_id']))
             c.execute('DELETE FROM queue WHERE id = ?', (action['queue_id'],))
             resolved += 1
+        elif action['type'] == 'advance_to_layer4':
+            # Skip Layer 2 (AI), go directly to Layer 4 (final verification/fix)
+            c.execute('UPDATE books SET verification_layer = 4 WHERE id = ?', (action['book_id'],))
         elif action['type'] == 'advance_to_layer2':
             c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (action['book_id'],))
 
@@ -249,4 +318,131 @@ def process_layer_1_api(
     return processed, resolved
 
 
-__all__ = ['process_layer_1_api']
+def process_sl_requeue_verification(
+    config: Dict,
+    get_db: Callable,
+    search_bookdb: Callable,
+    limit: Optional[int] = None
+) -> Tuple[int, int]:
+    """
+    Phase 5: Verify books that were scheduled for SL requeue.
+
+    When SL returns requeue_suggested=true (live scrape in progress),
+    we store the partial ID and schedule re-verification for after nightly merge.
+
+    This function finds those books and re-verifies them against SL to see
+    if the book is now in the main database with higher confidence.
+
+    Args:
+        config: App configuration dict
+        get_db: Function to get database connection
+        search_bookdb: Function to search Skaldleita
+        limit: Maximum batch size
+
+    Returns:
+        Tuple of (processed_count, upgraded_count)
+    """
+    conn = get_db()
+    c = conn.cursor()
+
+    batch_size = limit or config.get('batch_size', 5)
+
+    # Find books with sl_requeue where requeue_after has passed
+    # These are pending_fix books that need re-verification
+    c.execute('''SELECT id, path, current_author, current_title, profile, confidence
+                 FROM books
+                 WHERE status = 'pending_fix'
+                   AND profile IS NOT NULL
+                   AND profile LIKE '%sl_requeue%'
+                 LIMIT ?''', (batch_size,))
+
+    books_to_check = [dict(row) for row in c.fetchall()]
+    conn.close()
+
+    if not books_to_check:
+        return 0, 0
+
+    processed = 0
+    upgraded = 0
+
+    for book in books_to_check:
+        try:
+            profile = json.loads(book['profile']) if book['profile'] else {}
+            sl_requeue = profile.get('sl_requeue', {})
+
+            if not sl_requeue:
+                continue
+
+            # Check if requeue time has passed
+            requeue_after_str = sl_requeue.get('requeue_after')
+            if not requeue_after_str:
+                continue
+
+            requeue_after = datetime.fromisoformat(requeue_after_str)
+            if datetime.now() < requeue_after:
+                continue  # Not time yet
+
+            # Time to re-verify! Query Skaldleita
+            author = book['current_author']
+            title = book['current_title']
+
+            logger.info(f"[SL REQUEUE] Re-verifying: {author} - {title}")
+
+            # Search Skaldleita for this book
+            sl_results = search_bookdb(
+                title=title,
+                author=author,
+                include_editions=False,
+                limit=5
+            )
+
+            if sl_results and len(sl_results) > 0:
+                # Found in main DB now - upgrade confidence
+                best_match = sl_results[0]
+                new_confidence = min(95, book['confidence'] + 10)
+
+                # Update profile - remove requeue flag, add SL verification
+                profile.pop('sl_requeue', None)
+                profile['sl_verified'] = {
+                    'book_id': best_match.get('id'),
+                    'verified_at': datetime.now().isoformat(),
+                    'confidence_boost': 10
+                }
+
+                conn = get_db()
+                c = conn.cursor()
+                c.execute('''UPDATE books SET profile = ?, confidence = ? WHERE id = ?''',
+                         (json.dumps(profile), new_confidence, book['id']))
+                conn.commit()
+                conn.close()
+
+                logger.info(f"[SL REQUEUE] Upgraded confidence {book['confidence']} -> {new_confidence}: {author} - {title}")
+                upgraded += 1
+            else:
+                # Still not in main DB - remove requeue flag, keep current identification
+                profile.pop('sl_requeue', None)
+                profile['sl_requeue_complete'] = {
+                    'checked_at': datetime.now().isoformat(),
+                    'result': 'not_found_in_main_db'
+                }
+
+                conn = get_db()
+                c = conn.cursor()
+                c.execute('UPDATE books SET profile = ? WHERE id = ?',
+                         (json.dumps(profile), book['id']))
+                conn.commit()
+                conn.close()
+
+                logger.info(f"[SL REQUEUE] No upgrade, keeping current ID: {author} - {title}")
+
+            processed += 1
+
+        except Exception as e:
+            logger.warning(f"[SL REQUEUE] Error processing book {book['id']}: {e}")
+            processed += 1
+
+    logger.info(f"[SL REQUEUE] Processed {processed}, upgraded {upgraded}")
+    return processed, upgraded
+
+
+__all__ = ['process_layer_1_api', 'process_sl_requeue_verification']

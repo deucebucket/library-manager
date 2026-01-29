@@ -85,13 +85,15 @@ def process_all_queue(
     process_layer_1_audio: Callable,
     process_layer_3_audio: Callable,
     process_layer_1_api: Callable,
-    process_queue: Callable
+    process_queue: Callable,
+    process_sl_requeue_verification: Optional[Callable] = None
 ) -> Tuple[int, int]:
     """Process ALL items in the queue using AUDIO-FIRST identification.
 
     NEW layered processing (audio is source of truth):
     - Layer 1: Audio transcription + AI parsing (narrator announces the book)
     - Layer 2: AI audio clip analysis (if transcription unclear)
+    - SL Requeue Check: Re-verify books after nightly merge (Phase 5)
     - Layer 3: API enrichment (add series, year, etc. - NOT identification)
     - Layer 4: Folder name fallback (last resort, low confidence)
 
@@ -108,6 +110,7 @@ def process_all_queue(
         process_layer_3_audio: Layer 2/3 audio processing function
         process_layer_1_api: Layer 3 API processing function
         process_queue: Layer 4 AI queue processing function
+        process_sl_requeue_verification: SL requeue verification function (Phase 5)
 
     Returns:
         Tuple of (total_processed, total_fixed)
@@ -187,20 +190,20 @@ def process_all_queue(
         logger.info("=== LAYER 1: Audio Transcription + AI Parsing ===")
         _processing_status["layer"] = 1
         _processing_status["layer_name"] = LAYER_NAMES[1]
-        _processing_status["current"] = "Transcribing audio intro via BookDB..."
+        _processing_status["current"] = "Transcribing audio intro via Skaldleita..."
         _processing_status["last_activity"] = "Started audio identification"
         _processing_status["last_activity_time"] = time.time()
         layer1_processed = 0
         layer1_resolved = 0
         while True:
-            # Issue #74: Check if BookDB circuit breaker is open - wait instead of skipping
+            # Issue #74: Check if Skaldleita circuit breaker is open - wait instead of skipping
             if is_circuit_open('bookdb'):
                 cb = get_circuit_breaker('bookdb')
                 remaining = int(cb.get('circuit_open_until', 0) - time.time())
                 if remaining > 0:
                     wait_time = min(remaining, 60)
-                    logger.info(f"[LAYER 1] BookDB circuit breaker open, waiting {wait_time}s ({remaining}s total remaining)")
-                    _processing_status["current"] = f"Layer 1: Waiting for BookDB ({remaining}s)"
+                    logger.info(f"[LAYER 1] Skaldleita circuit breaker open, waiting {wait_time}s ({remaining}s total remaining)")
+                    _processing_status["current"] = f"Layer 1: Waiting for Skaldleita ({remaining}s)"
                     time.sleep(wait_time)
                     continue
 
@@ -274,13 +277,25 @@ def process_all_queue(
             logger.info(f"Layer 2 disabled - advanced {len(layer2_books)} items to Layer 4 (folder fallback)")
         conn.close()
 
+    # SL REQUEUE CHECK (Phase 5): Re-verify books after nightly merge
+    # Books with sl_requeue set had partial ID from SL - check if now in main DB
+    if process_sl_requeue_verification:
+        logger.info("=== SL REQUEUE CHECK: Re-verifying pending books after nightly merge ===")
+        _processing_status["current"] = "Checking SL requeue verifications..."
+        _processing_status["last_activity"] = "Re-verifying books after nightly merge"
+        _processing_status["last_activity_time"] = time.time()
+
+        requeue_processed, requeue_upgraded = process_sl_requeue_verification(config)
+        if requeue_processed > 0:
+            logger.info(f"SL Requeue Check complete: {requeue_processed} processed, {requeue_upgraded} upgraded")
+
     # LAYER 3: API Enrichment (NOT identification - add series, year, description, etc.)
     # At this point we should know the book - now we enrich it with metadata
     if config.get('enable_api_lookups', True):
         logger.info("=== LAYER 3: API Enrichment (adding metadata to identified books) ===")
         _processing_status["layer"] = 3
         _processing_status["layer_name"] = LAYER_NAMES[3]
-        _processing_status["current"] = "Looking up metadata from BookDB/Audnexus..."
+        _processing_status["current"] = "Looking up metadata from Skaldleita/Audnexus..."
         _processing_status["last_activity"] = "Started API metadata lookup"
         _processing_status["last_activity_time"] = time.time()
         layer3_processed = 0

@@ -12,3 +12,4 @@ langdetect>=1.0.9
 # Enables decentralized sharing of book lookup results
 # Install with: pip install pygundb
 # pygundb>=0.2.0
+Flask-Babel

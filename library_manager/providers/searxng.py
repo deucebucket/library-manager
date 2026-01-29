@@ -1,6 +1,6 @@
 """SearXNG provider for fallback book metadata searches.
 
-When primary APIs (BookDB, Audnexus, etc.) fail to find a book,
+When primary APIs (Skaldleita, Audnexus, etc.) fail to find a book,
 SearXNG can search the web and extract metadata from results.
 
 Search results often contain structured data from:
