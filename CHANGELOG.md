@@ -2,6 +2,114 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.100] - 2026-01-28
+
+### Added
+
+- **Dashboard Activity Log** - Real-time processing results on dashboard
+  - Shows last 15 processed books with full metadata
+  - Separate columns: Time, Author, Title, Narrator, Series, Book #, Status
+  - Auto-refreshes every 5 seconds without page reload
+  - Detects author-narrated audiobooks (shows "📖 Author" in narrator column)
+  - Only shows actual processed items (verified, needs_fix, needs_attention)
+
+- **Skaldleita IDs in BookProfile** - New fields for instant audiobook lookup
+  - `audio_fingerprint` - Chromaprint fingerprint for audio matching
+  - `narrator_id` - Voice cluster ID or known narrator name
+  - `book_id` - ISBN, ASIN, or internal ID
+  - `version_id` - Unique recording version identifier
+  - `voice_cluster_id` - Links unknown voices for future identification
+
+- **Extended Metadata Embedding** - Skaldleita IDs written to audio files
+  - MP3: TXXX frames for NARRATORID, AUDIOFINGERPRINT, BOOKID, VERSIONID
+  - M4B: Freeform atoms in ----:com.apple.iTunes namespace
+  - FLAC/Ogg: Vorbis comments
+  - Enables instant identification when files are shared/moved
+
+### Changed
+
+- **Skaldleita Rebranding** - Internal rename from BookDB for audio features
+  - `SKALDLEITA_BASE_URL` points to skaldleita.com
+  - Fingerprint, narrator, and voice endpoints updated
+  - Settings "Request API key" link updated to skaldleita.com
+
+### Credits
+
+- Thanks to **@Merijeek** for the original Skaldleita concept (Issue #72)
+- Skaldleita = "Seek the Storyteller" in Old Norse
+
+---
+
+## [0.9.0-beta.99] - 2026-01-27
+
+### Added
+
+- **Live Status Bar** - Real-time processing visibility on every page (Issue #73 feedback)
+  - Persistent status bar below navbar shows what's happening at all times
+  - Displays current book being processed with author/title
+  - Shows current processing layer (Audio Transcription, AI Analysis, API Enrichment, Folder Fallback)
+  - Queue count and pending fixes always visible
+  - Progress indicator (X/Y) when processing batches
+  - Different visual states: processing (animated), idle (dimmed), stopped (gray)
+  - Auto-updates every 2-3 seconds (faster during active processing)
+  - No more digging through logs to see what the app is doing!
+
+- **Skaldleita Voice ID** - "Shazam for audiobook narrators" (Issue #78)
+  - Identifies narrators by their voice fingerprint, not just metadata
+  - Every audiobook gets its voice stored in the community narrator library
+  - When transcript doesn't mention narrator, voice matching fills the gap
+  - Uses 256-dimensional voice embeddings with resemblyzer/pyannote
+  - Contributes to community voice library for future identification
+  - Toggle in Settings → AI Setup → Voice ID (Skaldleita)
+  - Works alongside audio transcription in Layer 1
+
+### Improved
+
+- **Processing Status API** - New `/api/live_status` endpoint returns comprehensive status
+  - Worker state, current book, layer name, queue depth, pending fixes
+  - Recent activity summary
+  - Optimized for frequent polling
+
+- **Issue #80: Series Number Padding** - Custom template support for `{series_num.pad(N)}` (derp90)
+  - FileBot-style padding: `{series_num.pad(2)}` turns 1 → 01, 10 → 10
+  - Works in custom naming templates for series with 10+ books
+  - Supports any width: `.pad(3)` for 001, 002... 100
+  - New button in Settings → Custom Template builder
+  - Handles decimal series numbers (1.5 → 01.5)
+
+### Fixed
+
+- **Issue #79: Stuck Queue Items** - Fixed books remaining in queue after fix applied (Merijeek)
+  - `apply_fix()` was setting book status to 'fixed' but not deleting queue entry
+  - Queue items now properly removed when fix is applied
+  - Prevents duplicate processing and stuck "pending" counts
+
+- **Title Shortening Regression** - Fixed AI replacing specific titles with shorter/generic ones
+  - "Double Cross" was incorrectly changed to "Cross" (a different book in the same series)
+  - Added substring protection: if AI returns a shorter title that's contained in the original, keep original
+  - Updated AI prompt to explicitly preserve longer, more specific titles
+  - Added regression test to prevent this from happening again
+  - Example fix: "Triple Cross" stays "Triple Cross" even when API finds "Cross" book
+
+---
+
+## [0.9.0-beta.98] - 2026-01-27
+
+### Improved
+
+- **Issue #73: API Keys Always Visible** - Restructured Settings → AI Setup tab
+  - All API keys now in dedicated "API Keys" card that's always visible
+  - No longer need to select a provider to see/enter its API key
+  - Clear labels: "Recommended", "Fallback / Whisper", "Optional"
+  - Added BookDB API Key field (was missing from UI)
+  - System automatically falls back through configured providers
+
+### Fixed
+
+- **BookDB API Key Not Saving** - Added missing save/load for `bookdb_api_key` in settings handler
+
+---
+
 ## [0.9.0-beta.97] - 2026-01-26
 
 ### Fixed

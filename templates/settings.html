@@ -131,9 +131,11 @@
                                         <button type="button" class="btn btn-sm btn-outline-info naming-tag" onclick="insertTag('{title}')">{title}</button>
                                         <button type="button" class="btn btn-sm btn-outline-warning naming-tag" onclick="insertTag('{series}')">{series}</button>
                                         <button type="button" class="btn btn-sm btn-outline-warning naming-tag" onclick="insertTag('{series_num}')">{series_num}</button>
+                                        <button type="button" class="btn btn-sm btn-outline-warning naming-tag" onclick="insertTag('{series_num.pad(2)}')" title="Zero-pad to 2 digits: 1→01, 10→10">{series_num.pad(2)}</button>
                                         <button type="button" class="btn btn-sm btn-outline-success naming-tag" onclick="insertTag('{narrator}')">{narrator}</button>
                                         <button type="button" class="btn btn-sm btn-outline-secondary naming-tag" onclick="insertTag('{year}')">{year}</button>
                                     </div>
+                                    <small class="text-muted d-block mt-1"><i class="bi bi-info-circle"></i> Use <code>.pad(N)</code> for zero-padding: <code>{series_num.pad(2)}</code> → 01, 02... 10</small>
                                 </div>
 
                                 <div class="alert alert-dark small py-2 mb-0">
@@ -381,6 +383,17 @@
                                 </label>
                             </div>
 
+                            <!-- Skaldleita Voice ID -->
+                            <div class="form-check form-switch mb-2 ms-4">
+                                <input class="form-check-input" type="checkbox" name="enable_voice_id"
+                                       id="enable_voice_id" {% if config.enable_voice_id is not defined or config.enable_voice_id %}checked{% endif %}>
+                                <label class="form-check-label" for="enable_voice_id">
+                                    <i class="bi bi-person-badge text-success"></i> Voice ID (Skaldleita)
+                                    <span class="badge bg-info text-dark">NEW</span>
+                                    <br><small class="text-muted">Identify narrators by voice fingerprint - like Shazam for audiobooks. Builds community narrator library.</small>
+                                </label>
+                            </div>
+
                             <div class="form-check form-switch mb-0">
                                 <input class="form-check-input" type="checkbox" name="enable_content_analysis"
                                        id="enable_content_analysis" {% if config.enable_content_analysis %}checked{% endif %}
@@ -426,78 +439,147 @@
         <!-- ==================== AI SETUP TAB ==================== -->
         <div class="tab-pane fade" id="tab-ai">
             <div class="row">
+                <!-- API Keys Card - Always visible -->
                 <div class="col-lg-6">
                     <div class="card mb-3">
                         <div class="card-header py-2">
-                            <i class="bi bi-robot"></i> AI Provider
+                            <i class="bi bi-key"></i> API Keys
+                            <small class="text-muted float-end">Enter all keys - system uses fallbacks automatically</small>
                         </div>
                         <div class="card-body">
+                            <!-- Gemini API Key -->
+                            <div class="mb-3">
+                                <label class="form-label">
+                                    <i class="bi bi-google text-info"></i> Gemini API Key
+                                    <span class="badge bg-success ms-1">Recommended</span>
+                                </label>
+                                <div class="input-group">
+                                    <input type="password" class="form-control bg-dark text-light" name="gemini_api_key" id="gemini_api_key"
+                                           value="{{ config.gemini_api_key or '' }}" placeholder="AIza..."
+                                           data-has-key="{{ 'true' if config.gemini_api_key else 'false' }}">
+                                    <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('gemini_api_key')" title="Show/hide key">
+                                        <i class="bi bi-eye"></i>
+                                    </button>
+                                    {% if config.gemini_api_key %}
+                                    <span class="input-group-text bg-success text-white"><i class="bi bi-check"></i></span>
+                                    <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('gemini_api_key')" title="Remove key">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                    {% endif %}
+                                </div>
+                                <small class="text-muted">Free at <a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a> - 14,400 calls/day</small>
+                            </div>
+
+                            <!-- OpenRouter API Key -->
+                            <div class="mb-3">
+                                <label class="form-label">
+                                    <i class="bi bi-cloud text-warning"></i> OpenRouter API Key
+                                    <span class="badge bg-secondary ms-1">Fallback / Whisper</span>
+                                </label>
+                                <div class="input-group">
+                                    <input type="password" class="form-control bg-dark text-light" name="openrouter_api_key" id="openrouter_api_key"
+                                           value="{{ config.openrouter_api_key or '' }}" placeholder="sk-or-v1-..."
+                                           data-has-key="{{ 'true' if config.openrouter_api_key else 'false' }}">
+                                    <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('openrouter_api_key')" title="Show/hide key">
+                                        <i class="bi bi-eye"></i>
+                                    </button>
+                                    {% if config.openrouter_api_key %}
+                                    <span class="input-group-text bg-success text-white"><i class="bi bi-check"></i></span>
+                                    <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('openrouter_api_key')" title="Remove key">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                    {% endif %}
+                                </div>
+                                <small class="text-muted">Get at <a href="https://openrouter.ai" target="_blank">openrouter.ai</a> - Free models, Whisper fallback</small>
+                            </div>
+
+                            <!-- BookDB API Key -->
+                            <div class="mb-3">
+                                <label class="form-label">
+                                    <i class="bi bi-book text-primary"></i> BookDB API Key
+                                    <span class="badge bg-secondary ms-1">Optional</span>
+                                </label>
+                                <div class="input-group">
+                                    <input type="password" class="form-control bg-dark text-light" name="bookdb_api_key" id="bookdb_api_key"
+                                           value="{{ config.bookdb_api_key or '' }}" placeholder="bdb_..."
+                                           data-has-key="{{ 'true' if config.bookdb_api_key else 'false' }}">
+                                    <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('bookdb_api_key')" title="Show/hide key">
+                                        <i class="bi bi-eye"></i>
+                                    </button>
+                                    {% if config.bookdb_api_key %}
+                                    <span class="input-group-text bg-success text-white"><i class="bi bi-check"></i></span>
+                                    <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('bookdb_api_key')" title="Remove key">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                    {% endif %}
+                                </div>
+                                <small class="text-muted">Higher rate limits (2000/hr) - <a href="https://skaldleita.com/api/request-key" target="_blank">Request free key</a></small>
+                            </div>
+
+                            <!-- Google Books API Key -->
+                            <div class="mb-0">
+                                <label class="form-label">
+                                    <i class="bi bi-google text-danger"></i> Google Books API Key
+                                    <span class="badge bg-secondary ms-1">Optional</span>
+                                </label>
+                                <div class="input-group">
+                                    <input type="password" class="form-control bg-dark text-light" name="google_books_api_key" id="google_books_api_key"
+                                           value="{{ config.google_books_api_key or '' }}" placeholder="AIza..."
+                                           data-has-key="{{ 'true' if config.google_books_api_key else 'false' }}">
+                                    <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('google_books_api_key')" title="Show/hide key">
+                                        <i class="bi bi-eye"></i>
+                                    </button>
+                                    {% if config.google_books_api_key %}
+                                    <span class="input-group-text bg-success text-white"><i class="bi bi-check"></i></span>
+                                    <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('google_books_api_key')" title="Remove key">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                    {% endif %}
+                                </div>
+                                <small class="text-muted">Higher rate limits on Google Books API</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AI Provider Settings -->
+                <div class="col-lg-6">
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-robot"></i> Primary AI Provider
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-2">Select which AI to try first. Falls back to others automatically.</p>
                             <div class="mb-3">
                                 <select class="form-select bg-dark text-light" name="ai_provider" id="ai_provider" onchange="toggleProviderFields()">
                                     <option value="gemini" {% if config.ai_provider == 'gemini' %}selected{% endif %}>
-                                        Google Gemini (Recommended - 14,400 free calls/day)
+                                        Google Gemini (Recommended)
                                     </option>
                                     <option value="openrouter" {% if config.ai_provider == 'openrouter' %}selected{% endif %}>
-                                        OpenRouter (Free models available)
+                                        OpenRouter
                                     </option>
                                     <option value="ollama" {% if config.ai_provider == 'ollama' %}selected{% endif %}>
-                                        Ollama (Self-hosted - No API costs)
+                                        Ollama (Self-hosted)
                                     </option>
                                 </select>
                             </div>
 
-                            <!-- Gemini Settings -->
+                            <!-- Gemini Model Selection -->
                             <div id="gemini-settings">
-                                <div class="mb-3">
-                                    <label class="form-label">Gemini API Key</label>
-                                    <div class="input-group">
-                                        <input type="password" class="form-control bg-dark text-light" name="gemini_api_key" id="gemini_api_key"
-                                               value="{{ config.gemini_api_key or '' }}" placeholder="AIza..."
-                                               data-has-key="{{ 'true' if config.gemini_api_key else 'false' }}">
-                                        <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('gemini_api_key')" title="Show/hide key">
-                                            <i class="bi bi-eye"></i>
-                                        </button>
-                                        {% if config.gemini_api_key %}
-                                        <span class="input-group-text bg-success text-white" id="gemini-key-check"><i class="bi bi-check"></i></span>
-                                        <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('gemini_api_key')" title="Remove key">
-                                            <i class="bi bi-trash"></i>
-                                        </button>
-                                        {% endif %}
-                                    </div>
-                                    <small class="text-muted">Free at <a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a></small>
-                                </div>
                                 <div class="mb-0">
-                                    <label class="form-label">Model</label>
+                                    <label class="form-label">Gemini Model</label>
                                     <select class="form-select bg-dark text-light" name="gemini_model">
-                                        <option value="gemma-3-27b-it" {% if config.gemini_model == 'gemma-3-27b-it' %}selected{% endif %}>Gemma 3 27B (Best)</option>
-                                        <option value="gemma-3-12b-it" {% if config.gemini_model == 'gemma-3-12b-it' %}selected{% endif %}>Gemma 3 12B (Faster)</option>
+                                        <option value="gemma-3-27b-it" {% if config.gemini_model == 'gemma-3-27b-it' %}selected{% endif %}>Gemma 3 27B (Best - Free)</option>
+                                        <option value="gemma-3-12b-it" {% if config.gemini_model == 'gemma-3-12b-it' %}selected{% endif %}>Gemma 3 12B (Faster - Free)</option>
                                         <option value="gemini-2.0-flash" {% if config.gemini_model == 'gemini-2.0-flash' %}selected{% endif %}>Gemini 2.0 Flash</option>
                                     </select>
                                 </div>
                             </div>
 
-                            <!-- OpenRouter Settings -->
+                            <!-- OpenRouter Model Selection -->
                             <div id="openrouter-settings" style="display: none;">
-                                <div class="mb-3">
-                                    <label class="form-label">OpenRouter API Key</label>
-                                    <div class="input-group">
-                                        <input type="password" class="form-control bg-dark text-light" name="openrouter_api_key" id="openrouter_api_key"
-                                               value="{{ config.openrouter_api_key or '' }}" placeholder="sk-or-v1-..."
-                                               data-has-key="{{ 'true' if config.openrouter_api_key else 'false' }}">
-                                        <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('openrouter_api_key')" title="Show/hide key">
-                                            <i class="bi bi-eye"></i>
-                                        </button>
-                                        {% if config.openrouter_api_key %}
-                                        <span class="input-group-text bg-success text-white" id="openrouter-key-check"><i class="bi bi-check"></i></span>
-                                        <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('openrouter_api_key')" title="Remove key">
-                                            <i class="bi bi-trash"></i>
-                                        </button>
-                                        {% endif %}
-                                    </div>
-                                    <small class="text-muted">Get at <a href="https://openrouter.ai" target="_blank">openrouter.ai</a></small>
-                                </div>
                                 <div class="mb-0">
-                                    <label class="form-label">Model</label>
+                                    <label class="form-label">OpenRouter Model</label>
                                     <select class="form-select bg-dark text-light" name="openrouter_model">
                                         <option value="google/gemma-3n-e4b-it:free" {% if config.openrouter_model == 'google/gemma-3n-e4b-it:free' %}selected{% endif %}>Google Gemma 3N (Free)</option>
                                         <option value="meta-llama/llama-3.3-70b-instruct:free" {% if config.openrouter_model == 'meta-llama/llama-3.3-70b-instruct:free' %}selected{% endif %}>Llama 3.3 70B (Free)</option>
@@ -537,6 +619,10 @@
                         </div>
                     </div>
                 </div>
+            </div>
+
+            <!-- Continue with rest of AI tab -->
+            <div class="row">
 
                 <div class="col-lg-6">
                     <div class="card mb-3">
@@ -812,7 +898,19 @@
                                     <option value="sv" {% if config.preferred_language == 'sv' %}selected{% endif %}>Swedish / Svenska (sv)</option>
                                     <option value="ja" {% if config.preferred_language == 'ja' %}selected{% endif %}>Japanese / 日本語 (ja)</option>
                                     <option value="zh" {% if config.preferred_language == 'zh' %}selected{% endif %}>Chinese / 中文 (zh)</option>
+                                    <option value="pl" {% if config.preferred_language == 'pl' %}selected{% endif %}>Polish / Polski (pl)</option>
+                                    <option value="ru" {% if config.preferred_language == 'ru' %}selected{% endif %}>Russian / Русский (ru)</option>
+                                    <option value="cs" {% if config.preferred_language == 'cs' %}selected{% endif %}>Czech / Čeština (cs)</option>
+                                    <option value="ko" {% if config.preferred_language == 'ko' %}selected{% endif %}>Korean / 한국어 (ko)</option>
                                 </select>
+                            </div>
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="strict_language_matching" id="strict_language_matching"
+                                       {% if config.strict_language_matching is not defined or config.strict_language_matching %}checked{% endif %}>
+                                <label class="form-check-label" for="strict_language_matching">
+                                    <strong>Strict Language Matching</strong>
+                                    <br><small class="text-muted">Only match books in your preferred language (prevents cross-language mismatches)</small>
+                                </label>
                             </div>
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" name="preserve_original_titles" id="preserve_original_titles"
@@ -1308,6 +1406,11 @@ function clearNamingTemplate() {
 
 function updateNamingPreview() {
     let preview = document.getElementById('custom_naming_template').value || '{author}/{title}';
+    // Issue #80: Handle .pad(N) modifier for series_num
+    preview = preview.replace(/\{series_num\.pad\((\d+)\)\}/g, (match, width) => {
+        const num = parseInt(sampleData.series_num || '0');
+        return String(num).padStart(parseInt(width), '0');
+    });
     Object.keys(sampleData).forEach(key => { preview = preview.replace(new RegExp(`\\{${key}\\}`, 'g'), sampleData[key] || ''); });
     preview = preview.replace(/\(\s*\)/g, '').replace(/\/+/g, '/').replace(/\s{2,}/g, ' ').trim();
     document.getElementById('preview-output').textContent = preview || '(empty)';

@@ -1073,3 +1073,47 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# Issue: Title shortening regression (Double Cross -> Cross)
+# This was fixed by adding title substring protection in layer_ai_queue.py
+def test_title_shortening_protection():
+    """Test that specific titles aren't shortened to generic ones.
+    
+    Example: "Double Cross" should NOT become "Cross" even if
+    the API returns a book called "Cross" from the same series.
+    """
+    test_cases = [
+        ("Double Cross", "Cross", "Double Cross"),  # Keep original
+        ("Triple Cross", "Cross", "Triple Cross"),  # Keep original
+        ("The Final Empire", "Empire", "The Final Empire"),  # Keep original
+        ("Cross", "Cross", "Cross"),  # Same - keep as-is
+        ("Cross", "Double Cross", "Double Cross"),  # New is longer - use new
+    ]
+    
+    print("\n=== Title Shortening Protection Tests ===")
+    for original, ai_returned, expected in test_cases:
+        # Simulate the logic from layer_ai_queue.py
+        new_title = ai_returned
+        current_title = original
+        
+        if new_title and current_title:
+            new_title_lower = new_title.lower().strip()
+            current_title_lower = current_title.lower().strip()
+            if (len(new_title_lower) < len(current_title_lower) and
+                new_title_lower in current_title_lower and
+                len(new_title_lower) >= 3):
+                new_title = current_title
+        
+        status = "PASS" if new_title == expected else "FAIL"
+        print(f"  [{status}] '{original}' + AI:'{ai_returned}' -> '{new_title}' (expected '{expected}')")
+        
+        if new_title != expected:
+            return False
+    
+    return True
+
+
+if __name__ == "__main__":
+    # Run the new test
+    test_title_shortening_protection()

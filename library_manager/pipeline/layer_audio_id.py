@@ -1,0 +1,529 @@
+"""Layer 1: Audio Transcription + AI Parsing + Voice ID
+
+Philosophy: Audio is the source of truth. Narrators announce the book.
+1. Transcribe first 90 seconds (the intro)
+2. AI extracts: author, title, narrator, series
+3. Voice fingerprint identifies narrator even when not mentioned
+4. High confidence → identified
+5. Low confidence → advance to Layer 2
+
+This replaces the old "trust folder names" approach.
+Part of the Skaldleita voice ID system - "Shazam for audiobook narrators"
+"""
+
+import json
+import logging
+import os
+import time
+from pathlib import Path
+from typing import Callable, Dict, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+# Voice ID integration - lazy imported to avoid startup penalty
+_voice_id_available = None
+
+
+def _check_voice_id() -> bool:
+    """Check if voice ID is available (pyannote installed)."""
+    global _voice_id_available
+    if _voice_id_available is None:
+        try:
+            from library_manager.providers.fingerprint import extract_voice_embedding
+            _voice_id_available = True
+            logger.info("[VOICE] Voice ID module available")
+        except ImportError:
+            _voice_id_available = False
+            logger.debug("[VOICE] Voice ID not available (pyannote not installed)")
+    return _voice_id_available
+
+
+def _store_voice_and_identify_narrator(
+    audio_path: str,
+    result: Dict,
+    config: Dict
+) -> Optional[str]:
+    """
+    Store voice signature and try to identify narrator by voice.
+
+    This is the Skaldleita integration - every audiobook gets its voice
+    fingerprinted. If the narrator isn't in the transcript, we might
+    still identify them by matching their voice to known narrators.
+
+    Returns:
+        Narrator name if identified by voice, None otherwise
+    """
+    if not _check_voice_id():
+        return None
+
+    try:
+        from library_manager.providers.fingerprint import (
+            store_voice_after_identification,
+            identify_narrator_by_voice
+        )
+
+        api_key = config.get('bookdb_api_key', '')
+
+        # First, try to identify narrator by voice alone
+        identified_narrator = None
+        if not result.get('narrator'):
+            identified_narrator = identify_narrator_by_voice(
+                str(audio_path),
+                threshold=0.6,
+                api_key=api_key
+            )
+            if identified_narrator:
+                logger.info(f"[VOICE] Identified narrator by voice: {identified_narrator}")
+
+        # Always store the voice signature for future matching
+        # Include narrator from either transcript or voice match
+        store_result = result.copy()
+        if identified_narrator and not store_result.get('narrator'):
+            store_result['narrator'] = identified_narrator
+
+        stored = store_voice_after_identification(
+            str(audio_path),
+            store_result,
+            api_key=api_key
+        )
+
+        if stored:
+            logger.debug(f"[VOICE] Stored voice signature for: {result.get('title', 'Unknown')}")
+
+        return identified_narrator
+
+    except Exception as e:
+        logger.warning(f"[VOICE] Voice ID error (non-fatal): {e}")
+        return None
+
+
+def _validate_ai_result_against_path(result: Dict, folder_hint: str, book_path: str) -> Dict:
+    """
+    Sanity check: Compare AI result against path/folder information.
+
+    If the AI returned something completely different from what the path suggests,
+    reduce confidence. This catches cases like:
+    - Path: "ANNIE JACOBSEN/Operation Paperclip"
+    - AI: Author="And Charles R", Title="Allen, Jr"  (completely wrong)
+
+    Returns the result with potentially modified confidence.
+    """
+    if not result or not folder_hint:
+        return result
+
+    ai_author = (result.get('author') or '').lower()
+    ai_title = (result.get('title') or '').lower()
+
+    # Extract path components for comparison
+    path_parts = book_path.lower() if book_path else folder_hint.lower()
+    hint_parts = folder_hint.lower()
+
+    # Clean up - remove common noise
+    def clean_text(text):
+        import re
+        # Remove brackets, hashes, special chars
+        text = re.sub(r'\[[^\]]*\]', ' ', text)
+        text = re.sub(r'[^a-z0-9\s]', ' ', text)
+        return set(text.split())
+
+    path_words = clean_text(path_parts)
+    hint_words = clean_text(hint_parts)
+    ai_author_words = clean_text(ai_author)
+    ai_title_words = clean_text(ai_title)
+
+    # Check if ANY significant word from AI matches path/hint
+    significant_ai_words = {w for w in (ai_author_words | ai_title_words) if len(w) > 3}
+    path_hint_words = {w for w in (path_words | hint_words) if len(w) > 3}
+
+    overlap = significant_ai_words & path_hint_words
+
+    # If no overlap at all and we have significant words from both, this is suspicious
+    if len(significant_ai_words) >= 2 and len(path_hint_words) >= 2 and not overlap:
+        logger.warning(f"[SANITY CHECK] AI result has NO overlap with path info!")
+        logger.warning(f"  AI: {result.get('author')} - {result.get('title')}")
+        logger.warning(f"  Path hint: {folder_hint}")
+
+        # Severely reduce confidence - this is likely a misparse
+        result['confidence'] = 'none'
+        result['sanity_failed'] = True
+        result['sanity_reason'] = 'AI result completely mismatched path info'
+        return result
+
+    # If only partial overlap (less than 50% of AI words match), reduce confidence
+    if len(significant_ai_words) > 0:
+        match_ratio = len(overlap) / len(significant_ai_words)
+        if match_ratio < 0.3:  # Less than 30% match
+            logger.info(f"[SANITY CHECK] Low overlap ({match_ratio:.0%}) - reducing confidence")
+            if result.get('confidence') == 'high':
+                result['confidence'] = 'medium'
+            elif result.get('confidence') == 'medium':
+                result['confidence'] = 'low'
+
+    return result
+
+
+def process_layer_1_audio(
+    config: Dict,
+    get_db: Callable,
+    identify_ebook_from_filename: Callable,
+    identify_audio_with_bookdb: Callable,
+    transcribe_audio_intro: Callable,
+    parse_transcript_with_ai: Callable,
+    is_circuit_open: Callable,
+    get_circuit_breaker: Callable,
+    load_config: Callable,
+    build_new_path: Callable,
+    update_processing_status: Optional[Callable] = None,
+    set_current_book: Optional[Callable] = None,
+    limit: Optional[int] = None
+) -> Tuple[int, int]:
+    """
+    Layer 1: Audio Transcription + AI Parsing
+
+    Processes items at verification_layer 0/1 using audio transcription.
+    Items that get a confident match are marked complete.
+    Items that fail are advanced to Layer 2.
+
+    Args:
+        config: App configuration dict
+        get_db: Function to get database connection
+        identify_ebook_from_filename: Function to identify ebooks from filename
+        identify_audio_with_bookdb: Function to identify audio via BookDB API
+        transcribe_audio_intro: Function to transcribe audio locally
+        parse_transcript_with_ai: Function to parse transcript with AI
+        is_circuit_open: Function to check if circuit breaker is open
+        get_circuit_breaker: Function to get circuit breaker state dict
+        load_config: Function to load config (for path building)
+        build_new_path: Function to build new paths
+        update_processing_status: Optional function to update processing status
+        limit: Maximum batch size (overrides config)
+
+    Returns:
+        Tuple of (processed_count, resolved_count)
+    """
+    batch_size = limit or config.get('batch_size', 3)
+
+    # Get items from queue
+    conn = get_db()
+    c = conn.cursor()
+
+    # Process items that haven't been through audio identification yet
+    # ALSO include 'needs_attention' items - they failed old system, might succeed with audio
+    c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
+                        b.path, b.current_author, b.current_title, b.verification_layer
+                 FROM queue q
+                 JOIN books b ON q.book_id = b.id
+                 WHERE b.verification_layer IN (0, 1)
+                   AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files')
+                   AND (b.user_locked IS NULL OR b.user_locked = 0)
+                 ORDER BY q.priority, q.added_at
+                 LIMIT ?''', (batch_size,))
+    batch = [dict(row) for row in c.fetchall()]
+    conn.close()
+
+    if not batch:
+        return 0, 0
+
+    logger.info(f"[LAYER 1/AUDIO] Processing {len(batch)} items via audio transcription")
+
+    processed = 0
+    resolved = 0
+
+    for row in batch:
+        book_path = row['path']
+        folder_hint = f"{row['current_author']} - {row['current_title']}"
+
+        # Update status bar with current book
+        if set_current_book:
+            set_current_book(
+                row['current_author'] or 'Unknown',
+                row['current_title'] or 'Unknown',
+                "Identifying via audio intro..."
+            )
+
+        # Find first audio file
+        audio_file = None
+        for ext in ['.m4b', '.mp3', '.m4a', '.flac', '.ogg']:
+            files = list(Path(book_path).glob(f'*{ext}'))
+            if files:
+                audio_file = files[0]
+                break
+
+        if not audio_file:
+            # No audio file - this is likely an ebook. Try to identify from filename + BookDB
+            filename = os.path.basename(book_path)
+            logger.debug(f"[EBOOK] No audio, trying filename + BookDB for: {filename}")
+            ebook_result = identify_ebook_from_filename(filename, book_path, config)
+
+            if ebook_result and ebook_result.get('author') and ebook_result.get('title'):
+                # Got identification from filename + BookDB!
+                author = ebook_result.get('author')
+                title = ebook_result.get('title')
+                confidence = ebook_result.get('confidence', 'medium')
+                source = ebook_result.get('source', 'bookdb')
+
+                logger.info(f"[EBOOK] Identified via {source}: {author} - {title} ({confidence})")
+
+                # Check if different from current
+                current_author = row['current_author'] or ''
+                current_title = row['current_title'] or ''
+                if author.lower() != current_author.lower() or title.lower() != current_title.lower():
+                    conn = get_db()
+                    c = conn.cursor()
+
+                    # Update book with ebook-identified info
+                    profile = {
+                        'author': {'value': author, 'source': source, 'confidence': 80 if confidence == 'high' else 50},
+                        'title': {'value': title, 'source': source, 'confidence': 80 if confidence == 'high' else 50},
+                    }
+                    if ebook_result.get('series'):
+                        profile['series'] = {'value': ebook_result['series'], 'source': source, 'confidence': 70}
+                    if ebook_result.get('series_num'):
+                        profile['series_num'] = {'value': ebook_result['series_num'], 'source': source, 'confidence': 70}
+
+                    c.execute('''UPDATE books SET status = 'pending',
+                                profile = ?, confidence = ?, verification_layer = 2
+                                WHERE id = ?''',
+                              (json.dumps(profile), 80 if confidence == 'high' else 50, row['book_id']))
+
+                    # Compute paths for history entry (Issue #64: prevent stale path errors)
+                    old_path_str = book_path
+                    current_config = load_config()
+                    library_paths = current_config.get('library_paths', [])
+                    new_path_str = None
+                    if library_paths:
+                        computed_path = build_new_path(
+                            Path(library_paths[0]), author, title,
+                            series=ebook_result.get('series'),
+                            series_num=ebook_result.get('series_num'),
+                            config=current_config
+                        )
+                        if computed_path:
+                            new_path_str = str(computed_path)
+
+                    # Add to history as pending fix (with paths to prevent stale references)
+                    c.execute('''INSERT INTO history
+                                (book_id, old_author, old_title, new_author, new_title, new_series, new_series_num, old_path, new_path, status)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
+                             (row['book_id'], row['current_author'], row['current_title'],
+                              author, title, ebook_result.get('series'), ebook_result.get('series_num'),
+                              old_path_str, new_path_str))
+
+                    # Remove from queue
+                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                    conn.commit()
+                    conn.close()
+                    resolved += 1
+                else:
+                    # Only mark as verified if we have confidence in the identification
+                    book_confidence = row.get('confidence', 0) or 0
+                    conn = get_db()
+                    c = conn.cursor()
+                    if book_confidence >= 40:
+                        logger.info(f"[EBOOK] Already correct (conf={book_confidence}): {current_author}/{current_title}")
+                        c.execute('UPDATE books SET status = ?, verification_layer = 2 WHERE id = ?',
+                                  ('verified', row['book_id']))
+                        resolved += 1
+                    else:
+                        logger.info(f"[EBOOK] Needs attention (low conf={book_confidence}): {current_author}/{current_title}")
+                        c.execute('UPDATE books SET status = ?, verification_layer = 2, error_message = ? WHERE id = ?',
+                                  ('needs_attention', f'Low confidence ({book_confidence}) - ebook needs manual verification', row['book_id']))
+                    conn.commit()
+                    conn.close()
+
+                processed += 1
+                continue
+
+            # Ebook identification failed - advance to Layer 2 for API lookups
+            logger.debug(f"[EBOOK] Filename parsing failed, advancing to Layer 2: {book_path}")
+            conn = get_db()
+            c = conn.cursor()
+            c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (row['book_id'],))
+            conn.commit()
+            conn.close()
+            processed += 1
+            continue
+
+        # === TRY BOOKDB API FIRST (GPU Whisper + 50M book database) ===
+        # This avoids Gemini rate limits and is faster
+        result = None
+        transcript = None
+
+        if config.get('use_bookdb_for_audio', True):
+            # Issue #74: Check if BookDB circuit breaker is open - wait instead of skipping
+            if is_circuit_open('bookdb'):
+                cb = get_circuit_breaker('bookdb')
+                remaining = int(cb.get('circuit_open_until', 0) - time.time())
+                if remaining > 0:
+                    wait_time = min(remaining, 60)  # Wait up to 60s at a time
+                    logger.info(f"[LAYER 1/AUDIO] BookDB circuit breaker open, waiting {wait_time}s ({remaining}s total remaining)")
+                    if update_processing_status:
+                        update_processing_status(f"Layer 1: Waiting for BookDB ({remaining}s)")
+                    time.sleep(wait_time)
+                    # After waiting, continue to next item - circuit breaker may have closed
+                    processed += 1
+                    continue
+
+            bookdb_result = identify_audio_with_bookdb(audio_file)
+            if bookdb_result and bookdb_result.get('author') and bookdb_result.get('title'):
+                # BookDB got a full identification - validate against path first
+                logger.info(f"[LAYER 1/AUDIO] BookDB identified: {bookdb_result['author']} - {bookdb_result['title']}")
+                # Sanity check: validate against path info to catch misparses
+                bookdb_result = _validate_ai_result_against_path(bookdb_result, folder_hint, book_path)
+                if bookdb_result.get('sanity_failed'):
+                    logger.warning(f"[LAYER 1/AUDIO] BookDB result failed sanity check - will try AI fallback")
+                    transcript = bookdb_result.get('transcript')  # Keep transcript for AI
+                    result = None  # Clear to trigger AI fallback
+                else:
+                    result = bookdb_result  # Passed sanity check
+            else:
+                # BookDB didn't get a full match - might have a transcript though
+                transcript = bookdb_result.get('transcript') if bookdb_result else None
+                result = None  # Clear partial result to trigger AI fallback
+        else:
+            logger.info(f"[LAYER 1/AUDIO] BookDB audio disabled, using local transcription + AI")
+
+        # If no result yet, try local transcription + AI
+        if not result:
+            if not transcript:
+                # No transcript from BookDB (or BookDB disabled), do local transcription
+                transcript = transcribe_audio_intro(audio_file)
+
+            if not transcript:
+                logger.warning(f"[LAYER 1/AUDIO] Transcription failed, advancing to Layer 2: {book_path}")
+                conn = get_db()
+                c = conn.cursor()
+                # Reset status to pending if it was needs_attention - we still have more layers to try
+                c.execute('''UPDATE books SET verification_layer = 2,
+                            status = CASE WHEN status = 'needs_attention' THEN 'pending' ELSE status END
+                            WHERE id = ?''', (row['book_id'],))
+                conn.commit()
+                conn.close()
+                processed += 1
+                continue
+
+            # Parse with AI (fallback path - when BookDB disabled or didn't identify)
+            result = parse_transcript_with_ai(transcript, folder_hint, config)
+
+            # Sanity check: validate AI result against path info
+            # This catches cases where AI completely misparses (e.g., narrator name as author)
+            if result:
+                result = _validate_ai_result_against_path(result, folder_hint, book_path)
+
+        if result and result.get('author') and result.get('title') and result.get('confidence') != 'none':
+            # Got identification from audio!
+            author = result.get('author')
+            title = result.get('title')
+            narrator = result.get('narrator')
+            series = result.get('series')
+            series_num = result.get('series_num')
+            confidence = result.get('confidence', 'medium')
+
+            logger.info(f"[LAYER 1/AUDIO] Identified from audio: {author} - {title} ({confidence})")
+
+            # === SKALDLEITA VOICE ID ===
+            # Store voice signature and try to identify narrator by voice
+            # This builds the narrator voice library and fills in missing narrator info
+            if audio_file and config.get('enable_voice_id', True):
+                voice_narrator = _store_voice_and_identify_narrator(
+                    str(audio_file), result, config
+                )
+                if voice_narrator and not narrator:
+                    narrator = voice_narrator
+                    result['narrator'] = narrator
+                    logger.info(f"[LAYER 1/AUDIO] Narrator identified by voice: {narrator}")
+
+            # Check if different from current (handle None values)
+            current_author = row['current_author'] or ''
+            current_title = row['current_title'] or ''
+            if author.lower() != current_author.lower() or title.lower() != current_title.lower():
+                # Needs fix - will be handled by existing fix mechanism
+                conn = get_db()
+                c = conn.cursor()
+
+                # Update book with audio-identified info
+                profile = {
+                    'author': {'value': author, 'source': 'audio_transcription', 'confidence': 85 if confidence == 'high' else 70},
+                    'title': {'value': title, 'source': 'audio_transcription', 'confidence': 85 if confidence == 'high' else 70},
+                }
+                if narrator:
+                    profile['narrator'] = {'value': narrator, 'source': 'audio_transcription', 'confidence': 80}
+                if series:
+                    profile['series'] = {'value': series, 'source': 'audio_transcription', 'confidence': 75}
+                if series_num:
+                    profile['series_num'] = {'value': str(series_num), 'source': 'audio_transcription', 'confidence': 75}
+
+                c.execute('''UPDATE books SET
+                            current_author = ?, current_title = ?,
+                            status = 'pending_fix', verification_layer = 3,
+                            profile = ?, confidence = ?
+                            WHERE id = ?''',
+                         (author, title, json.dumps(profile),
+                          85 if confidence == 'high' else 70, row['book_id']))
+
+                # Compute paths for history entry (Issue #64: prevent stale path errors)
+                old_path_str = book_path
+                audio_config = load_config()
+                library_paths = audio_config.get('library_paths', [])
+                new_path_str = None
+                if library_paths:
+                    computed_path = build_new_path(
+                        Path(library_paths[0]), author, title,
+                        series=series, series_num=series_num, narrator=narrator,
+                        config=audio_config
+                    )
+                    if computed_path:
+                        new_path_str = str(computed_path)
+
+                # Add to history (with paths to prevent stale references)
+                c.execute('''INSERT INTO history
+                            (book_id, old_author, old_title, new_author, new_title, new_narrator, new_series, new_series_num, old_path, new_path, status)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
+                         (row['book_id'], row['current_author'], row['current_title'],
+                          author, title, narrator, series, series_num,
+                          old_path_str, new_path_str))
+
+                # Remove from queue
+                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                conn.commit()
+                conn.close()
+
+                resolved += 1
+            else:
+                # Already correct - but update confidence since we did identify via audio
+                audio_confidence = 85 if confidence == 'high' else 70
+
+                # Store voice signature for correctly-named books too
+                # This builds the narrator library from verified audiobooks
+                if audio_file and config.get('enable_voice_id', True):
+                    _store_voice_and_identify_narrator(str(audio_file), result, config)
+
+                conn = get_db()
+                c = conn.cursor()
+                c.execute('UPDATE books SET status = ?, verification_layer = 3, confidence = ? WHERE id = ?',
+                         ('verified', audio_confidence, row['book_id']))
+                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                conn.commit()
+                conn.close()
+
+                logger.info(f"[LAYER 1/AUDIO] Already correct (conf={audio_confidence}): {author}/{title}")
+                resolved += 1
+        else:
+            # Couldn't identify from transcript, advance to Layer 2
+            logger.info(f"[LAYER 1/AUDIO] Unclear transcript, advancing to Layer 2: {folder_hint}")
+            conn = get_db()
+            c = conn.cursor()
+            # Reset status to pending if it was needs_attention - we still have more layers to try
+            c.execute('''UPDATE books SET verification_layer = 2,
+                        status = CASE WHEN status = 'needs_attention' THEN 'pending' ELSE status END
+                        WHERE id = ?''', (row['book_id'],))
+            conn.commit()
+            conn.close()
+
+        processed += 1
+
+    logger.info(f"[LAYER 1/AUDIO] Processed {processed}, resolved {resolved} via audio transcription")
+    return processed, resolved
+
+
+__all__ = ['process_layer_1_audio']

@@ -88,13 +88,65 @@
     </div>
 </div>
 
+<!-- Processing Activity Log - Shows ALL recent processing, not just fixes -->
+<style>
+    #activity-log-table { table-layout: fixed; width: 100%; }
+    #activity-log-table td, #activity-log-table th {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        padding: 0.35rem 0.5rem;
+    }
+    /* Marquee scroll on hover for truncated text */
+    #activity-log-table td.scroll-text:hover {
+        overflow: visible;
+    }
+    #activity-log-table td.scroll-text:hover span {
+        display: inline-block;
+        animation: marquee 4s linear infinite;
+    }
+    @keyframes marquee {
+        0% { transform: translateX(0); }
+        100% { transform: translateX(-50%); }
+    }
+</style>
 <div class="row">
     <div class="col-12">
         <div class="card">
-            <div class="card-header">
-                <i class="bi bi-clock-history"></i> Recent Activity (Last 15)
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-activity"></i> Processing Activity (Last 15)</span>
+                <small class="text-muted" id="activity-refresh-time">Auto-refreshes</small>
             </div>
             <div class="card-body p-0" style="max-height: 400px; overflow-y: auto;">
+                <table class="table table-sm mb-0" id="activity-log-table">
+                    <thead style="position: sticky; top: 0; background: rgba(22, 33, 62, 0.95);">
+                        <tr>
+                            <th style="width: 42px;">Time</th>
+                            <th style="width: 16%;">Author</th>
+                            <th style="width: 20%;">Title</th>
+                            <th style="width: 14%;">Narrator</th>
+                            <th style="width: 14%;">Series</th>
+                            <th style="width: 28px;">#</th>
+                            <th style="width: 55px;">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="activity-log-body">
+                        <tr><td colspan="4" class="text-muted text-center py-3">Loading activity...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Pending Fixes - Now in separate section below -->
+<div class="row mt-3">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-clock-history"></i> Pending Fixes (Last 15)
+            </div>
+            <div class="card-body p-0" style="max-height: 300px; overflow-y: auto;">
                 {% if recent_history %}
                 <table class="table table-sm mb-0" id="recent-activity-table">
                     <thead style="position: sticky; top: 0; background: rgba(22, 33, 62, 0.95);">
@@ -331,6 +383,7 @@ function refreshDashboard() {
         })
         .catch(e => console.error('Stats refresh error:', e));
 
+    // Refresh pending fixes table
     fetch('/api/recent_history')
         .then(r => r.json())
         .then(data => {
@@ -369,6 +422,42 @@ function refreshDashboard() {
             }
         })
         .catch(e => console.error('History refresh error:', e));
+
+    // Refresh processing activity log (ALL recent processing, not just fixes)
+    fetch('/api/recent_activity')
+        .then(r => r.json())
+        .then(data => {
+            const tbody = document.getElementById('activity-log-body');
+            const timeEl = document.getElementById('activity-refresh-time');
+            if (tbody && data.items) {
+                if (data.items.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7" class="text-muted text-center py-3">No processing activity yet. Start a scan to begin.</td></tr>';
+                } else {
+                    tbody.innerHTML = data.items.map(item => {
+                        const time = item.updated_at ? item.updated_at.substring(11, 16) : '';
+                        const narratorDisplay = item.narrator_display || item.narrator || '-';
+                        const narratorClass = item.is_author_narrated ? 'text-success fw-bold' : (item.narrator ? 'text-light' : 'text-muted');
+                        const seriesStr = item.series || '-';
+                        const bookNum = item.book_num || '-';
+                        return `
+                            <tr>
+                                <td><small class="text-muted">${time}</small></td>
+                                <td title="${escapeHtml(item.author)}" class="text-success">${escapeHtml(item.author)}</td>
+                                <td title="${escapeHtml(item.title)}" class="text-warning">${escapeHtml(item.title)}</td>
+                                <td title="${escapeHtml(item.narrator || '-')}" class="${narratorClass}">${narratorDisplay}</td>
+                                <td title="${escapeHtml(seriesStr)}" class="${item.series ? 'text-info' : 'text-muted'}">${escapeHtml(seriesStr)}</td>
+                                <td class="${item.book_num ? 'text-warning' : 'text-muted'}">${bookNum}</td>
+                                <td><small>${item.status_display}</small></td>
+                            </tr>
+                        `;
+                    }).join('');
+                }
+                if (timeEl) {
+                    timeEl.textContent = new Date().toLocaleTimeString();
+                }
+            }
+        })
+        .catch(e => console.error('Activity refresh error:', e));
 }
 
 function escapeHtml(text) {

@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.97"
+APP_VERSION = "0.9.0-beta.99"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -40,6 +40,67 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
 from audio_tagging import embed_tags_for_path, build_metadata_for_embedding
+
+# Import from refactored modules
+from library_manager.config import (
+    BASE_DIR, DATA_DIR, DB_PATH, CONFIG_PATH, SECRETS_PATH,
+    DEFAULT_CONFIG, DEFAULT_SECRETS,
+    migrate_legacy_config, init_config, needs_setup,
+    load_config, save_config, save_secrets, load_secrets
+)
+from library_manager.database import init_db, get_db, set_db_path
+from library_manager.models.book_profile import (
+    SOURCE_WEIGHTS, FIELD_WEIGHTS, FieldValue, BookProfile,
+    detect_multibook_vs_chapters, save_book_profile, load_book_profile,
+    build_profile_from_sources, set_db_getter, set_narrator_saver
+)
+from library_manager.utils import (
+    # naming
+    calculate_title_similarity, extract_series_from_title, clean_search_title,
+    standardize_initials, clean_author_name, extract_author_title,
+    # validation
+    is_unsearchable_query, is_garbage_match, is_placeholder_author, is_drastic_author_change,
+    # audio
+    AUDIO_EXTENSIONS, EBOOK_EXTENSIONS,
+    get_first_audio_file, extract_audio_sample, extract_audio_sample_from_middle,
+    find_audio_files, find_ebook_files,
+    # path_safety
+    sanitize_path_component, build_new_path,
+)
+from library_manager.providers import (
+    rate_limit_wait, is_circuit_open, record_api_failure, record_api_success,
+    API_RATE_LIMITS, API_CIRCUIT_BREAKER,
+    search_audnexus, search_openlibrary, search_google_books, search_hardcover,
+    BOOKDB_API_URL, BOOKDB_PUBLIC_KEY,
+    search_bookdb as _search_bookdb_raw, identify_audio_with_bookdb,
+    call_ollama as _call_ollama_raw, call_ollama_simple as _call_ollama_simple_raw,
+    get_ollama_models, test_ollama_connection,
+    call_openrouter, call_openrouter_simple, identify_book_from_transcript,
+    test_openrouter_connection,
+    # Gemini provider
+    call_gemini as _call_gemini_raw,
+    _call_gemini_simple as _call_gemini_simple_raw,
+    analyze_audio_with_gemini as _analyze_audio_with_gemini_raw,
+    detect_audio_language as _detect_audio_language_raw,
+    try_gemini_content_identification as _try_gemini_content_identification_raw,
+)
+from library_manager.pipeline import (
+    process_layer_3_audio as _process_layer_3_audio_raw,
+    process_layer_1_api as _process_layer_1_api_raw,
+    process_layer_1_audio as _process_layer_1_audio_raw,
+    process_layer_2_ai as _process_queue_raw,
+)
+from library_manager.worker import (
+    process_all_queue as _process_all_queue_raw,
+    start_worker as _start_worker_raw,
+    stop_worker as _stop_worker_raw,
+    is_worker_running as _is_worker_running_raw,
+    get_processing_status,
+    update_processing_status,
+    set_current_book,
+    clear_current_book,
+    LAYER_NAMES,
+)
 
 # Try to import P2P cache (optional - gracefully degrades if not available)
 try:
@@ -3223,6 +3284,24 @@ def gather_all_api_candidates(title, author=None, config=None):
             seen.add(key)
             unique_candidates.append(c)
 
+    # Issue #81: Strict language filtering - remove candidates that don't match preferred language
+    if config and config.get('strict_language_matching', True) and preferred_lang != 'en':
+        filtered_candidates = []
+        for c in unique_candidates:
+            title_lang = detect_title_language(c.get('title', ''))
+            # Accept if language matches preference OR if detection is uncertain (short titles, mixed content)
+            if title_lang == preferred_lang or title_lang == 'en':
+                # Accept English as fallback since many databases only have English metadata
+                filtered_candidates.append(c)
+            else:
+                logger.info(f"[LAYER 1] Filtered out {title_lang} result for {preferred_lang} user: {c.get('title')}")
+
+        if filtered_candidates:
+            unique_candidates = filtered_candidates
+        else:
+            # Don't filter everything out - keep original if no matches
+            logger.info(f"[LAYER 1] No {preferred_lang} results found, keeping all candidates")
+
     return unique_candidates
 
 
@@ -3470,6 +3549,15 @@ API RESULTS WARNING - CRITICAL:
 - If API title is COMPLETELY DIFFERENT from input title, IGNORE THE API RESULT
 - Same title can exist by different authors - if API author differs, keep INPUT author
 - Only use API if input has NO author OR the titles closely match
+
+TITLE PRESERVATION - VERY IMPORTANT:
+- If input title is MORE SPECIFIC than API title, KEEP THE INPUT TITLE
+- "Double Cross" is more specific than "Cross" - keep "Double Cross"!
+- "Triple Cross" is more specific than "Cross" - keep "Triple Cross"!
+- Input "Double Cross" + API "Cross" = Output MUST be "Double Cross" (not "Cross")
+- NEVER shorten a specific title to a shorter/more generic one
+- The API found the SERIES (Alex Cross) but matched the WRONG BOOK in that series
+- Always prefer the longer, more specific title from the input
 
 LANGUAGE/CHARACTER RULES:
 - ALWAYS use Latin/English characters for author and title names
@@ -3924,6 +4012,9 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
 
     Note: openrouter and ollama require transcription first (slower).
 
+    FINGERPRINT FAST PATH: Before trying any providers, we attempt fingerprint
+    lookup which is instant if the book is already in the database.
+
     Args:
         audio_file: Path to audio file to analyze
         config: App config
@@ -3935,6 +4026,33 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
     chain = config.get('audio_provider_chain', ['bookdb', 'gemini'])
     secrets = load_secrets()
     merged_config = {**config, **secrets}
+
+    # ========== FINGERPRINT FAST PATH ==========
+    # Try fingerprint lookup FIRST - instant if book is already known
+    fingerprint_data = None
+    if config.get('enable_fingerprinting', True):  # Enabled by default
+        try:
+            from library_manager.providers.fingerprint import try_fingerprint_identification, contribute_after_identification
+            api_key = merged_config.get('bookdb_api_key')
+
+            logger.info("[AUDIO CHAIN] Trying fingerprint lookup (fast path)...")
+            fingerprint_data = try_fingerprint_identification(audio_file, api_key=api_key, duration=120)
+
+            if fingerprint_data and not fingerprint_data.get('_no_match'):
+                # Fingerprint matched! Use the result directly
+                logger.info(f"[AUDIO CHAIN] FINGERPRINT MATCH: {fingerprint_data.get('author')} - {fingerprint_data.get('title')}")
+                fingerprint_data['_source'] = 'fingerprint'
+                return fingerprint_data
+
+            if fingerprint_data and fingerprint_data.get('_no_match'):
+                logger.debug("[AUDIO CHAIN] No fingerprint match - continuing to providers")
+                # Keep fingerprint_data for later contribution
+
+        except ImportError:
+            logger.debug("[AUDIO CHAIN] Fingerprint module not available")
+        except Exception as e:
+            logger.warning(f"[AUDIO CHAIN] Fingerprint lookup error: {e}")
+    # ========== END FINGERPRINT FAST PATH ==========
 
     # Check if we have any viable fallback providers
     has_fallback = False
@@ -3965,6 +4083,10 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
                     result = identify_audio_with_bookdb(audio_file)
                     if result and result.get('title'):
                         logger.info(f"[AUDIO CHAIN] Success with bookdb: {result.get('author')} - {result.get('title')}")
+                        # Contribute fingerprint - BookDB Whisper ID is different from fingerprint
+                        _contribute_fingerprint_async(fingerprint_data, result, merged_config)
+                        # Verify/correct narrator using voice matching
+                        result = _verify_and_correct_narrator(audio_file, result, merged_config)
                         return result
                     elif result and result.get('transcript'):
                         # Got transcript but no match - still useful, return for potential AI fallback
@@ -3991,6 +4113,10 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
                 result = analyze_audio_with_gemini(audio_file, merged_config, duration=duration, mode=mode)
                 if result and (result.get('title') or result.get('author')):
                     logger.info(f"[AUDIO CHAIN] Success with gemini: {result.get('author')} - {result.get('title')}")
+                    # Contribute fingerprint for future instant matches
+                    _contribute_fingerprint_async(fingerprint_data, result, merged_config)
+                    # Verify/correct narrator using voice matching
+                    result = _verify_and_correct_narrator(audio_file, result, merged_config)
                     return result
 
             elif provider == 'openrouter':
@@ -4003,6 +4129,8 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
                     result = identify_book_from_transcript(transcript, merged_config)
                     if result and result.get('title'):
                         logger.info(f"[AUDIO CHAIN] Success with openrouter: {result.get('author')} - {result.get('title')}")
+                        _contribute_fingerprint_async(fingerprint_data, result, merged_config)
+                        result = _verify_and_correct_narrator(audio_file, result, merged_config)
                         return result
                 else:
                     logger.debug("[AUDIO CHAIN] openrouter - no transcript available")
@@ -4021,6 +4149,8 @@ Return JSON with: author, title, narrator (if mentioned), series (if mentioned),
                     result = call_ollama(prompt, merged_config)
                     if result and result.get('title'):
                         logger.info(f"[AUDIO CHAIN] Success with ollama: {result.get('author')} - {result.get('title')}")
+                        _contribute_fingerprint_async(fingerprint_data, result, merged_config)
+                        result = _verify_and_correct_narrator(audio_file, result, merged_config)
                         return result
                 else:
                     logger.debug("[AUDIO CHAIN] ollama - no transcript available")
@@ -4034,6 +4164,132 @@ Return JSON with: author, title, narrator (if mentioned), series (if mentioned),
 
     logger.warning("[AUDIO CHAIN] All audio providers failed")
     return None
+
+
+def _contribute_fingerprint_async(fingerprint_data, result, config):
+    """
+    Contribute fingerprint to BookDB after successful identification.
+    This runs quickly and doesn't block the main flow.
+    """
+    if not fingerprint_data or not fingerprint_data.get('_fingerprint'):
+        return
+
+    if not result or not result.get('title'):
+        return
+
+    try:
+        from library_manager.providers.fingerprint import contribute_after_identification
+        api_key = config.get('bookdb_api_key')
+
+        success = contribute_after_identification(
+            fingerprint_data,
+            {
+                'author': result.get('author', ''),
+                'title': result.get('title', ''),
+                'narrator': result.get('narrator', ''),
+                'series': result.get('series', ''),
+                'series_position': result.get('series_position')
+            },
+            api_key=api_key
+        )
+
+        if success:
+            logger.info(f"[FINGERPRINT] Contributed fingerprint for: {result.get('title')}")
+        else:
+            logger.debug("[FINGERPRINT] Fingerprint contribution skipped or failed")
+
+    except Exception as e:
+        logger.debug(f"[FINGERPRINT] Contribution error (non-fatal): {e}")
+
+
+def _verify_and_correct_narrator(audio_file, result, config):
+    """
+    Verify narrator using voice matching and correct if mismatch detected.
+    Also stores the voice signature for future matching.
+
+    This catches metadata errors where the wrong narrator is tagged.
+
+    Args:
+        audio_file: Path to the audio file
+        result: Dict with author, title, narrator, etc.
+        config: App configuration
+
+    Returns:
+        Updated result dict with narrator verification
+    """
+    if not config.get('enable_narrator_verification', True):
+        return result
+
+    # ALWAYS store voice signature (even if narrator unknown)
+    # This builds the voice database for future matching
+    try:
+        from library_manager.providers.fingerprint import store_voice_after_identification
+        api_key = config.get('bookdb_api_key')
+        store_voice_after_identification(audio_file, result, api_key=api_key)
+    except Exception as e:
+        logger.debug(f"[VOICE] Storage error (non-fatal): {e}")
+
+    tagged_narrator = result.get('narrator', '')
+    if not tagged_narrator:
+        # No narrator to verify - try to identify by voice alone
+        try:
+            from library_manager.providers.fingerprint import identify_narrator_by_voice
+            api_key = config.get('bookdb_api_key')
+
+            identified = identify_narrator_by_voice(audio_file, threshold=0.6, api_key=api_key)
+            if identified:
+                logger.info(f"[NARRATOR] Identified by voice: {identified}")
+                result['narrator'] = identified
+                result['_narrator_source'] = 'voice_id'
+        except Exception as e:
+            logger.debug(f"[NARRATOR] Voice identification unavailable: {e}")
+        return result
+
+    try:
+        from library_manager.providers.fingerprint import verify_narrator, contribute_narrator, extract_voice_embedding
+        api_key = config.get('bookdb_api_key')
+
+        verification = verify_narrator(audio_file, tagged_narrator, threshold=0.5, api_key=api_key)
+
+        if verification.get('recommendation') == 'correct':
+            # Voice matches tagged narrator
+            result['_narrator_verified'] = True
+            logger.debug(f"[NARRATOR] Verified: {tagged_narrator}")
+
+        elif verification.get('recommendation') == 'mismatch':
+            # Voice doesn't match - use voice-matched narrator
+            matched = verification.get('matched_narrator', '')
+            confidence = verification.get('confidence', 0)
+
+            logger.warning(f"[NARRATOR] MISMATCH: Tagged '{tagged_narrator}' but voice is '{matched}' ({confidence:.2f})")
+
+            # Store the mismatch info for user review
+            result['_narrator_mismatch'] = {
+                'tagged': tagged_narrator,
+                'voice_matched': matched,
+                'confidence': confidence
+            }
+
+            # Use the voice-matched narrator if confident enough
+            if confidence >= 0.7:
+                result['narrator'] = matched
+                result['_narrator_source'] = 'voice_correction'
+                logger.info(f"[NARRATOR] Auto-corrected to: {matched}")
+            else:
+                # Lower confidence - flag for review but keep original
+                result['_narrator_needs_review'] = True
+
+        elif verification.get('recommendation') == 'no_profile':
+            # No voice profile exists - the tagged narrator gets contributed
+            result['_narrator_contributed'] = True
+            logger.debug(f"[NARRATOR] Contributed new profile: {tagged_narrator}")
+
+    except ImportError:
+        logger.debug("[NARRATOR] Narrator verification module not available")
+    except Exception as e:
+        logger.debug(f"[NARRATOR] Verification error (non-fatal): {e}")
+
+    return result
 
 
 def transcribe_audio_local(audio_file, duration=90):
@@ -5900,6 +6156,30 @@ Only if the title is truly unrecognizable, return:
             ai_result['confidence'] = adjusted_confidence
             if reason != 'validated':
                 ai_result['validation_note'] = reason
+
+            # Issue #81: Strict language matching - reject cross-language AI results
+            preferred_lang = config.get('preferred_language', 'en') if config else 'en'
+            if config and config.get('strict_language_matching', True) and preferred_lang != 'en':
+                result_lang = detect_title_language(ai_result.get('title', ''))
+                # Reject if result is clearly in a different non-English language
+                if result_lang not in (preferred_lang, 'en'):
+                    logger.warning(f"AI returned {result_lang} result, user prefers {preferred_lang}: {ai_result.get('title')}")
+                    return {'author': None, 'title': None, 'confidence': 'none', 'reason': f'language_mismatch ({result_lang} vs {preferred_lang})'}
+
+            # Contribute to community database if we got a valid identification
+            # This helps other users even if they don't use the same AI provider
+            if ai_result.get('title') and ai_result.get('author'):
+                try:
+                    contribute_to_community(
+                        title=ai_result.get('title'),
+                        author=ai_result.get('author'),
+                        series=ai_result.get('series'),
+                        series_position=ai_result.get('series_num'),
+                        source=ai_result.get('provider', 'ai'),  # gemini, openrouter, ollama, etc.
+                        confidence=adjusted_confidence
+                    )
+                except Exception as contrib_err:
+                    logger.debug(f"[COMMUNITY] Contribution failed (non-fatal): {contrib_err}")
 
             return ai_result
 
@@ -8161,6 +8441,9 @@ def parse_transcript_with_ai(transcript, folder_hint=None, config=None):
         return None
 
     config = config or load_config()
+    # Merge secrets to get API keys
+    secrets = load_secrets()
+    config = {**config, **secrets}
 
     prompt = f"""You are extracting audiobook metadata from a transcription of the book's intro.
 
@@ -8189,7 +8472,34 @@ If you cannot identify the book from the transcript, return:
 {{"title": null, "author": null, "narrator": null, "series": null, "series_num": null, "confidence": "none", "reason": "why"}}"""
 
     try:
-        # Try Gemini first
+        # Try local Ollama FIRST (no cold starts, no rate limits)
+        ollama_url = config.get('ollama_url', 'http://localhost:11434')
+        ollama_model = config.get('ollama_model', 'qwen2.5:0.5b')  # Tiny model (912MB VRAM)
+
+        try:
+            ollama_response = requests.post(
+                f"{ollama_url}/api/generate",
+                json={
+                    'model': ollama_model,
+                    'prompt': prompt,
+                    'stream': False,
+                    'options': {'temperature': 0.1}
+                },
+                timeout=60
+            )
+
+            if ollama_response.status_code == 200:
+                ollama_text = ollama_response.json().get('response', '')
+                result = parse_json_response(ollama_text)
+                if result and result.get('author') and result.get('title'):
+                    logger.info(f"[LAYER 1/AUDIO] Local LLM parsed: {result.get('author', '?')} - {result.get('title', '?')}")
+                    return result
+                else:
+                    logger.debug(f"[LAYER 1/AUDIO] Local LLM returned incomplete result, trying external APIs")
+        except requests.exceptions.RequestException as e:
+            logger.debug(f"[LAYER 1/AUDIO] Local Ollama not available: {e}")
+
+        # Fallback to Gemini
         if config.get('gemini_api_key'):
             api_key = config.get('gemini_api_key')
             model = config.get('gemini_model', 'gemini-2.0-flash')
@@ -8205,7 +8515,7 @@ If you cannot identify the book from the transcript, return:
                 text = response.json().get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
                 result = parse_json_response(text)
                 if result:
-                    logger.info(f"[LAYER 1/AUDIO] AI parsed: {result.get('author', '?')} - {result.get('title', '?')}")
+                    logger.info(f"[LAYER 1/AUDIO] Gemini parsed: {result.get('author', '?')} - {result.get('title', '?')}")
                     return result
 
         # Fallback to OpenRouter
@@ -8240,1449 +8550,73 @@ def process_layer_1_audio(config, limit=None):
     """
     NEW Layer 1: Audio Transcription + AI Parsing
 
-    Philosophy: Audio is the source of truth. Narrators announce the book.
-    1. Transcribe first 90 seconds (the intro)
-    2. AI extracts: author, title, narrator, series
-    3. High confidence → identified
-    4. Low confidence → advance to Layer 2 (audio clip analysis)
+    def set_book(author, title, stage=""):
+        set_current_book(author, title, stage)
 
-    This replaces the old "trust folder names" approach.
-    """
-    batch_size = limit or config.get('batch_size', 3)
+    def get_circuit_breaker(api_name):
+        return API_CIRCUIT_BREAKER.get(api_name, {})
 
-    # Get items from queue
-    conn = get_db()
-    c = conn.cursor()
-
-    # Process items that haven't been through audio identification yet
-    # ALSO include 'needs_attention' items - they failed old system, might succeed with audio
-    c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
-                        b.path, b.current_author, b.current_title, b.verification_layer
-                 FROM queue q
-                 JOIN books b ON q.book_id = b.id
-                 WHERE b.verification_layer IN (0, 1)
-                   AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files')
-                   AND (b.user_locked IS NULL OR b.user_locked = 0)
-                 ORDER BY q.priority, q.added_at
-                 LIMIT ?''', (batch_size,))
-    batch = [dict(row) for row in c.fetchall()]
-    conn.close()
-
-    if not batch:
-        return 0, 0
-
-    logger.info(f"[LAYER 1/AUDIO] Processing {len(batch)} items via audio transcription")
-
-    processed = 0
-    resolved = 0
-
-    for row in batch:
-        book_path = row['path']
-        folder_hint = f"{row['current_author']} - {row['current_title']}"
-
-        # Find first audio file
-        audio_file = None
-        for ext in ['.m4b', '.mp3', '.m4a', '.flac', '.ogg']:
-            files = list(Path(book_path).glob(f'*{ext}'))
-            if files:
-                audio_file = files[0]
-                break
-
-        if not audio_file:
-            # No audio file - this is likely an ebook. Try to identify from filename + BookDB
-            filename = os.path.basename(book_path)
-            logger.debug(f"[EBOOK] No audio, trying filename + BookDB for: {filename}")
-            ebook_result = identify_ebook_from_filename(filename, book_path, config)
-
-            if ebook_result and ebook_result.get('author') and ebook_result.get('title'):
-                # Got identification from filename + BookDB!
-                author = ebook_result.get('author')
-                title = ebook_result.get('title')
-                confidence = ebook_result.get('confidence', 'medium')
-                source = ebook_result.get('source', 'bookdb')
-
-                logger.info(f"[EBOOK] Identified via {source}: {author} - {title} ({confidence})")
-
-                # Check if different from current
-                current_author = row['current_author'] or ''
-                current_title = row['current_title'] or ''
-                if author.lower() != current_author.lower() or title.lower() != current_title.lower():
-                    conn = get_db()
-                    c = conn.cursor()
-
-                    # Update book with ebook-identified info
-                    profile = {
-                        'author': {'value': author, 'source': source, 'confidence': 80 if confidence == 'high' else 50},
-                        'title': {'value': title, 'source': source, 'confidence': 80 if confidence == 'high' else 50},
-                    }
-                    if ebook_result.get('series'):
-                        profile['series'] = {'value': ebook_result['series'], 'source': source, 'confidence': 70}
-                    if ebook_result.get('series_num'):
-                        profile['series_num'] = {'value': ebook_result['series_num'], 'source': source, 'confidence': 70}
-
-                    c.execute('''UPDATE books SET status = 'pending',
-                                profile = ?, confidence = ?, verification_layer = 2
-                                WHERE id = ?''',
-                              (json.dumps(profile), 80 if confidence == 'high' else 50, row['book_id']))
-
-                    # Compute paths for history entry (Issue #64: prevent stale path errors)
-                    old_path_str = book_path
-                    config = load_config()
-                    library_paths = config.get('library_paths', [])
-                    new_path_str = None
-                    if library_paths:
-                        computed_path = build_new_path(
-                            Path(library_paths[0]), author, title,
-                            series=ebook_result.get('series'),
-                            series_num=ebook_result.get('series_num'),
-                            config=config
-                        )
-                        if computed_path:
-                            new_path_str = str(computed_path)
-
-                    # Add to history as pending fix (with paths to prevent stale references)
-                    c.execute('''INSERT INTO history
-                                (book_id, old_author, old_title, new_author, new_title, new_series, new_series_num, old_path, new_path, status)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
-                             (row['book_id'], row['current_author'], row['current_title'],
-                              author, title, ebook_result.get('series'), ebook_result.get('series_num'),
-                              old_path_str, new_path_str))
-
-                    # Remove from queue
-                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                    conn.commit()
-                    conn.close()
-                    resolved += 1
-                else:
-                    # Only mark as verified if we have confidence in the identification
-                    book_confidence = row.get('confidence', 0) or 0
-                    conn = get_db()
-                    c = conn.cursor()
-                    if book_confidence >= 40:
-                        logger.info(f"[EBOOK] Already correct (conf={book_confidence}): {current_author}/{current_title}")
-                        c.execute('UPDATE books SET status = ?, verification_layer = 2 WHERE id = ?',
-                                  ('verified', row['book_id']))
-                        resolved += 1
-                    else:
-                        logger.info(f"[EBOOK] Needs attention (low conf={book_confidence}): {current_author}/{current_title}")
-                        c.execute('UPDATE books SET status = ?, verification_layer = 2, error_message = ? WHERE id = ?',
-                                  ('needs_attention', f'Low confidence ({book_confidence}) - ebook needs manual verification', row['book_id']))
-                    conn.commit()
-                    conn.close()
-
-                processed += 1
-                continue
-
-            # Ebook identification failed - advance to Layer 2 for API lookups
-            logger.debug(f"[EBOOK] Filename parsing failed, advancing to Layer 2: {book_path}")
-            conn = get_db()
-            c = conn.cursor()
-            c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (row['book_id'],))
-            conn.commit()
-            conn.close()
-            processed += 1
-            continue
-
-        # === TRY BOOKDB API FIRST (GPU Whisper + 50M book database) ===
-        # This avoids Gemini rate limits and is faster
-        result = None
-        transcript = None
-
-        if config.get('use_bookdb_for_audio', True):
-            # Issue #74: Check if BookDB circuit breaker is open - wait instead of skipping
-            if is_circuit_open('bookdb'):
-                cb = API_CIRCUIT_BREAKER.get('bookdb', {})
-                remaining = int(cb.get('circuit_open_until', 0) - time.time())
-                if remaining > 0:
-                    wait_time = min(remaining, 60)  # Wait up to 60s at a time
-                    logger.info(f"[LAYER 1/AUDIO] BookDB circuit breaker open, waiting {wait_time}s ({remaining}s total remaining)")
-                    processing_status["current"] = f"Layer 1: Waiting for BookDB ({remaining}s)"
-                    time.sleep(wait_time)
-                    # After waiting, continue to next item - circuit breaker may have closed
-                    processed += 1
-                    continue
-
-            result = identify_audio_with_bookdb(audio_file)
-            if result and result.get('author') and result.get('title'):
-                # BookDB got a full identification - use it!
-                logger.info(f"[LAYER 1/AUDIO] BookDB identified: {result['author']} - {result['title']}")
-            else:
-                # BookDB didn't get a full match - might have a transcript though
-                transcript = result.get('transcript') if result else None
-                result = None  # Clear partial result to trigger AI fallback
-        else:
-            logger.info(f"[LAYER 1/AUDIO] BookDB audio disabled, using local transcription + AI")
-
-        # If no result yet, try local transcription + AI
-        if not result:
-            if not transcript:
-                # No transcript from BookDB (or BookDB disabled), do local transcription
-                transcript = transcribe_audio_intro(audio_file)
-
-            if not transcript:
-                logger.warning(f"[LAYER 1/AUDIO] Transcription failed, advancing to Layer 2: {book_path}")
-                conn = get_db()
-                c = conn.cursor()
-                # Reset status to pending if it was needs_attention - we still have more layers to try
-                c.execute('''UPDATE books SET verification_layer = 2,
-                            status = CASE WHEN status = 'needs_attention' THEN 'pending' ELSE status END
-                            WHERE id = ?''', (row['book_id'],))
-                conn.commit()
-                conn.close()
-                processed += 1
-                continue
-
-            # Parse with AI (fallback path - when BookDB disabled or didn't identify)
-            result = parse_transcript_with_ai(transcript, folder_hint, config)
-
-        if result and result.get('author') and result.get('title') and result.get('confidence') != 'none':
-            # Got identification from audio!
-            author = result.get('author')
-            title = result.get('title')
-            narrator = result.get('narrator')
-            series = result.get('series')
-            series_num = result.get('series_num')
-            confidence = result.get('confidence', 'medium')
-
-            logger.info(f"[LAYER 1/AUDIO] Identified from audio: {author} - {title} ({confidence})")
-
-            # Check if different from current (handle None values)
-            current_author = row['current_author'] or ''
-            current_title = row['current_title'] or ''
-            if author.lower() != current_author.lower() or title.lower() != current_title.lower():
-                # Needs fix - will be handled by existing fix mechanism
-                conn = get_db()
-                c = conn.cursor()
-
-                # Update book with audio-identified info
-                profile = {
-                    'author': {'value': author, 'source': 'audio_transcription', 'confidence': 85 if confidence == 'high' else 70},
-                    'title': {'value': title, 'source': 'audio_transcription', 'confidence': 85 if confidence == 'high' else 70},
-                }
-                if narrator:
-                    profile['narrator'] = {'value': narrator, 'source': 'audio_transcription', 'confidence': 80}
-                if series:
-                    profile['series'] = {'value': series, 'source': 'audio_transcription', 'confidence': 75}
-                if series_num:
-                    profile['series_num'] = {'value': str(series_num), 'source': 'audio_transcription', 'confidence': 75}
-
-                c.execute('''UPDATE books SET
-                            current_author = ?, current_title = ?,
-                            status = 'pending_fix', verification_layer = 3,
-                            profile = ?, confidence = ?
-                            WHERE id = ?''',
-                         (author, title, json.dumps(profile),
-                          85 if confidence == 'high' else 70, row['book_id']))
-
-                # Compute paths for history entry (Issue #64: prevent stale path errors)
-                old_path_str = book_path
-                audio_config = load_config()
-                library_paths = audio_config.get('library_paths', [])
-                new_path_str = None
-                if library_paths:
-                    computed_path = build_new_path(
-                        Path(library_paths[0]), author, title,
-                        series=series, series_num=series_num, narrator=narrator,
-                        config=audio_config
-                    )
-                    if computed_path:
-                        new_path_str = str(computed_path)
-
-                # Add to history (with paths to prevent stale references)
-                c.execute('''INSERT INTO history
-                            (book_id, old_author, old_title, new_author, new_title, new_narrator, new_series, new_series_num, old_path, new_path, status)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
-                         (row['book_id'], row['current_author'], row['current_title'],
-                          author, title, narrator, series, series_num,
-                          old_path_str, new_path_str))
-
-                # Remove from queue
-                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                conn.commit()
-                conn.close()
-
-                resolved += 1
-            else:
-                # Already correct - but update confidence since we did identify via audio
-                audio_confidence = 85 if confidence == 'high' else 70
-                conn = get_db()
-                c = conn.cursor()
-                c.execute('UPDATE books SET status = ?, verification_layer = 3, confidence = ? WHERE id = ?',
-                         ('verified', audio_confidence, row['book_id']))
-                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                conn.commit()
-                conn.close()
-
-                logger.info(f"[LAYER 1/AUDIO] Already correct (conf={audio_confidence}): {author}/{title}")
-                resolved += 1
-        else:
-            # Couldn't identify from transcript, advance to Layer 2
-            logger.info(f"[LAYER 1/AUDIO] Unclear transcript, advancing to Layer 2: {folder_hint}")
-            conn = get_db()
-            c = conn.cursor()
-            # Reset status to pending if it was needs_attention - we still have more layers to try
-            c.execute('''UPDATE books SET verification_layer = 2,
-                        status = CASE WHEN status = 'needs_attention' THEN 'pending' ELSE status END
-                        WHERE id = ?''', (row['book_id'],))
-            conn.commit()
-            conn.close()
-
-        processed += 1
-
-    logger.info(f"[LAYER 1/AUDIO] Processed {processed}, resolved {resolved} via audio transcription")
-    return processed, resolved
+    return _process_layer_1_audio_raw(
+        config=config,
+        get_db=get_db,
+        identify_ebook_from_filename=identify_ebook_from_filename,
+        identify_audio_with_bookdb=identify_audio_with_bookdb,
+        transcribe_audio_intro=transcribe_audio_intro,
+        parse_transcript_with_ai=parse_transcript_with_ai,
+        is_circuit_open=is_circuit_open,
+        get_circuit_breaker=get_circuit_breaker,
+        load_config=load_config,
+        build_new_path=build_new_path,
+        update_processing_status=update_status,
+        set_current_book=set_book,
+        limit=limit
+    )
 
 
 def process_layer_1_api(config, limit=None):
-    """
-    Layer 1: API Database Lookups
+    """Wrapper for extracted layer function - passes app-level dependencies."""
+    def set_book(author, title, stage=""):
+        set_current_book(author, title, stage)
 
-    Processes items at verification_layer=1 using API databases (BookDB, Audnexus, etc.)
-    Items that get a confident match are marked complete.
-    Items that fail are advanced to layer 2 (AI verification).
-
-    This is faster and cheaper than AI, so we try it first.
-
-    NOTE: This function uses a 3-phase approach to avoid holding DB locks during
-    external API calls (which can take 10-30+ seconds for a batch):
-      Phase 1: Quick fetch, release connection
-      Phase 2: External API work (no DB connection held)
-      Phase 3: Quick write, release connection
-    """
-    if not config.get('enable_api_lookups', True):
-        logger.info("[LAYER 1] API lookups disabled, skipping")
-        return 0, 0
-
-    # === PHASE 1: Fetch batch (quick read, release connection immediately) ===
-    conn = get_db()
-    c = conn.cursor()
-
-    batch_size = limit or config.get('batch_size', 3)
-    confidence_threshold = config.get('profile_confidence_threshold', 85)
-
-    # Get items awaiting API lookup (layer 1) or new items (layer 0)
-    # Skip user-locked books - user has manually set metadata
-    c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
-                        b.path, b.current_author, b.current_title, b.verification_layer
-                 FROM queue q
-                 JOIN books b ON q.book_id = b.id
-                 WHERE b.verification_layer IN (0, 1)
-                   AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
-                   AND (b.user_locked IS NULL OR b.user_locked = 0)
-                 ORDER BY q.priority, q.added_at
-                 LIMIT ?''', (batch_size,))
-    # Convert to dicts immediately - sqlite3.Row objects become invalid after conn.close()
-    batch = [dict(row) for row in c.fetchall()]
-    conn.close()  # Release DB lock BEFORE external API calls
-
-    if not batch:
-        return 0, 0
-
-    logger.info(f"[LAYER 1] Processing {len(batch)} items via API lookup")
-
-    # === PHASE 2: External API lookups (NO database connection held) ===
-    # Collect all actions to perform, then apply them in phase 3
-    actions = []  # List of action dicts describing what to do for each item
-
-    for row in batch:
-        current_author = row['current_author']
-        current_title = row['current_title']
-
-        # Use existing API candidate gathering function (EXTERNAL CALLS HAPPEN HERE)
-        candidates = gather_all_api_candidates(current_title, current_author, config)
-
-        # Determine what action to take based on API results
-        action = {
-            'book_id': row['book_id'],
-            'queue_id': row['queue_id'],
-            'type': None,  # Will be set below
-            'profile_json': None,
-            'confidence': None,
-            'log_message': None
-        }
-
-        if candidates:
-            # Issue #57 (Merijeek): Vote by author popularity across APIs
-            # If 6 APIs say "Charles Stross" and 1 says "China Mieville", Charles Stross should win
-            from collections import Counter
-
-            # Normalize author names for comparison (lowercase, strip whitespace)
-            def normalize_author(a):
-                return (a or '').lower().strip()
-
-            # Count votes for each author
-            author_votes = Counter()
-            author_to_candidate = {}  # Map normalized author -> best candidate with that author
-
-            for candidate in candidates:
-                norm_author = normalize_author(candidate.get('author'))
-                if norm_author and norm_author not in ['unknown', 'various', 'various authors', 'n/a', 'none']:
-                    author_votes[norm_author] += 1
-                    # Keep track of the candidate (prefer ones with series info)
-                    existing = author_to_candidate.get(norm_author)
-                    if not existing or (candidate.get('series') and not existing.get('series')):
-                        author_to_candidate[norm_author] = candidate
-
-            best_match = None
-
-            if author_votes:
-                # Get the most common author
-                most_common_author, vote_count = author_votes.most_common(1)[0]
-
-                # If current author matches the winner OR has more than 1 vote, use the winner
-                current_norm = normalize_author(current_author)
-
-                if vote_count > 1 or is_placeholder_author(current_author):
-                    # Multiple APIs agree OR current author is placeholder - trust the vote
-                    best_match = author_to_candidate.get(most_common_author)
-                    if vote_count > 1:
-                        logger.debug(f"[LAYER 1] Author vote: '{most_common_author}' won with {vote_count} votes")
-                elif current_norm == most_common_author:
-                    # Current author matches the winner - good!
-                    best_match = author_to_candidate.get(most_common_author)
-                elif current_norm in author_to_candidate:
-                    # Current author is in candidates but didn't win - still use it if only 1 vote each
-                    # This handles ties gracefully
-                    best_match = author_to_candidate.get(current_norm)
-                else:
-                    # Current author not in candidates at all - use the vote winner
-                    best_match = author_to_candidate.get(most_common_author)
-
-            if not best_match:
-                best_match = candidates[0]  # Ultimate fallback
-
-            # Check if this is a good enough match
-            match_title = best_match.get('title', '')
-            match_author = best_match.get('author', '')
-
-            if match_title and match_author:
-                # Calculate match confidence using word overlap similarity (returns 0.0-1.0)
-                title_sim = calculate_title_similarity(current_title, match_title) if current_title else 0
-
-                # IMPORTANT: If author is placeholder (Unknown, Various, etc.), we CANNOT verify as-is
-                # The book needs to be fixed, not verified. Advance to Layer 2 for proper identification.
-                if is_placeholder_author(current_author):
-                    action['type'] = 'advance_to_layer2'
-                    action['log_message'] = f"[LAYER 1] Placeholder author '{current_author}', advancing to AI for identification: {current_title}"
-                else:
-                    author_sim = calculate_title_similarity(current_author, match_author)
-                    avg_confidence = (title_sim + author_sim) / 2
-
-                    # confidence_threshold is 0-100 scale, convert to 0-1
-                    threshold = confidence_threshold / 100.0 if confidence_threshold > 1 else confidence_threshold
-                    if avg_confidence >= threshold:
-                        # Good match found - check if current values are correct or need fixing
-                        if title_sim >= 0.90 and author_sim >= 0.90:
-                            # Book is already correctly named - mark as verified and remove from queue
-                            action['type'] = 'verified'
-                            action['log_message'] = f"[LAYER 1] Verified OK ({avg_confidence:.0%}): {current_author}/{current_title}"
-
-                            # Create profile with verification source
-                            api_source = best_match.get('source', 'api')
-                            profile = BookProfile()
-                            profile.author.add_source(api_source, match_author)
-                            profile.title.add_source(api_source, match_title)
-                            if best_match.get('series'):
-                                profile.series.add_source(api_source, best_match['series'])
-                            if best_match.get('series_num'):
-                                profile.series_num.add_source(api_source, best_match['series_num'])
-
-                            # Issue #57: Fallback - extract series from title if API didn't provide it
-                            # This ensures consistent series detection between Layer 1 and Layer 2
-                            if not best_match.get('series'):
-                                extracted_series, extracted_num, _ = extract_series_from_title(match_title)
-                                if extracted_series:
-                                    profile.series.add_source('path', extracted_series)
-                                    if extracted_num:
-                                        profile.series_num.add_source('path', extracted_num)
-
-                            profile.verification_layers_used = ['api']
-                            profile.finalize()
-
-                            action['profile_json'] = json.dumps(profile.to_dict())
-                            action['confidence'] = profile.overall_confidence
-                        else:
-                            # API found the book but current values differ - let Layer 2 handle the fix
-                            action['type'] = 'advance_to_layer2'
-                            action['log_message'] = f"[LAYER 1] API match needs fix ({avg_confidence:.0%}, title={title_sim:.0%}, author={author_sim:.0%}): {current_author}/{current_title} -> {match_author}/{match_title}"
-                    else:
-                        # Low confidence - advance to AI layer
-                        action['type'] = 'advance_to_layer2'
-                        action['log_message'] = f"[LAYER 1] API match low confidence ({avg_confidence:.0f}%), advancing to AI: {current_author}/{current_title}"
-            else:
-                # No good match found - advance to AI
-                action['type'] = 'advance_to_layer2'
-                action['log_message'] = f"[LAYER 1] No API match, advancing to AI: {current_author}/{current_title}"
-        else:
-            # No candidates at all - advance to AI
-            action['type'] = 'advance_to_layer2'
-            action['log_message'] = f"[LAYER 1] No API candidates, advancing to AI: {current_author}/{current_title}"
-
-        actions.append(action)
-
-    # === PHASE 3: Apply all updates (quick write, release connection) ===
-    conn = get_db()
-    c = conn.cursor()
-
-    processed = 0
-    resolved = 0
-
-    for action in actions:
-        # Log the message (was logged inline before, now batched)
-        if action['log_message']:
-            logger.info(action['log_message'])
-
-        if action['type'] == 'verified':
-            # Save profile and mark as verified
-            c.execute('UPDATE books SET status = ?, verification_layer = 4, profile = ?, confidence = ? WHERE id = ?',
-                     ('verified', action['profile_json'], action['confidence'], action['book_id']))
-            c.execute('DELETE FROM queue WHERE id = ?', (action['queue_id'],))
-            resolved += 1
-        elif action['type'] == 'advance_to_layer2':
-            c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (action['book_id'],))
-
-        processed += 1
-
-    conn.commit()
-    conn.close()
-
-    logger.info(f"[LAYER 1] Processed {processed}, resolved {resolved} via API")
-    return processed, resolved
+    return _process_layer_1_api_raw(
+        config=config,
+        get_db=get_db,
+        gather_all_api_candidates=gather_all_api_candidates,
+        limit=limit,
+        set_current_book=set_book
+    )
 
 
 def process_queue(config, limit=None, verification_layer=2):
-    """
-    Process items in the queue using AI verification.
-
-    Args:
-        config: Configuration dict
-        limit: Max items to process
-        verification_layer: Which layer's items to process (2=AI, 4=folder fallback)
-
-    NOTE: This function uses a 3-phase approach to avoid holding DB locks during
-    external AI API calls (which can take 5-30+ seconds):
-      Phase 1: Quick fetch, release connection
-      Phase 2: External AI call (no DB connection held)
-      Phase 3: Reconnect and process results
-    """
-    # Check rate limit first
-    allowed, calls_made, max_calls = check_rate_limit(config)
-    if not allowed:
-        logger.warning(f"Rate limit reached: {calls_made}/{max_calls} calls. Waiting...")
-        return 0, 0
-
-    # Check if AI verification is enabled (before opening connection)
-    if not config.get('enable_ai_verification', True):
-        logger.info("[LAYER 2] AI verification disabled, skipping")
-        return 0, 0
-
-    # === PHASE 1: Fetch batch (quick read, release connection immediately) ===
-    conn = get_db()
-    c = conn.cursor()
-
-    batch_size = config.get('batch_size', 3)
-    if limit:
-        batch_size = min(batch_size, limit)
-
-    layer_name = "LAYER 2/AI" if verification_layer == 2 else f"LAYER {verification_layer}"
-    logger.info(f"[{layer_name}] process_queue called with batch_size={batch_size}, limit={limit}, layer={verification_layer} (API: {calls_made}/{max_calls})")
-
-    # Get batch from queue - process items at specified verification_layer
-    # Skip user-locked books - user has manually set metadata
-    api_enabled = config.get('enable_api_lookups', True)
-    if api_enabled or verification_layer == 4:
-        # Process items at specified layer (or layer 4 for folder fallback)
-        c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
-                            b.path, b.current_author, b.current_title,
-                            b.confidence, b.profile
-                     FROM queue q
-                     JOIN books b ON q.book_id = b.id
-                     WHERE b.verification_layer = ?
-                       AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
-                       AND (b.user_locked IS NULL OR b.user_locked = 0)
-                     ORDER BY q.priority, q.added_at
-                     LIMIT ?''', (verification_layer, batch_size))
-    else:
-        # API disabled - process all queue items directly with AI
-        c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
-                            b.path, b.current_author, b.current_title,
-                            b.confidence, b.profile
-                     FROM queue q
-                     JOIN books b ON q.book_id = b.id
-                     WHERE b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
-                       AND (b.user_locked IS NULL OR b.user_locked = 0)
-                     ORDER BY q.priority, q.added_at
-                     LIMIT ?''', (batch_size,))
-    # Convert to dicts immediately - sqlite3.Row objects become invalid after conn.close()
-    batch = [dict(row) for row in c.fetchall()]
-    conn.close()  # Release DB lock BEFORE external AI call
-
-    logger.info(f"[{layer_name}] Fetched {len(batch)} items from queue")
-
-    if not batch:
-        logger.info(f"[{layer_name}] No items in batch, returning 0")
-        return 0, 0  # (processed, fixed)
-
-    # Build messy names for AI
-    messy_names = [f"{row['current_author']} - {row['current_title']}" for row in batch]
-
-    logger.info(f"[DEBUG] Processing batch of {len(batch)} items:")
-    for i, name in enumerate(messy_names):
-        logger.info(f"[DEBUG]   Item {i+1}: {name}")
-
-    # === PHASE 2: External AI call (NO database connection held) ===
-    results = call_ai(messy_names, config)
-    logger.info(f"[DEBUG] AI returned {len(results) if results else 0} results")
-
-    if not results:
-        logger.warning("No results from AI")
-        return 0, 0  # (processed, fixed)
-
-    # === PHASE 3: Process results and apply DB updates ===
-    conn = get_db()
-    c = conn.cursor()
-
-    # Update API call stats (INSERT if not exists, then UPDATE to preserve other columns)
-    today = datetime.now().strftime('%Y-%m-%d')
-    c.execute('INSERT OR IGNORE INTO stats (date) VALUES (?)', (today,))
-    c.execute('UPDATE stats SET api_calls = COALESCE(api_calls, 0) + 1 WHERE date = ?', (today,))
-
-    processed = 0
-    fixed = 0
-    for row, result in zip(batch, results):
-        # SAFETY CHECK: Before processing, verify this isn't a multi-book collection
-        # that slipped through (items already in queue before detection was added)
-        old_path = Path(row['path'])
-        if old_path.exists() and old_path.is_dir():
-            # Check for multiple book SUBFOLDERS
-            subdirs = [d for d in old_path.iterdir() if d.is_dir()]
-            if len(subdirs) >= 2:
-                book_folder_patterns = [
-                    r'^\d+\s*[-–—:.]?\s*\w', r'^#?\d+\s*[-–—:]',
-                    r'book\s*\d+', r'vol(ume)?\s*\d+', r'part\s*\d+'
-                ]
-                book_like_count = sum(1 for d in subdirs
-                    if any(re.search(p, d.name, re.IGNORECASE) for p in book_folder_patterns))
-                if book_like_count >= 2:
-                    logger.warning(f"BLOCKED: {row['path']} is a series folder ({book_like_count} book subfolders) - skipping")
-                    c.execute('UPDATE books SET status = ? WHERE id = ?', ('series_folder', row['book_id']))
-                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                    processed += 1
-                    continue
-
-            # Check for multiple book FILES using smart detection (Issue #29 fix)
-            audio_files = [f for f in old_path.iterdir()
-                           if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
-            if len(audio_files) >= 2:
-                multibook_result = detect_multibook_vs_chapters(audio_files, config)
-                if multibook_result['is_multibook']:
-                    logger.warning(f"BLOCKED: {row['path']} is multibook ({multibook_result['reason']}) - skipping")
-                    c.execute('UPDATE books SET status = ? WHERE id = ?', ('multi_book_files', row['book_id']))
-                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                    processed += 1
-                    continue
-
-        new_author = (result.get('author') or '').strip()
-        new_title = (result.get('title') or '').strip()
-        new_narrator = (result.get('narrator') or '').strip() or None  # None if empty
-        new_series = (result.get('series') or '').strip() or None  # Series name
-        new_series_num = result.get('series_num')  # Series number (can be int or string like "1" or "Book 1")
-        new_year = result.get('year')  # Publication year
-        new_edition = (result.get('edition') or '').strip() or None  # Anniversary, Unabridged, etc.
-        new_variant = (result.get('variant') or '').strip() or None  # Graphic Audio, Full Cast, BBC Radio
-
-        # CRITICAL: Catch AI returning literal "None" or "null" as strings
-        # This happens when AI misunderstands the JSON format or the book
-        null_strings = {'none', 'null', 'n/a', 'unknown', 'untitled', ''}
-        if new_title.lower() in null_strings:
-            logger.warning(f"AI returned invalid title '{new_title}' - treating as empty")
-            new_title = ''
-        if new_author.lower() in null_strings:
-            logger.warning(f"AI returned invalid author '{new_author}' - treating as empty")
-            new_author = ''
-
-        # CRITICAL: Detect when AI swaps author/title (common when folder has title first)
-        # If new_title looks like current_author and new_author looks like current_title, swap them
-        if new_author and new_title and row.get('current_author') and row.get('current_title'):
-            # Check if AI accidentally swapped them
-            current_author_clean = row['current_author'].lower().strip()
-            current_title_clean = row['current_title'].lower().strip()
-            new_author_clean = new_author.lower().strip()
-            new_title_clean = new_title.lower().strip()
-
-            # If new_author matches old_title and new_title matches old_author, AI swapped them
-            if (new_author_clean == current_title_clean and new_title_clean == current_author_clean):
-                logger.warning(f"AI appears to have swapped author/title, correcting: {new_author}/{new_title} -> {new_title}/{new_author}")
-                new_author, new_title = new_title, new_author
-
-        # CRITICAL: Known narrators that AI sometimes mistakes for authors
-        # These are famous audiobook narrators, NOT authors
-        known_narrators = {
-            'scott brick', 'ray porter', 'luke daniels', 'wil wheaton', 'steven pacey',
-            'tim gerard reynolds', 'r.c. bray', 'rc bray', 'nick podehl', 'simon vance',
-            'michael kramer', 'kate reading', 'january lavoy', 'rebecca soler',
-            'kirby heyborne', 'stephen fry', 'rob inglis', 'toby longworth',
-            'joe morton', 'bahni turpin', 'robin miles', 'dion graham'
-        }
-        if new_author.lower() in known_narrators:
-            # Narrator mistaken for author - flag for attention
-            logger.warning(f"AI returned narrator '{new_author}' as author - flagging for attention")
-            c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                     ('needs_attention', f"AI returned narrator '{new_author}' as author - needs manual review", row['book_id']))
-            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-            processed += 1
-            continue
-
-        # Auto-save narrator to BookDB if we found one
-        if new_narrator:
-            auto_save_narrator(new_narrator, source='ai_extract')
-
-        # Issue #57: Apply author initials standardization if enabled
-        # This ensures "Peter F Hamilton" becomes "Peter F. Hamilton" consistently
-        if config.get('standardize_author_initials', False) and new_author:
-            new_author = standardize_initials(new_author)
-
-        # If AI didn't detect series, try to extract it from title patterns
-        # First try the ORIGINAL title (has series info like "The Reckoners, Book 2 - Firefight")
-        # Then try the new title as fallback
-        if not new_series:
-            # Try original title first (most likely to have series pattern)
-            original_title = row['current_title']
-            extracted_series, extracted_num, extracted_title = extract_series_from_title(original_title)
-            if extracted_series:
-                new_series = extracted_series
-                new_series_num = extracted_num
-                # Keep the AI's cleaned title, just add the series info
-                logger.info(f"Extracted series from original title: '{extracted_series}' #{extracted_num}")
-            else:
-                # Got book number but no series name? Check if original "author" is actually a series
-                if extracted_num and not new_series:
-                    original_author = row['current_author']
-                    # Check if original author looks like a series name
-                    series_indicators = ['series', 'saga', 'cycle', 'chronicles', 'trilogy', 'collection',
-                                         'edition', 'novels', 'books', 'tales', 'adventures', 'mysteries']
-                    if any(ind in original_author.lower() for ind in series_indicators):
-                        new_series = original_author
-                        new_series_num = extracted_num
-                        logger.info(f"Using original author as series: '{new_series}' #{new_series_num}")
-
-            # Fallback: try the new title
-            if not new_series and new_title:
-                extracted_series, extracted_num, extracted_title = extract_series_from_title(new_title)
-                if extracted_series:
-                    new_series = extracted_series
-                    new_series_num = extracted_num
-                    new_title = extracted_title
-                    logger.info(f"Extracted series from new title: '{extracted_series}' #{extracted_num} - '{extracted_title}'")
-
-        if not new_author or not new_title:
-            # AI couldn't identify the book - decide what to do based on existing verification
-            # Check if book was already verified by Layer 1 (has profile with confidence)
-            book_confidence = row.get('confidence', 0) or 0
-            has_profile = row.get('profile') is not None and row.get('profile') != ''
-
-            if is_placeholder_author(row['current_author']):
-                # Placeholder author - advance to Layer 3 for audio analysis
-                if config.get('enable_audio_analysis', False):
-                    logger.info(f"Advancing to Layer 3 (AI empty, placeholder author '{row['current_author']}'): {row['current_title']}")
-                    c.execute('UPDATE books SET verification_layer = 3 WHERE id = ?', (row['book_id'],))
-                    conn.commit()
-                    processed += 1
-                    continue
-                else:
-                    # Audio analysis disabled - mark as needs_attention
-                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                    logger.info(f"Needs attention (AI empty, placeholder author '{row['current_author']}', no audio): {row['current_title']}")
-                    c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                             ('needs_attention', f"Could not identify author (currently '{row['current_author']}')", row['book_id']))
-            elif book_confidence >= 40 and has_profile:
-                # Book was verified by Layer 1 with decent confidence - trust that verification
-                c.execute('UPDATE books SET status = ? WHERE id = ?', ('verified', row['book_id']))
-                logger.info(f"Verified OK (Layer 1 verified, AI empty): {row['current_author']}/{row['current_title']} (conf={book_confidence})")
-            else:
-                # No prior verification AND AI couldn't identify - needs attention, not blind trust
-                # The folder name might have typos or be completely wrong
-                logger.info(f"Needs attention (AI empty, no prior verification): {row['current_author']}/{row['current_title']}")
-                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))  # Fix: remove from queue
-                c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                         ('needs_attention', f"AI could not verify - folder may have typos or incorrect metadata", row['book_id']))
-            processed += 1
-            continue
-
-        # Check if fix needed (also check narrator change)
-        if new_author != row['current_author'] or new_title != row['current_title'] or new_narrator:
-            old_path = Path(row['path'])
-
-            # Find which configured library this book belongs to
-            # (Don't assume 2-level structure - series_grouping uses 3 levels)
-            lib_path = None
-            is_from_watch_folder = False
-            for lp in config.get('library_paths', []):
-                lp_path = Path(lp)
-                try:
-                    old_path.relative_to(lp_path)
-                    lib_path = lp_path
-                    break
-                except ValueError:
-                    continue
-
-            # Issue #57: Check if book is from watch folder and should go to watch_output_folder
-            watch_folder = config.get('watch_folder', '').strip()
-            watch_output_folder = config.get('watch_output_folder', '').strip()
-            if watch_folder and watch_output_folder:
-                try:
-                    watch_path = Path(watch_folder).resolve()
-                    old_path_resolved = old_path.resolve()
-                    try:
-                        old_path_resolved.relative_to(watch_path)
-                        # Book is in watch folder - use output folder as target
-                        lib_path = Path(watch_output_folder)
-                        is_from_watch_folder = True
-                        logger.info(f"Watch folder book: routing to output folder {lib_path}")
-                    except ValueError:
-                        pass  # Not in watch folder
-                except Exception as e:
-                    logger.debug(f"Watch folder path check failed: {e}")
-
-            # Fallback if not found in configured libraries
-            if lib_path is None:
-                lib_path = old_path.parent.parent
-                logger.warning(f"Book path {old_path} not under any configured library, guessing lib_path={lib_path}")
-
-            new_path = build_new_path(lib_path, new_author, new_title,
-                                      series=new_series, series_num=new_series_num,
-                                      narrator=new_narrator, year=new_year,
-                                      edition=new_edition, variant=new_variant, config=config)
-
-            # For loose files, new_path should include the filename
-            is_loose_file = row['reason'] and row['reason'].startswith('loose_file_needs_folder')
-            if is_loose_file and old_path.is_file():
-                # Append original filename to the new folder path
-                new_path = new_path / old_path.name
-                logger.info(f"Loose file: will move {old_path.name} to {new_path}")
-
-            # For loose ebook files
-            is_loose_ebook = row['reason'] and row['reason'].startswith('ebook_loose')
-            if is_loose_ebook and old_path.is_file():
-                ebook_mode = config.get('ebook_library_mode', 'merge')
-                if ebook_mode == 'merge':
-                    # Look for existing audiobook folder to merge into
-                    safe_author = sanitize_path_component(new_author)
-                    safe_title = sanitize_path_component(new_title)
-                    potential_audiobook_path = lib_path / safe_author / safe_title
-                    if potential_audiobook_path.exists():
-                        # Found matching audiobook folder - put ebook there
-                        new_path = potential_audiobook_path / old_path.name
-                        logger.info(f"Ebook merge: found audiobook folder, moving to {new_path}")
-                    else:
-                        # No audiobook folder - create ebook folder like normal
-                        new_path = new_path / old_path.name
-                        logger.info(f"Ebook: no audiobook folder found, creating new at {new_path}")
-                else:
-                    # Separate mode - create ebook folder
-                    new_path = new_path / old_path.name
-                    logger.info(f"Ebook: separate mode, moving to {new_path}")
-
-            # CRITICAL SAFETY: If path building failed, skip this item
-            if new_path is None:
-                logger.error(f"SAFETY BLOCK: Invalid path for '{new_author}' / '{new_title}' - skipping to prevent data loss")
-                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                         ('error', 'Path validation failed - unsafe author/title', row['book_id']))
-                conn.commit()
-                processed += 1
-                continue
-
-            # Check for drastic author change
-            drastic_change = is_drastic_author_change(row['current_author'], new_author)
-            protect_authors = config.get('protect_author_changes', True)
-
-            # If drastic change detected, run verification pipeline
-            if drastic_change and protect_authors:
-                logger.info(f"DRASTIC CHANGE DETECTED: {row['current_author']} -> {new_author}, running verification...")
-
-                # Run verification with all APIs
-                original_input = f"{row['current_author']}/{row['current_title']}"
-                verification = verify_drastic_change(
-                    original_input,
-                    row['current_author'], row['current_title'],
-                    new_author, new_title,
-                    config
-                )
-
-                if verification:
-                    if verification['verified']:
-                        # AI verified the change is correct (or corrected it)
-                        new_author = verification['author']
-                        new_title = verification['title']
-                        # Recheck if it's still drastic after verification
-                        drastic_change = is_drastic_author_change(row['current_author'], new_author)
-                        logger.info(f"VERIFIED: {row['current_author']} -> {new_author} ({verification['reasoning'][:50]}...)")
-                    elif verification['decision'] == 'WRONG':
-                        # AI says the change is wrong - use the recommended fix instead
-                        new_author = verification['author']
-                        new_title = verification['title']
-                        drastic_change = is_drastic_author_change(row['current_author'], new_author)
-                        logger.info(f"CORRECTED: {row['current_author']} -> {new_author} (was wrong: {verification['reasoning'][:50]}...)")
-                    else:
-                        # AI is uncertain - check if Trust the Process mode enabled
-                        trust_mode = config.get('trust_the_process', False)
-                        if trust_mode and config.get('gemini_api_key'):
-                            # Try audio analysis as tie-breaker
-                            logger.info(f"TRUST THE PROCESS: Uncertain verification, trying audio tie-breaker...")
-                            # Use smart first-file detection for opening credits
-                            audio_result = analyze_audio_for_credits(str(old_path), config)
-
-                            if audio_result and audio_result.get('author'):
-                                audio_author = audio_result.get('author', '')
-                                audio_title = audio_result.get('title', '')
-                                # Check if audio confirms new author OR original author
-                                new_match = audio_author.lower() in new_author.lower() or new_author.lower() in audio_author.lower()
-                                old_match = audio_author.lower() in row['current_author'].lower() or row['current_author'].lower() in audio_author.lower()
-
-                                if new_match and not old_match:
-                                    # Audio confirms new author - proceed with change
-                                    logger.info(f"TRUST THE PROCESS: Audio confirms change to '{new_author}'")
-                                    if audio_title:
-                                        new_title = audio_title
-                                    drastic_change = False  # Allow auto-fix
-                                elif old_match and not new_match:
-                                    # Audio says keep original - don't change
-                                    logger.info(f"TRUST THE PROCESS: Audio says keep '{row['current_author']}'")
-                                    new_author = row['current_author']
-                                    drastic_change = False
-                                else:
-                                    # Audio is ambiguous - add to needs_attention list
-                                    logger.warning(f"TRUST THE PROCESS: Audio ambiguous, flagging for attention")
-                                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?, ?, ?, ?, ?, ?)''',
-                                             (row['book_id'], row['current_author'], row['current_title'],
-                                              new_author, new_title, str(old_path), str(new_path),
-                                              f"Unidentifiable: AI uncertain, audio ambiguous. Audio heard: {audio_author}",
-                                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                              str(new_year) if new_year else None, new_edition, new_variant))
-                                    c.execute('UPDATE books SET status = ? WHERE id = ?', ('needs_attention', row['book_id']))
-                                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                                    processed += 1
-                                    continue
-                            else:
-                                # No audio analysis possible - flag for attention
-                                logger.warning(f"TRUST THE PROCESS: No audio available, flagging for attention")
-                                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                                  new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                             VALUES (?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?, ?, ?, ?, ?, ?)''',
-                                         (row['book_id'], row['current_author'], row['current_title'],
-                                          new_author, new_title, str(old_path), str(new_path),
-                                          f"Unidentifiable: AI uncertain, no audio analysis available",
-                                          new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                          str(new_year) if new_year else None, new_edition, new_variant))
-                                c.execute('UPDATE books SET status = ? WHERE id = ?', ('needs_attention', row['book_id']))
-                                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                                processed += 1
-                                continue
-                        else:
-                            # Standard mode - block the change
-                            logger.warning(f"BLOCKED (uncertain): {row['current_author']} -> {new_author}")
-                            # Record as pending_fix for manual review
-                            c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                              new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?, ?)''',
-                                     (row['book_id'], row['current_author'], row['current_title'],
-                                      new_author, new_title, str(old_path), str(new_path),
-                                      f"Uncertain: {verification.get('reasoning', 'needs review')}",
-                                      new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                      str(new_year) if new_year else None, new_edition, new_variant))
-                            c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', row['book_id']))
-                            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                            processed += 1
-                            continue
-                else:
-                    # Verification failed completely - check Trust the Process mode
-                    trust_mode = config.get('trust_the_process', False)
-                    if trust_mode and config.get('gemini_api_key'):
-                        # Try audio analysis as last resort
-                        logger.info(f"TRUST THE PROCESS: Verification failed, trying audio as last resort...")
-                        # Use smart first-file detection for opening credits
-                        audio_result = analyze_audio_for_credits(str(old_path), config)
-                        if audio_result and audio_result.get('author'):
-                            # Use audio result directly
-                            new_author = audio_result.get('author', new_author)
-                            new_title = audio_result.get('title', new_title)
-                            new_narrator = audio_result.get('narrator', new_narrator)
-                            drastic_change = is_drastic_author_change(row['current_author'], new_author)
-                            logger.info(f"TRUST THE PROCESS: Using audio metadata: {new_author} - {new_title}")
-                        else:
-                            # Audio failed or no audio files - flag for attention
-                            c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                              new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                         VALUES (?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?, ?, ?, ?, ?, ?)''',
-                                     (row['book_id'], row['current_author'], row['current_title'],
-                                      new_author, new_title, str(old_path), str(new_path),
-                                      f"Unidentifiable: All verification methods failed",
-                                      new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                      str(new_year) if new_year else None, new_edition, new_variant))
-                            c.execute('UPDATE books SET status = ? WHERE id = ?', ('needs_attention', row['book_id']))
-                            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                            processed += 1
-                            continue
-                    else:
-                        # Standard mode - block the change
-                        logger.warning(f"BLOCKED (verification failed): {row['current_author']} -> {new_author}")
-                        c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', row['book_id']))
-                        c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                        processed += 1
-                        continue
-
-                # Recalculate new_path with potentially updated author/title/narrator
-                new_path = build_new_path(lib_path, new_author, new_title,
-                                          series=new_series, series_num=new_series_num,
-                                          narrator=new_narrator, year=new_year,
-                                          edition=new_edition, variant=new_variant, config=config)
-
-                # CRITICAL SAFETY: Check recalculated path
-                if new_path is None:
-                    logger.error(f"SAFETY BLOCK: Invalid recalculated path for '{new_author}' / '{new_title}'")
-                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                    c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                             ('error', 'Path validation failed after verification', row['book_id']))
-                    conn.commit()
-                    processed += 1
-                    continue
-
-            # Issue #57 fix: Check if book is already in correct location
-            # Without this check, we'd compare the folder to itself and mark it as "duplicate"
-            if old_path.resolve() == new_path.resolve():
-                # Issue #59: If author is placeholder (Unknown, etc.), advance to Layer 3 for audio analysis
-                if is_placeholder_author(new_author):
-                    # Check if audio analysis is enabled before advancing
-                    if config.get('enable_audio_analysis', False):
-                        logger.info(f"Advancing to Layer 3 (placeholder author '{new_author}'): {old_path.name}")
-                        c.execute('UPDATE books SET verification_layer = 3 WHERE id = ?', (row['book_id'],))
-                        conn.commit()
-                        processed += 1
-                        continue
-                    else:
-                        # Audio analysis disabled - mark as needs_attention
-                        logger.info(f"Needs attention (placeholder author '{new_author}', no audio analysis): {old_path.name}")
-                        c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                        c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                                 ('needs_attention', f"Could not identify author (currently '{new_author}')", row['book_id']))
-                else:
-                    # Only mark as verified if we have actual confidence in the identification
-                    # Otherwise the AI is just echoing back the folder name without verification
-                    book_confidence = row.get('confidence', 0) or 0
-                    if book_confidence >= 40:
-                        logger.info(f"Already correct (conf={book_confidence}): {old_path.name}")
-                        c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                        c.execute('UPDATE books SET status = ? WHERE id = ?',
-                                 ('verified', row['book_id']))
-                    else:
-                        # Low/no confidence - needs manual verification
-                        logger.info(f"Needs attention (low confidence={book_confidence}): {old_path.name}")
-                        c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                        c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                                 ('needs_attention', f'Low confidence ({book_confidence}) - could not verify identification', row['book_id']))
-                conn.commit()
-                processed += 1
-                continue
-
-            # Issue #59: If author is placeholder (Unknown, etc.), advance to Layer 3 for audio analysis
-            if is_placeholder_author(new_author):
-                # Check if audio analysis is enabled before advancing
-                if config.get('enable_audio_analysis', False):
-                    logger.info(f"Advancing to Layer 3 (AI returned placeholder '{new_author}'): {row['current_author']}/{row['current_title']}")
-                    c.execute('UPDATE books SET verification_layer = 3 WHERE id = ?', (row['book_id'],))
-                    conn.commit()
-                    processed += 1
-                    continue
-                else:
-                    # Audio analysis disabled - mark as needs_attention
-                    logger.info(f"NEEDS ATTENTION (placeholder author '{new_author}', no audio analysis): {row['current_author']}/{row['current_title']}")
-                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?, ?, ?, ?, ?, ?)''',
-                             (row['book_id'], row['current_author'], row['current_title'],
-                              new_author, new_title, str(old_path), str(new_path),
-                              f"Could not identify author (got '{new_author}')",
-                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                              str(new_year) if new_year else None, new_edition, new_variant))
-                    c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                             ('needs_attention', f"Could not identify author (got '{new_author}')", row['book_id']))
-                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                    processed += 1
-                    continue
-
-            # Only auto-fix if enabled AND NOT a drastic change (unless Trust the Process mode)
-            # In Trust the Process mode, verified drastic changes can be auto-fixed
-            trust_mode = config.get('trust_the_process', False)
-            can_auto_fix = config.get('auto_fix', False) and (not drastic_change or trust_mode)
-            if can_auto_fix:
-                # Actually rename the folder
-                try:
-                    if new_path.exists():
-                        # Destination already exists - check if it has files
-                        existing_files = list(new_path.iterdir())
-                        if existing_files:
-                            # Try to find a unique path by adding version distinguishers
-                            logger.info(f"CONFLICT: {new_path} exists, trying version-aware naming...")
-                            resolved_path = None
-
-                            # Try distinguishers in order: narrator, variant, edition, year
-                            # Only try if we have the data AND it's not already in the path
-                            distinguishers_to_try = []
-
-                            if new_narrator and new_narrator not in str(new_path):
-                                distinguishers_to_try.append(('narrator', new_narrator, None, None))
-                            if new_variant and new_variant not in str(new_path):
-                                distinguishers_to_try.append(('variant', None, None, new_variant))
-                            if new_edition and new_edition not in str(new_path):
-                                distinguishers_to_try.append(('edition', None, new_edition, None))
-                            if new_year and str(new_year) not in str(new_path):
-                                distinguishers_to_try.append(('year', None, None, None))
-
-                            for dist_type, narrator_val, edition_val, variant_val in distinguishers_to_try:
-                                test_path = build_new_path(
-                                    lib_path, new_author, new_title,
-                                    series=new_series, series_num=new_series_num,
-                                    narrator=narrator_val or new_narrator,
-                                    year=new_year if dist_type == 'year' else None,
-                                    edition=edition_val,
-                                    variant=variant_val,
-                                    config=config
-                                )
-                                if test_path and not test_path.exists():
-                                    resolved_path = test_path
-                                    logger.info(f"Resolved conflict using {dist_type}: {resolved_path}")
-                                    break
-
-                            if resolved_path:
-                                new_path = resolved_path
-                            else:
-                                # Couldn't resolve with distinguishers - check if it's actually a duplicate
-                                logger.info(f"Comparing folders to check for duplicate: {old_path} vs {new_path}")
-                                comparison = compare_book_folders(old_path, new_path)
-
-                                # Check for corrupt file scenarios first
-                                if comparison.get('dest_corrupt'):
-                                    # Destination is corrupt - source is valid, move source to version path
-                                    # Don't replace corrupt dest - let user deal with that
-                                    logger.warning(f"CORRUPT DEST: {new_path} has corrupt/unreadable files, source {old_path} is valid - moving source to version path")
-
-                                    # Create version path for the valid source
-                                    version_path = build_new_path(
-                                        lib_path, new_author, new_title,
-                                        series=new_series, series_num=new_series_num,
-                                        narrator=new_narrator,
-                                        variant="Valid Copy" if not new_variant else f"{new_variant}, Valid Copy",
-                                        config=config
-                                    )
-                                    if version_path and not version_path.exists():
-                                        new_path = version_path
-                                        logger.info(f"Moving valid source to: {new_path}")
-                                        # Fall through to the move code below
-                                    else:
-                                        # Can't create version path - just record the issue
-                                        reason = comparison.get('reason', 'Destination files are corrupt/unreadable')
-                                        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                                          new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                                     VALUES (?, ?, ?, ?, ?, ?, ?, 'corrupt_dest', ?, ?, ?, ?, ?, ?, ?)''',
-                                                 (row['book_id'], row['current_author'], row['current_title'],
-                                                  new_author, new_title, str(old_path), str(new_path),
-                                                  f"{reason}. Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files (corrupt)",
-                                                  new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                                  str(new_year) if new_year else None, new_edition, new_variant))
-                                        c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                                                 ('corrupt_dest', f'Destination {new_path} is corrupt - source is valid', row['book_id']))
-                                        c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                                        processed += 1
-                                        continue
-
-                                if comparison.get('source_corrupt'):
-                                    # Source is corrupt - mark as duplicate (keep dest)
-                                    logger.warning(f"CORRUPT SOURCE: {old_path} has corrupt/unreadable files, dest {new_path} is valid")
-                                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'duplicate', ?, ?, ?, ?, ?, ?, ?)''',
-                                             (row['book_id'], row['current_author'], row['current_title'],
-                                              new_author, new_title, str(old_path), str(new_path),
-                                              f"Source is corrupt/unreadable, destination is valid. Recommend removing corrupt source.",
-                                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                              str(new_year) if new_year else None, new_edition, new_variant))
-                                    c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                                             ('duplicate', f'Corrupt - valid copy exists at {new_path}', row['book_id']))
-                                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                                    processed += 1
-                                    continue
-
-                                if comparison['identical'] or comparison['same_book']:
-                                    # It's a duplicate! Mark for removal instead of conflict
-                                    logger.info(f"DUPLICATE DETECTED: {old_path} is duplicate of {new_path} "
-                                               f"(identical={comparison['identical']}, overlap={comparison['overlap_ratio']:.0%})")
-
-                                    # Determine which to keep based on recommendation
-                                    recommendation = comparison.get('recommendation', 'keep_dest')
-                                    reason = comparison.get('reason', '')
-
-                                    if recommendation == 'keep_source' and comparison['source_better']:
-                                        # Source is better - note this for user review
-                                        logger.info(f"Note: Source is better ({reason})")
-
-                                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'duplicate', ?, ?, ?, ?, ?, ?, ?)''',
-                                             (row['book_id'], row['current_author'], row['current_title'],
-                                              new_author, new_title, str(old_path), str(new_path),
-                                              f"Duplicate detected ({comparison['overlap_ratio']:.0%} match, {comparison['matching_count']} files). Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files. {reason}",
-                                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                              str(new_year) if new_year else None, new_edition, new_variant))
-                                    c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                                             ('duplicate', f'Duplicate of {new_path}', row['book_id']))
-                                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                                    processed += 1
-                                    continue
-                                else:
-                                    # Different versions - these are BOTH valid, create unique path for source
-                                    # Don't error out - find a way to distinguish them and move!
-                                    deep_info = comparison.get('deep_analysis', {})
-                                    logger.info(f"DIFFERENT VERSIONS: {old_path.name} vs existing {new_path.name} - creating unique path")
-
-                                    # Generate a distinguisher based on what we know about the source
-                                    # Priority: narrator > file count > folder name hint
-                                    version_distinguisher = None
-
-                                    # Try to get narrator from source audio files
-                                    if not new_narrator:
-                                        try:
-                                            source_narrator = extract_narrator_from_folder(old_path)
-                                            if source_narrator:
-                                                version_distinguisher = source_narrator
-                                                logger.info(f"Using narrator from source: {source_narrator}")
-                                        except Exception as e:
-                                            logger.debug(f"Could not extract narrator: {e}")
-                                    else:
-                                        version_distinguisher = new_narrator
-
-                                    # Fallback: use file characteristics
-                                    if not version_distinguisher:
-                                        src_files = comparison.get('source_files', 0)
-                                        src_size_mb = comparison.get('source_size', 0) // 1024 // 1024
-                                        # Create a distinguisher like "Version B" or use file count
-                                        # Check what versions already exist
-                                        existing_versions = []
-                                        for sibling in new_path.parent.iterdir():
-                                            if sibling.is_dir() and sibling.name.startswith(new_path.name):
-                                                existing_versions.append(sibling.name)
-
-                                        # Generate next version letter
-                                        if not existing_versions:
-                                            # Existing one is "A", new one is "B"
-                                            version_distinguisher = "Version B"
-                                        else:
-                                            # Find next available letter
-                                            used_letters = set()
-                                            for v in existing_versions:
-                                                if 'Version ' in v:
-                                                    try:
-                                                        letter = v.split('Version ')[1][0]
-                                                        used_letters.add(letter)
-                                                    except:
-                                                        pass
-                                            for letter in 'BCDEFGHIJKLMNOPQRSTUVWXYZ':
-                                                if letter not in used_letters:
-                                                    version_distinguisher = f"Version {letter}"
-                                                    break
-
-                                        logger.info(f"Using fallback distinguisher: {version_distinguisher}")
-
-                                    # Build new path with distinguisher
-                                    if version_distinguisher:
-                                        # Add as variant (in brackets)
-                                        unique_path = build_new_path(
-                                            lib_path, new_author, new_title,
-                                            series=new_series, series_num=new_series_num,
-                                            narrator=new_narrator,
-                                            variant=version_distinguisher if not new_variant else f"{new_variant}, {version_distinguisher}",
-                                            config=config
-                                        )
-                                        if unique_path and not unique_path.exists():
-                                            new_path = unique_path
-                                            logger.info(f"Resolved to unique path: {new_path}")
-                                            # Don't continue - fall through to the move code below
-                                        else:
-                                            # Still can't find unique path - now error
-                                            logger.warning(f"CONFLICT: Could not create unique path for different version")
-                                            c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                                              new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                                         VALUES (?, ?, ?, ?, ?, ?, ?, 'error', ?, ?, ?, ?, ?, ?, ?)''',
-                                                     (row['book_id'], row['current_author'], row['current_title'],
-                                                      new_author, new_title, str(old_path), str(new_path),
-                                                      f"Different version exists, could not generate unique path. Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files",
-                                                      new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                                      str(new_year) if new_year else None, new_edition, new_variant))
-                                            c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                                                     ('conflict', 'Different version exists, unique path generation failed', row['book_id']))
-                                            c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                                            processed += 1
-                                            continue
-                                    else:
-                                        # No distinguisher at all - error
-                                        logger.warning(f"CONFLICT: No distinguisher available for different version")
-                                        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                                          new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                                     VALUES (?, ?, ?, ?, ?, ?, ?, 'error', ?, ?, ?, ?, ?, ?, ?)''',
-                                                 (row['book_id'], row['current_author'], row['current_title'],
-                                                  new_author, new_title, str(old_path), str(new_path),
-                                                  f"Different version exists, no distinguisher available. Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files",
-                                                  new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                                  str(new_year) if new_year else None, new_edition, new_variant))
-                                        c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                                                 ('conflict', 'Different version exists', row['book_id']))
-                                        c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-                                        processed += 1
-                                        continue
-                        else:
-                            # Destination is empty folder - safe to use it
-                            shutil.move(str(old_path), str(new_path.parent / (new_path.name + "_temp")))
-                            new_path.rmdir()
-                            (new_path.parent / (new_path.name + "_temp")).rename(new_path)
-
-                        # Clean up empty parent author folder
-                        try:
-                            if old_path.parent.exists() and not any(old_path.parent.iterdir()):
-                                old_path.parent.rmdir()
-                        except OSError:
-                            pass  # Parent not empty, that's fine
-
-                    if not new_path.exists():
-                        # Destination doesn't exist - simple rename
-                        new_path.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.move(str(old_path), str(new_path))
-
-                        # Clean up empty parent author folder
-                        try:
-                            if old_path.parent.exists() and not any(old_path.parent.iterdir()):
-                                old_path.parent.rmdir()
-                        except OSError:
-                            pass  # Parent not empty, that's fine
-
-                    logger.info(f"Fixed: {row['current_author']}/{row['current_title']} -> {new_author}/{new_title}")
-
-                    # Clean up any stale pending entries for this book before recording fix
-                    c.execute("DELETE FROM history WHERE book_id = ? AND status = 'pending_fix'", (row['book_id'],))
-
-                    # Record in history
-                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
-                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'fixed', ?, ?, ?, ?, ?, ?)''',
-                             (row['book_id'], row['current_author'], row['current_title'],
-                              new_author, new_title, str(old_path), str(new_path),
-                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                              str(new_year) if new_year else None, new_edition, new_variant))
-                    history_id = c.lastrowid  # Capture the newly inserted history record ID
-
-                    # Update book record - handle case where another book already has this path
-                    try:
-                        c.execute('''UPDATE books SET path = ?, current_author = ?, current_title = ?, status = ?
-                                     WHERE id = ?''',
-                                 (str(new_path), new_author, new_title, 'fixed', row['book_id']))
-                    except sqlite3.IntegrityError:
-                        # Path already exists (duplicate book merged) - delete this book record
-                        logger.info(f"Merged duplicate: {row['path']} -> existing {new_path}")
-                        c.execute('DELETE FROM books WHERE id = ?', (row['book_id'],))
-
-                    fixed += 1
-
-                    # Embed metadata tags if enabled
-                    if config.get('metadata_embedding_enabled', False):
-                        try:
-                            embed_metadata = build_metadata_for_embedding(
-                                author=new_author,
-                                title=new_title,
-                                series=new_series,
-                                series_num=str(new_series_num) if new_series_num else None,
-                                narrator=new_narrator,
-                                year=str(new_year) if new_year else None,
-                                edition=new_edition,
-                                variant=new_variant
-                            )
-                            embed_result = embed_tags_for_path(
-                                new_path,
-                                embed_metadata,
-                                create_backup=config.get('metadata_embedding_backup_sidecar', True),
-                                overwrite=config.get('metadata_embedding_overwrite_managed', True)
-                            )
-                            if embed_result['success']:
-                                embed_status = 'ok'
-                                embed_error = None
-                                logger.info(f"Embedded tags in {embed_result['files_processed']} files at {new_path}")
-                            else:
-                                embed_status = 'error'
-                                embed_error = embed_result.get('error') or '; '.join(embed_result.get('errors', []))[:500]
-                                logger.warning(f"Tag embedding failed for {new_path}: {embed_error}")
-                            # Update history with embed status using the captured history ID
-                            c.execute('UPDATE history SET embed_status = ?, embed_error = ? WHERE id = ?',
-                                     (embed_status, embed_error, history_id))
-                        except Exception as embed_e:
-                            logger.error(f"Tag embedding exception for {new_path}: {embed_e}")
-                            c.execute('UPDATE history SET embed_status = ?, embed_error = ? WHERE id = ?',
-                                     ('error', str(embed_e)[:500], history_id))
-
-                except Exception as e:
-                    error_msg = str(e)
-                    logger.error(f"Error fixing {row['path']}: {error_msg}")
-                    c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                             ('error', error_msg, row['book_id']))
-            else:
-                # Drastic change or auto_fix disabled - record as pending for manual review
-                logger.info(f"PENDING APPROVAL: {row['current_author']} -> {new_author} (drastic={drastic_change})")
-                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
-                                                  new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?)''',
-                         (row['book_id'], row['current_author'], row['current_title'],
-                          new_author, new_title, str(old_path), str(new_path),
-                          new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                          str(new_year) if new_year else None, new_edition, new_variant))
-                c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', row['book_id']))
-                fixed += 1
-        else:
-            # No fix needed - AI confirmed current values are correct
-            # Issue #59: check if author is placeholder
-            if is_placeholder_author(row['current_author']):
-                c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
-                         ('needs_attention', f"Could not identify author (currently '{row['current_author']}')", row['book_id']))
-                logger.info(f"Needs attention (placeholder author): {row['current_author']}/{row['current_title']}")
-            else:
-                # Create profile documenting that AI verified this book
-                profile = BookProfile()
-                profile.author.add_source('ai', new_author)
-                profile.title.add_source('ai', new_title)
-                if new_series:
-                    profile.series.add_source('ai', new_series)
-                if new_series_num:
-                    profile.series_num.add_source('ai', new_series_num)
-                if new_narrator:
-                    profile.narrator.add_source('ai', new_narrator)
-                profile.verification_layers_used = ['ai']
-                profile.finalize()
-
-                c.execute('UPDATE books SET status = ?, profile = ?, confidence = ? WHERE id = ?',
-                         ('verified', json.dumps(profile.to_dict()), profile.overall_confidence, row['book_id']))
-                logger.info(f"Verified OK (AI confirmed): {row['current_author']}/{row['current_title']} (conf={profile.overall_confidence})")
-
-        # Remove from queue
-        c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
-        processed += 1
-
-    # Update stats (INSERT if not exists first)
-    c.execute('INSERT OR IGNORE INTO stats (date) VALUES (?)', (today,))
-    c.execute('UPDATE stats SET fixed = COALESCE(fixed, 0) + ? WHERE date = ?', (fixed, today))
-
-    conn.commit()
-    conn.close()
-
-    logger.info(f"[LAYER 2/AI] Batch complete: {processed} processed, {fixed} fixed")
-    return processed, fixed
+    """Wrapper for extracted layer function - passes app-level dependencies."""
+    def set_book(author, title, stage=""):
+        set_current_book(author, title, stage)
+
+    return _process_queue_raw(
+        config=config,
+        get_db=get_db,
+        check_rate_limit=check_rate_limit,
+        call_ai=call_ai,
+        detect_multibook_vs_chapters=detect_multibook_vs_chapters,
+        auto_save_narrator=auto_save_narrator,
+        standardize_initials=standardize_initials,
+        extract_series_from_title=extract_series_from_title,
+        is_placeholder_author=is_placeholder_author,
+        build_new_path=build_new_path,
+        is_drastic_author_change=is_drastic_author_change,
+        verify_drastic_change=verify_drastic_change,
+        analyze_audio_for_credits=analyze_audio_for_credits,
+        compare_book_folders=compare_book_folders,
+        sanitize_path_component=sanitize_path_component,
+        extract_narrator_from_folder=extract_narrator_from_folder,
+        build_metadata_for_embedding=build_metadata_for_embedding,
+        embed_tags_for_path=embed_tags_for_path,
+        BookProfile=BookProfile,
+        audio_extensions=AUDIO_EXTENSIONS,
+        limit=limit,
+        verification_layer=verification_layer,
+        set_current_book=set_book
+    )
 
 
 def process_layer_3_audio(config, limit=None, verification_layer=3):
@@ -10333,6 +9267,9 @@ def apply_fix(history_id):
 
         # Update history status
         c.execute('UPDATE history SET status = ? WHERE id = ?', ('fixed', history_id))
+
+        # Issue #79: Remove from queue - this was missing, causing stuck queue items
+        c.execute('DELETE FROM queue WHERE book_id = ?', (fix['book_id'],))
 
         # Embed metadata tags if enabled
         embed_status = None
@@ -11474,6 +10411,7 @@ def settings_page():
         config['enable_audio_analysis'] = 'enable_audio_analysis' in request.form
         config['enable_content_analysis'] = 'enable_content_analysis' in request.form  # Issue #65: Layer 4
         config['use_bookdb_for_audio'] = 'use_bookdb_for_audio' in request.form
+        config['enable_voice_id'] = 'enable_voice_id' in request.form  # Skaldleita narrator voice ID
         config['deep_scan_mode'] = 'deep_scan_mode' in request.form
         config['profile_confidence_threshold'] = int(request.form.get('profile_confidence_threshold', 85))
         config['skip_confirmations'] = 'skip_confirmations' in request.form
@@ -11484,6 +10422,7 @@ def settings_page():
         config['metadata_embedding_backup_sidecar'] = 'metadata_embedding_backup_sidecar' in request.form
         # Language settings
         config['preferred_language'] = request.form.get('preferred_language', 'en')
+        config['strict_language_matching'] = 'strict_language_matching' in request.form
         config['preserve_original_titles'] = 'preserve_original_titles' in request.form
         config['detect_language_from_audio'] = 'detect_language_from_audio' in request.form
         # google_books_api_key is now stored in secrets only (security fix)
@@ -11523,6 +10462,7 @@ def settings_page():
         new_openrouter_key = request.form.get('openrouter_api_key', '').strip()
         new_gemini_key = request.form.get('gemini_api_key', '').strip()
         new_google_books_key = request.form.get('google_books_api_key', '').strip()
+        new_bookdb_key = request.form.get('bookdb_api_key', '').strip()
 
         # Only overwrite existing keys if user entered a new value
         if new_openrouter_key:
@@ -11531,6 +10471,8 @@ def settings_page():
             secrets['gemini_api_key'] = new_gemini_key
         if new_google_books_key:
             secrets['google_books_api_key'] = new_google_books_key
+        if new_bookdb_key:
+            secrets['bookdb_api_key'] = new_bookdb_key
         save_secrets(secrets)
 
         return redirect(url_for('settings_page'))
@@ -11542,6 +10484,7 @@ def settings_page():
     config['gemini_api_key'] = secrets.get('gemini_api_key', '')
     config['openrouter_api_key'] = secrets.get('openrouter_api_key', '')
     config['google_books_api_key'] = secrets.get('google_books_api_key', '')
+    config['bookdb_api_key'] = secrets.get('bookdb_api_key', '')
     return render_template('settings.html', config=config, version=APP_VERSION)
 
 
@@ -12109,6 +11052,9 @@ def api_process():
 
     logger.info(f"API process called: all={process_all}, limit={limit}")
 
+    # Update status to show we're processing
+    update_processing_status('active', True)
+
     if process_all:
         # Process entire queue in batches
         processed, fixed = process_all_queue(config)
@@ -12147,6 +11093,10 @@ def api_process():
     remaining = c.fetchone()[0]
     conn.close()
 
+    # Clear active status when done
+    update_processing_status('active', False)
+    clear_current_book()
+
     # Build helpful status message
     if remaining == 0:
         status = 'complete'
@@ -12165,10 +11115,176 @@ def api_process():
         'message': message
     })
 
+
+# Background processing thread state
+_bg_processing_thread = None
+_bg_processing_active = False
+
+@app.route('/api/process_background', methods=['POST'])
+def api_process_background():
+    """Start background processing that updates status in real-time.
+
+    Unlike /api/process which blocks, this returns immediately and
+    processes in a background thread so the status bar can update live.
+    """
+    global _bg_processing_thread, _bg_processing_active
+
+    # Check if already processing
+    if _bg_processing_active:
+        return jsonify({
+            'success': False,
+            'message': 'Background processing already running'
+        })
+
+    def process_in_background():
+        global _bg_processing_active
+        _bg_processing_active = True
+        try:
+            config = load_config()
+            update_processing_status('active', True)
+
+            # Get queue count for progress tracking
+            conn = get_db()
+            c = conn.cursor()
+            c.execute('SELECT COUNT(*) FROM queue')
+            total_queue = c.fetchone()[0]
+            conn.close()
+
+            update_processing_status('total', total_queue)
+            processed_count = 0
+
+            # Process in batches until queue is empty or we hit a limit
+            max_batches = 100  # Safety limit
+            for batch in range(max_batches):
+                # Check remaining
+                conn = get_db()
+                c = conn.cursor()
+                c.execute('SELECT COUNT(*) FROM queue')
+                remaining = c.fetchone()[0]
+                conn.close()
+
+                if remaining == 0:
+                    break
+
+                update_processing_status('queue_remaining', remaining)
+
+                # Process one batch (Layer 1 + Layer 2)
+                if config.get('enable_api_lookups', True):
+                    update_processing_status('layer', 3)  # API Lookup
+                    l1_processed, l1_resolved = process_layer_1_api(config, limit=3)
+                    processed_count += l1_processed
+
+                if config.get('enable_ai_verification', True):
+                    update_processing_status('layer', 4)  # AI Verify
+                    l2_processed, l2_fixed = process_queue(config, limit=3)
+                    processed_count += l2_processed
+
+                update_processing_status('processed', processed_count)
+
+                # Brief pause to allow status polling
+                import time
+                time.sleep(0.1)
+
+        except Exception as e:
+            logger.error(f"Background processing error: {e}")
+        finally:
+            update_processing_status('active', False)
+            update_processing_status('layer', 0)
+            clear_current_book()
+            _bg_processing_active = False
+
+    import threading
+    _bg_processing_thread = threading.Thread(target=process_in_background, daemon=True)
+    _bg_processing_thread.start()
+
+    return jsonify({
+        'success': True,
+        'message': 'Background processing started. Watch the status bar for updates.'
+    })
+
+
 @app.route('/api/process_status')
 def api_process_status():
     """Get current processing status."""
     return jsonify(processing_status)
+
+
+@app.route('/api/live_status')
+def api_live_status():
+    """Get comprehensive live status for the status bar.
+
+    Returns worker state, processing status, queue depth, and recent activity
+    all in one efficient call for the persistent status bar.
+    """
+    import time as time_module
+
+    # Get processing status
+    status = get_processing_status()
+
+    # Get queue depth
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) as count FROM queue')
+    queue_count = c.fetchone()['count']
+
+    # Get pending fixes count
+    c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'pending_fix'")
+    pending_fixes = c.fetchone()['count']
+
+    # Get recent activity (last 5 processed books)
+    c.execute('''SELECT new_author, new_title, status, fixed_at
+                 FROM history
+                 ORDER BY fixed_at DESC
+                 LIMIT 5''')
+    recent = [dict(row) for row in c.fetchall()]
+    conn.close()
+
+    # Build response
+    worker_running = is_worker_running()
+
+    # Determine the display state
+    if status.get('active'):
+        state = 'processing'
+    elif worker_running:
+        state = 'idle'
+    else:
+        state = 'stopped'
+
+    # Calculate time since last activity
+    last_activity_time = status.get('last_activity_time', 0)
+    if last_activity_time:
+        seconds_ago = int(time_module.time() - last_activity_time)
+        if seconds_ago < 60:
+            time_ago = f"{seconds_ago}s ago"
+        elif seconds_ago < 3600:
+            time_ago = f"{seconds_ago // 60}m ago"
+        else:
+            time_ago = f"{seconds_ago // 3600}h ago"
+    else:
+        time_ago = ""
+
+    return jsonify({
+        'state': state,
+        'worker_running': worker_running,
+        'processing': {
+            'active': status.get('active', False),
+            'layer': status.get('layer', 0),
+            'layer_name': status.get('layer_name', 'Idle'),
+            'current_stage': status.get('current', ''),
+            'current_book': status.get('current_book', ''),
+            'current_author': status.get('current_author', ''),
+            'processed': status.get('processed', 0),
+            'total': status.get('total', 0),
+        },
+        'queue': {
+            'count': queue_count,
+            'pending_fixes': pending_fixes,
+        },
+        'last_activity': status.get('last_activity', ''),
+        'last_activity_time_ago': time_ago,
+        'recent': recent[:3],  # Last 3 for the dropdown
+    })
+
 
 @app.route('/api/apply_fix/<int:history_id>', methods=['POST'])
 def api_apply_fix(history_id):
@@ -12976,6 +12092,113 @@ def api_recent_history():
                  ORDER BY h.fixed_at DESC LIMIT 15''')
     items = [dict(row) for row in c.fetchall()]
     conn.close()
+    return jsonify({'items': items})
+
+
+@app.route('/api/recent_activity')
+def api_recent_activity():
+    """Get last 15 processed books with full info including series.
+    Shows ALL recently processed books - including pending items that have been touched.
+    Excludes series_folder, loose_file, needs_split - users want to see actual book processing."""
+    conn = get_db()
+    c = conn.cursor()
+    # Show all recently updated books (excluding folder/file markers)
+    # This shows books AS they're being processed, not just when complete
+    c.execute('''SELECT id, current_author, current_title, status, profile, updated_at, verification_layer
+                 FROM books
+                 WHERE status NOT IN ('series_folder', 'loose_file', 'needs_split', 'skipped')
+                 AND verification_layer > 0
+                 ORDER BY updated_at DESC
+                 LIMIT 15''')
+    rows = c.fetchall()
+    conn.close()
+
+    items = []
+    for row in rows:
+        profile_data = {}
+        if row['profile']:
+            try:
+                profile_data = json.loads(row['profile'])
+            except:
+                pass
+
+        # Extract series info from profile
+        series = profile_data.get('series', {}).get('value', '') or ''
+        series_num = profile_data.get('series_num', {}).get('value', '')
+        narrator = profile_data.get('narrator', {}).get('value', '') or ''
+        confidence = profile_data.get('overall_confidence', 0)
+        author = row['current_author'] or ''
+
+        # Format book number (B1, B2, etc.) - strip .0 from whole numbers
+        book_num_str = ''
+        if series_num:
+            try:
+                num = float(series_num)
+                if num == int(num):
+                    book_num_str = f"B{int(num)}"
+                else:
+                    book_num_str = f"B{series_num}"
+            except (ValueError, TypeError):
+                book_num_str = f"B{series_num}"
+
+        # Check if author-narrated (compare normalized names)
+        is_author_narrated = False
+        narrator_display = narrator
+        if narrator and author:
+            # Normalize for comparison: lowercase, remove common suffixes
+            def normalize_name(name):
+                n = name.lower().strip()
+                for suffix in [' jr', ' jr.', ' sr', ' sr.', ' iii', ' ii', ' phd', ' ph.d.']:
+                    n = n.replace(suffix, '')
+                return n
+
+            author_norm = normalize_name(author)
+            narrator_norm = normalize_name(narrator)
+
+            # Check if narrator contains author name or vice versa
+            if author_norm in narrator_norm or narrator_norm in author_norm:
+                is_author_narrated = True
+                narrator_display = "📖 Author"
+            # Check last name match for "FirstName LastName" patterns
+            elif ' ' in author and ' ' in narrator:
+                author_last = author_norm.split()[-1]
+                narrator_last = narrator_norm.split()[-1]
+                if author_last == narrator_last and len(author_last) > 2:
+                    is_author_narrated = True
+                    narrator_display = "📖 Author"
+
+        # Map status to user-friendly display
+        layer = row['verification_layer'] if 'verification_layer' in row.keys() else 0
+        if row['status'] == 'verified':
+            status_display = "✅ OK"
+        elif row['status'] == 'needs_fix':
+            status_display = "🔧 Rename"
+        elif row['status'] == 'needs_attention':
+            status_display = "⚠️ Review"
+        elif row['status'] == 'error':
+            status_display = "❌ Error"
+        elif row['status'] == 'pending':
+            # Show which layer it's at
+            layer_names = {1: "🎤 Audio", 2: "🤖 AI", 3: "📚 API", 4: "📁 Folder"}
+            status_display = layer_names.get(layer, f"⏳ L{layer}")
+        else:
+            status_display = row['status']
+
+        items.append({
+            'id': row['id'],
+            'author': author or 'Unknown',
+            'title': row['current_title'] or 'Unknown',
+            'series': series,
+            'book_num': book_num_str,
+            'narrator': narrator,
+            'narrator_display': narrator_display,
+            'is_author_narrated': is_author_narrated,
+            'status': row['status'],
+            'status_display': status_display,
+            'confidence': confidence,
+            'updated_at': row['updated_at']
+        })
+
     return jsonify({'items': items})
 
 
