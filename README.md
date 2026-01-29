@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.98-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.99-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,18 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.99** - 👁️ **Live Status Bar** - See what's happening in real-time!
+> - **Persistent Status Bar** - Always visible below navbar on every page
+> - **Current Book Display** - Shows author/title of book being processed
+> - **Layer Indicator** - See which processing stage is active (Audio, AI, API, Fallback)
+> - **Queue & Pending Counts** - Always know how many items are waiting
+> - **No More Log Diving** - Processing status at a glance without checking logs
+
+> **beta.98** - 🔑 **API Keys Always Visible** (Issue #73)
+> - **Dedicated API Keys Card** - All keys visible at once in Settings → AI Setup
+> - **No Provider Selection Required** - Enter any API key without changing primary provider
+> - **BookDB API Key Field** - Now available in UI (was missing)
 
 > **beta.97** - 🔍 **Series Mismatch Detection & SearXNG Fallback** (Issues #76, #77)
 > - **Series Mismatch Fix** - Books with series info now correctly reject wrong matches
@@ -408,6 +420,26 @@ Before pushing any changes, we run:
 3. **Code review** - Adversarial review of changes
 4. **Security audit** - Check for common vulnerabilities
 5. **Chaos library scan** - Full 500-book identification test
+
+---
+
+## Credits & Acknowledgments
+
+This project wouldn't be what it is without the community. Special thanks to:
+
+### @Merijeek
+The idea for **Skaldleita** (audio fingerprinting + narrator voice identification) came from Merijeek's suggestion in Issue #72 about MAM hashing. His vision of "Shazam for audiobooks" became the foundation for Skaldleita - instant audiobook identification via voice fingerprints. Beyond that, his thorough testing on the `:develop` branch has caught countless edge cases and made Library Manager far more robust. His blunt feedback pushes the project to be better.
+
+### Community Testers
+- **Dennis** - Remote Pi testing, ARM/low-resource environment validation
+- **WickedT53** - BookDB stability testing, Unraid platform support
+- **greggh** - UI bug reports, Docker testing
+- **freitagdavid** - Code quality feedback
+
+### Open Source Projects
+- **Chromaprint/fpcalc** - Audio fingerprinting technology
+- **faster-whisper** - Speech-to-text transcription
+- **WeSpeaker** - Voice embedding models for narrator identification
 
 ---
 

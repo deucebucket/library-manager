@@ -37,7 +37,7 @@ import subprocess
 # Configuration
 # IMPORTANT: Chaos library lives permanently on 4TB drive for testing
 # See CLAUDE.md for documentation
-SOURCE_LIBRARY = "/mnt/torrent-downloads/audiobooks"
+SOURCE_LIBRARY = "/mnt/rag_data/audiobooks"
 TARGET_LIBRARY = "/mnt/4tb-storage/library-manager-chaos-test/chaos-library"
 TARGET_FILE_COUNT = 500
 USE_HARDLINKS = False  # Use real copies - this is permanent test data
