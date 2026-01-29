@@ -10,6 +10,7 @@ from library_manager.utils.naming import (
 )
 from library_manager.utils.validation import (
     is_unsearchable_query,
+    is_garbage_author_match,
     is_garbage_match,
     is_placeholder_author,
     is_drastic_author_change,
@@ -38,6 +39,7 @@ __all__ = [
     'extract_author_title',
     # validation
     'is_unsearchable_query',
+    'is_garbage_author_match',
     'is_garbage_match',
     'is_placeholder_author',
     'is_drastic_author_change',

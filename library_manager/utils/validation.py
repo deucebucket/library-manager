@@ -45,6 +45,79 @@ def is_unsearchable_query(title):
     return False
 
 
+def is_garbage_author_match(original_author, suggested_author, threshold=0.2):
+    """
+    Check if a suggested author is garbage (completely different person).
+    Returns True if the match should be rejected.
+
+    Examples that should be rejected:
+    - "John Green" -> "Trivion Books" (completely different, not even a person)
+    - "Jordan B. Peterson" -> "Peter Jackson" (different person)
+    - "Mark Cain" -> "Mark Kane" -> allowed (close enough, could be typo)
+
+    Returns False (allow) if:
+    - Original author is a placeholder (Unknown, Various, etc.)
+    - Authors share significant name overlap
+    - One name contains the other's last name
+    """
+    # If no original author, can't validate - allow the match
+    if not original_author:
+        return False
+
+    # If original is a placeholder, any real author is an improvement
+    if is_placeholder_author(original_author):
+        return False
+
+    # If no suggested author, that's garbage
+    if not suggested_author:
+        return True
+
+    # Normalize names
+    orig_lower = original_author.lower().strip()
+    sugg_lower = suggested_author.lower().strip()
+
+    # Exact match is fine
+    if orig_lower == sugg_lower:
+        return False
+
+    # Extract name parts (remove punctuation)
+    def get_name_parts(name):
+        clean = re.sub(r'[^\w\s]', ' ', name.lower())
+        return set(p for p in clean.split() if len(p) > 1)
+
+    orig_parts = get_name_parts(original_author)
+    sugg_parts = get_name_parts(suggested_author)
+
+    if not orig_parts or not sugg_parts:
+        return True  # No usable name parts = garbage
+
+    # Check for any overlap
+    overlap = orig_parts.intersection(sugg_parts)
+
+    if overlap:
+        # Some name parts match - probably same person or close variant
+        return False
+
+    # No direct overlap - check if last names match
+    # Last name is usually the longest word or actual last word
+    orig_last = max(orig_parts, key=len) if orig_parts else ""
+    sugg_last = max(sugg_parts, key=len) if sugg_parts else ""
+
+    # Check if one contains the other (handles "Tolkien" vs "J.R.R. Tolkien")
+    if orig_last and sugg_last:
+        if orig_last in sugg_last or sugg_last in orig_last:
+            return False
+
+    # Calculate similarity as fallback
+    similarity = calculate_title_similarity(original_author, suggested_author)
+    if similarity >= threshold:
+        return False
+
+    # No overlap, no last name match, low similarity = garbage
+    logger.info(f"Garbage author match rejected: '{original_author}' -> '{suggested_author}' (similarity: {similarity:.2f})")
+    return True
+
+
 def is_garbage_match(original_title, suggested_title, threshold=0.3):
     """
     Check if an API suggestion is garbage (very low title similarity).
@@ -179,6 +252,7 @@ def is_drastic_author_change(old_author, new_author):
 
 __all__ = [
     'is_unsearchable_query',
+    'is_garbage_author_match',
     'is_garbage_match',
     'is_placeholder_author',
     'is_drastic_author_change',

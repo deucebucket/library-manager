@@ -60,7 +60,7 @@ from library_manager.utils import (
     calculate_title_similarity, extract_series_from_title, clean_search_title,
     standardize_initials, clean_author_name, extract_author_title,
     # validation
-    is_unsearchable_query, is_garbage_match, is_placeholder_author, is_drastic_author_change,
+    is_unsearchable_query, is_garbage_author_match, is_garbage_match, is_placeholder_author, is_drastic_author_change,
     # audio
     AUDIO_EXTENSIONS, EBOOK_EXTENSIONS,
     get_first_audio_file, extract_audio_sample, extract_audio_sample_from_middle,
@@ -1142,10 +1142,13 @@ def gather_all_api_candidates(title, author=None, config=None):
             # Search with author hint
             result = search_func(clean_title, author)
             if result:
-                # Filter garbage matches
+                # Filter garbage title matches
                 suggested_title = result.get('title', '')
+                suggested_author = result.get('author', '')
                 if is_garbage_match(clean_title, suggested_title):
-                    logger.info(f"[LAYER 1] REJECTED garbage from {api_name}: '{clean_title}' -> '{suggested_title}'")
+                    logger.info(f"[LAYER 1] REJECTED garbage title from {api_name}: '{clean_title}' -> '{suggested_title}'")
+                elif author and is_garbage_author_match(author, suggested_author):
+                    logger.info(f"[LAYER 1] REJECTED garbage author from {api_name}: '{author}' -> '{suggested_author}'")
                 else:
                     # Ensure source attribution for Book Profile system
                     result['source'] = api_name.lower()
@@ -1158,8 +1161,11 @@ def gather_all_api_candidates(title, author=None, config=None):
                 result_no_author = search_func(clean_title, None)
                 if result_no_author:
                     suggested_title = result_no_author.get('title', '')
+                    suggested_author = result_no_author.get('author', '')
                     if is_garbage_match(clean_title, suggested_title):
-                        logger.debug(f"REJECTED garbage from {api_name}: '{clean_title}' -> '{suggested_title}'")
+                        logger.debug(f"REJECTED garbage title from {api_name}: '{clean_title}' -> '{suggested_title}'")
+                    elif is_garbage_author_match(author, suggested_author):
+                        logger.debug(f"REJECTED garbage author from {api_name}: '{author}' -> '{suggested_author}'")
                     elif result_no_author.get('author') != (result.get('author') if result else None):
                         # Ensure source attribution for Book Profile system
                         result_no_author['source'] = api_name.lower()
