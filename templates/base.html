@@ -1,50 +1,127 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="{{ config.ui_theme|default('default') }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Library Manager{% endblock %}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <!-- Skaldleita theme fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
+        /* ===== THEME SYSTEM - CSS Variables ===== */
+        :root,
+        [data-theme="default"] {
+            /* Background colors */
+            --theme-bg-primary: #1a1a2e;
+            --theme-bg-secondary: #16213e;
+            --theme-bg-card: rgba(22, 33, 62, 0.8);
+            --theme-bg-navbar: rgba(15, 52, 96, 0.9);
+            --theme-bg-header: rgba(15, 52, 96, 0.5);
+            /* Accent colors */
+            --theme-accent-primary: #e94560;
+            --theme-accent-primary-hover: #d63d56;
+            --theme-accent-secondary: #00d9ff;
+            --theme-accent-warning: #ffc107;
+            --theme-accent-success: #00ff00;
+            /* Text colors */
+            --theme-text-primary: #eee;
+            --theme-text-secondary: rgba(255, 255, 255, 0.6);
+            --theme-text-link: #00d9ff;
+            /* Border colors */
+            --theme-border-primary: rgba(15, 52, 96, 0.5);
+            --theme-border-accent: rgba(0, 217, 255, 0.3);
+            /* Gradients */
+            --theme-gradient-bg: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            --theme-gradient-stat: linear-gradient(45deg, #e94560, #00d9ff);
+            --theme-gradient-progress: linear-gradient(90deg, #e94560, #00d9ff);
+            /* Fonts - Bootstrap system default */
+            --theme-font-heading: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            --theme-font-body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            /* Shadows */
+            --theme-shadow-glow: rgba(0, 217, 255, 0.1);
+            --theme-shadow-card: rgba(0, 0, 0, 0.5);
+        }
+
+        /* ===== SKALDLEITA THEME - Norse Gold ===== */
+        [data-theme="skaldleita"] {
+            /* Background colors - darker, more dramatic */
+            --theme-bg-primary: #0a0c10;
+            --theme-bg-secondary: #12151c;
+            --theme-bg-card: rgba(18, 21, 28, 0.9);
+            --theme-bg-navbar: rgba(26, 30, 40, 0.95);
+            --theme-bg-header: rgba(26, 30, 40, 0.7);
+            /* Accent colors - gold and ice blue */
+            --theme-accent-primary: #c9a55c;
+            --theme-accent-primary-hover: #e8c87d;
+            --theme-accent-secondary: #7eb8da;
+            --theme-accent-warning: #c9a55c;
+            --theme-accent-success: #7eb8da;
+            /* Text colors */
+            --theme-text-primary: #e8e6e3;
+            --theme-text-secondary: #9ca3af;
+            --theme-text-link: #c9a55c;
+            /* Border colors */
+            --theme-border-primary: rgba(201, 165, 92, 0.2);
+            --theme-border-accent: rgba(201, 165, 92, 0.4);
+            /* Gradients */
+            --theme-gradient-bg: linear-gradient(135deg, #0a0c10 0%, #12151c 100%);
+            --theme-gradient-stat: linear-gradient(45deg, #c9a55c, #7eb8da);
+            --theme-gradient-progress: linear-gradient(90deg, #c9a55c, #7eb8da);
+            /* Fonts - Norse-inspired */
+            --theme-font-heading: 'Cinzel', serif;
+            --theme-font-body: 'Inter', sans-serif;
+            /* Shadows - warmer glow */
+            --theme-shadow-glow: rgba(201, 165, 92, 0.15);
+            --theme-shadow-card: rgba(0, 0, 0, 0.6);
+        }
+
+        /* ===== Apply theme variables ===== */
         :root {
-            --bs-body-bg: #1a1a2e;
-            --bs-body-color: #eee;
-            --bs-card-bg: #16213e;
-            --bs-border-color: #0f3460;
+            --bs-body-bg: var(--theme-bg-primary);
+            --bs-body-color: var(--theme-text-primary);
+            --bs-card-bg: var(--theme-bg-card);
+            --bs-border-color: var(--theme-border-primary);
         }
         body {
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            background: var(--theme-gradient-bg);
             min-height: 100vh;
+            font-family: var(--theme-font-body);
+            color: var(--theme-text-primary);
+        }
+        h1, h2, h3, h4, h5, h6, .navbar-brand {
+            font-family: var(--theme-font-heading);
         }
         .navbar {
-            background: rgba(15, 52, 96, 0.9) !important;
+            background: var(--theme-bg-navbar) !important;
             backdrop-filter: blur(10px);
         }
         .card {
-            background: rgba(22, 33, 62, 0.8);
-            border: 1px solid rgba(15, 52, 96, 0.5);
+            background: var(--theme-bg-card);
+            border: 1px solid var(--theme-border-primary);
             border-radius: 12px;
         }
         .card-header {
-            background: rgba(15, 52, 96, 0.5);
-            border-bottom: 1px solid rgba(15, 52, 96, 0.5);
+            background: var(--theme-bg-header);
+            border-bottom: 1px solid var(--theme-border-primary);
         }
         .table {
             --bs-table-bg: transparent;
-            --bs-table-color: #eee;
+            --bs-table-color: var(--theme-text-primary);
         }
         .btn-primary {
-            background: #e94560;
-            border-color: #e94560;
+            background: var(--theme-accent-primary);
+            border-color: var(--theme-accent-primary);
         }
         .btn-primary:hover {
-            background: #d63d56;
-            border-color: #d63d56;
+            background: var(--theme-accent-primary-hover);
+            border-color: var(--theme-accent-primary-hover);
         }
         .btn-success {
-            background: #00d9ff;
-            border-color: #00d9ff;
+            background: var(--theme-accent-secondary);
+            border-color: var(--theme-accent-secondary);
             color: #000;
         }
         .stat-card {
@@ -56,19 +133,19 @@
         .stat-number {
             font-size: 2.5rem;
             font-weight: bold;
-            background: linear-gradient(45deg, #e94560, #00d9ff);
+            background: var(--theme-gradient-stat);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
         .badge-fix {
-            background: #e94560;
+            background: var(--theme-accent-primary);
         }
         .badge-ok {
-            background: #00d9ff;
+            background: var(--theme-accent-secondary);
             color: #000;
         }
         .badge-pending {
-            background: #ffc107;
+            background: var(--theme-accent-warning);
             color: #000;
         }
         .status-indicator {
@@ -79,8 +156,8 @@
             margin-right: 8px;
         }
         .status-running {
-            background: #00ff00;
-            box-shadow: 0 0 10px #00ff00;
+            background: var(--theme-accent-success);
+            box-shadow: 0 0 10px var(--theme-accent-success);
             animation: pulse 2s infinite;
         }
         .status-stopped {
@@ -94,10 +171,219 @@
             color: rgba(255,255,255,0.8) !important;
         }
         .nav-link:hover, .nav-link.active {
-            color: #00d9ff !important;
+            color: var(--theme-text-link) !important;
         }
         .text-muted {
-            color: rgba(255, 255, 255, 0.6) !important;
+            color: var(--theme-text-secondary) !important;
+        }
+        /* ===== SKALDLEITA THEME - Comprehensive Color Overrides ===== */
+        /* All Bootstrap text utilities -> Gold */
+        [data-theme="skaldleita"] .text-primary,
+        [data-theme="skaldleita"] .text-info,
+        [data-theme="skaldleita"] .text-success,
+        [data-theme="skaldleita"] .text-warning,
+        [data-theme="skaldleita"] .text-danger {
+            color: #c9a55c !important; /* ALL accent colors become gold */
+        }
+        [data-theme="skaldleita"] .text-secondary {
+            color: #8b7340 !important; /* Dim gold for secondary */
+        }
+        /* ALL icons become gold */
+        [data-theme="skaldleita"] i.bi,
+        [data-theme="skaldleita"] .bi {
+            color: #c9a55c !important;
+        }
+        /* Headings get gold accent */
+        [data-theme="skaldleita"] h1,
+        [data-theme="skaldleita"] h2,
+        [data-theme="skaldleita"] h3,
+        [data-theme="skaldleita"] h4,
+        [data-theme="skaldleita"] h5,
+        [data-theme="skaldleita"] .card-header {
+            color: #c9a55c !important;
+        }
+        /* Card header text */
+        [data-theme="skaldleita"] .card-header * {
+            color: #c9a55c !important;
+        }
+        /* Navbar brand gold */
+        [data-theme="skaldleita"] .navbar-brand {
+            color: #c9a55c !important;
+        }
+        /* Links gold */
+        [data-theme="skaldleita"] a {
+            color: #c9a55c !important;
+        }
+        [data-theme="skaldleita"] a:hover {
+            color: #e8c87d !important; /* Brighter gold on hover */
+        }
+        /* Nav links */
+        [data-theme="skaldleita"] .nav-link {
+            color: #9ca3af !important; /* Gray when inactive */
+        }
+        [data-theme="skaldleita"] .nav-link:hover,
+        [data-theme="skaldleita"] .nav-link.active {
+            color: #c9a55c !important; /* Gold when active/hover */
+        }
+        /* Background colors - all use gold */
+        [data-theme="skaldleita"] .bg-primary,
+        [data-theme="skaldleita"] .bg-info,
+        [data-theme="skaldleita"] .bg-success,
+        [data-theme="skaldleita"] .bg-warning,
+        [data-theme="skaldleita"] .bg-danger {
+            background-color: #c9a55c !important;
+            color: #0a0c10 !important; /* Dark text on gold bg */
+        }
+        /* Badges - gold with dark text */
+        [data-theme="skaldleita"] .badge {
+            background-color: #c9a55c !important;
+            color: #0a0c10 !important;
+            font-weight: 500;
+        }
+        /* Buttons */
+        [data-theme="skaldleita"] .btn-primary,
+        [data-theme="skaldleita"] .btn-success,
+        [data-theme="skaldleita"] .btn-info {
+            background-color: #c9a55c !important;
+            border-color: #c9a55c !important;
+            color: #0a0c10 !important;
+        }
+        [data-theme="skaldleita"] .btn-primary:hover,
+        [data-theme="skaldleita"] .btn-success:hover,
+        [data-theme="skaldleita"] .btn-info:hover {
+            background-color: #e8c87d !important;
+            border-color: #e8c87d !important;
+        }
+        [data-theme="skaldleita"] .btn-outline-primary,
+        [data-theme="skaldleita"] .btn-outline-success,
+        [data-theme="skaldleita"] .btn-outline-info,
+        [data-theme="skaldleita"] .btn-outline-secondary,
+        [data-theme="skaldleita"] .btn-outline-warning {
+            color: #c9a55c !important;
+            border-color: #c9a55c !important;
+        }
+        [data-theme="skaldleita"] .btn-outline-primary:hover,
+        [data-theme="skaldleita"] .btn-outline-success:hover,
+        [data-theme="skaldleita"] .btn-outline-info:hover,
+        [data-theme="skaldleita"] .btn-outline-secondary:hover,
+        [data-theme="skaldleita"] .btn-outline-warning:hover {
+            background-color: #c9a55c !important;
+            color: #0a0c10 !important;
+        }
+        /* Status bar elements */
+        [data-theme="skaldleita"] .status-book,
+        [data-theme="skaldleita"] .status-author {
+            color: #c9a55c !important;
+        }
+        [data-theme="skaldleita"] .status-layer {
+            background: rgba(201, 165, 92, 0.2) !important;
+            color: #c9a55c !important;
+        }
+        [data-theme="skaldleita"] .status-stat-value {
+            color: #c9a55c !important;
+        }
+        /* Stat numbers gradient -> solid gold */
+        [data-theme="skaldleita"] .stat-number {
+            background: none !important;
+            -webkit-background-clip: unset !important;
+            -webkit-text-fill-color: #c9a55c !important;
+            color: #c9a55c !important;
+        }
+        /* Form focus states */
+        [data-theme="skaldleita"] .form-control:focus,
+        [data-theme="skaldleita"] .form-select:focus {
+            border-color: #c9a55c !important;
+            box-shadow: 0 0 0 0.2rem rgba(201, 165, 92, 0.25) !important;
+        }
+        [data-theme="skaldleita"] .form-check-input:checked {
+            background-color: #c9a55c !important;
+            border-color: #c9a55c !important;
+        }
+        /* Gold borders around elements */
+        [data-theme="skaldleita"] .card {
+            border: 1px solid rgba(201, 165, 92, 0.3) !important;
+        }
+        [data-theme="skaldleita"] .card-header {
+            border-bottom: 1px solid rgba(201, 165, 92, 0.3) !important;
+        }
+        [data-theme="skaldleita"] .form-control,
+        [data-theme="skaldleita"] .form-select {
+            border-color: rgba(201, 165, 92, 0.3) !important;
+        }
+        [data-theme="skaldleita"] .table {
+            border-color: rgba(201, 165, 92, 0.2) !important;
+        }
+        [data-theme="skaldleita"] .table > :not(caption) > * > * {
+            border-color: rgba(201, 165, 92, 0.15) !important;
+        }
+        [data-theme="skaldleita"] .navbar {
+            border-bottom: 1px solid rgba(201, 165, 92, 0.2) !important;
+        }
+        [data-theme="skaldleita"] .status-bar {
+            border-bottom: 1px solid rgba(201, 165, 92, 0.3) !important;
+        }
+        [data-theme="skaldleita"] .alert {
+            border-color: rgba(201, 165, 92, 0.3) !important;
+        }
+        [data-theme="skaldleita"] .list-group-item {
+            border-color: rgba(201, 165, 92, 0.2) !important;
+        }
+        [data-theme="skaldleita"] hr {
+            border-color: rgba(201, 165, 92, 0.2) !important;
+            opacity: 1;
+        }
+        [data-theme="skaldleita"] .modal-content {
+            border: 1px solid rgba(201, 165, 92, 0.3) !important;
+        }
+        [data-theme="skaldleita"] .dropdown-menu {
+            border: 1px solid rgba(201, 165, 92, 0.3) !important;
+        }
+        /* Skaldleita-specific: rune divider */
+        [data-theme="skaldleita"] .rune-divider {
+            text-align: center;
+            color: var(--theme-accent-primary);
+            opacity: 0.3;
+            font-size: 0.8rem;
+            letter-spacing: 0.5em;
+            margin: 1rem 0;
+        }
+        [data-theme="skaldleita"] .rune-divider::before {
+            content: "ᚠ ᚢ ᚦ ᚨ ᚱ ᚲ";
+        }
+        /* Theme-aware form controls */
+        .form-select, .form-control {
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .form-select:focus, .form-control:focus {
+            border-color: var(--theme-accent-primary);
+            box-shadow: 0 0 0 0.2rem rgba(var(--theme-accent-primary-rgb, 233, 69, 96), 0.25);
+        }
+        .form-check-input:checked {
+            background-color: var(--theme-accent-primary);
+            border-color: var(--theme-accent-primary);
+        }
+        /* Theme-aware links */
+        a {
+            color: var(--theme-text-link);
+        }
+        a:hover {
+            color: var(--theme-accent-primary-hover);
+        }
+        /* Alert styling */
+        .alert-dark {
+            background: var(--theme-bg-card);
+            border-color: var(--theme-border-primary);
+            color: var(--theme-text-primary);
+        }
+        /* Skaldleita theme enhancements */
+        [data-theme="skaldleita"] .navbar-brand {
+            font-weight: 600;
+            letter-spacing: 0.05em;
+        }
+        [data-theme="skaldleita"] .card-header {
+            font-family: var(--theme-font-heading);
+            font-weight: 500;
+            letter-spacing: 0.02em;
         }
 
         /* ===== Book Info Card (Hover Preview) ===== */
@@ -105,10 +391,10 @@
             position: absolute;
             z-index: 1000;
             width: 380px;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            border: 1px solid rgba(0, 217, 255, 0.3);
+            background: var(--theme-gradient-bg);
+            border: 1px solid var(--theme-border-accent);
             border-radius: 12px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 20px rgba(0, 217, 255, 0.1);
+            box-shadow: 0 8px 32px var(--theme-shadow-card), 0 0 20px var(--theme-shadow-glow);
             padding: 0;
             display: none;
             overflow: hidden;
@@ -122,9 +408,9 @@
             to { opacity: 1; transform: translateY(0); }
         }
         .book-hover-card .card-header {
-            background: rgba(0, 217, 255, 0.1);
+            background: rgba(var(--theme-accent-secondary-rgb, 0, 217, 255), 0.1);
             padding: 12px 15px;
-            border-bottom: 1px solid rgba(0, 217, 255, 0.2);
+            border-bottom: 1px solid var(--theme-border-accent);
         }
         .book-hover-card .card-body {
             padding: 15px;
@@ -144,13 +430,13 @@
             height: 120px;
             object-fit: cover;
             border-radius: 6px;
-            border: 2px solid rgba(0, 217, 255, 0.3);
+            border: 2px solid var(--theme-border-accent);
             background: rgba(0, 0, 0, 0.3);
         }
         .book-hover-card .book-cover-placeholder {
             width: 80px;
             height: 120px;
-            background: linear-gradient(45deg, #0f3460, #16213e);
+            background: var(--theme-bg-header);
             border-radius: 6px;
             display: flex;
             align-items: center;
@@ -167,7 +453,7 @@
         .book-hover-card .book-title {
             font-size: 1.1rem;
             font-weight: 600;
-            color: #fff;
+            color: var(--theme-text-primary);
             margin-bottom: 4px;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -176,16 +462,16 @@
             -webkit-box-orient: vertical;
         }
         .book-hover-card .book-author {
-            color: #00d9ff;
+            color: var(--theme-accent-secondary);
             font-size: 0.9rem;
         }
         .book-hover-card .book-series {
-            color: #ffc107;
+            color: var(--theme-accent-warning);
             font-size: 0.85rem;
         }
         .book-hover-card .book-meta {
             font-size: 0.8rem;
-            color: rgba(255,255,255,0.6);
+            color: var(--theme-text-secondary);
         }
         .book-hover-card .book-description {
             font-size: 0.85rem;
@@ -204,8 +490,8 @@
             font-size: 0.7rem;
             padding: 2px 8px;
             border-radius: 10px;
-            background: rgba(0, 217, 255, 0.15);
-            color: #00d9ff;
+            background: rgba(var(--theme-accent-secondary-rgb, 0, 217, 255), 0.15);
+            color: var(--theme-accent-secondary);
         }
         .book-hover-card .abs-status {
             background: rgba(0,0,0,0.2);
@@ -229,7 +515,7 @@
             font-size: 0.75rem;
             color: rgba(255,255,255,0.4);
             padding: 8px;
-            border-top: 1px solid rgba(0, 217, 255, 0.1);
+            border-top: 1px solid var(--theme-border-accent);
         }
 
         /* ===== Search Result Cover Thumbnails ===== */
@@ -243,12 +529,12 @@
             height: 60px;
             object-fit: cover;
             border-radius: 4px;
-            border: 1px solid rgba(0, 217, 255, 0.3);
+            border: 1px solid var(--theme-border-accent);
         }
         .search-cover-placeholder {
             width: 40px;
             height: 60px;
-            background: linear-gradient(45deg, #0f3460, #16213e);
+            background: var(--theme-bg-header);
             border-radius: 4px;
             display: flex;
             align-items: center;
@@ -257,25 +543,24 @@
             font-size: 1.2rem;
         }
         .search-result-item {
-            border-color: rgba(0, 217, 255, 0.1) !important;
+            border-color: var(--theme-border-primary) !important;
         }
         .search-result-item:hover {
-            background: rgba(0, 217, 255, 0.1) !important;
-            border-color: rgba(0, 217, 255, 0.3) !important;
+            background: var(--theme-bg-header) !important;
+            border-color: var(--theme-border-accent) !important;
         }
 
         /* ===== Live Status Bar ===== */
         .status-bar {
-            background: linear-gradient(90deg, rgba(15, 52, 96, 0.95) 0%, rgba(22, 33, 62, 0.95) 100%);
-            border-bottom: 1px solid rgba(0, 217, 255, 0.2);
+            background: var(--theme-bg-navbar);
+            border-bottom: 1px solid var(--theme-border-accent);
             padding: 8px 0;
             margin-bottom: 1rem;
             backdrop-filter: blur(10px);
             transition: all 0.3s ease;
         }
         .status-bar.processing {
-            background: linear-gradient(90deg, rgba(233, 69, 96, 0.15) 0%, rgba(15, 52, 96, 0.95) 50%, rgba(0, 217, 255, 0.15) 100%);
-            border-bottom-color: rgba(233, 69, 96, 0.4);
+            border-bottom-color: var(--theme-accent-primary);
         }
         .status-bar.idle {
             opacity: 0.7;
@@ -303,11 +588,11 @@
             text-align: center;
         }
         .status-icon.processing {
-            color: #e94560;
+            color: var(--theme-accent-primary);
             animation: pulse-icon 1.5s ease-in-out infinite;
         }
         .status-icon.idle {
-            color: #00d9ff;
+            color: var(--theme-accent-secondary);
         }
         .status-icon.stopped {
             color: #6c757d;
@@ -325,31 +610,31 @@
         .status-primary {
             font-size: 0.9rem;
             font-weight: 500;
-            color: #fff;
+            color: var(--theme-text-primary);
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
         .status-secondary {
             font-size: 0.75rem;
-            color: rgba(255, 255, 255, 0.6);
+            color: var(--theme-text-secondary);
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
         .status-book {
-            color: #00d9ff;
+            color: var(--theme-accent-secondary);
             font-weight: 500;
         }
         .status-author {
-            color: #ffc107;
+            color: var(--theme-accent-warning);
         }
         .status-layer {
             display: inline-flex;
             align-items: center;
             gap: 4px;
-            background: rgba(233, 69, 96, 0.2);
-            color: #e94560;
+            background: rgba(var(--theme-accent-primary-rgb, 233, 69, 96), 0.2);
+            color: var(--theme-accent-primary);
             padding: 2px 8px;
             border-radius: 10px;
             font-size: 0.7rem;
@@ -375,12 +660,12 @@
         .status-stat-value {
             font-size: 1rem;
             font-weight: 600;
-            color: #00d9ff;
+            color: var(--theme-accent-secondary);
             line-height: 1;
         }
         .status-stat-label {
             font-size: 0.65rem;
-            color: rgba(255, 255, 255, 0.5);
+            color: var(--theme-text-secondary);
             text-transform: uppercase;
         }
         .status-progress {
@@ -394,7 +679,7 @@
         }
         .status-progress-bar {
             height: 100%;
-            background: linear-gradient(90deg, #e94560, #00d9ff);
+            background: var(--theme-gradient-progress);
             border-radius: 2px;
             transition: width 0.5s ease;
         }

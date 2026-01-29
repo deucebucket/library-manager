@@ -1009,6 +1009,18 @@
                                 </select>
                                 <small class="text-muted">Translates UI buttons and labels (not book metadata)</small>
                             </div>
+
+                            <!-- UI Theme -->
+                            <div class="mb-3">
+                                <label class="form-label">
+                                    <i class="bi bi-palette text-info"></i> Theme
+                                </label>
+                                <select class="form-select bg-dark text-light" name="ui_theme" id="ui_theme" onchange="applyTheme(this.value)">
+                                    <option value="default" {% if config.ui_theme == 'default' or not config.ui_theme %}selected{% endif %}>Default (Blue/Pink)</option>
+                                    <option value="skaldleita" {% if config.ui_theme == 'skaldleita' %}selected{% endif %}>Skaldleita (Gold/Norse)</option>
+                                </select>
+                                <small class="text-muted">Changes the color scheme and visual style</small>
+                            </div>
                             <hr class="my-3">
                             <!-- Metadata Language (for book lookups) -->
                             <div class="mb-3">
@@ -1437,6 +1449,19 @@ function toggleEmbeddingOptions() {
 function toggleWatchOptions() {
     document.getElementById('watch-options').style.display = document.getElementById('watch_mode').checked ? 'block' : 'none';
 }
+
+function applyTheme(themeName) {
+    // Apply theme immediately for live preview
+    document.documentElement.setAttribute('data-theme', themeName);
+    // Also store in localStorage for persistence before save
+    localStorage.setItem('ui_theme', themeName);
+}
+
+// Apply saved theme on page load
+(function() {
+    const savedTheme = localStorage.getItem('ui_theme') || '{{ config.ui_theme|default("default") }}';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+})();
 
 function toggleLanguageTagOptions() {
     const mode = document.getElementById('multilang_naming_mode').value;

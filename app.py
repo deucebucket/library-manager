@@ -6905,8 +6905,9 @@ def settings_page():
         config['metadata_embedding_enabled'] = 'metadata_embedding_enabled' in request.form
         config['metadata_embedding_overwrite_managed'] = 'metadata_embedding_overwrite_managed' in request.form
         config['metadata_embedding_backup_sidecar'] = 'metadata_embedding_backup_sidecar' in request.form
-        # Language settings
+        # Language and appearance settings
         config['ui_language'] = request.form.get('ui_language', 'en')  # UI translation language
+        config['ui_theme'] = request.form.get('ui_theme', 'default')  # UI theme (default, skaldleita)
         config['preferred_language'] = request.form.get('preferred_language', 'en')
         config['strict_language_matching'] = 'strict_language_matching' in request.form
         config['preserve_original_titles'] = 'preserve_original_titles' in request.form

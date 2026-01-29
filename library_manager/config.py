@@ -90,6 +90,8 @@ DEFAULT_CONFIG = {
     "strict_language_matching": True,  # Only match books in preferred language (prevents cross-language mismatches, Issue #81)
     # UI Language (i18n) - translates UI elements only, not book metadata
     "ui_language": "en",  # ISO 639-1 code for UI translation (en, es, de, fr, pl, ru, etc.)
+    # UI Theme - visual appearance
+    "ui_theme": "default",  # "default" (blue/pink), "skaldleita" (gold/Norse)
     # Multi-language naming - how to name books based on their detected language
     "multilang_naming_mode": "native",      # "native" = book's language, "preferred" = user's language, "tagged" = preferred + tag
     "language_tag_enabled": False,          # Add language tag to folder names (e.g., "Title (Russian)")
