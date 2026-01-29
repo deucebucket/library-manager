@@ -19,6 +19,19 @@ from library_manager.utils.path_safety import build_new_path
 logger = logging.getLogger(__name__)
 
 
+# Language detection for multi-language naming
+def _detect_title_language(text):
+    """Detect language from title text."""
+    if not text or len(text) < 3:
+        return None
+    try:
+        from langdetect import detect, DetectorFactory
+        DetectorFactory.seed = 0
+        return detect(text)
+    except Exception:
+        return None
+
+
 def process_layer_3_audio(
     config: Dict,
     get_db: Callable,
@@ -168,7 +181,7 @@ def process_layer_3_audio(
             new_series = audio_result.get('series', '')
             new_series_num = audio_result.get('series_num')
 
-            # Auto-save narrator to BookDB if we found one
+            # Auto-save narrator to Skaldleita if we found one
             if new_narrator and auto_save_narrator:
                 auto_save_narrator(new_narrator, source='audio_extract')
 
@@ -218,9 +231,11 @@ def process_layer_3_audio(
                     lib_path = book_path.parent.parent
                     logger.warning(f"[LAYER 3] Book path {book_path} not under any configured library, guessing lib_path={lib_path}")
 
+                # Detect language for multi-language naming
+                lang_code = _detect_title_language(new_title)
                 new_path = build_new_path(lib_path, new_author, new_title,
                                           series=new_series, series_num=new_series_num,
-                                          narrator=new_narrator, config=config)
+                                          narrator=new_narrator, language_code=lang_code, config=config)
 
                 if new_path is None:
                     analysis_results.append((row, 'error', {

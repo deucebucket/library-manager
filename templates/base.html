@@ -420,7 +420,7 @@
     <nav class="navbar navbar-expand-lg navbar-dark mb-4">
         <div class="container">
             <a class="navbar-brand" href="/">
-                <i class="bi bi-book"></i> Library Manager
+                <i class="bi bi-book"></i> {{ _('Library Manager') }}
             </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                 <span class="navbar-toggler-icon"></span>
@@ -429,39 +429,39 @@
                 <ul class="navbar-nav me-auto">
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/' %}active{% endif %}" href="/">
-                            <i class="bi bi-speedometer2"></i> Dashboard
+                            <i class="bi bi-speedometer2"></i> {{ _('Dashboard') }}
                         </a>
                     </li>
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/library' or request.path == '/queue' or request.path == '/orphans' %}active{% endif %}" href="/library">
-                            <i class="bi bi-collection"></i> Library
+                            <i class="bi bi-collection"></i> {{ _('Library') }}
                         </a>
                     </li>
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/history' %}active{% endif %}" href="/history">
-                            <i class="bi bi-clock-history"></i> History
+                            <i class="bi bi-clock-history"></i> {{ _('History') }}
                         </a>
                     </li>
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/abs' %}active{% endif %}" href="/abs">
-                            <i class="bi bi-headphones"></i> ABS
+                            <i class="bi bi-headphones"></i> {{ _('ABS') }}
                         </a>
                     </li>
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/settings' %}active{% endif %}" href="/settings">
-                            <i class="bi bi-gear"></i> Settings
+                            <i class="bi bi-gear"></i> {{ _('Settings') }}
                         </a>
                     </li>
                 </ul>
                 <div class="d-flex align-items-center">
                     <span id="update-badge" class="badge bg-success me-2" style="display: none; cursor: pointer;" onclick="showUpdateModal()">
-                        <i class="bi bi-arrow-up-circle"></i> Update Available
+                        <i class="bi bi-arrow-up-circle"></i> {{ _('Update Available') }}
                     </span>
-                    <span class="badge bg-secondary me-3" id="version-badge" title="Click to check for updates" style="cursor: pointer;" onclick="checkForUpdate()">
+                    <span class="badge bg-secondary me-3" id="version-badge" title="{{ _('Click to check for updates') }}" style="cursor: pointer;" onclick="checkForUpdate()">
                         v<span id="current-version">...</span>
                     </span>
                     <span class="status-indicator {% if worker_running %}status-running{% else %}status-stopped{% endif %}"></span>
-                    <span class="text-light me-3">Worker: {{ 'Running' if worker_running else 'Stopped' }}</span>
+                    <span class="text-light me-3">{{ _('Worker') }}: {{ _('Running') if worker_running else _('Stopped') }}</span>
                 </div>
             </div>
         </div>

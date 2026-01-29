@@ -11,9 +11,9 @@ logger = logging.getLogger(__name__)
 
 # Rate limiting to stay under API limits
 # Format: api_name -> {last_call, min_delay}
-# BookDB: 3.6 sec delay = 1000 requests/hour max, spread evenly (never hits limit)
+# Skaldleita (bookdb): 3.6 sec delay = 1000 requests/hour max, spread evenly (never hits limit)
 API_RATE_LIMITS = {
-    'bookdb': {'last_call': 0, 'min_delay': 3.6},        # 3600s / 1000 = 3.6s between calls = exactly 1000/hr
+    'bookdb': {'last_call': 0, 'min_delay': 3.6},        # Skaldleita: 3600s / 1000 = 3.6s between calls = exactly 1000/hr
     'audnexus': {'last_call': 0, 'min_delay': 2.0},      # ~100/hr community API - be nice
     'openlibrary': {'last_call': 0, 'min_delay': 1.5},   # They request max 1/sec, add buffer
     'googlebooks': {'last_call': 0, 'min_delay': 1.0},   # 1000/day, no per-sec limit but be safe
@@ -29,7 +29,7 @@ API_RATE_LOCK = threading.Lock()
 # Issue #74: Reduced cooldowns to prevent queue from stalling too long
 API_CIRCUIT_BREAKER = {
     'audnexus': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 3, 'cooldown': 300},   # 5 min cooldown after 3 failures
-    'bookdb': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 5, 'cooldown': 120},     # 2 min cooldown after 5 rate limits
+    'bookdb': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 5, 'cooldown': 120},     # Skaldleita: 2 min cooldown after 5 rate limits
     'openrouter': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 3, 'cooldown': 600}, # 10 min cooldown after 3 failures (was 1hr)
     'gemini': {'failures': 0, 'circuit_open_until': 0, 'max_failures': 3, 'cooldown': 300},     # 5 min cooldown after 3 quota errors (was 30min)
 }
@@ -39,7 +39,7 @@ def rate_limit_wait(api_name):
     """
     Wait if needed to respect rate limits for the given API.
 
-    For BookDB: 3.6s delay ensures exactly 1000 requests/hour max.
+    For Skaldleita: 3.6s delay ensures exactly 1000 requests/hour max.
     All requests go through - no skipping, just proper pacing.
     """
     with API_RATE_LOCK:

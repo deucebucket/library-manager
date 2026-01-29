@@ -121,11 +121,11 @@ def lookup_fingerprint(
     threshold: float = 0.8
 ) -> Optional[Dict[str, Any]]:
     """
-    Look up a fingerprint in BookDB.
+    Look up a fingerprint in Skaldleita.
 
     Args:
         fingerprint: The Chromaprint fingerprint string
-        api_key: Optional BookDB API key for higher rate limits
+        api_key: Optional Skaldleita API key for higher rate limits
 
     Returns:
         Book metadata dict if match found, None otherwise
@@ -177,13 +177,13 @@ def contribute_fingerprint(
     api_key: Optional[str] = None
 ) -> bool:
     """
-    Contribute a fingerprint to BookDB.
+    Contribute a fingerprint to Skaldleita.
 
     Args:
         fingerprint: The Chromaprint fingerprint string
         duration: Duration of audio that was fingerprinted
         book_metadata: Dict with author, title, narrator, series, etc.
-        api_key: Optional BookDB API key
+        api_key: Optional Skaldleita API key
 
     Returns:
         True if contribution successful, False otherwise
@@ -248,7 +248,7 @@ def identify_by_fingerprint(
 
     Args:
         audio_path: Path to audio file
-        api_key: Optional BookDB API key
+        api_key: Optional Skaldleita API key
         duration: Seconds of audio to fingerprint
 
     Returns:
@@ -261,7 +261,7 @@ def identify_by_fingerprint(
 
     fingerprint, actual_duration = result
 
-    # Look up in BookDB
+    # Look up in Skaldleita
     return lookup_fingerprint(fingerprint, api_key=api_key)
 
 
@@ -319,7 +319,7 @@ def try_fingerprint_identification(
 
     Args:
         audio_path: Path to audio file
-        api_key: Optional BookDB API key
+        api_key: Optional Skaldleita API key
         duration: Seconds of audio to fingerprint
 
     Returns:
@@ -337,7 +337,7 @@ def try_fingerprint_identification(
 
     fingerprint, actual_duration = result
 
-    # Look up in BookDB
+    # Look up in Skaldleita
     match = lookup_fingerprint(fingerprint, api_key=api_key)
 
     if match:
@@ -361,7 +361,7 @@ def contribute_after_identification(
     api_key: Optional[str] = None
 ) -> bool:
     """
-    Contribute fingerprint to BookDB after successful identification.
+    Contribute fingerprint to Skaldleita after successful identification.
 
     Call this after Whisper/Gemini successfully identifies a book
     to build up the fingerprint database.
@@ -369,7 +369,7 @@ def contribute_after_identification(
     Args:
         fingerprint_data: Dict from try_fingerprint_identification containing _fingerprint
         identified_metadata: Dict with author, title, narrator, series from AI identification
-        api_key: Optional BookDB API key
+        api_key: Optional Skaldleita API key
 
     Returns:
         True if contribution successful
@@ -481,12 +481,12 @@ def lookup_narrator(
     api_key: str = None
 ) -> Optional[Dict[str, Any]]:
     """
-    Look up narrator by voice embedding in BookDB.
+    Look up narrator by voice embedding in Skaldleita.
 
     Args:
         embedding: 256-dim numpy array from extract_voice_embedding()
         threshold: Minimum similarity for a match
-        api_key: Optional BookDB API key
+        api_key: Optional Skaldleita API key
 
     Returns:
         Dict with narrator_name, confidence, contributor_count if matched
@@ -529,14 +529,14 @@ def contribute_narrator(
     api_key: str = None
 ) -> bool:
     """
-    Contribute narrator voice embedding to BookDB.
+    Contribute narrator voice embedding to Skaldleita.
 
     Args:
         embedding: 256-dim numpy array
         narrator_name: Name of the narrator
         book_title: Source book title
         book_author: Source book author
-        api_key: Optional BookDB API key
+        api_key: Optional Skaldleita API key
 
     Returns:
         True if contribution accepted
@@ -591,7 +591,7 @@ def verify_narrator(
         audio_path: Path to audio file
         tagged_narrator: Narrator name from metadata tags
         threshold: Similarity threshold for voice matching
-        api_key: Optional BookDB API key
+        api_key: Optional Skaldleita API key
 
     Returns:
         Dict with:
@@ -667,7 +667,7 @@ def identify_narrator_by_voice(
     Args:
         audio_path: Path to audio file
         threshold: Minimum confidence for a match
-        api_key: Optional BookDB API key
+        api_key: Optional Skaldleita API key
 
     Returns:
         Narrator name if confidently identified, None otherwise
@@ -699,7 +699,7 @@ def store_voice_signature(
     Store a voice signature for this audiobook.
 
     This stores EVERY voice, even if narrator is unknown.
-    BookDB will cluster matching voices together with TBD_xxx IDs.
+    Skaldleita will cluster matching voices together with TBD_xxx IDs.
     When the narrator is eventually identified, all voices in the cluster get updated.
 
     Args:
@@ -707,7 +707,7 @@ def store_voice_signature(
         book_title: Title of the book
         book_author: Author of the book
         narrator_name: Narrator name if known (optional)
-        api_key: Optional BookDB API key
+        api_key: Optional Skaldleita API key
 
     Returns:
         Dict with success status, cluster_id, matched_narrator if found
@@ -769,7 +769,7 @@ def store_voice_after_identification(
     Args:
         audio_path: Path to audio file
         result: Identification result with author, title, narrator
-        api_key: Optional BookDB API key
+        api_key: Optional Skaldleita API key
 
     Returns:
         True if stored successfully

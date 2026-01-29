@@ -15,8 +15,23 @@ import json
 import logging
 import os
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
+
+from library_manager.config import use_skaldleita_for_audio
+
+# Language detection for multi-language naming
+def _detect_title_language(text):
+    """Detect language from title text."""
+    if not text or len(text) < 3:
+        return None
+    try:
+        from langdetect import detect, DetectorFactory
+        DetectorFactory.seed = 0
+        return detect(text)
+    except Exception:
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +61,18 @@ def _store_voice_and_identify_narrator(
     """
     Store voice signature and try to identify narrator by voice.
 
-    This is the Skaldleita integration - every audiobook gets its voice
-    fingerprinted. If the narrator isn't in the transcript, we might
-    still identify them by matching their voice to known narrators.
+    When use_skaldleita_for_audio=true (default), Skaldleita handles voice ID
+    server-side, so this function does nothing. Local voice ID via pyannote
+    is only used when the user explicitly disables Skaldleita audio.
 
     Returns:
         Narrator name if identified by voice, None otherwise
     """
+    # When Skaldleita handles audio, voice ID is done server-side
+    # No need for local pyannote - skip entirely
+    if use_skaldleita_for_audio(config):
+        return None
+
     if not _check_voice_id():
         return None
 
@@ -188,7 +208,7 @@ def process_layer_1_audio(
         config: App configuration dict
         get_db: Function to get database connection
         identify_ebook_from_filename: Function to identify ebooks from filename
-        identify_audio_with_bookdb: Function to identify audio via BookDB API
+        identify_audio_with_bookdb: Function to identify audio via Skaldleita API
         transcribe_audio_intro: Function to transcribe audio locally
         parse_transcript_with_ai: Function to parse transcript with AI
         is_circuit_open: Function to check if circuit breaker is open
@@ -250,13 +270,13 @@ def process_layer_1_audio(
                 break
 
         if not audio_file:
-            # No audio file - this is likely an ebook. Try to identify from filename + BookDB
+            # No audio file - this is likely an ebook. Try to identify from filename + Skaldleita
             filename = os.path.basename(book_path)
-            logger.debug(f"[EBOOK] No audio, trying filename + BookDB for: {filename}")
+            logger.debug(f"[EBOOK] No audio, trying filename + Skaldleita for: {filename}")
             ebook_result = identify_ebook_from_filename(filename, book_path, config)
 
             if ebook_result and ebook_result.get('author') and ebook_result.get('title'):
-                # Got identification from filename + BookDB!
+                # Got identification from filename + Skaldleita!
                 author = ebook_result.get('author')
                 title = ebook_result.get('title')
                 confidence = ebook_result.get('confidence', 'medium')
@@ -292,10 +312,13 @@ def process_layer_1_audio(
                     library_paths = current_config.get('library_paths', [])
                     new_path_str = None
                     if library_paths:
+                        # Detect language for multi-language naming
+                        lang_code = _detect_title_language(title)
                         computed_path = build_new_path(
                             Path(library_paths[0]), author, title,
                             series=ebook_result.get('series'),
                             series_num=ebook_result.get('series_num'),
+                            language_code=lang_code,
                             config=current_config
                         )
                         if computed_path:
@@ -344,49 +367,86 @@ def process_layer_1_audio(
             processed += 1
             continue
 
-        # === TRY BOOKDB API FIRST (GPU Whisper + 50M book database) ===
+        # === TRY SKALDLEITA API FIRST (GPU Whisper + 50M book database) ===
         # This avoids Gemini rate limits and is faster
         result = None
         transcript = None
 
-        if config.get('use_bookdb_for_audio', True):
-            # Issue #74: Check if BookDB circuit breaker is open - wait instead of skipping
+        if use_skaldleita_for_audio(config):
+            # Issue #74: Check if Skaldleita circuit breaker is open - wait instead of skipping
             if is_circuit_open('bookdb'):
                 cb = get_circuit_breaker('bookdb')
                 remaining = int(cb.get('circuit_open_until', 0) - time.time())
                 if remaining > 0:
                     wait_time = min(remaining, 60)  # Wait up to 60s at a time
-                    logger.info(f"[LAYER 1/AUDIO] BookDB circuit breaker open, waiting {wait_time}s ({remaining}s total remaining)")
+                    logger.info(f"[LAYER 1/AUDIO] Skaldleita circuit breaker open, waiting {wait_time}s ({remaining}s total remaining)")
                     if update_processing_status:
-                        update_processing_status(f"Layer 1: Waiting for BookDB ({remaining}s)")
+                        update_processing_status(f"Layer 1: Waiting for Skaldleita ({remaining}s)")
                     time.sleep(wait_time)
                     # After waiting, continue to next item - circuit breaker may have closed
                     processed += 1
                     continue
 
             bookdb_result = identify_audio_with_bookdb(audio_file)
-            if bookdb_result and bookdb_result.get('author') and bookdb_result.get('title'):
-                # BookDB got a full identification - validate against path first
-                logger.info(f"[LAYER 1/AUDIO] BookDB identified: {bookdb_result['author']} - {bookdb_result['title']}")
+
+            # Phase 5: Handle requeue_suggested from SL (Skaldleita backbone)
+            # If SL has author/title but suggests requeue (live scrape added to staging),
+            # create a pending_fix NOW but schedule recheck for tomorrow
+            if bookdb_result and bookdb_result.get('requeue_suggested', False):
+                sl_source = bookdb_result.get('sl_source', 'unknown')
+                sl_author = bookdb_result.get('author')
+                sl_title = bookdb_result.get('title')
+
+                if sl_author and sl_title:
+                    # SL found author/title - trust it but schedule requeue for nightly merge
+                    logger.info(f"[LAYER 1/AUDIO] SL requeue with partial ID (source: {sl_source}): {sl_author} - {sl_title}")
+
+                    # Store as pending_fix - this is trusted SL identification
+                    result = {
+                        'author': sl_author,
+                        'title': sl_title,
+                        'narrator': bookdb_result.get('narrator'),
+                        'series': bookdb_result.get('series'),
+                        'series_num': bookdb_result.get('series_num'),
+                        'confidence': bookdb_result.get('confidence', 0.75),
+                        'sl_source': sl_source,
+                        'requeue_suggested': True
+                    }
+                    # Continue processing - let the normal flow create pending_fix
+                    # The requeue flag will be used to schedule a future recheck
+                else:
+                    # No author/title - just advance to layer 2 for AI
+                    logger.info(f"[LAYER 1/AUDIO] SL requeue no ID (source: {sl_source}) - trying AI: {book_path}")
+                    conn = get_db()
+                    c = conn.cursor()
+                    c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (row['book_id'],))
+                    conn.commit()
+                    conn.close()
+                    processed += 1
+                    continue
+            elif bookdb_result and bookdb_result.get('author') and bookdb_result.get('title'):
+                # Skaldleita got a full identification - validate against path first
+                sl_source = bookdb_result.get('sl_source', 'audio')
+                logger.info(f"[LAYER 1/AUDIO] Skaldleita identified (source: {sl_source}): {bookdb_result['author']} - {bookdb_result['title']}")
                 # Sanity check: validate against path info to catch misparses
                 bookdb_result = _validate_ai_result_against_path(bookdb_result, folder_hint, book_path)
                 if bookdb_result.get('sanity_failed'):
-                    logger.warning(f"[LAYER 1/AUDIO] BookDB result failed sanity check - will try AI fallback")
+                    logger.warning(f"[LAYER 1/AUDIO] Skaldleita result failed sanity check - will try AI fallback")
                     transcript = bookdb_result.get('transcript')  # Keep transcript for AI
                     result = None  # Clear to trigger AI fallback
                 else:
                     result = bookdb_result  # Passed sanity check
             else:
-                # BookDB didn't get a full match - might have a transcript though
+                # Skaldleita didn't get a full match - might have a transcript though
                 transcript = bookdb_result.get('transcript') if bookdb_result else None
                 result = None  # Clear partial result to trigger AI fallback
         else:
-            logger.info(f"[LAYER 1/AUDIO] BookDB audio disabled, using local transcription + AI")
+            logger.info(f"[LAYER 1/AUDIO] Skaldleita audio disabled, using local transcription + AI")
 
         # If no result yet, try local transcription + AI
         if not result:
             if not transcript:
-                # No transcript from BookDB (or BookDB disabled), do local transcription
+                # No transcript from Skaldleita (or Skaldleita disabled), do local transcription
                 transcript = transcribe_audio_intro(audio_file)
 
             if not transcript:
@@ -402,7 +462,7 @@ def process_layer_1_audio(
                 processed += 1
                 continue
 
-            # Parse with AI (fallback path - when BookDB disabled or didn't identify)
+            # Parse with AI (fallback path - when Skaldleita disabled or didn't identify)
             result = parse_transcript_with_ai(transcript, folder_hint, config)
 
             # Sanity check: validate AI result against path info
@@ -442,16 +502,30 @@ def process_layer_1_audio(
                 c = conn.cursor()
 
                 # Update book with audio-identified info
+                sl_source = result.get('sl_source', 'audio_transcription')
+                base_confidence = 85 if confidence == 'high' else 70
                 profile = {
-                    'author': {'value': author, 'source': 'audio_transcription', 'confidence': 85 if confidence == 'high' else 70},
-                    'title': {'value': title, 'source': 'audio_transcription', 'confidence': 85 if confidence == 'high' else 70},
+                    'author': {'value': author, 'source': sl_source, 'confidence': base_confidence},
+                    'title': {'value': title, 'source': sl_source, 'confidence': base_confidence},
                 }
                 if narrator:
-                    profile['narrator'] = {'value': narrator, 'source': 'audio_transcription', 'confidence': 80}
+                    profile['narrator'] = {'value': narrator, 'source': sl_source, 'confidence': 80}
                 if series:
-                    profile['series'] = {'value': series, 'source': 'audio_transcription', 'confidence': 75}
+                    profile['series'] = {'value': series, 'source': sl_source, 'confidence': 75}
                 if series_num:
-                    profile['series_num'] = {'value': str(series_num), 'source': 'audio_transcription', 'confidence': 75}
+                    profile['series_num'] = {'value': str(series_num), 'source': sl_source, 'confidence': 75}
+
+                # Phase 5: Track SL requeue suggestion for future re-verification
+                # After nightly merge, the book should be re-checked against main DB
+                if result.get('requeue_suggested'):
+                    # Schedule requeue for tomorrow at 6am (after nightly merge at 4am)
+                    tomorrow_6am = (datetime.now() + timedelta(days=1)).replace(hour=6, minute=0, second=0)
+                    profile['sl_requeue'] = {
+                        'suggested_at': datetime.now().isoformat(),
+                        'requeue_after': tomorrow_6am.isoformat(),
+                        'reason': 'SL live scrape - pending nightly merge'
+                    }
+                    logger.info(f"[LAYER 1/AUDIO] Scheduled SL requeue for {tomorrow_6am.strftime('%Y-%m-%d %H:%M')}: {author} - {title}")
 
                 c.execute('''UPDATE books SET
                             current_author = ?, current_title = ?,
@@ -467,9 +541,12 @@ def process_layer_1_audio(
                 library_paths = audio_config.get('library_paths', [])
                 new_path_str = None
                 if library_paths:
+                    # Detect language for multi-language naming
+                    lang_code = _detect_title_language(title)
                     computed_path = build_new_path(
                         Path(library_paths[0]), author, title,
                         series=series, series_num=series_num, narrator=narrator,
+                        language_code=lang_code,
                         config=audio_config
                     )
                     if computed_path:

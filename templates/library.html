@@ -290,16 +290,16 @@
 
                 <hr class="text-muted">
 
-                <!-- Search BookDB -->
+                <!-- Search Skaldleita -->
                 <div class="mb-3">
-                    <label class="form-label"><i class="bi bi-search"></i> Search Book Database</label>
+                    <label class="form-label"><i class="bi bi-search"></i> Search Skaldleita</label>
                     <div class="input-group">
                         <input type="text" class="form-control bg-dark text-light" id="edit-search-query" placeholder="Search by title or author...">
                         <button class="btn btn-outline-info" type="button" onclick="searchBookDB()">
                             <i class="bi bi-search"></i> Search
                         </button>
                     </div>
-                    <small class="text-muted">Search across our database to find the correct match</small>
+                    <small class="text-muted">Search Skaldleita's 50M+ book database to find the correct match</small>
                 </div>
 
                 <!-- Search Results -->
@@ -540,7 +540,7 @@ function getDetails(item) {
     if (item.status === 'verified') {
         if (item.sources && item.sources.length > 0) {
             const sourceIcons = {
-                'bookdb': '<i class="bi bi-database text-primary" title="BookDB"></i>',
+                'bookdb': '<i class="bi bi-database text-primary" title="Skaldleita"></i>',
                 'audio': '<i class="bi bi-soundwave text-success" title="Audio Analysis"></i>',
                 'ai': '<i class="bi bi-robot text-info" title="AI Verification"></i>',
                 'id3': '<i class="bi bi-tag text-warning" title="ID3 Tags"></i>',

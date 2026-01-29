@@ -2,6 +2,50 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.101] - 2026-01-29
+
+### Added
+
+- **Issue #81: Multi-Language Audiobook Naming** - Intelligent naming based on book language
+  - **Three naming modes:**
+    - `Native` - Books keep their original language titles (Russian book → Russian title)
+    - `Preferred` - All books use your preferred language (everything in English)
+    - `Tagged` - Use preferred language with language tag ("Metro 2033 (Russian)")
+  - **Four tag formats:**
+    - `(Polish)` - Full name in parentheses (default)
+    - `[pl]` - ISO code in brackets
+    - `Polish` - Full name without brackets
+    - `_pl` - ISO code suffix
+  - **Three tag positions:**
+    - After title: `Author/Title (Russian)/`
+    - Before title: `Author/(Russian) Title/`
+    - Subfolder: `Author/Russian/Title/`
+  - **Custom template tags:** `{language}` and `{lang_code}` for full control
+  - **28 languages supported:** English, German, French, Spanish, Italian, Portuguese, Dutch, Swedish, Norwegian, Danish, Finnish, Polish, Russian, Japanese, Chinese, Korean, Arabic, Hebrew, Hindi, Turkish, Czech, Hungarian, Greek, Thai, Vietnamese, Ukrainian, Romanian, Indonesian
+  - Tags only applied to non-preferred languages (English books won't get "(English)" tag if English is preferred)
+
+- **SL Trust Mode** - Control when to trust Skaldleita audio identification
+  - `Full` - Trust all Skaldleita results (fastest, recommended)
+  - `Boost` - Trust high-confidence results, verify medium/low with AI
+  - `Legacy` - Always run AI verification (original behavior)
+  - Reduces unnecessary API calls when Skaldleita provides confident matches
+
+### Fixed
+
+- **Issue #81: Polish Language Matching Failures** - Strict language matching now works correctly
+  - Polish and other non-English books now properly identified via Skaldleita
+  - Language detection integrated into all processing pipelines
+  - Fixed missing language_code parameter in pipeline layer build_new_path calls
+
+### Changed
+
+- **Skaldleita Config Rename** - `use_bookdb_for_audio` renamed to `use_skaldleita_for_audio`
+  - Backwards compatible - old config name still works
+  - New helper function handles migration automatically
+  - UI labels updated throughout Settings
+
+---
+
 ## [0.9.0-beta.100] - 2026-01-28
 
 ### Added

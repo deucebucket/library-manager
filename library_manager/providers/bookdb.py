@@ -1,11 +1,13 @@
-"""BookDB API provider for Library Manager.
+"""Skaldleita API provider for Library Manager.
 
-This module provides access to BookDB, our private metadata service with:
+This module provides access to Skaldleita (formerly BookDB), our metadata service with:
 - Fuzzy matching via Qdrant vectors (great for messy filenames)
 - 50M+ book database
 - GPU-powered Whisper audio identification
 - Series info including book position
 - Local/P2P cache support
+
+Note: Internal names use 'bookdb' for backwards compatibility with existing configs.
 """
 
 import os
@@ -26,8 +28,8 @@ from library_manager.providers.rate_limiter import (
 
 logger = logging.getLogger(__name__)
 
-# BookDB API endpoint (our private metadata service)
-BOOKDB_API_URL = "https://bookdb.deucebucket.com"
+# Skaldleita API endpoint (our metadata service, legacy name: BookDB)
+BOOKDB_API_URL = "https://bookdb.deucebucket.com"  # URL unchanged for backwards compatibility
 # Public API key for Library Manager users (no config needed)
 BOOKDB_PUBLIC_KEY = "lm-public-2024_85TbJ2lbrXGm38tBgliPAcAexLA_AeWxyqvHPbwRIrA"
 
@@ -35,7 +37,7 @@ BOOKDB_PUBLIC_KEY = "lm-public-2024_85TbJ2lbrXGm38tBgliPAcAexLA_AeWxyqvHPbwRIrA"
 def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=None, config=None,
                   data_dir=None, cache_getter=None):
     """
-    Search our private BookDB metadata service.
+    Search our Skaldleita metadata service.
     Uses fuzzy matching via Qdrant vectors - great for messy filenames.
     Returns series info including book position if found.
 
@@ -44,9 +46,9 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
     Args:
         title: Book title to search for
         author: Optional author name for better matching
-        api_key: BookDB API key (uses public key if not provided)
+        api_key: Skaldleita API key (uses public key if not provided)
         retry_count: Internal retry counter for rate limiting
-        bookdb_url: Custom BookDB URL (uses default if not provided)
+        bookdb_url: Custom Skaldleita URL (uses default if not provided)
         config: App config dict for cache settings
         data_dir: Data directory path for cache storage
         cache_getter: Function to get cache instance (for dependency injection)
@@ -76,7 +78,7 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
     cb = API_CIRCUIT_BREAKER.get('bookdb', {})
     if cb.get('circuit_open_until', 0) > time.time():
         remaining = int(cb['circuit_open_until'] - time.time())
-        logger.debug(f"BookDB: Circuit open, skipping ({remaining}s remaining)")
+        logger.debug(f"Skaldleita: Circuit open, skipping ({remaining}s remaining)")
         return None
 
     rate_limit_wait('bookdb')  # 3.6s delay = max 1000/hr, never skips
@@ -103,7 +105,7 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
                 cb['failures'] = cb.get('failures', 0) + 1
                 if cb['failures'] >= cb.get('max_failures', 5):
                     cb['circuit_open_until'] = time.time() + cb.get('cooldown', 120)
-                    logger.warning(f"BookDB: Circuit OPEN after {cb['failures']} rate limits, backing off for {cb['cooldown']}s")
+                    logger.warning(f"Skaldleita: Circuit OPEN after {cb['failures']} rate limits, backing off for {cb['cooldown']}s")
                     return None
 
             if retry_count < 2:  # Reduced retries since we have circuit breaker now
@@ -112,16 +114,16 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
                     wait_time = min(int(retry_after), 120)  # Cap at 2 minutes
                 except ValueError:
                     wait_time = 30 * (retry_count + 1)  # Fallback: 30s, 60s
-                logger.info(f"BookDB rate limited, waiting {wait_time}s (Retry-After: {retry_after})...")
+                logger.info(f"Skaldleita rate limited, waiting {wait_time}s (Retry-After: {retry_after})...")
                 time.sleep(wait_time)
                 return search_bookdb(title, author, api_key, retry_count + 1, bookdb_url,
                                      config, data_dir, cache_getter)
             else:
-                logger.warning("BookDB rate limited, max retries reached")
+                logger.warning("Skaldleita rate limited, max retries reached")
                 return None
 
         if resp.status_code != 200:
-            logger.debug(f"BookDB returned status {resp.status_code}")
+            logger.debug(f"Skaldleita returned status {resp.status_code}")
             return None
 
         # Success - reset circuit breaker failures
@@ -132,7 +134,7 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
 
         # Check confidence threshold
         if data.get('confidence', 0) < 0.5:
-            logger.debug(f"BookDB match below confidence threshold: {data.get('confidence')}")
+            logger.debug(f"Skaldleita match below confidence threshold: {data.get('confidence')}")
             return None
 
         series = data.get('series')
@@ -170,7 +172,7 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
         }
 
         if result['title'] and result['author']:
-            logger.info(f"BookDB found: {result['author']} - {result['title']}" +
+            logger.info(f"Skaldleita found: {result['author']} - {result['title']}" +
                        (f" ({result['series']} #{result['series_num']})" if result['series'] else "") +
                        f" [confidence: {result['confidence']:.2f}]")
 
@@ -193,13 +195,13 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
         return None
 
     except Exception as e:
-        logger.debug(f"BookDB search failed: {e}")
+        logger.debug(f"Skaldleita search failed: {e}")
         return None
 
 
 def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
     """
-    Use BookDB's GPU-powered Whisper API to identify a book from audio.
+    Use Skaldleita's GPU-powered Whisper API to identify a book from audio.
 
     This uses a fair round-robin queue system:
     1. Submit audio, get ticket + queue position
@@ -207,27 +209,27 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
     3. Return result when complete
 
     This is PREFERRED over local transcription + Gemini because:
-    1. BookDB has a GTX 1080 running Whisper (faster)
+    1. Skaldleita has a GTX 1080 running Whisper (faster)
     2. No Gemini rate limits
-    3. BookDB cross-references against its 50M+ book database
+    3. Skaldleita cross-references against its 50M+ book database
     4. Fair multi-user access via round-robin queue
 
     Args:
         audio_file: Path to the audio file
         extract_seconds: How many seconds to extract (default 90)
-        bookdb_url: Custom BookDB URL (uses BOOKDB_URL env var or default if not provided)
+        bookdb_url: Custom Skaldleita URL (uses BOOKDB_URL env var or default if not provided)
 
     Returns:
         dict with author, title, narrator, series, etc. or None
     """
     url = bookdb_url or os.environ.get('BOOKDB_URL', BOOKDB_API_URL)
-    logger.info(f"[BOOKDB AUDIO] Starting identification for: {audio_file}")
-    logger.debug(f"[BOOKDB AUDIO] Using API URL: {url}")
+    logger.info(f"[SKALDLEITA] Starting identification for: {audio_file}")
+    logger.debug(f"[SKALDLEITA] Using API URL: {url}")
 
     try:
         audio_path = Path(audio_file)
         if not audio_path.exists():
-            logger.warning(f"[BOOKDB AUDIO] File not found: {audio_file}")
+            logger.warning(f"[SKALDLEITA] File not found: {audio_file}")
             return None
 
         # Extract first N seconds to a temp file
@@ -236,7 +238,7 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
 
         try:
             # Use ffmpeg to extract the intro - use fast seek for large files
-            logger.debug(f"[BOOKDB AUDIO] Extracting {extract_seconds}s from {audio_path.name}")
+            logger.debug(f"[SKALDLEITA] Extracting {extract_seconds}s from {audio_path.name}")
             cmd = [
                 'ffmpeg', '-y',
                 '-ss', '0',  # Fast input seek
@@ -250,18 +252,18 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
             result = subprocess.run(cmd, capture_output=True, timeout=60)
 
             if result.returncode != 0:
-                logger.warning(f"[BOOKDB AUDIO] ffmpeg extraction failed: {result.stderr.decode()[:200]}")
+                logger.warning(f"[SKALDLEITA] ffmpeg extraction failed: {result.stderr.decode()[:200]}")
                 return None
 
             # Check file size to ensure it's valid
             tmp_size = os.path.getsize(tmp_path)
-            logger.debug(f"[BOOKDB AUDIO] Extracted file size: {tmp_size} bytes")
+            logger.debug(f"[SKALDLEITA] Extracted file size: {tmp_size} bytes")
             if tmp_size < 1000:
-                logger.warning(f"[BOOKDB AUDIO] Extracted file too small ({tmp_size} bytes), likely invalid audio")
+                logger.warning(f"[SKALDLEITA] Extracted file too small ({tmp_size} bytes), likely invalid audio")
                 return None
 
-            # Submit to BookDB queue
-            logger.info(f"[BOOKDB AUDIO] Submitting to queue: {url}/api/identify_audio")
+            # Submit to Skaldleita queue
+            logger.info(f"[SKALDLEITA] Submitting to queue: {url}/api/identify_audio")
             with open(tmp_path, 'rb') as f:
                 response = requests.post(
                     f"{url}/api/identify_audio",
@@ -270,7 +272,7 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                 )
 
             if response.status_code != 200:
-                logger.warning(f"[BOOKDB AUDIO] API returned {response.status_code}: {response.text[:200]}")
+                logger.warning(f"[SKALDLEITA] API returned {response.status_code}: {response.text[:200]}")
                 return None
 
             submit_data = response.json()
@@ -282,7 +284,7 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                 queue_position = submit_data.get('queue_position', '?')
                 estimated_seconds = submit_data.get('estimated_seconds', '?')
 
-                logger.info(f"[BOOKDB AUDIO] Queued! Position: {queue_position}, ETA: ~{estimated_seconds}s (ticket: {ticket_id})")
+                logger.info(f"[SKALDLEITA] Queued! Position: {queue_position}, ETA: ~{estimated_seconds}s (ticket: {ticket_id})")
 
                 # Poll for result
                 poll_url = f"{url}/api/identify_audio/{ticket_id}"
@@ -306,28 +308,28 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                         # Update user on queue position changes
                         new_position = status_data.get('queue_position')
                         if new_position and new_position != last_position:
-                            logger.info(f"[BOOKDB AUDIO] Queue position: {new_position}")
+                            logger.info(f"[SKALDLEITA] Queue position: {new_position}")
                             last_position = new_position
 
                         if status == 'processing':
-                            logger.info(f"[BOOKDB AUDIO] Processing audio...")
+                            logger.info(f"[SKALDLEITA] Processing audio...")
 
                         elif status == 'complete':
                             # Got result!
                             data = status_data.get('result', {})
-                            logger.info(f"[BOOKDB AUDIO] Complete! Processing result...")
+                            logger.info(f"[SKALDLEITA] Complete! Processing result...")
                             break
 
                         elif status == 'error':
-                            logger.warning(f"[BOOKDB AUDIO] Job failed: {status_data.get('error')}")
+                            logger.warning(f"[SKALDLEITA] Job failed: {status_data.get('error')}")
                             return None
 
                     except Exception as poll_err:
-                        logger.debug(f"[BOOKDB AUDIO] Poll error (will retry): {poll_err}")
+                        logger.debug(f"[SKALDLEITA] Poll error (will retry): {poll_err}")
                         continue
 
                 else:
-                    logger.warning(f"[BOOKDB AUDIO] Timed out waiting for result after {max_wait}s")
+                    logger.warning(f"[SKALDLEITA] Timed out waiting for result after {max_wait}s")
                     return None
 
             else:
@@ -337,13 +339,17 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
             # Process result (same for both systems)
             transcript = data.get('transcript') or ''
             matched_books = data.get('matched_books') or []
-            logger.info(f"[BOOKDB AUDIO] Result received - transcript: {len(transcript)} chars, matches: {len(matched_books)}")
+            logger.info(f"[SKALDLEITA] Result received - transcript: {len(transcript)} chars, matches: {len(matched_books)}")
 
             if data.get('error'):
-                logger.warning(f"[BOOKDB AUDIO] API error: {data['error']}")
+                logger.warning(f"[SKALDLEITA] API error: {data['error']}")
                 return None
 
             best_match = matched_books[0] if matched_books else None
+
+            # Phase 2: Capture source and requeue_suggested from SL response
+            sl_source = data.get('source', 'audio')  # 'database', 'audio', or 'live_scrape'
+            requeue_suggested = data.get('requeue_suggested', False)
 
             result = {
                 'author': data.get('author') or (best_match.get('author_name') if best_match else None),
@@ -352,20 +358,22 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                 'series': best_match.get('series_name') if best_match else None,
                 'series_num': best_match.get('series_position') if best_match else None,
                 'source': 'bookdb_audio',
-                'confidence': 'high' if best_match else 'medium',
+                'sl_source': sl_source,  # Where SL got the data: 'database' or 'audio'
+                'requeue_suggested': requeue_suggested,  # True if LM should retry later
+                'confidence': 'high' if best_match or sl_source == 'database' else 'medium',
                 'transcript': transcript[:500],
             }
 
             if result['author'] and result['title']:
-                logger.info(f"[BOOKDB AUDIO] Identified: {result['author']} - {result['title']}" +
+                logger.info(f"[SKALDLEITA] Identified: {result['author']} - {result['title']}" +
                            (f" ({result['series']} #{result['series_num']})" if result.get('series') else ""))
                 return result
 
             if transcript:
-                logger.info(f"[BOOKDB AUDIO] No match but got transcript ({len(transcript)} chars) - returning for AI fallback")
+                logger.info(f"[SKALDLEITA] No match but got transcript ({len(transcript)} chars) - returning for AI fallback")
                 return {'transcript': transcript, 'source': 'bookdb_audio'}
 
-            logger.warning(f"[BOOKDB AUDIO] No identification and no transcript returned")
+            logger.warning(f"[SKALDLEITA] No identification and no transcript returned")
             return None
 
         finally:
@@ -373,10 +381,10 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                 os.unlink(tmp_path)
 
     except requests.exceptions.Timeout:
-        logger.warning("[BOOKDB AUDIO] Request timed out")
+        logger.warning("[SKALDLEITA] Request timed out")
         return None
     except Exception as e:
-        logger.warning(f"[BOOKDB AUDIO] Error: {e}")
+        logger.warning(f"[SKALDLEITA] Error: {e}")
         return None
 
 
@@ -384,11 +392,11 @@ def contribute_to_bookdb(title, author=None, narrator=None, series=None,
                          series_position=None, source='unknown', confidence='medium',
                          bookdb_url=None):
     """
-    Contribute book metadata to the BookDB community database.
+    Contribute book metadata to the Skaldleita community database.
 
     This allows users who identify books via Gemini, OpenRouter, local Whisper,
     or other methods to contribute back to the community database. Even users
-    who don't use BookDB for identification can help enrich it.
+    who don't use Skaldleita for identification can help enrich it.
 
     Args:
         title: Book title (required)
@@ -398,19 +406,19 @@ def contribute_to_bookdb(title, author=None, narrator=None, series=None,
         series_position: Position in series (float, e.g., 1.0, 2.5)
         source: How this book was identified (gemini, openrouter, whisper, folder_parse, manual, etc.)
         confidence: How confident we are (low, medium, high)
-        bookdb_url: Custom BookDB URL (uses default if not provided)
+        bookdb_url: Custom Skaldleita URL (uses default if not provided)
 
     Returns:
         dict with status, is_new, consensus_count or None on failure
     """
     if not title or len(title.strip()) < 2:
-        logger.debug("[BOOKDB CONTRIBUTE] Title too short, skipping")
+        logger.debug("[SKALDLEITA CONTRIBUTE] Title too short, skipping")
         return None
 
     # Check circuit breaker - don't spam if rate limited
     cb = API_CIRCUIT_BREAKER.get('bookdb', {})
     if cb.get('circuit_open_until', 0) > time.time():
-        logger.debug("[BOOKDB CONTRIBUTE] Circuit open, skipping")
+        logger.debug("[SKALDLEITA CONTRIBUTE] Circuit open, skipping")
         return None
 
     url = bookdb_url or BOOKDB_API_URL
@@ -433,11 +441,11 @@ def contribute_to_bookdb(title, author=None, narrator=None, series=None,
         )
 
         if response.status_code == 429:
-            logger.debug("[BOOKDB CONTRIBUTE] Rate limited, skipping")
+            logger.debug("[SKALDLEITA CONTRIBUTE] Rate limited, skipping")
             return None
 
         if response.status_code != 200:
-            logger.debug(f"[BOOKDB CONTRIBUTE] API returned {response.status_code}")
+            logger.debug(f"[SKALDLEITA CONTRIBUTE] API returned {response.status_code}")
             return None
 
         data = response.json()
@@ -445,17 +453,17 @@ def contribute_to_bookdb(title, author=None, narrator=None, series=None,
         if data.get('status') == 'accepted':
             is_new = data.get('is_new', False)
             consensus = data.get('consensus_count', 1)
-            logger.info(f"[BOOKDB CONTRIBUTE] {'New' if is_new else 'Existing'} contribution accepted: "
+            logger.info(f"[SKALDLEITA CONTRIBUTE] {'New' if is_new else 'Existing'} contribution accepted: "
                        f"{author} - {title} (source: {source}, consensus: {consensus})")
             return data
 
         return None
 
     except requests.exceptions.Timeout:
-        logger.debug("[BOOKDB CONTRIBUTE] Request timed out")
+        logger.debug("[SKALDLEITA CONTRIBUTE] Request timed out")
         return None
     except Exception as e:
-        logger.debug(f"[BOOKDB CONTRIBUTE] Error: {e}")
+        logger.debug(f"[SKALDLEITA CONTRIBUTE] Error: {e}")
         return None
 
 
@@ -464,12 +472,12 @@ def lookup_community_consensus(title, author=None, bookdb_url=None):
     Look up community consensus for a book.
 
     This checks if other users have contributed metadata for this book.
-    Useful as a fallback when BookDB's main database doesn't have a match.
+    Useful as a fallback when Skaldleita's main database doesn't have a match.
 
     Args:
         title: Book title (required)
         author: Optional author name for better matching
-        bookdb_url: Custom BookDB URL (uses default if not provided)
+        bookdb_url: Custom Skaldleita URL (uses default if not provided)
 
     Returns:
         dict with book metadata if found, None otherwise
@@ -496,14 +504,14 @@ def lookup_community_consensus(title, author=None, bookdb_url=None):
         data = response.json()
 
         if data.get('found'):
-            logger.info(f"[BOOKDB COMMUNITY] Found consensus for {title}: "
+            logger.info(f"[SKALDLEITA COMMUNITY] Found consensus for {title}: "
                        f"{data.get('author')} (contributors: {data.get('contributor_count', 1)})")
             return data
 
         return None
 
     except Exception as e:
-        logger.debug(f"[BOOKDB COMMUNITY] Lookup error: {e}")
+        logger.debug(f"[SKALDLEITA COMMUNITY] Lookup error: {e}")
         return None
 
 
