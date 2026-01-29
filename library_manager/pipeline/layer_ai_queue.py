@@ -16,6 +16,19 @@ from typing import Callable, Dict, List, Optional, Set, Tuple, Type
 logger = logging.getLogger(__name__)
 
 
+# Language detection for multi-language naming
+def _detect_title_language(text):
+    """Detect language from title text."""
+    if not text or len(text) < 3:
+        return None
+    try:
+        from langdetect import detect, DetectorFactory
+        DetectorFactory.seed = 0
+        return detect(text)
+    except Exception:
+        return None
+
+
 def process_queue(
     config: Dict,
     get_db: Callable,
@@ -267,7 +280,7 @@ def process_queue(
             processed += 1
             continue
 
-        # Auto-save narrator to BookDB if we found one
+        # Auto-save narrator to Skaldleita if we found one
         if new_narrator:
             auto_save_narrator(new_narrator, source='ai_extract')
 
@@ -383,10 +396,13 @@ def process_queue(
                 lib_path = old_path.parent.parent
                 logger.warning(f"Book path {old_path} not under any configured library, guessing lib_path={lib_path}")
 
+            # Detect language for multi-language naming
+            lang_code = _detect_title_language(new_title)
             new_path = build_new_path(lib_path, new_author, new_title,
                                       series=new_series, series_num=new_series_num,
                                       narrator=new_narrator, year=new_year,
-                                      edition=new_edition, variant=new_variant, config=config)
+                                      edition=new_edition, variant=new_variant,
+                                      language_code=lang_code, config=config)
 
             # For loose files, new_path should include the filename
             is_loose_file = row['reason'] and row['reason'].startswith('loose_file_needs_folder')
@@ -569,10 +585,13 @@ def process_queue(
                         continue
 
                 # Recalculate new_path with potentially updated author/title/narrator
+                # Detect language for multi-language naming
+                lang_code = _detect_title_language(new_title)
                 new_path = build_new_path(lib_path, new_author, new_title,
                                           series=new_series, series_num=new_series_num,
                                           narrator=new_narrator, year=new_year,
-                                          edition=new_edition, variant=new_variant, config=config)
+                                          edition=new_edition, variant=new_variant,
+                                          language_code=lang_code, config=config)
 
                 # CRITICAL SAFETY: Check recalculated path
                 if new_path is None:
@@ -683,6 +702,7 @@ def process_queue(
                                     year=new_year if dist_type == 'year' else None,
                                     edition=edition_val,
                                     variant=variant_val,
+                                    language_code=lang_code,
                                     config=config
                                 )
                                 if test_path and not test_path.exists():
@@ -709,6 +729,7 @@ def process_queue(
                                         series=new_series, series_num=new_series_num,
                                         narrator=new_narrator,
                                         variant="Valid Copy" if not new_variant else f"{new_variant}, Valid Copy",
+                                        language_code=lang_code,
                                         config=config
                                     )
                                     if version_path and not version_path.exists():
@@ -837,6 +858,7 @@ def process_queue(
                                             series=new_series, series_num=new_series_num,
                                             narrator=new_narrator,
                                             variant=version_distinguisher if not new_variant else f"{new_variant}, {version_distinguisher}",
+                                            language_code=lang_code,
                                             config=config
                                         )
                                         if unique_path and not unique_path.exists():

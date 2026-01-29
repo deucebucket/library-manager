@@ -2,8 +2,63 @@
 import re
 import logging
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Language code to full name mapping for multi-language naming
+LANGUAGE_NAMES = {
+    'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish',
+    'it': 'Italian', 'pt': 'Portuguese', 'nl': 'Dutch', 'sv': 'Swedish',
+    'no': 'Norwegian', 'da': 'Danish', 'fi': 'Finnish', 'pl': 'Polish',
+    'ru': 'Russian', 'ja': 'Japanese', 'zh': 'Chinese', 'ko': 'Korean',
+    'ar': 'Arabic', 'he': 'Hebrew', 'hi': 'Hindi', 'tr': 'Turkish',
+    'cs': 'Czech', 'hu': 'Hungarian', 'el': 'Greek', 'th': 'Thai',
+    'vi': 'Vietnamese', 'uk': 'Ukrainian', 'ro': 'Romanian', 'id': 'Indonesian'
+}
+
+
+def format_language_tag(lang_code: str, lang_name: str = None, fmt: str = "bracket_full") -> str:
+    """Format language tag based on user preference.
+
+    Args:
+        lang_code: ISO 639-1 language code (e.g., 'pl', 'ru')
+        lang_name: Full language name (optional, will lookup from LANGUAGE_NAMES)
+        fmt: Tag format - "code", "full", "bracket_code", "bracket_full"
+
+    Returns:
+        Formatted tag string
+    """
+    name = lang_name or LANGUAGE_NAMES.get(lang_code, lang_code.upper())
+
+    if fmt == "code":
+        return f"_{lang_code}"
+    elif fmt == "full":
+        return f" {name}"
+    elif fmt == "bracket_code":
+        return f" [{lang_code}]"
+    elif fmt == "bracket_full":
+        return f" ({name})"
+    return ""
+
+
+def apply_language_tag(title: str, tag: str, position: str) -> str:
+    """Apply language tag to title in specified position.
+
+    Args:
+        title: Book title
+        tag: Formatted language tag (e.g., " (Russian)")
+        position: "before_title", "after_title" (subfolder handled separately)
+
+    Returns:
+        Title with tag applied
+    """
+    if position == "before_title":
+        return f"{tag.strip()} {title}"
+    elif position == "after_title":
+        return f"{title}{tag}"
+    # subfolder position handled separately in path construction
+    return title
 
 
 def _apply_template_modifiers(template: str, field: str, value: str) -> str:
@@ -81,7 +136,7 @@ def sanitize_path_component(name):
 
 
 def build_new_path(lib_path, author, title, series=None, series_num=None, narrator=None, year=None,
-                   edition=None, variant=None, config=None):
+                   edition=None, variant=None, language=None, language_code=None, config=None):
     """Build a new path based on the naming format configuration.
 
     Audiobookshelf-compatible format (when series_grouping enabled):
@@ -90,6 +145,21 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
     - Year in parentheses: (2003)
     - Edition in brackets: [30th Anniversary Edition]
     - Variant in brackets: [Graphic Audio]
+    - Language tag: (Russian), [pl], etc. (when enabled)
+
+    Args:
+        lib_path: Library root path
+        author: Author name
+        title: Book title
+        series: Series name (optional)
+        series_num: Series number (optional)
+        narrator: Narrator name (optional)
+        year: Publication year (optional)
+        edition: Edition info (optional)
+        variant: Variant info like "Graphic Audio" (optional)
+        language: Full language name like "Russian" (optional)
+        language_code: ISO 639-1 code like "ru" (optional)
+        config: Configuration dict
 
     SAFETY: Returns None if path would be invalid/dangerous.
     """
@@ -151,6 +221,30 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
                 # Legacy format uses parentheses
                 title_folder = f"{title_folder} ({safe_narrator})"
 
+    # Multi-language naming: add language tag to title folder if enabled
+    # (subfolder position handled separately during path construction)
+    lang_subfolder = None  # Will be set if position is "subfolder"
+    if config and language_code:
+        preferred_lang = config.get('preferred_language', 'en')
+        multilang_mode = config.get('multilang_naming_mode', 'native')
+        tag_enabled = config.get('language_tag_enabled', False)
+
+        # Determine if we should add a tag
+        should_tag = (tag_enabled or multilang_mode == 'tagged') and language_code != preferred_lang
+
+        if should_tag:
+            tag_format = config.get('language_tag_format', 'bracket_full')
+            tag_position = config.get('language_tag_position', 'after_title')
+
+            if tag_position == 'subfolder':
+                # Will create Author/Language/Title structure
+                lang_name = language or LANGUAGE_NAMES.get(language_code, language_code.upper())
+                lang_subfolder = sanitize_path_component(lang_name)
+            else:
+                # Add tag to title folder
+                lang_tag = format_language_tag(language_code, language, tag_format)
+                title_folder = apply_language_tag(title_folder, lang_tag, tag_position)
+
     if naming_format == 'custom':
         # Custom template: parse and replace tags
         custom_template = config.get('custom_naming_template', '{author}/{title}') if config else '{author}/{title}'
@@ -188,6 +282,10 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
         path_str = path_str.replace('{year}', safe_year)
         path_str = path_str.replace('{edition}', safe_edition)
         path_str = path_str.replace('{variant}', safe_variant)
+        # Multi-language template tags
+        safe_language = LANGUAGE_NAMES.get(language_code, language_code.upper()) if language_code else ''
+        path_str = path_str.replace('{language}', safe_language)
+        path_str = path_str.replace('{lang_code}', language_code or '')
 
         # Clean up empty brackets/parens from missing optional data
         path_str = re.sub(r'\(\s*\)', '', path_str)  # Empty ()
@@ -215,6 +313,12 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
         # Flat structure: Author - Title (single folder)
         folder_name = f"{safe_author} - {title_folder}"
         result_path = lib_path / folder_name
+    elif lang_subfolder:
+        # Language subfolder: Author/Language/Title (or Author/Series/Language/Title)
+        if series_grouping and safe_series:
+            result_path = lib_path / safe_author / safe_series / lang_subfolder / title_folder
+        else:
+            result_path = lib_path / safe_author / lang_subfolder / title_folder
     elif series_grouping and safe_series:
         # Series grouping enabled AND book has series: Author/Series/Title
         result_path = lib_path / safe_author / safe_series / title_folder
@@ -247,4 +351,7 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
 __all__ = [
     'sanitize_path_component',
     'build_new_path',
+    'format_language_tag',
+    'apply_language_tag',
+    'LANGUAGE_NAMES',
 ]

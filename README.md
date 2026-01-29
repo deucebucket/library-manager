@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.99-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.101-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,33 +16,34 @@
 
 ## Recent Changes (stable)
 
+> **beta.101** - 🌍 **Multi-Language Audiobook Naming** (Issue #81)
+> - **Three Naming Modes** - Native (keep original language), Preferred (translate all), Tagged (add language labels)
+> - **Flexible Tagging** - Four formats `(Polish)`, `[pl]`, `Polish`, `_pl` + three positions (after/before title, subfolder)
+> - **Custom Templates** - New `{language}` and `{lang_code}` tags for full control
+> - **Polish Language Fix** - Strict language matching now works correctly for all 28 supported languages
+
+> **beta.100** - 📊 **Dashboard Activity Log & Skaldleita IDs**
+> - **Real-time Activity Log** - See processed books with full metadata on dashboard
+> - **Skaldleita IDs** - Audio fingerprints and narrator IDs embedded in files
+> - **Extended Metadata** - Enables instant identification when files are shared/moved
+
 > **beta.99** - 👁️ **Live Status Bar** - See what's happening in real-time!
 > - **Persistent Status Bar** - Always visible below navbar on every page
 > - **Current Book Display** - Shows author/title of book being processed
 > - **Layer Indicator** - See which processing stage is active (Audio, AI, API, Fallback)
-> - **Queue & Pending Counts** - Always know how many items are waiting
-> - **No More Log Diving** - Processing status at a glance without checking logs
-
-> **beta.98** - 🔑 **API Keys Always Visible** (Issue #73)
-> - **Dedicated API Keys Card** - All keys visible at once in Settings → AI Setup
-> - **No Provider Selection Required** - Enter any API key without changing primary provider
-> - **BookDB API Key Field** - Now available in UI (was missing)
 
 > **beta.97** - 🔍 **Series Mismatch Detection & SearXNG Fallback** (Issues #76, #77)
 > - **Series Mismatch Fix** - Books with series info now correctly reject wrong matches
 > - **SearXNG Fallback** - New web search provider when APIs fail (Amazon, Audible, Goodreads parsing)
 > - **Whisper Setting Fix** - Speech-to-Text model selection now saves correctly
-> - **External API Updates** - Audnexus adapter updated for Jan 2026 API changes (now ASIN-only)
 
 > **beta.96** - 🐛 **Watch Folder Duplicates Fix** (Issue #76)
 > - **Atomic Directory Move** - Prevents partial moves creating "Version B" folders
 > - **Partial Move Detection** - Completes interrupted moves instead of duplicating
-> - **Edit Persistence Fix** - Multiple edits to pending_fix items now preserve original metadata
 
 > **beta.95** - 🔧 **Major Code Refactoring**
 > - **32% Code Reduction** - `app.py` reduced from 15,491 to 10,519 lines
 > - **Modular Architecture** - New `library_manager/` package with organized modules
-> - **No User-Facing Changes** - Same functionality, cleaner codebase for future development
 
 > **beta.94** - 🐛 **Bug Fixes** (Issues #64, #71, #74)
 > - **Queue Hanging Fix** - Circuit breaker now properly advances queue when providers fail (#74)
@@ -178,10 +179,17 @@ Build your own folder structure:
 {author}/{title}                          → Brandon Sanderson/The Final Empire/
 {author}/{series}/{series_num} - {title}  → Brandon Sanderson/Mistborn/1 - The Final Empire/
 {author} - {title} ({narrator})           → Brandon Sanderson - The Final Empire (Kramer)/
+{author}/{language}/{title}               → Dmitry Glukhovsky/Russian/Metro 2033/
+{author}/{title} [{lang_code}]            → Antoine de Saint-Exupéry/Le Petit Prince [fr]/
 ```
 
 ### Language Support
 - **28 languages** - German, French, Spanish, Italian, Portuguese, Dutch, Swedish, Norwegian, Danish, Finnish, Polish, Russian, Japanese, Chinese, Korean, Arabic, Hebrew, Hindi, Turkish, Czech, Hungarian, Greek, Thai, Vietnamese, Ukrainian, Romanian, Indonesian
+- **Multi-language naming** - intelligent folder naming based on detected book language:
+  - **Native mode** - Russian books get Russian titles, English books get English titles
+  - **Preferred mode** - all books named in your preferred language
+  - **Tagged mode** - preferred language + language tag ("Metro 2033 (Russian)")
+- **Flexible tagging** - four formats `(Polish)`, `[pl]`, `Polish`, `_pl` + subfolder option
 - **Preserve original titles** - keeps "Der Bücherdrache" instead of translating to English
 - **Regional Audible search** - queries audible.de, audible.fr, etc. for localized results
 - **Audio language detection** - use Gemini to detect spoken language in audiobooks

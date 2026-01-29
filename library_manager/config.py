@@ -88,18 +88,29 @@ DEFAULT_CONFIG = {
     "preserve_original_titles": True,  # Don't replace foreign language titles with English translations
     "detect_language_from_audio": False,  # Use Gemini audio analysis to detect spoken language
     "strict_language_matching": True,  # Only match books in preferred language (prevents cross-language mismatches, Issue #81)
+    # UI Language (i18n) - translates UI elements only, not book metadata
+    "ui_language": "en",  # ISO 639-1 code for UI translation (en, es, de, fr, pl, ru, etc.)
+    # Multi-language naming - how to name books based on their detected language
+    "multilang_naming_mode": "native",      # "native" = book's language, "preferred" = user's language, "tagged" = preferred + tag
+    "language_tag_enabled": False,          # Add language tag to folder names (e.g., "Title (Russian)")
+    "language_tag_format": "bracket_full",  # "code" (_pl), "full" (Polish), "bracket_code" ([pl]), "bracket_full" ((Polish))
+    "language_tag_position": "after_title", # "after_title", "before_title", "subfolder"
     # Trust the Process mode - fully automatic verification chain
     "trust_the_process": False,  # Auto-verify drastic changes, use audio analysis as tie-breaker, only flag truly unidentifiable
     # Book Profile System settings - progressive verification with confidence scoring
-    "enable_api_lookups": True,           # Layer 2: API database lookups (BookDB, Audnexus, etc.)
+    "enable_api_lookups": True,           # Layer 2: API database lookups (Skaldleita, Audnexus, etc.)
     "enable_ai_verification": True,       # Layer 3: AI verification (uses configured provider)
     "enable_audio_analysis": False,       # Layer 4: Audio analysis (requires Gemini API key)
     "enable_content_analysis": False,      # Layer 4 sub-option: Content analysis (deeper audio analysis)
-    "use_bookdb_for_audio": True,          # Use BookDB GPU Whisper for audio identification (faster, no rate limits)
+    "use_skaldleita_for_audio": True,      # Use Skaldleita GPU Whisper for audio identification (faster, no rate limits)
+    # DEPRECATED: use_bookdb_for_audio - kept for backwards compatibility, use use_skaldleita_for_audio instead
+    # Skaldleita Trust Mode - controls how much LM trusts SL audio identification
+    "sl_trust_mode": "full",               # "full" = trust 80%+ audio ID, "boost" = verify with APIs, "legacy" = use AI fallback
+    "sl_confidence_threshold": 80,         # Minimum confidence to trust SL audio ID without AI verification
     # Provider Chains - ordered lists of providers to try (first = primary, rest = fallbacks)
-    # Audio providers: "bookdb", "gemini", "openrouter", "ollama"
+    # Audio providers: "bookdb" (Skaldleita), "gemini", "openrouter", "ollama"
     # Text providers: "gemini", "openrouter", "ollama"
-    "audio_provider_chain": ["bookdb", "gemini"],  # Order to try audio identification
+    "audio_provider_chain": ["bookdb", "gemini"],  # Order to try audio identification (bookdb = Skaldleita)
     "text_provider_chain": ["gemini", "openrouter"],  # Order to try text-based AI
     "deep_scan_mode": False,              # Always use all enabled layers regardless of confidence
     "profile_confidence_threshold": 85,   # Minimum confidence to skip remaining layers (0-100)
@@ -111,7 +122,7 @@ DEFAULT_CONFIG = {
     # Community contribution - crowdsourced audiobook metadata
     "contribute_to_community": False,      # Opt-in: share audio-extracted metadata (author/title/narrator) to help others
     # P2P Cache - decentralized book lookup cache via Gun.db
-    "enable_p2p_cache": False,             # Opt-in: share book lookup cache with other Library Manager users (helps when BookDB is down)
+    "enable_p2p_cache": False,             # Opt-in: share book lookup cache with other Library Manager users (helps when Skaldleita is down)
     # Watch Folder settings - monitor a folder for new audiobooks and organize them
     "watch_mode": False,                   # Enable folder watching
     "watch_folder": "",                    # Path to monitor for new audiobooks
@@ -125,9 +136,29 @@ DEFAULT_CONFIG = {
 DEFAULT_SECRETS = {
     "openrouter_api_key": "",
     "gemini_api_key": "",
-    "bookdb_api_key": "",  # Optional API key for BookDB (not required for public endpoints)
+    "bookdb_api_key": "",  # Optional API key for Skaldleita (not required for public endpoints)
     "abs_api_token": ""
 }
+
+
+def use_skaldleita_for_audio(config: dict) -> bool:
+    """Check if Skaldleita should handle audio identification.
+
+    Handles backwards compatibility: checks both new name (use_skaldleita_for_audio)
+    and deprecated name (use_bookdb_for_audio).
+
+    Args:
+        config: Configuration dictionary
+
+    Returns:
+        True if Skaldleita should handle audio, False for local processing
+    """
+    # Check new name first, fall back to old name for backwards compatibility
+    if 'use_skaldleita_for_audio' in config:
+        return config['use_skaldleita_for_audio']
+    if 'use_bookdb_for_audio' in config:
+        return config['use_bookdb_for_audio']
+    return True  # Default: use Skaldleita
 
 
 def migrate_legacy_config():

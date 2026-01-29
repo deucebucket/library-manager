@@ -68,7 +68,8 @@
         <div class="tab-pane fade show active" id="tab-library">
             <div class="row">
                 <div class="col-lg-6">
-                    <!-- Library Paths -->
+                    <!-- Library Paths (hidden in demo mode) -->
+                    {% if not config.demo_mode %}
                     <div class="card mb-3">
                         <div class="card-header py-2">
                             <i class="bi bi-folder"></i> Library Paths
@@ -88,6 +89,15 @@
                             </div>
                         </div>
                     </div>
+                    {% else %}
+                    <div class="card mb-3 border-info">
+                        <div class="card-body text-center py-4">
+                            <i class="bi bi-info-circle text-info" style="font-size: 2rem;"></i>
+                            <h5 class="mt-2">Demo Mode</h5>
+                            <p class="text-muted mb-0">This is a public demo instance. Library paths are locked.</p>
+                        </div>
+                    </div>
+                    {% endif %}
 
                     <!-- Folder Naming Format -->
                     <div class="card mb-3">
@@ -134,6 +144,8 @@
                                         <button type="button" class="btn btn-sm btn-outline-warning naming-tag" onclick="insertTag('{series_num.pad(2)}')" title="Zero-pad to 2 digits: 1→01, 10→10">{series_num.pad(2)}</button>
                                         <button type="button" class="btn btn-sm btn-outline-success naming-tag" onclick="insertTag('{narrator}')">{narrator}</button>
                                         <button type="button" class="btn btn-sm btn-outline-secondary naming-tag" onclick="insertTag('{year}')">{year}</button>
+                                        <button type="button" class="btn btn-sm btn-outline-primary naming-tag" onclick="insertTag('{language}')" title="Full language name: English, Russian, Polish">{language}</button>
+                                        <button type="button" class="btn btn-sm btn-outline-primary naming-tag" onclick="insertTag('{lang_code}')" title="ISO code: en, ru, pl">{lang_code}</button>
                                     </div>
                                     <small class="text-muted d-block mt-1"><i class="bi bi-info-circle"></i> Use <code>.pad(N)</code> for zero-padding: <code>{series_num.pad(2)}</code> → 01, 02... 10</small>
                                 </div>
@@ -161,6 +173,64 @@
                                     <strong>Standardize Author Initials</strong>
                                     <br><small class="text-muted">Normalize to <code>J. R. R. Tolkien</code> format</small>
                                 </label>
+                            </div>
+
+                            <hr class="my-3">
+
+                            <!-- Multi-Language Naming -->
+                            <div class="mb-3">
+                                <label class="form-label">
+                                    <i class="bi bi-translate text-primary"></i>
+                                    <strong>Multi-Language Naming</strong>
+                                </label>
+                                <select class="form-select bg-dark text-light form-select-sm mb-2" name="multilang_naming_mode" id="multilang_naming_mode" onchange="toggleLanguageTagOptions()">
+                                    <option value="native" {% if config.multilang_naming_mode == 'native' or not config.multilang_naming_mode %}selected{% endif %}>
+                                        Native - Name in book's detected language (Recommended)
+                                    </option>
+                                    <option value="preferred" {% if config.multilang_naming_mode == 'preferred' %}selected{% endif %}>
+                                        Preferred - Always use your preferred language
+                                    </option>
+                                    <option value="tagged" {% if config.multilang_naming_mode == 'tagged' %}selected{% endif %}>
+                                        Tagged - Use preferred + add language tag
+                                    </option>
+                                </select>
+                                <small class="text-muted d-block mb-2">
+                                    Native: Russian books get Russian titles, English books get English titles.
+                                </small>
+
+                                <div class="form-check form-switch mb-2">
+                                    <input class="form-check-input" type="checkbox" name="language_tag_enabled" id="language_tag_enabled"
+                                           {% if config.language_tag_enabled %}checked{% endif %} onchange="toggleLanguageTagOptions()">
+                                    <label class="form-check-label" for="language_tag_enabled">
+                                        <strong>Add Language Tags</strong>
+                                        <br><small class="text-muted">E.g., "Metro 2033 (Russian)" or "[RU] Metro 2033"</small>
+                                    </label>
+                                </div>
+
+                                <div id="language_tag_options" class="ms-3 mt-2" style="display: {% if config.language_tag_enabled or config.multilang_naming_mode == 'tagged' %}block{% else %}none{% endif %};">
+                                    <div class="row g-2">
+                                        <div class="col-6">
+                                            <label class="form-label small mb-1">Tag Format</label>
+                                            <select class="form-select form-select-sm bg-dark text-light" name="language_tag_format" id="language_tag_format" onchange="updateLanguageTagPreview()">
+                                                <option value="bracket_full" {% if config.language_tag_format == 'bracket_full' or not config.language_tag_format %}selected{% endif %}>(Polish)</option>
+                                                <option value="bracket_code" {% if config.language_tag_format == 'bracket_code' %}selected{% endif %}>[pl]</option>
+                                                <option value="full" {% if config.language_tag_format == 'full' %}selected{% endif %}>Polish</option>
+                                                <option value="code" {% if config.language_tag_format == 'code' %}selected{% endif %}>_pl</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="form-label small mb-1">Tag Position</label>
+                                            <select class="form-select form-select-sm bg-dark text-light" name="language_tag_position" id="language_tag_position" onchange="updateLanguageTagPreview()">
+                                                <option value="after_title" {% if config.language_tag_position == 'after_title' or not config.language_tag_position %}selected{% endif %}>After Title</option>
+                                                <option value="before_title" {% if config.language_tag_position == 'before_title' %}selected{% endif %}>Before Title</option>
+                                                <option value="subfolder" {% if config.language_tag_position == 'subfolder' %}selected{% endif %}>Subfolder</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="alert alert-dark small py-1 px-2 mt-2 mb-0">
+                                        <strong>Preview:</strong> <code id="language-tag-preview">Author/Title (Russian)/</code>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -340,13 +410,37 @@
                                 Books are identified in order. Each layer only runs if the previous one didn't get a confident match.
                             </p>
 
+                            <!-- Skaldleita Trust Mode -->
+                            <div class="mb-3 p-2 bg-light rounded">
+                                <label class="form-label mb-1">
+                                    <i class="bi bi-shield-check text-success"></i>
+                                    <strong>Skaldleita Trust Mode</strong>
+                                </label>
+                                <select name="sl_trust_mode" class="form-select form-select-sm">
+                                    <option value="full" {% if config.sl_trust_mode == 'full' or config.sl_trust_mode is not defined %}selected{% endif %}>
+                                        Full Trust (Recommended) - Accept 80%+ matches, skip AI
+                                    </option>
+                                    <option value="boost" {% if config.sl_trust_mode == 'boost' %}selected{% endif %}>
+                                        Boost Mode - Verify with APIs, skip AI
+                                    </option>
+                                    <option value="legacy" {% if config.sl_trust_mode == 'legacy' %}selected{% endif %}>
+                                        Legacy - Use AI for uncertain matches
+                                    </option>
+                                </select>
+                                <small class="text-muted d-block mt-1">
+                                    Full Trust: Skaldleita GPU Whisper + 50M book database is usually accurate. Use AI only when needed.
+                                </small>
+                            </div>
+
+                            <hr class="my-2">
+
                             <div class="form-check form-switch mb-3">
                                 <input class="form-check-input" type="checkbox" name="enable_api_lookups"
                                        id="enable_api_lookups" {% if config.enable_api_lookups != false %}checked{% endif %}>
                                 <label class="form-check-label" for="enable_api_lookups">
                                     <i class="bi bi-cloud text-info"></i> <strong>Layer 1: Database Lookups</strong>
                                     <span class="badge bg-success">Free</span>
-                                    <br><small class="text-muted">BookDB, Audnexus, OpenLibrary, Google Books</small>
+                                    <br><small class="text-muted">Skaldleita, Audnexus, OpenLibrary, Google Books</small>
                                 </label>
                             </div>
 
@@ -372,12 +466,12 @@
                                 </label>
                             </div>
 
-                            <!-- BookDB Audio sub-option -->
+                            <!-- Skaldleita Audio sub-option -->
                             <div class="form-check form-switch mb-2 ms-4">
-                                <input class="form-check-input" type="checkbox" name="use_bookdb_for_audio"
-                                       id="use_bookdb_for_audio" {% if config.use_bookdb_for_audio is not defined or config.use_bookdb_for_audio %}checked{% endif %}>
-                                <label class="form-check-label" for="use_bookdb_for_audio">
-                                    <i class="bi bi-cloud-arrow-up text-primary"></i> Use BookDB for Audio ID
+                                <input class="form-check-input" type="checkbox" name="use_skaldleita_for_audio"
+                                       id="use_skaldleita_for_audio" {% if (config.use_skaldleita_for_audio is not defined and config.use_bookdb_for_audio is not defined) or config.use_skaldleita_for_audio or config.use_bookdb_for_audio %}checked{% endif %}>
+                                <label class="form-check-label" for="use_skaldleita_for_audio">
+                                    <i class="bi bi-cloud-arrow-up text-primary"></i> Use Skaldleita for Audio ID
                                     <span class="badge bg-success">Recommended</span>
                                     <br><small class="text-muted">GPU Whisper + 50M book database (faster, no rate limits). Disable to use your own AI/Whisper.</small>
                                 </label>
@@ -439,8 +533,17 @@
         <!-- ==================== AI SETUP TAB ==================== -->
         <div class="tab-pane fade" id="tab-ai">
             <div class="row">
-                <!-- API Keys Card - Always visible -->
+                <!-- API Keys Card - Hidden in demo mode -->
                 <div class="col-lg-6">
+                    {% if config.demo_mode %}
+                    <div class="card mb-3 border-info">
+                        <div class="card-body text-center py-4">
+                            <i class="bi bi-shield-lock text-info" style="font-size: 2rem;"></i>
+                            <h5 class="mt-2">API Keys Hidden</h5>
+                            <p class="text-muted mb-0">API keys are pre-configured on this demo instance.</p>
+                        </div>
+                    </div>
+                    {% else %}
                     <div class="card mb-3">
                         <div class="card-header py-2">
                             <i class="bi bi-key"></i> API Keys
@@ -493,10 +596,10 @@
                                 <small class="text-muted">Get at <a href="https://openrouter.ai" target="_blank">openrouter.ai</a> - Free models, Whisper fallback</small>
                             </div>
 
-                            <!-- BookDB API Key -->
+                            <!-- Skaldleita API Key -->
                             <div class="mb-3">
                                 <label class="form-label">
-                                    <i class="bi bi-book text-primary"></i> BookDB API Key
+                                    <i class="bi bi-book text-primary"></i> Skaldleita API Key
                                     <span class="badge bg-secondary ms-1">Optional</span>
                                 </label>
                                 <div class="input-group">
@@ -540,6 +643,7 @@
                             </div>
                         </div>
                     </div>
+                    {% endif %}{# end demo_mode check for API Keys #}
                 </div>
 
                 <!-- AI Provider Settings -->
@@ -684,7 +788,7 @@
                                         <input type="checkbox" class="form-check-input me-2" checked data-chain="audio" value="{{ provider }}">
                                         <span class="me-auto">
                                             {% if provider == 'bookdb' %}
-                                            <strong>BookDB</strong> <small class="text-success">(GPU Whisper - Best)</small>
+                                            <strong>Skaldleita</strong> <small class="text-success">(GPU Whisper - Best)</small>
                                             {% elif provider == 'gemini' %}
                                             <strong>Gemini</strong> <small class="text-info">(Native audio)</small>
                                             {% elif provider == 'openrouter' %}
@@ -701,7 +805,7 @@
                                         <input type="checkbox" class="form-check-input me-2" data-chain="audio" value="{{ provider }}">
                                         <span class="me-auto">
                                             {% if provider == 'bookdb' %}
-                                            <strong>BookDB</strong> <small class="text-success">(GPU Whisper - Best)</small>
+                                            <strong>Skaldleita</strong> <small class="text-success">(GPU Whisper - Best)</small>
                                             {% elif provider == 'gemini' %}
                                             <strong>Gemini</strong> <small class="text-info">(Native audio)</small>
                                             {% elif provider == 'openrouter' %}
@@ -885,6 +989,28 @@
                             <i class="bi bi-translate"></i> Language
                         </div>
                         <div class="card-body">
+                            <!-- UI Language (Interface Translation) -->
+                            <div class="mb-3">
+                                <label class="form-label">Interface Language</label>
+                                <select class="form-select bg-dark text-light" name="ui_language" id="ui_language">
+                                    <option value="en" {% if config.ui_language == 'en' or not config.ui_language %}selected{% endif %}>English</option>
+                                    <option value="es" {% if config.ui_language == 'es' %}selected{% endif %}>Español</option>
+                                    <option value="de" {% if config.ui_language == 'de' %}selected{% endif %}>Deutsch</option>
+                                    <option value="fr" {% if config.ui_language == 'fr' %}selected{% endif %}>Français</option>
+                                    <option value="pl" {% if config.ui_language == 'pl' %}selected{% endif %}>Polski</option>
+                                    <option value="ru" {% if config.ui_language == 'ru' %}selected{% endif %}>Русский</option>
+                                    <option value="pt" {% if config.ui_language == 'pt' %}selected{% endif %}>Português</option>
+                                    <option value="it" {% if config.ui_language == 'it' %}selected{% endif %}>Italiano</option>
+                                    <option value="nl" {% if config.ui_language == 'nl' %}selected{% endif %}>Nederlands</option>
+                                    <option value="cs" {% if config.ui_language == 'cs' %}selected{% endif %}>Čeština</option>
+                                    <option value="ko" {% if config.ui_language == 'ko' %}selected{% endif %}>한국어</option>
+                                    <option value="ja" {% if config.ui_language == 'ja' %}selected{% endif %}>日本語</option>
+                                    <option value="zh" {% if config.ui_language == 'zh' %}selected{% endif %}>中文</option>
+                                </select>
+                                <small class="text-muted">Translates UI buttons and labels (not book metadata)</small>
+                            </div>
+                            <hr class="my-3">
+                            <!-- Metadata Language (for book lookups) -->
                             <div class="mb-3">
                                 <label class="form-label">Preferred Metadata Language</label>
                                 <select class="form-select bg-dark text-light" name="preferred_language" id="preferred_language">
@@ -998,8 +1124,8 @@
                                 </label>
                             </div>
                             <small class="text-muted d-block mt-2">
-                                <strong>How it works:</strong> Successful BookDB lookups are cached locally AND shared to a peer-to-peer network.<br>
-                                <strong>Why enable:</strong> Helps when BookDB is temporarily down - you can still get results from other users' caches.<br>
+                                <strong>How it works:</strong> Successful Skaldleita lookups are cached locally AND shared to a peer-to-peer network.<br>
+                                <strong>Why enable:</strong> Helps when Skaldleita is temporarily down - you can still get results from other users' caches.<br>
                                 <strong>Storage:</strong> ~50-100MB local cache<br>
                                 <strong>Privacy:</strong> Only book metadata is shared (title, author, series). No file paths or personal data.
                             </small>
@@ -1050,7 +1176,7 @@
                                     <p class="mb-2"><strong>What it costs:</strong></p>
                                     <ul class="mb-0 small">
                                         <li><i class="bi bi-clock"></i> <strong>Time:</strong> ~30 seconds per book (500 books = ~4 hours)</li>
-                                        <li><i class="bi bi-cloud-arrow-up"></i> <strong>API Calls:</strong> 3-5 API calls per book (BookDB, OpenLibrary, Google Books, Audnexus)</li>
+                                        <li><i class="bi bi-cloud-arrow-up"></i> <strong>API Calls:</strong> 3-5 API calls per book (Skaldleita, OpenLibrary, Google Books, Audnexus)</li>
                                         <li><i class="bi bi-cpu"></i> <strong>Processing:</strong> All books get re-queued and processed through Layer 1-3</li>
                                     </ul>
                                 </div>
@@ -1126,7 +1252,7 @@
                             <div class="mb-2">
                                 <strong class="small">API Tests</strong>
                                 <div class="d-flex flex-wrap gap-1 mt-1">
-                                    <button type="button" class="btn btn-sm btn-outline-primary py-0" onclick="testBookDB()">BookDB</button>
+                                    <button type="button" class="btn btn-sm btn-outline-primary py-0" onclick="testBookDB()">Skaldleita</button>
                                     <button type="button" class="btn btn-sm btn-outline-primary py-0" onclick="testGemini()">Gemini</button>
                                     <button type="button" class="btn btn-sm btn-outline-primary py-0" onclick="testOpenRouter()">OpenRouter</button>
                                     <button type="button" class="btn btn-sm btn-outline-primary py-0" onclick="testOllamaDebug()">Ollama</button>
@@ -1312,6 +1438,41 @@ function toggleWatchOptions() {
     document.getElementById('watch-options').style.display = document.getElementById('watch_mode').checked ? 'block' : 'none';
 }
 
+function toggleLanguageTagOptions() {
+    const mode = document.getElementById('multilang_naming_mode').value;
+    const tagEnabled = document.getElementById('language_tag_enabled').checked;
+    const optionsDiv = document.getElementById('language_tag_options');
+    if (optionsDiv) {
+        optionsDiv.style.display = (mode === 'tagged' || tagEnabled) ? 'block' : 'none';
+    }
+    updateLanguageTagPreview();
+}
+
+function updateLanguageTagPreview() {
+    const format = document.getElementById('language_tag_format').value;
+    const position = document.getElementById('language_tag_position').value;
+    const previewEl = document.getElementById('language-tag-preview');
+    if (!previewEl) return;
+
+    // Build tag based on format
+    let tag = '';
+    switch (format) {
+        case 'bracket_full': tag = ' (Russian)'; break;
+        case 'bracket_code': tag = ' [ru]'; break;
+        case 'full': tag = ' Russian'; break;
+        case 'code': tag = '_ru'; break;
+    }
+
+    // Build preview based on position
+    let preview = '';
+    switch (position) {
+        case 'after_title': preview = 'Author/Title' + tag + '/'; break;
+        case 'before_title': preview = 'Author/' + tag.trim() + ' Title/'; break;
+        case 'subfolder': preview = 'Author/Russian/Title/'; break;
+    }
+    previewEl.textContent = preview;
+}
+
 function toggleErrorReportingOptions() {
     document.getElementById('error-reporting-options').style.display = document.getElementById('anonymous_error_reporting').checked ? 'block' : 'none';
 }
@@ -1449,8 +1610,8 @@ function showApiTestResult(msg, success) {
 function testBookDB() {
     showApiTestResult('Testing...', true);
     fetch('/api/test_bookdb', {method: 'POST'}).then(r => r.json())
-        .then(data => showApiTestResult(data.success ? 'BookDB: OK' : 'BookDB: ' + (data.error || 'Failed'), data.success))
-        .catch(e => showApiTestResult('BookDB: ' + e, false));
+        .then(data => showApiTestResult(data.success ? 'Skaldleita: OK' : 'Skaldleita: ' + (data.error || 'Failed'), data.success))
+        .catch(e => showApiTestResult('Skaldleita: ' + e, false));
 }
 
 function testGemini() {

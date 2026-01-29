@@ -38,7 +38,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
-from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
+from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file, session
+from flask_babel import Babel, gettext as _, lazy_gettext as _l
 from audio_tagging import embed_tags_for_path, build_metadata_for_embedding
 
 # Import from refactored modules
@@ -89,6 +90,7 @@ from library_manager.pipeline import (
     process_layer_1_api as _process_layer_1_api_raw,
     process_layer_1_audio as _process_layer_1_audio_raw,
     process_layer_2_ai as _process_queue_raw,
+    process_sl_requeue_verification as _process_sl_requeue_verification_raw,
 )
 from library_manager.worker import (
     process_all_queue as _process_all_queue_raw,
@@ -540,6 +542,38 @@ logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 app = Flask(__name__)
 app.secret_key = 'library-manager-secret-key-2024'
+
+# ============== INTERNATIONALIZATION (i18n) ==============
+# Flask-Babel for UI translations - book metadata (author/title) is NOT translated
+SUPPORTED_LANGUAGES = {
+    'en': 'English',
+    'es': 'Español',
+    'de': 'Deutsch',
+    'fr': 'Français',
+    'pl': 'Polski',
+    'ru': 'Русский',
+    'pt': 'Português',
+    'it': 'Italiano',
+    'nl': 'Nederlands',
+    'cs': 'Čeština',
+    'ko': '한국어',
+    'ja': '日本語',
+    'zh': '中文',
+}
+
+def get_locale():
+    """Get the user's selected UI language from config, session, or browser."""
+    # First check session (temporary override)
+    if 'ui_language' in session:
+        return session['ui_language']
+    # Then check saved config
+    config = load_config()
+    if config.get('ui_language'):
+        return config['ui_language']
+    # Fall back to browser preference, then English
+    return request.accept_languages.best_match(SUPPORTED_LANGUAGES.keys()) or 'en'
+
+babel = Babel(app, locale_selector=get_locale)
 
 # ============== MODULE WIRING ==============
 # Wire up the refactored modules with their dependencies
@@ -5694,6 +5728,16 @@ def process_layer_1_api(config, limit=None):
     )
 
 
+def process_sl_requeue_verification(config, limit=None):
+    """Wrapper for SL requeue verification - re-checks books after nightly merge."""
+    return _process_sl_requeue_verification_raw(
+        config=config,
+        get_db=get_db,
+        search_bookdb=search_bookdb,
+        limit=limit
+    )
+
+
 def process_queue(config, limit=None, verification_layer=2):
     """Wrapper for extracted layer function - passes app-level dependencies."""
     def set_book(author, title, stage=""):
@@ -5783,16 +5827,20 @@ def apply_fix(history_id):
             return False, "Cannot determine destination - no library paths configured"
 
         # Build new path from fix metadata
+        # Detect language from title for multi-language naming
+        fix_title = fix['new_title'] or fix['old_title']
+        lang_code = detect_title_language(fix_title) if fix_title else None
         new_path = build_new_path(
             Path(library_paths[0]),
             fix['new_author'] or fix['old_author'],
-            fix['new_title'] or fix['old_title'],
+            fix_title,
             series=fix['new_series'] if fix['new_series'] else None,
             series_num=fix['new_series_num'] if fix['new_series_num'] else None,
             narrator=fix['new_narrator'] if fix['new_narrator'] else None,
             year=fix['new_year'] if fix['new_year'] else None,
             edition=fix['new_edition'] if fix['new_edition'] else None,
             variant=fix['new_variant'] if fix['new_variant'] else None,
+            language_code=lang_code,
             config=config
         )
         if not new_path:
@@ -6030,7 +6078,8 @@ def process_all_queue(config):
         process_layer_1_audio=process_layer_1_audio,
         process_layer_3_audio=process_layer_3_audio,
         process_layer_1_api=process_layer_1_api,
-        process_queue=process_queue
+        process_queue=process_queue,
+        process_sl_requeue_verification=process_sl_requeue_verification
     )
 
 
@@ -6843,7 +6892,10 @@ def settings_page():
         config['enable_content_analysis'] = 'enable_content_analysis' in request.form  # Issue #65: Layer 4
         config['whisper_model'] = request.form.get('whisper_model', 'base')  # Issue #77: was missing
         config['layer4_openrouter_model'] = request.form.get('layer4_openrouter_model', 'google/gemma-3n-e4b-it:free')
-        config['use_bookdb_for_audio'] = 'use_bookdb_for_audio' in request.form
+        # Handle both old and new config names for backwards compatibility
+        use_sl = 'use_skaldleita_for_audio' in request.form or 'use_bookdb_for_audio' in request.form
+        config['use_skaldleita_for_audio'] = use_sl
+        config.pop('use_bookdb_for_audio', None)  # Remove deprecated key
         config['enable_voice_id'] = 'enable_voice_id' in request.form  # Skaldleita narrator voice ID
         config['deep_scan_mode'] = 'deep_scan_mode' in request.form
         config['profile_confidence_threshold'] = int(request.form.get('profile_confidence_threshold', 85))
@@ -6854,10 +6906,16 @@ def settings_page():
         config['metadata_embedding_overwrite_managed'] = 'metadata_embedding_overwrite_managed' in request.form
         config['metadata_embedding_backup_sidecar'] = 'metadata_embedding_backup_sidecar' in request.form
         # Language settings
+        config['ui_language'] = request.form.get('ui_language', 'en')  # UI translation language
         config['preferred_language'] = request.form.get('preferred_language', 'en')
         config['strict_language_matching'] = 'strict_language_matching' in request.form
         config['preserve_original_titles'] = 'preserve_original_titles' in request.form
         config['detect_language_from_audio'] = 'detect_language_from_audio' in request.form
+        # Multi-language naming settings
+        config['multilang_naming_mode'] = request.form.get('multilang_naming_mode', 'native')
+        config['language_tag_enabled'] = 'language_tag_enabled' in request.form
+        config['language_tag_format'] = request.form.get('language_tag_format', 'bracket_full')
+        config['language_tag_position'] = request.form.get('language_tag_position', 'after_title')
         # google_books_api_key is now stored in secrets only (security fix)
         config['update_channel'] = request.form.get('update_channel', 'stable')
         config['naming_format'] = request.form.get('naming_format', 'author/title')
@@ -10808,10 +10866,14 @@ def api_manual_match():
         if lib_path is None:
             lib_path = Path(old_path).parent.parent
 
+        # Detect language from title for multi-language naming
+        lang_code = detect_title_language(new_title) if new_title else None
+
         # Build the new path
         new_path = build_new_path(lib_path, new_author, new_title,
                                   series=new_series, series_num=new_series_num,
-                                  narrator=new_narrator, year=new_year, config=config)
+                                  narrator=new_narrator, year=new_year,
+                                  language_code=lang_code, config=config)
 
         if new_path is None:
             conn.close()
@@ -10973,10 +11035,14 @@ def api_edit_book():
             if lib_path is None:
                 lib_path = Path(old_path).parent.parent
 
+        # Detect language from title for multi-language naming
+        lang_code = detect_title_language(new_title) if new_title else None
+
         # Build the new path
         new_path = build_new_path(lib_path, new_author, new_title,
                                   series=new_series, series_num=new_series_num,
-                                  narrator=new_narrator, year=new_year, config=config)
+                                  narrator=new_narrator, year=new_year,
+                                  language_code=lang_code, config=config)
 
         if new_path is None:
             conn.close()
