@@ -14,6 +14,21 @@ All notable changes to Library Manager will be documented in this file.
 
 ### Fixed
 
+- **Issue #86: Pyannote Warning at Startup** - No longer tries to load local pyannote when Skaldleita handles audio
+  - When `use_skaldleita_for_audio=true` (the default), voice ID is done server-side
+  - Local voice fingerprinting now correctly skipped, eliminating the "No module named 'pyannote'" warning
+  - Users only need pyannote if they explicitly disable Skaldleita audio
+
+- **Issue #86: Worker Crash on Malformed AI Response** - Added defensive validation
+  - AI sometimes returns strings instead of dicts when confused by messy filenames
+  - Now logs warning and skips invalid results instead of crashing
+  - Prevents `'str' object has no attribute 'get'` error in queue processing
+
+- **Theme Persistence Across Pages** - Theme no longer resets when navigating
+  - Clicking dashboard icons (hourglass, etc.) no longer switches back to default theme
+  - localStorage theme loading now runs on ALL pages, not just Settings
+  - Theme applies instantly before CSS loads to prevent flash
+
 - **Author Validation in Audio ID Layer** - Prevents garbage matches from audio identification
   - Added validation check ensuring detected author exists in BookDB or matches known patterns
   - Rejects results where "author" is clearly garbage (random strings, file artifacts)

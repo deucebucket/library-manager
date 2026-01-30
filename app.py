@@ -1904,6 +1904,12 @@ def _verify_and_correct_narrator(audio_file, result, config):
     Returns:
         Updated result dict with narrator verification
     """
+    # Issue #86: Skip local voice processing when Skaldleita handles audio
+    # Skaldleita does voice ID server-side, no need for local pyannote
+    from library_manager.config import use_skaldleita_for_audio
+    if use_skaldleita_for_audio(config):
+        return result
+
     if not config.get('enable_narrator_verification', True):
         return result
 

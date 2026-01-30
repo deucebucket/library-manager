@@ -175,6 +175,13 @@ def process_queue(
     processed = 0
     fixed = 0
     for row, result in zip(batch, results):
+        # Issue #86: Validate result is a dict before processing
+        # AI can return malformed JSON that parses as string/list/None
+        if not isinstance(result, dict):
+            logger.warning(f"[{layer_name}] AI returned invalid result type {type(result).__name__} for {row.get('path', 'unknown')} - skipping")
+            processed += 1
+            continue
+
         # Update status bar with current book
         if set_current_book:
             set_current_book(

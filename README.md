@@ -16,10 +16,12 @@
 
 ## Recent Changes (stable)
 
-> **beta.102** - 🎨 **UI Theming System & Author Validation Fixes**
+> **beta.102** - 🎨 **UI Theming System & Bug Fixes** (Issue #86)
 > - **Theme Selector** - Switch between Default and Skaldleita (Norse-inspired) themes
-> - **Author Validation** - Audio ID layer now validates detected authors to prevent garbage matches
-> - **Quality Fix** - Whisper misheard narrator intros no longer create fake authors
+> - **Theme Persistence** - Theme no longer resets when navigating between pages
+> - **Pyannote Fix** - No more "No module named 'pyannote'" warnings at startup
+> - **Worker Crash Fix** - Queue processing no longer crashes on malformed AI responses
+> - **Author Validation** - Audio ID layer validates authors to prevent garbage matches
 
 > **beta.101** - 🌍 **Multi-Language Audiobook Naming** (Issue #81)
 > - **Three Naming Modes** - Native (keep original language), Preferred (translate all), Tagged (add language labels)
