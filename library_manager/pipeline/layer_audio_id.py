@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
 from library_manager.config import use_skaldleita_for_audio
+from library_manager.utils.validation import is_garbage_author_match, is_placeholder_author
 
 # Language detection for multi-language naming
 def _detect_title_language(text):
@@ -497,6 +498,30 @@ def process_layer_1_audio(
             current_author = row['current_author'] or ''
             current_title = row['current_title'] or ''
             if author.lower() != current_author.lower() or title.lower() != current_title.lower():
+                # Validate that the extracted author isn't garbage
+                # "earth" from "Middle-earth" or single words shouldn't replace real authors
+                author_is_garbage = False
+                if author and len(author) < 4:
+                    # Too short to be a real author name
+                    author_is_garbage = True
+                    logger.info(f"[LAYER 1/AUDIO] Rejecting garbage author (too short): '{author}'")
+                elif current_author and not is_placeholder_author(current_author):
+                    # Current author is real - check if new author is garbage match
+                    if is_garbage_author_match(current_author, author):
+                        author_is_garbage = True
+                        logger.info(f"[LAYER 1/AUDIO] Rejecting garbage author match: '{current_author}' -> '{author}'")
+
+                if author_is_garbage:
+                    # Don't create pending fix with garbage author - advance to layer 2
+                    conn = get_db()
+                    c = conn.cursor()
+                    c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (row['book_id'],))
+                    conn.commit()
+                    conn.close()
+                    logger.info(f"[LAYER 1/AUDIO] Garbage author rejected, advancing to Layer 2: {current_author}/{current_title}")
+                    processed += 1
+                    continue
+
                 # Needs fix - will be handled by existing fix mechanism
                 conn = get_db()
                 c = conn.cursor()
