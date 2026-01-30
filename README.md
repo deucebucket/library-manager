@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.101-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.102-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,11 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.102** - 🎨 **UI Theming System & Author Validation Fixes**
+> - **Theme Selector** - Switch between Default and Skaldleita (Norse-inspired) themes
+> - **Author Validation** - Audio ID layer now validates detected authors to prevent garbage matches
+> - **Quality Fix** - Whisper misheard narrator intros no longer create fake authors
 
 > **beta.101** - 🌍 **Multi-Language Audiobook Naming** (Issue #81)
 > - **Three Naming Modes** - Native (keep original language), Preferred (translate all), Tagged (add language labels)

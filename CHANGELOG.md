@@ -2,6 +2,26 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.102] - 2026-01-29
+
+### Added
+
+- **UI Theming System** - Switch between visual themes
+  - **Default** - Original dark blue theme
+  - **Skaldleita** - Norse-inspired theme with warm amber accents and rune decorations
+  - Theme selector in Settings → Advanced
+  - Persistent across sessions (saved to localStorage)
+
+### Fixed
+
+- **Author Validation in Audio ID Layer** - Prevents garbage matches from audio identification
+  - Added validation check ensuring detected author exists in BookDB or matches known patterns
+  - Rejects results where "author" is clearly garbage (random strings, file artifacts)
+  - Audio transcription results now verified before being trusted
+  - Fixes cases where Whisper misheard narrator intros created fake authors
+
+---
+
 ## [0.9.0-beta.101] - 2026-01-29
 
 ### Added
