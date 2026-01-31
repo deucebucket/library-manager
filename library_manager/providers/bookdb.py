@@ -25,6 +25,10 @@ from library_manager.providers.rate_limiter import (
     record_api_success,
     API_CIRCUIT_BREAKER,
 )
+from library_manager.utils.voice_embedding import (
+    is_voice_embedding_available,
+    extract_voice_embedding_from_clip,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -276,12 +280,32 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                 logger.warning(f"[SKALDLEITA] Extracted file too small ({tmp_size} bytes), likely invalid audio")
                 return None
 
+            # Extract voice embedding while we have the clip (contributes to narrator ID)
+            voice_embedding = None
+            if is_voice_embedding_available():
+                logger.debug("[SKALDLEITA] Extracting voice embedding from clip...")
+                voice_embedding = extract_voice_embedding_from_clip(tmp_path)
+                if voice_embedding:
+                    logger.info(f"[SKALDLEITA] Voice embedding extracted (256-dim)")
+                else:
+                    logger.debug("[SKALDLEITA] Voice embedding extraction failed (non-fatal)")
+
             # Submit to Skaldleita queue
             logger.info(f"[SKALDLEITA] Submitting to queue: {url}/api/identify_audio")
             with open(tmp_path, 'rb') as f:
+                # Build request with optional voice embedding
+                files = {'audio': (audio_path.name, f, 'audio/mpeg')}
+                data = {}
+                if voice_embedding:
+                    # Send pre-computed embedding - Skaldleita won't need to extract it
+                    import json
+                    data['voice_embedding'] = json.dumps(voice_embedding)
+                    logger.debug("[SKALDLEITA] Including voice embedding in request")
+
                 response = requests.post(
                     f"{url}/api/identify_audio",
-                    files={'audio': (audio_path.name, f, 'audio/mpeg')},
+                    files=files,
+                    data=data,
                     headers={"User-Agent": get_user_agent()},
                     timeout=30  # Just submitting, should be fast
                 )
