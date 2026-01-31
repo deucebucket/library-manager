@@ -932,7 +932,8 @@ def process_queue(
                     logger.info(f"Fixed: {row['current_author']}/{row['current_title']} -> {new_author}/{new_title}")
 
                     # Clean up any stale pending entries for this book before recording fix
-                    c.execute("DELETE FROM history WHERE book_id = ? AND status = 'pending_fix'", (row['book_id'],))
+                    # Issue #79: Also prevent duplicate 'fixed' history entries by deleting existing ones
+                    c.execute("DELETE FROM history WHERE book_id = ? AND status IN ('pending_fix', 'fixed')", (row['book_id'],))
 
                     # Record in history
                     c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,

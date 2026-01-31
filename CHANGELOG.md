@@ -2,6 +2,28 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.103] - 2026-01-31
+
+### Fixed
+
+- **Issue #79: Phantom History Counts** - Dashboard counts now match actual items
+  - History queries now use JOIN to only count items with existing books
+  - Prevents orphaned history entries from inflating pending/fixed/error counts
+  - Counts on dashboard now accurately reflect what you'll see when clicking through
+
+- **Issue #79: Duplicate History Entries** - Prevents multiple 'fixed' entries per book
+  - Now cleans up existing 'fixed' entries before recording a new fix
+  - Stops history from accumulating duplicate entries when re-processing books
+
+### Changed
+
+- **Request Tracking** - Added User-Agent header to Skaldleita API requests
+  - Requests now identify as `LibraryManager/{version}`
+  - Helps track Library Manager traffic vs other API consumers
+  - No functional change for users
+
+---
+
 ## [0.9.0-beta.102] - 2026-01-29
 
 ### Added

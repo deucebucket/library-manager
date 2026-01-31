@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.102"
+APP_VERSION = "0.9.0-beta.103"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -8841,7 +8841,10 @@ def api_library():
     c.execute("SELECT COUNT(*) FROM books WHERE media_type = 'both'")
     counts['both_formats'] = c.fetchone()[0]
 
-    c.execute("SELECT COUNT(*) FROM history WHERE status = 'pending_fix'")
+    # Issue #79: Use JOIN to match the fetch query - only count items with existing books
+    c.execute('''SELECT COUNT(*) FROM history h
+                 JOIN books b ON h.book_id = b.id
+                 WHERE h.status = 'pending_fix' ''')
     counts['pending'] = c.fetchone()[0]
 
     # Issue #36: Queue count should exclude series_folder and multi_book_files
@@ -8850,16 +8853,25 @@ def api_library():
                  WHERE b.status NOT IN ('series_folder', 'multi_book_files', 'verified', 'fixed')''')
     counts['queue'] = c.fetchone()[0]
 
-    c.execute("SELECT COUNT(*) FROM history WHERE status = 'fixed'")
+    # Issue #79: Use JOIN to match the fetch query - only count items with existing books
+    c.execute('''SELECT COUNT(*) FROM history h
+                 JOIN books b ON h.book_id = b.id
+                 WHERE h.status = 'fixed' ''')
     counts['fixed'] = c.fetchone()[0]
 
     c.execute("SELECT COUNT(*) FROM books WHERE status = 'verified'")
     counts['verified'] = c.fetchone()[0]
 
-    c.execute("SELECT COUNT(*) FROM history WHERE status IN ('error', 'duplicate', 'corrupt_dest')")
+    # Issue #79: Use JOIN to match the fetch query - only count items with existing books
+    c.execute('''SELECT COUNT(*) FROM history h
+                 JOIN books b ON h.book_id = b.id
+                 WHERE h.status IN ('error', 'duplicate', 'corrupt_dest')''')
     counts['error'] = c.fetchone()[0]
 
-    c.execute("SELECT COUNT(*) FROM history WHERE status = 'needs_attention'")
+    # Issue #79: Use JOIN to match the fetch query - only count items with existing books
+    c.execute('''SELECT COUNT(*) FROM history h
+                 JOIN books b ON h.book_id = b.id
+                 WHERE h.status = 'needs_attention' ''')
     attention_history = c.fetchone()[0]
     c.execute("SELECT COUNT(*) FROM books WHERE status IN ('needs_attention', 'structure_reversed', 'watch_folder_error')")
     attention_books = c.fetchone()[0]

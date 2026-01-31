@@ -33,6 +33,20 @@ BOOKDB_API_URL = "https://bookdb.deucebucket.com"  # URL unchanged for backwards
 # Public API key for Library Manager users (no config needed)
 BOOKDB_PUBLIC_KEY = "lm-public-2024_85TbJ2lbrXGm38tBgliPAcAexLA_AeWxyqvHPbwRIrA"
 
+# User-Agent for tracking requests (helps identify Library Manager traffic)
+def get_user_agent():
+    """Get User-Agent string with version from app.py"""
+    try:
+        import sys
+        # Try to get version from app module if loaded
+        if 'app' in sys.modules:
+            version = getattr(sys.modules['app'], 'APP_VERSION', 'unknown')
+        else:
+            version = 'unknown'
+    except:
+        version = 'unknown'
+    return f"LibraryManager/{version}"
+
 
 def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=None, config=None,
                   data_dir=None, cache_getter=None):
@@ -93,7 +107,7 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
         resp = requests.post(
             f"{base_url}/match",
             json={"filename": filename},
-            headers={"X-API-Key": api_key},
+            headers={"X-API-Key": api_key, "User-Agent": get_user_agent()},
             timeout=10
         )
 
@@ -268,6 +282,7 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                 response = requests.post(
                     f"{url}/api/identify_audio",
                     files={'audio': (audio_path.name, f, 'audio/mpeg')},
+                    headers={"User-Agent": get_user_agent()},
                     timeout=30  # Just submitting, should be fast
                 )
 
@@ -298,7 +313,7 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                     waited += poll_interval
 
                     try:
-                        poll_response = requests.get(poll_url, timeout=10)
+                        poll_response = requests.get(poll_url, headers={"User-Agent": get_user_agent()}, timeout=10)
                         if poll_response.status_code != 200:
                             continue
 

@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.102-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.103-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,12 +16,16 @@
 
 ## Recent Changes (stable)
 
+> **beta.103** - 🔧 **History Count Fixes** (Issue #79)
+> - **Accurate Dashboard Counts** - Pending/fixed/error counts now match actual items
+> - **No More Duplicate History** - Fixed entries no longer accumulate duplicates
+> - **Request Tracking** - API requests now identify Library Manager version
+
 > **beta.102** - 🎨 **UI Theming System & Bug Fixes** (Issue #86)
 > - **Theme Selector** - Switch between Default and Skaldleita (Norse-inspired) themes
 > - **Theme Persistence** - Theme no longer resets when navigating between pages
 > - **Pyannote Fix** - No more "No module named 'pyannote'" warnings at startup
 > - **Worker Crash Fix** - Queue processing no longer crashes on malformed AI responses
-> - **Author Validation** - Audio ID layer validates authors to prevent garbage matches
 
 > **beta.101** - 🌍 **Multi-Language Audiobook Naming** (Issue #81)
 > - **Three Naming Modes** - Native (keep original language), Preferred (translate all), Tagged (add language labels)
