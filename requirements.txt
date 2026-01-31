@@ -12,4 +12,12 @@ langdetect>=1.0.9
 # Enables decentralized sharing of book lookup results
 # Install with: pip install pygundb
 # pygundb>=0.2.0
+
+# i18n support for multi-language UI
 Flask-Babel
+
+# Optional: ISBN extraction from ebooks (Issue #67)
+# Enables ISBN lookup from EPUB/PDF files for better metadata matching
+# Install with: pip install ebooklib pypdf
+# ebooklib>=0.18
+# pypdf>=4.0.0

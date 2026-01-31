@@ -2,6 +2,22 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.105] - 2026-01-31
+
+### Added
+
+- **Issue #67: ISBN Lookup for Ebooks** - Extract ISBN from ebook metadata for better matching
+  - Extracts ISBN from EPUB metadata (dc:identifier elements)
+  - Extracts ISBN from PDF metadata and first 5 pages
+  - Extracts ISBN from MOBI/AZW header data
+  - New BookDB endpoint `/api/isbn/{isbn}` for direct ISBN lookup
+  - Normalizes ISBN-10 ↔ ISBN-13 conversion
+  - Falls back to existing filename parsing if no ISBN found
+  - New setting: "ISBN Lookup" toggle in Ebook Management section
+  - Optional dependencies: `ebooklib`, `pypdf` (graceful degradation if not installed)
+
+---
+
 ## [0.9.0-beta.104] - 2026-01-31
 
 ### Fixed
@@ -112,6 +128,8 @@ All notable changes to Library Manager will be documented in this file.
   - Backwards compatible - old config name still works
   - New helper function handles migration automatically
   - UI labels updated throughout Settings
+
+---
 
 ---
 

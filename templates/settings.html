@@ -322,6 +322,15 @@
                                     </option>
                                 </select>
                                 <small class="text-muted d-block mt-1">Merge puts ebooks in same Author/Title/ folder as audiobook</small>
+
+                                <div class="form-check form-switch mt-3">
+                                    <input class="form-check-input" type="checkbox" name="enable_isbn_lookup" id="enable_isbn_lookup"
+                                           {% if config.enable_isbn_lookup %}checked{% endif %}>
+                                    <label class="form-check-label" for="enable_isbn_lookup">
+                                        <strong>ISBN Lookup</strong>
+                                        <br><small class="text-muted">Extract ISBN from EPUB/PDF metadata for better matching (requires ebooklib/pypdf)</small>
+                                    </label>
+                                </div>
                             </div>
                         </div>
                     </div>

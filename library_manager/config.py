@@ -75,6 +75,7 @@ DEFAULT_CONFIG = {
     "series_grouping": False,  # Group series: Author/Series/1 - Title (Audiobookshelf compatible)
     "ebook_management": False,  # Enable ebook organization (Beta)
     "ebook_library_mode": "merge",  # "merge" = same folder as audiobooks, "separate" = own library
+    "enable_isbn_lookup": True,  # Issue #67: Extract ISBN from EPUB/PDF files for metadata lookup
     "update_channel": "beta",  # "stable", "beta", or "nightly"
     "naming_format": "author/title",  # "author/title", "author - title", "custom"
     "custom_naming_template": "{author}/{title}",  # Custom template with {author}, {title}, {series}, etc.
