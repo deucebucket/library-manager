@@ -4952,13 +4952,15 @@ def deep_scan_library(config):
                     continue
 
                 # Skip system/metadata folders - these are NEVER books
+                # Issue #88: Added @eaDir, #recycle (Synology), .Trash*, .AppleDouble, __MACOSX
                 system_folders = {'metadata', 'tmp', 'temp', 'cache', 'config', 'data', 'logs', 'log',
                                   'backup', 'backups', 'old', 'new', 'test', 'tests', 'sample', 'samples',
                                   '.thumbnails', 'thumbnails', 'covers', 'images', 'artwork', 'art',
                                   'extras', 'bonus', 'misc', 'other', 'various', 'unknown', 'unsorted',
                                   'downloads', 'incoming', 'processing', 'completed', 'done', 'failed',
-                                  'streams', 'chapters', 'parts', '.streams', '.cache', '.metadata'}
-                if title.lower() in system_folders or title.startswith('.'):
+                                  'streams', 'chapters', 'parts', '.streams', '.cache', '.metadata',
+                                  '@eadir', '#recycle', '.appledouble', '__macosx', '.trash'}
+                if title.lower() in system_folders or title.startswith('.') or title.startswith('@') or title.startswith('#'):
                     logger.debug(f"Skipping system folder: {path}")
                     continue
 
@@ -5010,6 +5012,11 @@ def deep_scan_library(config):
                                 continue
                             book_title = book_dir.name
                             book_path = str(book_dir)
+
+                            # Issue #88: Skip system folders inside series (Synology @eaDir, etc.)
+                            if book_title.lower() in system_folders or book_title.startswith('.') or book_title.startswith('@') or book_title.startswith('#'):
+                                logger.debug(f"Skipping system folder in series: {book_path}")
+                                continue
 
                             # Issue #53: Strip author prefix from book folder name
                             # If folder is "David Baldacci - Dream Town" and parent is "David Baldacci",
