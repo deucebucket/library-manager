@@ -16,8 +16,6 @@ langdetect>=1.0.9
 # i18n support for multi-language UI
 Flask-Babel
 
-# Optional: ISBN extraction from ebooks (Issue #67)
-# Enables ISBN lookup from EPUB/PDF files for better metadata matching
-# Install with: pip install ebooklib pypdf
-# ebooklib>=0.18
-# pypdf>=4.0.0
+# ISBN extraction from ebooks (Issue #67)
+ebooklib>=0.18
+pypdf>=4.0.0
