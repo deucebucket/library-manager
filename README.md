@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.103-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.104-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,7 +16,7 @@
 
 ## Recent Changes (stable)
 
-> **beta.103** - 🔧 **History Count Fixes** (Issue #79)
+> **beta.104** - 🔧 **Synology @eaDir Fix** (Issue #88)
 > - **Accurate Dashboard Counts** - Pending/fixed/error counts now match actual items
 > - **No More Duplicate History** - Fixed entries no longer accumulate duplicates
 > - **Request Tracking** - API requests now identify Library Manager version

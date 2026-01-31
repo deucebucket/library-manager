@@ -2,6 +2,18 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.104] - 2026-01-31
+
+### Fixed
+
+- **Issue #88: Synology @eaDir folders appearing as books** - System folder filtering now works at book level
+  - Added `@eaDir`, `#recycle`, `.AppleDouble`, `__MACOSX`, `.Trash` to filtered folders
+  - Added checks for any folder starting with `@` or `#` prefix
+  - Applied same filter inside series folders
+  - Synology users will no longer see garbage entries after rescan
+
+---
+
 ## [0.9.0-beta.103] - 2026-01-31
 
 ### Fixed
