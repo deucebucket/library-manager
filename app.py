@@ -2163,13 +2163,37 @@ def transcribe_with_whisper(audio_file, config):
 
 def identify_ebook_from_filename(filename, folder_path, config):
     """
-    Identify an ebook using filename parsing + BookDB search.
+    Identify an ebook using ISBN extraction + filename parsing + BookDB search.
     No AI needed - just smart regex and database lookup.
 
     Flow:
-    1. Parse filename with regex to extract author/title guess
-    2. Use BookDB search to verify and enrich metadata
+    1. Try ISBN extraction from ebook metadata (EPUB/PDF/MOBI)
+    2. If ISBN found, look up via BookDB /api/isbn/{isbn}
+    3. Fall back to filename parsing + BookDB search
     """
+    # === PHASE 1: ISBN EXTRACTION (Issue #67) ===
+    if config.get('enable_isbn_lookup', True) and folder_path:
+        try:
+            from library_manager.providers.isbn_lookup import identify_ebook_by_isbn
+            isbn_result = identify_ebook_by_isbn(folder_path)
+            if isbn_result:
+                logger.info(f"[EBOOK] ISBN lookup success: {isbn_result.get('author_name')} - {isbn_result.get('title')}")
+                return {
+                    'author': isbn_result.get('author_name'),
+                    'title': isbn_result.get('title'),
+                    'series': isbn_result.get('series_name'),
+                    'series_num': isbn_result.get('series_position'),
+                    'year': isbn_result.get('year_published'),
+                    'isbn': isbn_result.get('isbn') or isbn_result.get('isbn13'),
+                    'confidence': 'high',
+                    'source': 'isbn'
+                }
+        except ImportError:
+            logger.debug("[EBOOK] ISBN lookup not available (ebooklib/pypdf not installed)")
+        except Exception as e:
+            logger.debug(f"[EBOOK] ISBN extraction failed: {e}")
+
+    # === PHASE 2: FILENAME PARSING ===
     # Clean the filename for parsing
     clean_name = os.path.splitext(filename)[0]
     folder_name = os.path.basename(os.path.dirname(folder_path)) if folder_path else ''

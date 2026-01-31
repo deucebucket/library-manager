@@ -70,6 +70,11 @@ from library_manager.providers.fingerprint import (
     contribute_fingerprint,
     identify_by_fingerprint,
 )
+from library_manager.providers.isbn_lookup import (
+    extract_isbn_from_file,
+    lookup_isbn,
+    identify_ebook_by_isbn,
+)
 
 __all__ = [
     # Rate limiting
@@ -122,4 +127,8 @@ __all__ = [
     'lookup_fingerprint',
     'contribute_fingerprint',
     'identify_by_fingerprint',
+    # ISBN extraction (Issue #67)
+    'extract_isbn_from_file',
+    'lookup_isbn',
+    'identify_ebook_by_isbn',
 ]
