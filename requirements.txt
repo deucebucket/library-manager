@@ -4,9 +4,10 @@ mutagen>=1.45.0
 langdetect>=1.0.9
 
 # Voice embedding for narrator identification (contributes to Skaldleita)
-# Extracts 256-dim speaker vectors - runs on CPU, ~50MB model download
-# Uses ONNX runtime (lightweight) instead of torch (2GB)
-wespeakerruntime>=1.0.0
+# Extracts 256-dim speaker vectors using WeSpeaker ONNX model
+# Raw ONNX Runtime (~15MB) + model download (~27MB) = ~42MB total
+# NO torch, NO cuda, NO 2GB downloads!
+onnxruntime>=1.16.0
 
 # Optional: Local speech-to-text for Layer 4 fallback (when Gemini unavailable)
 # Install with: pip install faster-whisper
