@@ -150,6 +150,11 @@ def process_queue(
         logger.warning("No results from AI")
         return 0, 0  # (processed, fixed)
 
+    # SAFETY: Ensure results is a list, not a string or other type
+    if not isinstance(results, list):
+        logger.error(f"AI returned invalid type: {type(results)} (expected list). Value: {repr(results)[:200]}")
+        return 0, 0
+
     # === PHASE 3: Process results and apply DB updates ===
     conn = get_db()
     c = conn.cursor()
