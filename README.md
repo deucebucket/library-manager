@@ -212,7 +212,7 @@ Build your own folder structure:
 - **Edit & lock metadata** - correct wrong matches, lock to prevent overwriting
 - **Library search** - find any book by author or title
 - **Loose file detection** - auto-creates folders for dumped files
-- **Ebook management (Beta)** - organize ebooks alongside audiobooks
+- **Ebook management (Beta)** - organize ebooks alongside audiobooks with ISBN lookup
 - **Health scan** - detect corrupt/incomplete audio files
 - **Audio analysis (Beta)** - extract metadata from audiobook intros via Gemini
 - **In-browser updates** - update from the web UI

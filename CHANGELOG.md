@@ -14,7 +14,6 @@ All notable changes to Library Manager will be documented in this file.
   - Normalizes ISBN-10 ↔ ISBN-13 conversion
   - Falls back to existing filename parsing if no ISBN found
   - New setting: "ISBN Lookup" toggle in Ebook Management section
-  - Optional dependencies: `ebooklib`, `pypdf` (graceful degradation if not installed)
 
 ---
 
