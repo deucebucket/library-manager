@@ -17,6 +17,31 @@ LANGUAGE_NAMES = {
     'vi': 'Vietnamese', 'uk': 'Ukrainian', 'ro': 'Romanian', 'id': 'Indonesian'
 }
 
+# Patterns to strip from titles when strip_unabridged is enabled (Issue #92)
+UNABRIDGED_PATTERNS = [
+    r'\s*\(Unabridged\)',
+    r'\s*\[Unabridged\]',
+    r'\s*-\s*Unabridged\b',
+    r'\s*,\s*Unabridged\b',
+    r'\s+Unabridged$',  # Trailing "Unabridged"
+    r'\s*\(Abridged\)',  # Also strip abridged markers
+    r'\s*\[Abridged\]',
+    r'\s*-\s*Abridged\b',
+    r'\s*,\s*Abridged\b',
+    r'\s+Abridged$',
+]
+
+
+def strip_unabridged_markers(title: str) -> str:
+    """Remove (Unabridged), [Unabridged], etc. from title.
+
+    Issue #92: Users may prefer clean titles without edition markers.
+    """
+    cleaned = title
+    for pattern in UNABRIDGED_PATTERNS:
+        cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
 
 def format_language_tag(lang_code: str, lang_name: str = None, fmt: str = "bracket_full") -> str:
     """Format language tag based on user preference.
@@ -175,6 +200,10 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
     if not safe_author or not safe_title:
         logger.error(f"BLOCKED: Invalid author '{author}' or title '{title}' - would create dangerous path")
         return None
+
+    # Issue #92: Strip "Unabridged"/"Abridged" markers if enabled
+    if config and config.get('strip_unabridged', False):
+        safe_title = strip_unabridged_markers(safe_title)
 
     # Build title folder name
     title_folder = safe_title
@@ -353,5 +382,6 @@ __all__ = [
     'build_new_path',
     'format_language_tag',
     'apply_language_tag',
+    'strip_unabridged_markers',
     'LANGUAGE_NAMES',
 ]

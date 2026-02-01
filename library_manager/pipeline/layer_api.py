@@ -87,9 +87,45 @@ def process_layer_1_api(
     sl_trust_mode = config.get('sl_trust_mode', 'full')
     sl_threshold = config.get('sl_confidence_threshold', 80)
 
+    # System folder patterns that should never be processed as books
+    garbage_inputs = {
+        '@eadir', '#recycle', '@syno', '@tmp',
+        '.appledouble', '__macosx', '.ds_store', '.spotlight', '.fseventsd', '.trashes',
+        '$recycle.bin', 'system volume information', 'thumbs.db',
+        '.trash', '.cache', '.metadata', '.thumbnails',
+        'metadata', 'tmp', 'temp', 'cache', 'config', 'data', 'logs', 'log',
+        'backup', 'backups', '.streams', 'streams'
+    }
+
     for row in batch:
         current_author = row['current_author']
         current_title = row['current_title']
+
+        # === GARBAGE INPUT CHECK ===
+        # Reject system folders/garbage before wasting API calls or AI time
+        title_lower = (current_title or '').lower().strip()
+        author_lower = (current_author or '').lower().strip()
+
+        is_garbage_input = False
+        if title_lower in garbage_inputs or author_lower in garbage_inputs:
+            is_garbage_input = True
+        elif title_lower.startswith('@') or title_lower.startswith('#'):
+            is_garbage_input = True
+        elif author_lower.startswith('@') or author_lower.startswith('#'):
+            is_garbage_input = True
+
+        if is_garbage_input:
+            # Mark as needs_attention so user can delete, don't send to AI
+            action = {
+                'book_id': row['book_id'],
+                'queue_id': row['queue_id'],
+                'type': 'garbage_rejected',
+                'profile_json': None,
+                'confidence': 0,
+                'log_message': f"[LAYER 1] REJECTED garbage input (system folder): {current_author}/{current_title}"
+            }
+            actions.append(action)
+            continue
 
         # === SL TRUST MODE CHECK ===
         # If book already identified by SL audio with high confidence, trust it
@@ -214,8 +250,8 @@ def process_layer_1_api(
                             # Create profile with verification source
                             api_source = best_match.get('source', 'api')
                             profile = BookProfile()
-                            profile.author.add_source(api_source, match_author)
-                            profile.title.add_source(api_source, match_title)
+                            profile.add_author(api_source, match_author)
+                            profile.add_title(api_source, match_title)
                             if best_match.get('series'):
                                 profile.series.add_source(api_source, best_match['series'])
                             if best_match.get('series_num'):
@@ -308,6 +344,12 @@ def process_layer_1_api(
             c.execute('UPDATE books SET verification_layer = 4 WHERE id = ?', (action['book_id'],))
         elif action['type'] == 'advance_to_layer2':
             c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (action['book_id'],))
+        elif action['type'] == 'garbage_rejected':
+            # System folder/garbage input - mark for user cleanup, don't process further
+            c.execute('''UPDATE books SET status = 'needs_attention',
+                        error_message = 'System folder detected - remove from library',
+                        verification_layer = 4 WHERE id = ?''', (action['book_id'],))
+            c.execute('DELETE FROM queue WHERE id = ?', (action['queue_id'],))
 
         processed += 1
 

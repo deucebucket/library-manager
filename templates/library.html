@@ -177,6 +177,9 @@
             <button class="btn btn-info btn-sm" onclick="organizeAllOrphans()" id="btn-organize-orphans" style="display: none;">
                 <i class="bi bi-folder-plus"></i> Organize Orphans (<span id="orphan-count-btn">0</span>)
             </button>
+            <button class="btn btn-outline-danger btn-sm" onclick="removeSelected()" id="btn-remove-selected" style="display: none;">
+                <i class="bi bi-trash"></i> Remove Selected (<span id="selected-count">0</span>)
+            </button>
             <div class="ms-auto d-flex align-items-center gap-2">
                 <div class="form-check form-switch">
                     <input class="form-check-input" type="checkbox" id="skip-confirm-toggle" {{ 'checked' if config.get('skip_confirmations') else '' }}>
@@ -202,11 +205,12 @@
         <table class="table table-sm mb-0">
             <thead style="position: sticky; top: 0; background: rgba(22, 33, 62, 0.98); z-index: 10;">
                 <tr>
-                    <th style="width: 25%;">Author</th>
-                    <th style="width: 30%;">Title</th>
-                    <th style="width: 15%;">Status</th>
-                    <th style="width: 20%;">Details</th>
-                    <th style="width: 10%;">Actions</th>
+                    <th style="width: 3%;"><input type="checkbox" id="select-all" onclick="toggleSelectAll()" title="Select all visible"></th>
+                    <th style="width: 23%;">Author</th>
+                    <th style="width: 29%;">Title</th>
+                    <th style="width: 14%;">Status</th>
+                    <th style="width: 18%;">Details</th>
+                    <th style="width: 13%;">Actions</th>
                 </tr>
             </thead>
             <tbody id="items-table">
@@ -443,7 +447,7 @@ function loadLibrary() {
         .catch(e => {
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="5" class="text-center py-4 text-danger">
+                    <td colspan="6" class="text-center py-4 text-danger">
                         <i class="bi bi-exclamation-triangle"></i> Error loading library: ${e}
                     </td>
                 </tr>
@@ -470,7 +474,7 @@ function renderItems(items) {
     if (!items || items.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="5" class="text-center py-4 text-muted">
+                <td colspan="6" class="text-center py-4 text-muted">
                     <i class="bi bi-inbox fs-1"></i>
                     <p class="mt-2 mb-0">No items found</p>
                 </td>
@@ -484,9 +488,13 @@ function renderItems(items) {
         const statusBadge = getStatusBadge(item);
         const actions = getActions(item);
         const details = getDetails(item);
+        // For checkbox, we need book_id for verified items, or id for history items
+        const checkId = item.book_id || item.id;
+        const checkType = item.book_id ? 'book' : item.type;
 
         html += `
-            <tr class="item-row" data-id="${item.id}" data-type="${item.type}">
+            <tr class="item-row" data-id="${item.id}" data-type="${item.type}" data-book-id="${item.book_id || ''}">
+                <td><input type="checkbox" class="item-checkbox" data-id="${checkId}" data-type="${checkType}" onchange="updateSelectedCount()"></td>
                 <td>
                     <i class="bi bi-person text-muted"></i>
                     <span class="${item.type === 'pending_fix' ? 'text-danger' : ''}">${escapeHtml(item.author || 'Unknown')}</span>
@@ -504,6 +512,9 @@ function renderItems(items) {
     });
 
     tbody.innerHTML = html;
+    // Reset select-all checkbox when table reloads
+    document.getElementById('select-all').checked = false;
+    updateSelectedCount();
 }
 
 function getStatusBadge(item) {
@@ -635,6 +646,15 @@ function getActions(item) {
         html += `
             <button class="btn btn-outline-danger btn-sm action-btn" onclick="removeFromQueue(${item.id})" title="Remove">
                 <i class="bi bi-x"></i>
+            </button>
+        `;
+    }
+
+    // Add "Remove from library" for verified items that have a book_id
+    if (item.book_id && (item.type === 'verified' || item.status === 'verified')) {
+        html += `
+            <button class="btn btn-outline-secondary btn-sm action-btn ms-1" onclick="removeBook(${item.book_id})" title="Remove from library (keeps files)">
+                <i class="bi bi-x-lg"></i>
             </button>
         `;
     }
@@ -913,6 +933,81 @@ function removeFromQueue(id) {
         .then(data => {
             if (data.success) loadLibrary();
         });
+}
+
+// Selection handling for bulk remove
+function toggleSelectAll() {
+    const selectAll = document.getElementById('select-all');
+    const checkboxes = document.querySelectorAll('.item-checkbox');
+    checkboxes.forEach(cb => cb.checked = selectAll.checked);
+    updateSelectedCount();
+}
+
+function updateSelectedCount() {
+    const checked = document.querySelectorAll('.item-checkbox:checked');
+    const count = checked.length;
+    document.getElementById('selected-count').textContent = count;
+    document.getElementById('btn-remove-selected').style.display = count > 0 ? 'inline-block' : 'none';
+}
+
+function removeBook(bookId) {
+    if (!confirm('Remove this entry from library database?\n\nFiles will NOT be deleted from disk. You can re-scan to add it back.')) {
+        return;
+    }
+
+    fetch(`/api/remove_book/${bookId}`, {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                addActivity('Removed from library', 'success');
+                loadLibrary();
+            } else {
+                addActivity(`Error: ${data.error}`, 'error');
+            }
+        })
+        .catch(e => {
+            addActivity(`Error: ${e}`, 'error');
+        });
+}
+
+function removeSelected() {
+    const checked = document.querySelectorAll('.item-checkbox:checked');
+    if (checked.length === 0) return;
+
+    // Collect book IDs (only items with book_id can be removed)
+    const bookIds = [];
+    checked.forEach(cb => {
+        if (cb.dataset.type === 'book') {
+            bookIds.push(parseInt(cb.dataset.id));
+        }
+    });
+
+    if (bookIds.length === 0) {
+        alert('No removable items selected. Only library entries can be removed this way.');
+        return;
+    }
+
+    if (!confirm(`Remove ${bookIds.length} item(s) from library database?\n\nThis will NOT delete files from disk - only removes them from the database. They can be re-scanned later.`)) {
+        return;
+    }
+
+    fetch('/api/remove_books_bulk', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({book_ids: bookIds})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            addActivity(`Removed ${data.removed} items from library`, 'success');
+            loadLibrary();
+        } else {
+            addActivity(`Error: ${data.error}`, 'error');
+        }
+    })
+    .catch(e => {
+        addActivity(`Error: ${e}`, 'error');
+    });
 }
 
 // Orphan handling
