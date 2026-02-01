@@ -109,7 +109,7 @@ def clean_search_title(messy_name):
     clean = re.sub(r'\b\d+k(?:bps)?\b', '', clean, flags=re.IGNORECASE)  # 128k, 64kbps
     clean = re.sub(r'\b\d+(?:\.\d+)?(?:mb|gb|kb)\b', '', clean, flags=re.IGNORECASE)  # 463mb, 1.2gb
     clean = re.sub(r'\b(?:mono|stereo|multi)\b', '', clean, flags=re.IGNORECASE)  # audio channels
-    clean = re.sub(r'\b(?:vbr|cbr|aac|lame|opus)\b', '', clean, flags=re.IGNORECASE)  # codec info
+    clean = re.sub(r'\b(?:vbr|cbr|aac|lame|opus|mp3|m4b|m4a|flac|wav|ogg)\b', '', clean, flags=re.IGNORECASE)  # codec/format info
     # Remove file extensions
     clean = re.sub(r'\.(mp3|m4b|m4a|epub|pdf|mobi|webm|opus)$', '', clean, flags=re.IGNORECASE)
     # Remove "by Author" at the end temporarily for searching

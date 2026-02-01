@@ -1062,6 +1062,180 @@ def main():
         failed += 1
 
     # ==========================================
+    # Issue #79: Encoding info slipping through in titles
+    # ==========================================
+    print("\n--- Issue #79: Encoding Info Cleanup ---")
+
+    # Test clean_search_title strips encoding formats
+    encoding_tests = [
+        ("Gateway MP3", "Gateway"),
+        ("Book Title M4B 64k", "Book Title"),
+        ("The Hobbit 320kbps", "The Hobbit"),
+        ("Dune FLAC", "Dune"),
+        ("Foundation AAC 256k", "Foundation"),
+        ("Title VBR", "Title"),
+    ]
+
+    for input_title, expected_contains in encoding_tests:
+        result = clean_search_title(input_title)
+        # Result should NOT contain encoding info
+        has_encoding = any(x in result.lower() for x in ['mp3', 'm4b', 'flac', 'aac', 'kbps', 'vbr', 'cbr', '320', '64k', '256'])
+        if test_result(f"clean_search_title strips encoding from '{input_title}'",
+                       not has_encoding,
+                       f"Got: '{result}' - still has encoding info"):
+            passed += 1
+        else:
+            failed += 1
+
+    # ==========================================
+    # Issue #92: Strip Unabridged from titles
+    # ==========================================
+    print("\n--- Issue #92: Strip Unabridged Toggle ---")
+
+    from library_manager.utils.path_safety import strip_unabridged_markers
+
+    unabridged_tests = [
+        ("The Hobbit (Unabridged)", "The Hobbit"),
+        ("Dune [Unabridged]", "Dune"),
+        ("Foundation - Unabridged", "Foundation"),
+        ("1984 (Abridged)", "1984"),
+        ("Title, Unabridged", "Title"),
+        ("Normal Title", "Normal Title"),  # Should not change
+    ]
+
+    for input_title, expected in unabridged_tests:
+        result = strip_unabridged_markers(input_title)
+        if test_result(f"strip_unabridged_markers('{input_title}')",
+                       result == expected,
+                       f"Expected '{expected}', got '{result}'"):
+            passed += 1
+        else:
+            failed += 1
+
+    # Test that setting exists and is used in build_new_path
+    from library_manager.utils.path_safety import build_new_path as bnp_func
+    import inspect
+    bnp_source = inspect.getsource(bnp_func)
+    if test_result("build_new_path checks strip_unabridged config",
+                   "strip_unabridged" in bnp_source,
+                   "build_new_path doesn't check strip_unabridged setting"):
+        passed += 1
+    else:
+        failed += 1
+
+    # ==========================================
+    # Issue #88: @eaDir and system folder cleanup
+    # ==========================================
+    print("\n--- Issue #88: System Folder Cleanup ---")
+
+    from library_manager.database import cleanup_garbage_entries
+    import inspect
+    cleanup_source = inspect.getsource(cleanup_garbage_entries)
+
+    garbage_patterns = ['@eadir', '#recycle', '.appledouble', '__macosx', '.ds_store']
+    for pattern in garbage_patterns:
+        if test_result(f"cleanup_garbage_entries handles '{pattern}'",
+                       pattern in cleanup_source,
+                       f"cleanup_garbage_entries doesn't handle {pattern}"):
+            passed += 1
+        else:
+            failed += 1
+
+    # Test cleanup is called on startup
+    from app import __name__ as app_name
+    with open('app.py', 'r') as f:
+        app_main = f.read()
+    if test_result("cleanup_garbage_entries called on startup",
+                   "cleanup_garbage_entries()" in app_main,
+                   "cleanup_garbage_entries not called in main block"):
+        passed += 1
+    else:
+        failed += 1
+
+    # ==========================================
+    # Author Validation (Merijeek garbage fixes)
+    # ==========================================
+    print("\n--- Author Validation: Garbage Rejection ---")
+
+    from library_manager.models.book_profile import is_valid_author, is_valid_title
+
+    # Valid authors
+    valid_authors = [
+        "J.R.R. Tolkien",
+        "Brandon Sanderson",
+        "Stephen King",
+        "J.K. Rowling",
+        "Craig Alanson",
+        "Douglas Adams",
+        "Agatha Christie",
+        "Terry Pratchett",
+    ]
+    for author in valid_authors:
+        if test_result(f"is_valid_author accepts '{author}'",
+                       is_valid_author(author),
+                       f"Rejected valid author: {author}"):
+            passed += 1
+        else:
+            failed += 1
+
+    # Invalid authors (garbage that should be rejected)
+    invalid_authors = [
+        ("earth", "single word extracted from title"),
+        ("[SCAN] Vol 13", "filename garbage with brackets"),
+        ("World War I", "topic, not author"),
+        ("Don't Panic", "title fragment"),
+        ("2018", "just a year"),
+        ("Vol 3", "volume number"),
+        ("Book 7", "book number"),
+        ("the", "common word"),
+        ("", "empty string"),
+        ("n/a", "placeholder"),
+        ("unknown", "placeholder"),
+    ]
+    for author, reason in invalid_authors:
+        if test_result(f"is_valid_author rejects '{author}' ({reason})",
+                       not is_valid_author(author),
+                       f"Accepted garbage author: {author}"):
+            passed += 1
+        else:
+            failed += 1
+
+    # Title validation tests
+    print("\n--- Title Validation: Garbage Rejection ---")
+
+    # Valid titles
+    valid_titles = [
+        "The Hobbit",
+        "1984",
+        "Dune",
+        "Atlas of a Lost World",
+        "Playing Possum",
+    ]
+    for title in valid_titles:
+        if test_result(f"is_valid_title accepts '{title}'",
+                       is_valid_title(title),
+                       f"Rejected valid title: {title}"):
+            passed += 1
+        else:
+            failed += 1
+
+    # Invalid titles (garbage that should be rejected)
+    invalid_titles = [
+        ("ital present The Complete", "truncated fragment"),
+        ("Aldous Huxley ANTIC HAY Modern Library c. 1951", "metadata pollution"),
+        ("First Edition Hardcover", "metadata pollution"),
+        ("", "empty string"),
+        ("x", "too short"),
+    ]
+    for title, reason in invalid_titles:
+        if test_result(f"is_valid_title rejects '{title[:30]}...' ({reason})",
+                       not is_valid_title(title),
+                       f"Accepted garbage title: {title}"):
+            passed += 1
+        else:
+            failed += 1
+
+    # ==========================================
     # Summary
     # ==========================================
     print("\n" + "=" * 60)

@@ -2,6 +2,28 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.106] - 2026-02-01
+
+### Added
+
+- **Issue #92: Strip "Unabridged" from Titles** - New toggle in Settings → Naming Format
+  - Removes `(Unabridged)`, `[Unabridged]`, and similar variants from book titles
+  - Off by default - enable if you prefer cleaner titles without edition markers
+  - Suggested by Merijeek - most modern audiobooks are unabridged by default
+
+### Fixed
+
+- **Garbage Recommendation Prevention** - Validation now catches bad author/title suggestions
+  - Rejects garbage authors like "earth", "Tantor Audio", "Don't Panic", "[SCAN] Vol 13"
+  - Rejects polluted titles like "written and read for you", "Tantor Audio presents..."
+  - Rejects truncated fragments like "lling overview of Celtic myths..."
+  - Validation runs at INSERT point, not just profile level
+  - 237 test cases covering real-world garbage patterns
+
+- Added more audio format extensions to search title cleanup (mp3, m4b, m4a, flac, wav, ogg)
+
+---
+
 ## [0.9.0-beta.105] - 2026-01-31
 
 ### Added
