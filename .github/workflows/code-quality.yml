@@ -1,0 +1,54 @@
+name: Code Quality
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [develop]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+
+      - name: Ruff Linting
+        run: ruff check . --select=E,F,W --ignore=E501,E402,F401 --output-format=github
+        continue-on-error: true
+
+      - name: Syntax Check (Critical Files)
+        run: |
+          python -m py_compile app.py
+          python -m py_compile library_manager/pipeline/layer_audio_id.py
+          python -m py_compile library_manager/pipeline/layer_ai_queue.py
+          python -m py_compile library_manager/pipeline/layer_api.py
+          python -m py_compile library_manager/utils/validation.py
+          echo "✓ All critical files compile successfully"
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Naming Tests
+        run: python test-env/test-naming-issues.py
