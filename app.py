@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.104"
+APP_VERSION = "0.9.0-beta.106"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -49,7 +49,7 @@ from library_manager.config import (
     migrate_legacy_config, init_config, needs_setup,
     load_config, save_config, save_secrets, load_secrets
 )
-from library_manager.database import init_db, get_db, set_db_path
+from library_manager.database import init_db, get_db, set_db_path, cleanup_garbage_entries
 from library_manager.models.book_profile import (
     SOURCE_WEIGHTS, FIELD_WEIGHTS, FieldValue, BookProfile,
     detect_multibook_vs_chapters, save_book_profile, load_book_profile,
@@ -2534,8 +2534,19 @@ JUNK_PATTERNS = [
     r'\(multi\)',  # multi-file indicator
     r'\(r\d+\.\d+\)',  # (r1.0), (r1.1) - revision markers
     r'\([A-Z]\)',  # (V), (A), etc. - single letter version markers
-    # Bitrates - expanded
+    # Bitrates and encoding info - expanded (Issue #79: encoding info slipping through)
     r'\b\d{2,3}k\b',  # 62k, 64k, 128k, 192k, 320k
+    r'\b\d{2,3}\s*kbps\b',  # 320 kbps, 192kbps
+    r'\bmp3\s*\d+\s*kbps\b',  # MP3 320kbps
+    r'\bmp3\s*\d+k\b',  # MP3 320k
+    r'\bm4b\s*\d+\s*k(?:bps)?\b',  # M4B 64k, M4B 64kbps
+    r'\baac\s*\d+\s*k(?:bps)?\b',  # AAC 256k
+    r'\bmp3\b(?!\s+\w)',  # Standalone MP3 (but not "MP3 Player" etc)
+    r'\bm4b\b(?!\s+\w)',  # Standalone M4B
+    r'\bflac\b(?!\s+\w)',  # Standalone FLAC
+    r'\baac\b(?!\s+\w)',  # Standalone AAC
+    r'\bvbr\b',  # VBR (variable bitrate)
+    r'\bcbr\b',  # CBR (constant bitrate)
     # Duration timestamps: 01.10.42, 23.35.16, 69.35.47
     r'\b\d{1,2}\.\d{2}\.\d{2}\b',
     # File sizes
@@ -6974,6 +6985,8 @@ def settings_page():
         config['watch_min_file_age_seconds'] = int(request.form.get('watch_min_file_age_seconds', 30))
         # Author initials setting (Issue #54)
         config['standardize_author_initials'] = 'standardize_author_initials' in request.form
+        # Strip "Unabridged" from titles (Issue #92)
+        config['strip_unabridged'] = 'strip_unabridged' in request.form
         # Community contributions setting
         config['contribute_to_community'] = 'contribute_to_community' in request.form
         # P2P cache setting (Issue #62)
@@ -7950,6 +7963,66 @@ def api_remove_from_queue(queue_id):
 
     conn.close()
     return jsonify({'success': True})
+
+
+@app.route('/api/remove_book/<int:book_id>', methods=['POST'])
+def api_remove_book(book_id):
+    """Remove a book entry from the library database (does NOT delete files on disk)."""
+    conn = get_db()
+    c = conn.cursor()
+
+    # Get book info for logging
+    c.execute('SELECT path FROM books WHERE id = ?', (book_id,))
+    book = c.fetchone()
+    if not book:
+        conn.close()
+        return jsonify({'success': False, 'error': 'Book not found'}), 404
+
+    path = book['path']
+
+    # Delete from all related tables
+    c.execute('DELETE FROM queue WHERE book_id = ?', (book_id,))
+    c.execute('DELETE FROM history WHERE book_id = ?', (book_id,))
+    c.execute('DELETE FROM books WHERE id = ?', (book_id,))
+
+    conn.commit()
+    conn.close()
+
+    log(f"[REMOVE] Removed book from library database: {path}")
+    return jsonify({'success': True, 'message': 'Book removed from library'})
+
+
+@app.route('/api/remove_books_bulk', methods=['POST'])
+def api_remove_books_bulk():
+    """Remove multiple book entries from the library database (does NOT delete files on disk)."""
+    data = request.get_json()
+    book_ids = data.get('book_ids', [])
+
+    if not book_ids:
+        return jsonify({'success': False, 'error': 'No book IDs provided'}), 400
+
+    conn = get_db()
+    c = conn.cursor()
+
+    removed = 0
+    for book_id in book_ids:
+        c.execute('SELECT path FROM books WHERE id = ?', (book_id,))
+        book = c.fetchone()
+        if book:
+            c.execute('DELETE FROM queue WHERE book_id = ?', (book_id,))
+            c.execute('DELETE FROM history WHERE book_id = ?', (book_id,))
+            c.execute('DELETE FROM books WHERE id = ?', (book_id,))
+            removed += 1
+            log(f"[REMOVE] Bulk removed: {book['path']}")
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        'success': True,
+        'message': f'Removed {removed} book(s) from library',
+        'removed': removed
+    })
 
 
 @app.route('/api/clear_queue', methods=['POST'])
@@ -11326,6 +11399,7 @@ if __name__ == '__main__':
     migrate_legacy_config()  # Migrate from old location if needed (Issue #23)
     init_config()  # Create config files if they don't exist
     init_db()
+    cleanup_garbage_entries()  # Remove @eaDir, #recycle, etc. from database (Issue #88)
     start_worker()
     port = int(os.environ.get('PORT', 5757))
     app.run(host='0.0.0.0', port=port, debug=False)

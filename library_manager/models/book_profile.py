@@ -38,6 +38,124 @@ FIELD_WEIGHTS = {
 }
 
 
+def is_valid_title(title: str) -> bool:
+    """
+    Validate that a string looks like a real book title, not garbage.
+    Prevents bad recommendations with truncated or polluted titles.
+    """
+    if not title or not isinstance(title, str):
+        return False
+
+    title = title.strip()
+
+    # Too short
+    if len(title) < 2:
+        return False
+
+    # Starts with lowercase fragment (truncated like "ital present")
+    if re.match(r'^[a-z]{2,6}\s+', title) and not title[0].isupper():
+        return False
+
+    # Famous numeric titles that are valid
+    famous_numeric = {'1984', '2001', '2010', '1776', '1066', '1421', '1491', '1493', '11/22/63'}
+
+    # Contains obvious metadata pollution
+    pollution_patterns = [
+        r'modern library c\.\s*\d{4}',  # "Modern Library c. 1951"
+        r'\b(hardcover|paperback|mass market)\b',
+        r'\bfirst edition\b',
+        r'\b\d{4}\s*(edition|printing|ed\.)\b',
+        # Audio intro pollution
+        r'\btantor\s+audio\b',  # "Tantor Audio..."
+        r'\brecorded\s+books\b',
+        r'\bbrilliance\s+audio\b',
+        r'\bpodium\s+audio\b',
+        r'\bblackstone\s+audio\b',
+        r'\baudible\s+studios\b',
+        r'\bdivision\s+of\b',
+        r',\s*written\s+(and\s+)?read\s+',  # "written and read for you"
+        r'\bpresents?\s+',  # "...presents The Book"
+    ]
+    for pattern in pollution_patterns:
+        if re.search(pattern, title, re.IGNORECASE):
+            return False
+
+    # Just a number (but allow famous numeric titles)
+    if re.match(r'^\s*\d+\s*$', title) and title.strip() not in famous_numeric:
+        return False
+
+    # Should contain at least one letter OR be a known numeric title
+    if not re.search(r'[a-zA-Z]', title):
+        if title.strip() not in famous_numeric:
+            return False
+
+    return True
+
+
+def is_valid_author(author: str) -> bool:
+    """
+    Validate that a string looks like a real author name, not garbage.
+    Prevents bad recommendations like "earth", "[SCAN] Vol 13", "World War I".
+    """
+    if not author or not isinstance(author, str):
+        return False
+
+    author = author.strip()
+
+    # Too short (single word under 3 chars is suspicious)
+    if len(author) < 3:
+        return False
+
+    # Contains brackets (likely filename garbage like [SCAN], (2018), etc.)
+    if re.search(r'[\[\]()]', author):
+        return False
+
+    # Starts with numbers (year, series number, etc.)
+    if re.match(r'^\d', author):
+        return False
+
+    # Is just a year
+    if re.match(r'^\d{4}$', author):
+        return False
+
+    # Single common word that's clearly not a name
+    single_word_blacklist = {
+        'earth', 'world', 'war', 'book', 'vol', 'volume', 'part', 'chapter',
+        'series', 'saga', 'chronicles', 'collection', 'anthology', 'edition',
+        'complete', 'unabridged', 'abridged', 'audio', 'audiobook', 'ebook',
+        'scan', 'index', 'contents', 'introduction', 'preface', 'epilogue',
+        'don', "don't", 'panic', 'the', 'a', 'an', 'of', 'and', 'or', 'in',
+        'unknown', 'various', 'anonymous', 'n/a', 'na', 'none', 'null',
+    }
+    if author.lower() in single_word_blacklist:
+        return False
+
+    # Multi-word phrases that are clearly titles, not authors
+    phrase_blacklist = {
+        "don't panic", "don t panic", "world war", "the end",
+        "the beginning", "the return", "the rise", "the fall",
+    }
+    if author.lower().strip() in phrase_blacklist:
+        return False
+
+    # Looks like a topic rather than person (starts with "The ", "A ", etc.)
+    topic_patterns = [
+        r'^(the|a|an)\s+\w+\s+(of|and|or|in)\s+',  # "The Nature of..."
+        r'^world\s+war',  # "World War I"
+        r'^\d+\s+(things|ways|secrets|lessons)',  # "10 Things..."
+        r'^(vol|volume|book|part|chapter)\s*\d',  # "Vol 13"
+    ]
+    for pattern in topic_patterns:
+        if re.match(pattern, author.lower()):
+            return False
+
+    # Should contain at least one letter
+    if not re.search(r'[a-zA-Z]', author):
+        return False
+
+    return True
+
+
 @dataclass
 class FieldValue:
     """A single metadata field with confidence and source tracking."""
@@ -94,6 +212,28 @@ class BookProfile:
     book_id: Optional[str] = None                # Book ID (ISBN, ASIN, internal)
     version_id: Optional[str] = None             # Unique recording version ID
     voice_cluster_id: Optional[str] = None       # Voice cluster for unknown narrators
+
+    def add_author(self, source: str, author: str, weight: int = None):
+        """Add author source with validation to prevent garbage recommendations.
+
+        Rejects obvious non-authors like 'earth', '[SCAN] Vol 13', 'World War I'.
+        """
+        if not is_valid_author(author):
+            # Don't add garbage - silently reject
+            return False
+        self.author.add_source(source, author, weight)
+        return True
+
+    def add_title(self, source: str, title: str, weight: int = None):
+        """Add title source with validation to prevent garbage recommendations.
+
+        Rejects truncated fragments like 'ital present...' and metadata pollution.
+        """
+        if not is_valid_title(title):
+            # Don't add garbage - silently reject
+            return False
+        self.title.add_source(source, title, weight)
+        return True
 
     def calculate_field_confidence(self, fv: FieldValue) -> tuple:
         """Calculate confidence for a field based on source agreement."""
@@ -416,9 +556,9 @@ def build_profile_from_sources(
     if path_info:
         profile.verification_layers_used.append('local')
         if path_info.get('detected_author'):
-            profile.author.add_source('path', path_info['detected_author'])
+            profile.add_author('path', path_info['detected_author'])
         if path_info.get('detected_title'):
-            profile.title.add_source('path', path_info['detected_title'])
+            profile.add_title('path', path_info['detected_title'])
         if path_info.get('detected_series'):
             profile.series.add_source('path', path_info['detected_series'])
         if path_info.get('issues'):
@@ -427,21 +567,21 @@ def build_profile_from_sources(
     # Layer 1: Folder metadata (ID3, NFO, JSON)
     if folder_meta:
         if folder_meta.get('audio_author'):
-            profile.author.add_source('id3', folder_meta['audio_author'])
+            profile.add_author('id3', folder_meta['audio_author'])
         if folder_meta.get('audio_title'):
-            profile.title.add_source('id3', folder_meta['audio_title'])
+            profile.add_title('id3', folder_meta['audio_title'])
         if folder_meta.get('nfo_author'):
-            profile.author.add_source('nfo', folder_meta['nfo_author'])
+            profile.add_author('nfo', folder_meta['nfo_author'])
         if folder_meta.get('nfo_title'):
-            profile.title.add_source('nfo', folder_meta['nfo_title'])
+            profile.add_title('nfo', folder_meta['nfo_title'])
         if folder_meta.get('nfo_narrator'):
             profile.narrator.add_source('nfo', folder_meta['nfo_narrator'])
             if _save_narrator:
                 _save_narrator(folder_meta['nfo_narrator'], source='nfo_extract')
         if folder_meta.get('meta_author'):
-            profile.author.add_source('json', folder_meta['meta_author'])
+            profile.add_author('json', folder_meta['meta_author'])
         if folder_meta.get('meta_title'):
-            profile.title.add_source('json', folder_meta['meta_title'])
+            profile.add_title('json', folder_meta['meta_title'])
         if folder_meta.get('meta_narrator'):
             profile.narrator.add_source('json', folder_meta['meta_narrator'])
             if _save_narrator:
@@ -454,9 +594,9 @@ def build_profile_from_sources(
         for candidate in api_candidates:
             source = candidate.get('source', 'api')
             if candidate.get('author'):
-                profile.author.add_source(source, candidate['author'])
+                profile.add_author(source, candidate['author'])
             if candidate.get('title'):
-                profile.title.add_source(source, candidate['title'])
+                profile.add_title(source, candidate['title'])
             if candidate.get('series'):
                 profile.series.add_source(source, candidate['series'])
             if candidate.get('series_num'):
@@ -469,9 +609,9 @@ def build_profile_from_sources(
         if 'ai' not in profile.verification_layers_used:
             profile.verification_layers_used.append('ai')
         if ai_result.get('author'):
-            profile.author.add_source('ai', ai_result['author'])
+            profile.add_author('ai', ai_result['author'])
         if ai_result.get('title'):
-            profile.title.add_source('ai', ai_result['title'])
+            profile.add_title('ai', ai_result['title'])
         if ai_result.get('narrator'):
             profile.narrator.add_source('ai', ai_result['narrator'])
         if ai_result.get('series'):
@@ -490,9 +630,9 @@ def build_profile_from_sources(
         if 'audio' not in profile.verification_layers_used:
             profile.verification_layers_used.append('audio')
         if audio_result.get('author'):
-            profile.author.add_source('audio', audio_result['author'])
+            profile.add_author('audio', audio_result['author'])
         if audio_result.get('title'):
-            profile.title.add_source('audio', audio_result['title'])
+            profile.add_title('audio', audio_result['title'])
         if audio_result.get('narrator'):
             profile.narrator.add_source('audio', audio_result['narrator'])
         if audio_result.get('series'):
@@ -537,5 +677,7 @@ __all__ = [
     'load_book_profile',
     'build_profile_from_sources',
     'set_db_getter',
-    'set_narrator_saver'
+    'set_narrator_saver',
+    'is_valid_author',
+    'is_valid_title'
 ]

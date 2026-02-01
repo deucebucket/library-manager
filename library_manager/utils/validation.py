@@ -250,10 +250,107 @@ def is_drastic_author_change(old_author, new_author):
     return False
 
 
+def is_valid_author_for_recommendation(author: str) -> bool:
+    """
+    Validate that an author string is suitable for a pending_fix recommendation.
+    Prevents garbage like 'earth', '[SCAN] Vol 13', 'World War I', "Don't Panic".
+    """
+    if not author or not isinstance(author, str):
+        return False
+
+    author = author.strip()
+
+    # Too short
+    if len(author) < 3:
+        return False
+
+    # Contains brackets (filename garbage)
+    if re.search(r'[\[\]()]', author):
+        return False
+
+    # Starts with numbers
+    if re.match(r'^\d', author):
+        return False
+
+    # Single word blacklist
+    blacklist = {
+        'earth', 'world', 'war', 'book', 'vol', 'volume', 'part', 'chapter',
+        'series', 'saga', 'chronicles', 'collection', 'anthology', 'edition',
+        'complete', 'unabridged', 'abridged', 'audio', 'audiobook', 'ebook',
+        'scan', 'index', 'the', 'a', 'an', 'of', 'and', 'or', 'in',
+        'unknown', 'various', 'anonymous', 'n/a', 'na', 'none', 'null', 'panic',
+    }
+    if author.lower() in blacklist:
+        return False
+
+    # Multi-word garbage phrases
+    phrase_blacklist = {
+        "don't panic", "don t panic", "world war", "the end",
+        "the beginning", "the return", "the rise", "the fall",
+    }
+    if author.lower().strip() in phrase_blacklist:
+        return False
+
+    # Topic patterns (not person names)
+    topic_patterns = [
+        r'^(the|a|an)\s+\w+\s+(of|and|or|in)\s+',
+        r'^world\s+war',
+        r'^\d+\s+(things|ways|secrets|lessons)',
+        r'^(vol|volume|book|part|chapter)\s*\d',
+    ]
+    for pattern in topic_patterns:
+        if re.match(pattern, author.lower()):
+            return False
+
+    return True
+
+
+def is_valid_title_for_recommendation(title: str) -> bool:
+    """
+    Validate that a title string is suitable for a pending_fix recommendation.
+    Prevents truncated garbage and metadata pollution.
+    """
+    if not title or not isinstance(title, str):
+        return False
+
+    title = title.strip()
+
+    if len(title) < 2:
+        return False
+
+    # Starts with lowercase fragment (truncated like "ital present")
+    if re.match(r'^[a-z]{2,6}\s+', title) and not title[0].isupper():
+        return False
+
+    # Audio publisher pollution
+    pollution_patterns = [
+        r'modern library c\.\s*\d{4}',
+        r'\b(hardcover|paperback|mass market)\b',
+        r'\bfirst edition\b',
+        r'\b\d{4}\s*(edition|printing|ed\.)\b',
+        r'\btantor\s+audio\b',
+        r'\brecorded\s+books\b',
+        r'\bbrilliance\s+audio\b',
+        r'\bpodium\s+audio\b',
+        r'\bblackstone\s+audio\b',
+        r'\baudible\s+studios\b',
+        r'\bdivision\s+of\b',
+        r',\s*written\s+(and\s+)?read\s+',
+        r'\bpresents?\s+',
+    ]
+    for pattern in pollution_patterns:
+        if re.search(pattern, title, re.IGNORECASE):
+            return False
+
+    return True
+
+
 __all__ = [
     'is_unsearchable_query',
     'is_garbage_author_match',
     'is_garbage_match',
     'is_placeholder_author',
     'is_drastic_author_change',
+    'is_valid_author_for_recommendation',
+    'is_valid_title_for_recommendation',
 ]

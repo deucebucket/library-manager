@@ -175,6 +175,15 @@
                                 </label>
                             </div>
 
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="strip_unabridged" id="strip_unabridged"
+                                       {% if config.strip_unabridged %}checked{% endif %}>
+                                <label class="form-check-label" for="strip_unabridged">
+                                    <strong>Strip "Unabridged" from Titles</strong>
+                                    <br><small class="text-muted">Remove (Unabridged), [Unabridged], etc. from book titles</small>
+                                </label>
+                            </div>
+
                             <hr class="my-3">
 
                             <!-- Multi-Language Naming -->

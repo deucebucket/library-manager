@@ -1,0 +1,32 @@
+# Ruff configuration for Library Manager
+# https://docs.astral.sh/ruff/
+
+[lint]
+# Enable pyflakes (F), pycodestyle errors (E), warnings (W)
+select = ["E", "F", "W"]
+
+# Ignore common issues in this codebase
+ignore = [
+    "E501",  # Line too long (we have some long lines)
+    "E402",  # Module level import not at top (Flask patterns)
+    "F401",  # Unused imports (sometimes intentional for exports)
+    "E722",  # Bare except (legacy code)
+    "F841",  # Local variable assigned but never used
+    "E711",  # Comparison to None (SQLite patterns)
+    "E712",  # Comparison to True/False
+]
+
+# Exclude directories
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "*.pyc",
+    "test-library",
+    "metadata_scraper.DEPRECATED",
+]
+
+[lint.per-file-ignores]
+# Test files can have more relaxed rules
+"test-env/*.py" = ["F811", "E711"]

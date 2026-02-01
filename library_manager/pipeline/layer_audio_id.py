@@ -20,7 +20,10 @@ from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
 from library_manager.config import use_skaldleita_for_audio
-from library_manager.utils.validation import is_garbage_author_match, is_placeholder_author
+from library_manager.utils.validation import (
+    is_garbage_author_match, is_placeholder_author,
+    is_valid_author_for_recommendation, is_valid_title_for_recommendation
+)
 
 # Language detection for multi-language naming
 def _detect_title_language(text):
@@ -325,6 +328,16 @@ def process_layer_1_audio(
                         if computed_path:
                             new_path_str = str(computed_path)
 
+                    # Validate before creating pending_fix (reject garbage recommendations)
+                    if not is_valid_author_for_recommendation(author):
+                        logger.warning(f"[LAYER 1] Rejected garbage author: '{author}' for {row['current_title']}")
+                        conn.close()
+                        continue
+                    if not is_valid_title_for_recommendation(title):
+                        logger.warning(f"[LAYER 1] Rejected garbage title: '{title}' for {row['current_author']}")
+                        conn.close()
+                        continue
+
                     # Add to history as pending fix (with paths to prevent stale references)
                     c.execute('''INSERT INTO history
                                 (book_id, old_author, old_title, new_author, new_title, new_series, new_series_num, old_path, new_path, status)
@@ -576,6 +589,29 @@ def process_layer_1_audio(
                     )
                     if computed_path:
                         new_path_str = str(computed_path)
+
+                # Validate before creating pending_fix (Issue #92: prevent garbage recommendations)
+                if not is_valid_author_for_recommendation(author):
+                    logger.warning(f"[LAYER 1/AUDIO] Rejected garbage author: '{author}' for {row['current_title']}")
+                    # Don't create garbage pending_fix - advance to Layer 2 instead
+                    c.execute('''UPDATE books SET verification_layer = 2,
+                                status = CASE WHEN status = 'needs_attention' THEN 'pending' ELSE status END
+                                WHERE id = ?''', (row['book_id'],))
+                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                    conn.commit()
+                    conn.close()
+                    continue
+
+                if not is_valid_title_for_recommendation(title):
+                    logger.warning(f"[LAYER 1/AUDIO] Rejected garbage title: '{title}' for {row['current_author']}")
+                    # Don't create garbage pending_fix - advance to Layer 2 instead
+                    c.execute('''UPDATE books SET verification_layer = 2,
+                                status = CASE WHEN status = 'needs_attention' THEN 'pending' ELSE status END
+                                WHERE id = ?''', (row['book_id'],))
+                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                    conn.commit()
+                    conn.close()
+                    continue
 
                 # Add to history (with paths to prevent stale references)
                 c.execute('''INSERT INTO history

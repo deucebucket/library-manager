@@ -13,6 +13,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple, Type
 
+from library_manager.utils.validation import (
+    is_valid_author_for_recommendation, is_valid_title_for_recommendation
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -147,6 +151,56 @@ def process_queue(
     if not batch:
         logger.info(f"[{layer_name}] No items in batch, returning 0")
         return 0, 0  # (processed, fixed)
+
+    # === GARBAGE INPUT FILTER ===
+    # Filter out system folders that slipped through to Layer 2
+    # These should NEVER be sent to AI - it will hallucinate
+    garbage_inputs = {
+        '@eadir', '#recycle', '@syno', '@tmp',
+        '.appledouble', '__macosx', '.ds_store', '.spotlight', '.fseventsd', '.trashes',
+        '$recycle.bin', 'system volume information', 'thumbs.db',
+        '.trash', '.cache', '.metadata', '.thumbnails',
+        'metadata', 'tmp', 'temp', 'cache', 'config', 'data', 'logs', 'log',
+        'backup', 'backups', '.streams', 'streams'
+    }
+
+    clean_batch = []
+    garbage_batch = []
+    for row in batch:
+        title_lower = (row.get('current_title') or '').lower().strip()
+        author_lower = (row.get('current_author') or '').lower().strip()
+
+        is_garbage = False
+        if title_lower in garbage_inputs or author_lower in garbage_inputs:
+            is_garbage = True
+        elif title_lower.startswith('@') or title_lower.startswith('#'):
+            is_garbage = True
+        elif author_lower.startswith('@') or author_lower.startswith('#'):
+            is_garbage = True
+
+        if is_garbage:
+            logger.info(f"[{layer_name}] REJECTED garbage input (system folder): {author_lower}/{title_lower}")
+            garbage_batch.append(row)
+        else:
+            clean_batch.append(row)
+
+    # Handle garbage items - mark for user cleanup
+    if garbage_batch:
+        conn_garbage = get_db()
+        c_garbage = conn_garbage.cursor()
+        for row in garbage_batch:
+            c_garbage.execute('''UPDATE books SET status = 'needs_attention',
+                                error_message = 'System folder detected - remove from library',
+                                verification_layer = 4 WHERE id = ?''', (row['book_id'],))
+            c_garbage.execute('DELETE FROM queue WHERE id = ?', (row['id'],))
+        conn_garbage.commit()
+        conn_garbage.close()
+        logger.info(f"[{layer_name}] Rejected {len(garbage_batch)} garbage items")
+
+    batch = clean_batch
+    if not batch:
+        logger.info(f"[{layer_name}] All items were garbage, nothing to process")
+        return len(garbage_batch), 0  # (processed, fixed)
 
     # Build messy names for AI
     messy_names = [f"{row['current_author']} - {row['current_title']}" for row in batch]
@@ -541,6 +595,19 @@ def process_queue(
                         else:
                             # Standard mode - block the change
                             logger.warning(f"BLOCKED (uncertain): {row['current_author']} -> {new_author}")
+                            # Validate before creating pending_fix (Issue #92: prevent garbage recommendations)
+                            if not is_valid_author_for_recommendation(new_author):
+                                logger.warning(f"[LAYER 2] Rejected garbage author: '{new_author}' for {row['current_title']}")
+                                c.execute('UPDATE books SET status = ? WHERE id = ?', ('needs_attention', row['book_id']))
+                                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                processed += 1
+                                continue
+                            if not is_valid_title_for_recommendation(new_title):
+                                logger.warning(f"[LAYER 2] Rejected garbage title: '{new_title}' for {row['current_author']}")
+                                c.execute('UPDATE books SET status = ? WHERE id = ?', ('needs_attention', row['book_id']))
+                                c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                                processed += 1
+                                continue
                             # Record as pending_fix for manual review
                             c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
                                                               new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
@@ -1000,6 +1067,17 @@ def process_queue(
             else:
                 # Drastic change or auto_fix disabled - record as pending for manual review
                 logger.info(f"PENDING APPROVAL: {row['current_author']} -> {new_author} (drastic={drastic_change})")
+                # Validate before creating pending_fix (Issue #92: prevent garbage recommendations)
+                if not is_valid_author_for_recommendation(new_author):
+                    logger.warning(f"[LAYER 2] Rejected garbage author: '{new_author}' for {row['current_title']}")
+                    c.execute('UPDATE books SET status = ? WHERE id = ?', ('needs_attention', row['book_id']))
+                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                    continue
+                if not is_valid_title_for_recommendation(new_title):
+                    logger.warning(f"[LAYER 2] Rejected garbage title: '{new_title}' for {row['current_author']}")
+                    c.execute('UPDATE books SET status = ? WHERE id = ?', ('needs_attention', row['book_id']))
+                    c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
+                    continue
                 c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
                                                   new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
                              VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?)''',
@@ -1019,8 +1097,8 @@ def process_queue(
             else:
                 # Create profile documenting that AI verified this book
                 profile = BookProfile()
-                profile.author.add_source('ai', new_author)
-                profile.title.add_source('ai', new_title)
+                profile.add_author('ai', new_author)
+                profile.add_title('ai', new_title)
                 if new_series:
                     profile.series.add_source('ai', new_series)
                 if new_series_num:
