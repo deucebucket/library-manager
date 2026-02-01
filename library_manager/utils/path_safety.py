@@ -103,18 +103,22 @@ def _apply_template_modifiers(template: str, field: str, value: str) -> str:
         pad_width = int(match.group(1))
 
         # Try to pad the value
-        try:
-            num = float(str(value).replace(',', '.')) if value else 0
-            if num == int(num):
-                padded = str(int(num)).zfill(pad_width)
-            else:
-                # Decimal: pad the integer part only
-                int_part = int(num)
-                decimal_part = str(num).split('.')[-1]
-                padded = f"{str(int_part).zfill(pad_width)}.{decimal_part}"
-        except (ValueError, TypeError):
-            # Can't parse as number, use original
-            padded = str(value) if value else ''
+        # Issue #94: If value is empty, return empty (not "00")
+        if not value:
+            padded = ''
+        else:
+            try:
+                num = float(str(value).replace(',', '.'))
+                if num == int(num):
+                    padded = str(int(num)).zfill(pad_width)
+                else:
+                    # Decimal: pad the integer part only
+                    int_part = int(num)
+                    decimal_part = str(num).split('.')[-1]
+                    padded = f"{str(int_part).zfill(pad_width)}.{decimal_part}"
+            except (ValueError, TypeError):
+                # Can't parse as number, use original
+                padded = str(value)
 
         # Replace this specific match
         template = template[:match.start()] + padded + template[match.end():]
@@ -296,12 +300,21 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
         else:
             safe_series_num = ''
 
+        # Issue #94: Don't use series_num if series name is missing
+        # Having a number without a folder name creates broken paths like "Author/01 - Title"
+        # instead of "Author/Series/01 - Title". Better to omit both than have orphan numbers.
+        series_num_for_template = series_num  # Keep raw value for .pad() modifier
+        if not safe_series and (safe_series_num or series_num):
+            logger.debug(f"Clearing series_num '{series_num}' because series name is missing")
+            safe_series_num = ''
+            series_num_for_template = ''  # Also clear for .pad() modifier
+
         # Build the path from template
         path_str = custom_template
 
         # Issue #80: Apply .pad(N) modifiers before standard replacements
         # This allows {series_num.pad(2)} -> "01", {series_num.pad(3)} -> "001"
-        path_str = _apply_template_modifiers(path_str, 'series_num', series_num or '')
+        path_str = _apply_template_modifiers(path_str, 'series_num', series_num_for_template or '')
 
         path_str = path_str.replace('{author}', safe_author)
         path_str = path_str.replace('{title}', safe_title)
