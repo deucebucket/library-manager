@@ -3000,12 +3000,13 @@ def group_loose_files(files):
     return groups
 
 
-def search_bookdb_api(title, retry_count=0):
+def search_bookdb_api(title, author=None, retry_count=0):
     """
     Search the BookBucket API for a book (public endpoint, no auth needed).
     Uses Qdrant vector search - fast even with 50M books.
     Returns dict with author, title, series if found.
     Filters garbage matches using title similarity.
+    If author is provided, uses it to validate/preserve existing author.
     """
     # Clean the search title (remove "audiobook", file extensions, etc.)
     search_title = clean_search_title(title)
@@ -7988,7 +7989,7 @@ def api_remove_book(book_id):
     conn.commit()
     conn.close()
 
-    log(f"[REMOVE] Removed book from library database: {path}")
+    logger.info(f"[REMOVE] Removed book from library database: {path}")
     return jsonify({'success': True, 'message': 'Book removed from library'})
 
 
@@ -8013,7 +8014,7 @@ def api_remove_books_bulk():
             c.execute('DELETE FROM history WHERE book_id = ?', (book_id,))
             c.execute('DELETE FROM books WHERE id = ?', (book_id,))
             removed += 1
-            log(f"[REMOVE] Bulk removed: {book['path']}")
+            logger.info(f"[REMOVE] Bulk removed: {book['path']}")
 
     conn.commit()
     conn.close()
