@@ -2,6 +2,19 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.107] - 2026-02-01
+
+### Fixed
+
+- **Issue #94: Series Number Without Series Name** - Custom naming templates no longer create broken paths
+  - Template `{author}/{series}/{series_num} - {title}` now falls back to `{author}/{title}` when series name is missing
+  - Previously created paths like `Author/01 - Title` (missing series folder)
+  - Now correctly omits series_num when series is empty
+  - Also fixed `.pad()` modifier to return empty string instead of "00" for empty values
+  - Root cause: Skaldleita search doesn't return series data (tracked in deucebucket/skaldleita#7)
+
+---
+
 ## [0.9.0-beta.106] - 2026-02-01
 
 ### Added
