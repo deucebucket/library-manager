@@ -141,6 +141,83 @@ def init_db(db_path=None):
     conn.close()
 
 
+def cleanup_garbage_entries(db_path=None):
+    """Remove garbage entries from database on startup.
+
+    This catches entries that were scanned before filtering was added,
+    like Synology @eaDir folders, macOS .AppleDouble, etc.
+    """
+    path = db_path or _db_path
+    if not path:
+        return 0
+
+    # System folder patterns that should never be authors or titles
+    garbage_patterns = {
+        # Synology
+        '@eadir', '#recycle', '@syno', '@tmp',
+        # macOS
+        '.appledouble', '__macosx', '.ds_store', '.spotlight', '.fseventsd', '.trashes',
+        # Windows
+        '$recycle.bin', 'system volume information', 'thumbs.db',
+        # Linux/General
+        '.trash', '.cache', '.metadata', '.thumbnails',
+        # Common system folders
+        'metadata', 'tmp', 'temp', 'cache', 'config', 'data', 'logs', 'log',
+        'backup', 'backups', '.streams', 'streams'
+    }
+
+    conn = sqlite3.connect(path, timeout=30)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+
+    # Find garbage entries
+    c.execute('SELECT id, path, current_author, current_title FROM books')
+    rows = c.fetchall()
+
+    garbage_ids = []
+    for row in rows:
+        author = (row['current_author'] or '').lower().strip()
+        title = (row['current_title'] or '').lower().strip()
+
+        is_garbage = False
+        reason = None
+
+        # Check exact matches
+        if author in garbage_patterns:
+            is_garbage = True
+            reason = f"garbage author: {author}"
+        elif title in garbage_patterns:
+            is_garbage = True
+            reason = f"garbage title: {title}"
+        # Check prefix patterns (folders starting with @ # or .)
+        elif author.startswith('@') or author.startswith('#'):
+            is_garbage = True
+            reason = f"system prefix author: {author}"
+        elif title.startswith('@') or title.startswith('#'):
+            is_garbage = True
+            reason = f"system prefix title: {title}"
+        # Check for hidden folders as author (but allow titles starting with . for edge cases)
+        elif author.startswith('.') and len(author) > 1:
+            is_garbage = True
+            reason = f"hidden folder author: {author}"
+
+        if is_garbage:
+            garbage_ids.append(row['id'])
+            logger.info(f"[CLEANUP] Removing garbage entry: {reason} - {row['path']}")
+
+    # Delete garbage entries
+    if garbage_ids:
+        placeholders = ','.join('?' * len(garbage_ids))
+        c.execute(f'DELETE FROM queue WHERE book_id IN ({placeholders})', garbage_ids)
+        c.execute(f'DELETE FROM history WHERE book_id IN ({placeholders})', garbage_ids)
+        c.execute(f'DELETE FROM books WHERE id IN ({placeholders})', garbage_ids)
+        conn.commit()
+        logger.info(f"[CLEANUP] Removed {len(garbage_ids)} garbage entries from database")
+
+    conn.close()
+    return len(garbage_ids)
+
+
 def get_db(db_path=None):
     """Get database connection with timeout to avoid lock issues."""
     path = db_path or _db_path
@@ -154,4 +231,4 @@ def get_db(db_path=None):
     return conn
 
 
-__all__ = ['init_db', 'get_db', 'set_db_path']
+__all__ = ['init_db', 'get_db', 'set_db_path', 'cleanup_garbage_entries']
