@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.104-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.107-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,19 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.107** - 🔧 **Series Path Fix** (Issue #94)
+> - **Series Number Without Name** - Custom naming templates no longer create broken paths
+> - Template `{author}/{series}/{series_num} - {title}` now falls back correctly when series is missing
+> - Previously created paths like `Author/01 - Title`, now properly omits orphan numbers
+
+> **beta.106** - 🧹 **Title Cleanup** (Issue #92)
+> - **Strip "Unabridged" Toggle** - New option removes `(Unabridged)` from titles
+> - **Garbage Prevention** - Validation rejects bad author/title suggestions before saving
+
+> **beta.105** - 📚 **ISBN Lookup** (Issue #67)
+> - **Ebook ISBN Extraction** - Extracts ISBN from EPUB, PDF, MOBI metadata for better matching
+> - New BookDB endpoint for direct ISBN lookup
 
 > **beta.104** - 🔧 **Synology @eaDir Fix** (Issue #88)
 > - **Accurate Dashboard Counts** - Pending/fixed/error counts now match actual items
