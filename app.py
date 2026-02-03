@@ -1460,6 +1460,15 @@ API RESULTS WARNING - CRITICAL:
 - Same title can exist by different authors - if API author differs, keep INPUT author
 - Only use API if input has NO author OR the titles closely match
 
+GENERIC TITLE WARNING - DO NOT HALLUCINATE AUTHORS:
+- Some titles are GENERIC and could match multiple different books by different authors
+- Generic titles include: "Match Game", "The Game", "Home", "Gone", "Prey", "Storm", "The Hunt", "Hunted"
+- If input has NO author and a GENERIC title, DO NOT GUESS the author
+- Example: "Match Game" alone (no author) -> could be Craig Alanson, could be someone else
+- NEVER invent an author name you're not certain about
+- If you don't KNOW which specific book this is, set author to null
+- Better to return null than to guess wrong!
+
 TITLE PRESERVATION - VERY IMPORTANT:
 - If input title is MORE SPECIFIC than API title, KEEP THE INPUT TITLE
 - "Double Cross" is more specific than "Cross" - keep "Double Cross"!
@@ -3278,6 +3287,23 @@ def validate_ai_result(ai_result, folder_name, info):
 
     if title_matches:
         # Title matches - AI may be correcting the author, which is valid
+        # BUT: Check for author hallucination on generic titles
+
+        # Detect if this is a "generic title with no author" case
+        # If folder has no author separator and title is short/generic, be suspicious
+        has_author_in_input = ' - ' in folder_name or ' / ' in folder_name
+        is_short_title = len(folder_title.split()) <= 3
+
+        # Generic title patterns that could match many books
+        generic_patterns = ['game', 'hunt', 'prey', 'gone', 'home', 'storm', 'dark', 'night', 'day', 'fire', 'ice', 'blood', 'death', 'life', 'love', 'war', 'peace']
+        is_generic_title = is_short_title and any(word in folder_title for word in generic_patterns)
+
+        # If no author in input and generic title, require higher confidence
+        if not has_author_in_input and is_generic_title and ai_author:
+            logger.warning(f"Generic title '{folder_title}' with no input author -> AI suggested '{ai_author}'. Flagging as low confidence.")
+            # Don't reject, but downgrade confidence significantly
+            return True, 'low', f'generic_title_author_uncertain (input had no author)'
+
         if title_similarity >= 0.7:
             return True, reported_confidence, 'validated'
         else:
@@ -3334,10 +3360,25 @@ def identify_book_with_ai(file_group, config):
 IMPORTANT: The folder/artist metadata may be WRONG. Your job is to identify the REAL book and author.
 
 RULES:
-1. If you recognize the TITLE, provide the CORRECT author even if the folder says a different author
+1. If you recognize the TITLE as a SPECIFIC, WELL-KNOWN book, provide the CORRECT author
 2. Example: "James Patterson - Le Petit Prince" -> The title is "Le Petit Prince" which is by Antoine de Saint-Exupéry, NOT James Patterson. Return the correct author.
 3. Only return null if the input is truly gibberish with no recognizable book title
 4. DO NOT invent books - if input is just numbers or "unknown_123", return null
+
+CRITICAL - GENERIC TITLE WARNING:
+Some titles are AMBIGUOUS and could match multiple books by different authors:
+- "Match Game", "The Game", "Home", "Gone", "Prey", "Storm" - these are GENERIC titles
+- If you see a generic title with NO other context (no series info, no author hint), return LOW confidence
+- NEVER invent an author for a generic title - if you don't KNOW the specific book, return null
+- Example: "Match Game" alone -> could be Craig Alanson (Expeditionary Force #12) or another book entirely
+- If you're not 100% CERTAIN which book this is, use confidence: "low" or return null
+
+REASONING REQUIRED:
+You MUST explain WHY you think this is the correct book. What evidence supports your identification?
+- Did you recognize a unique title?
+- Did series info help identify it?
+- Did the author name confirm it?
+- Or are you GUESSING based on a generic title? (If guessing, return null!)
 
 Input information:
 - Folder name: {folder_name}
@@ -3346,11 +3387,13 @@ Input information:
 - Album tag: {info.get('title', 'none')}
 - Artist tag: {info.get('author', 'none')}
 
-If you can identify the book (even if metadata is wrong), return:
-{{"author": "CORRECT Author Name", "title": "CORRECT Book Title", "series": "Series Name or null", "confidence": "high/medium/low"}}
+If you can CONFIDENTLY identify the book, return:
+{{"author": "CORRECT Author Name", "title": "CORRECT Book Title", "series": "Series Name or null", "confidence": "high/medium/low", "reasoning": "Why you identified this specific book"}}
 
-Only if the title is truly unrecognizable, return:
-{{"author": null, "title": null, "confidence": "none", "reason": "why"}}"""
+If the title is ambiguous/generic and you cannot be certain, return:
+{{"author": null, "title": null, "confidence": "none", "reason": "ambiguous_title - could be multiple books"}}
+
+Only invent nothing. Return null rather than guess."""
 
     try:
         # Use the provider chain for fallback support
