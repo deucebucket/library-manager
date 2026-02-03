@@ -79,8 +79,8 @@ jobs:
             echo "Code files changed:"
             echo "$CODE_CHANGED"
 
-            # Check if APP_VERSION was updated
-            if ! git diff $BASE_SHA...$HEAD_SHA -- app.py | grep -q 'APP_VERSION'; then
+            # Check if APP_VERSION was actually modified (not just mentioned in diff context)
+            if ! git diff $BASE_SHA...$HEAD_SHA -- app.py | grep -qE '^[+-].*APP_VERSION'; then
               echo ""
               echo "::error::Code changed but APP_VERSION not bumped!"
               echo "::error::Update APP_VERSION in app.py before merging."
