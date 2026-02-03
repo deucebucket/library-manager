@@ -231,4 +231,94 @@ def get_db(db_path=None):
     return conn
 
 
-__all__ = ['init_db', 'get_db', 'set_db_path', 'cleanup_garbage_entries']
+def cleanup_duplicate_history_entries(db_path=None):
+    """Remove duplicate history entries on startup (Issue #79).
+
+    Duplicates occur when:
+    1. A book is processed multiple times through different layers
+    2. Rescans create new entries without cleaning up old ones
+    3. Race conditions between scan, watch folder, and requeue processing
+
+    This keeps only the most recent entry per book_id + status combination.
+    """
+    path = db_path or _db_path
+    if not path:
+        return 0
+
+    conn = sqlite3.connect(path, timeout=30)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+
+    # Find duplicates: same book_id + status but different IDs
+    # Keep only the most recent (highest ID or most recent fixed_at)
+    c.execute('''
+        SELECT book_id, status, COUNT(*) as cnt, GROUP_CONCAT(id) as ids
+        FROM history
+        GROUP BY book_id, status
+        HAVING cnt > 1
+    ''')
+    duplicates = c.fetchall()
+
+    removed = 0
+    for dup in duplicates:
+        ids = [int(x) for x in dup['ids'].split(',')]
+        # Keep the highest ID (most recent), delete the rest
+        keep_id = max(ids)
+        delete_ids = [i for i in ids if i != keep_id]
+
+        if delete_ids:
+            placeholders = ','.join('?' * len(delete_ids))
+            c.execute(f'DELETE FROM history WHERE id IN ({placeholders})', delete_ids)
+            removed += len(delete_ids)
+            logger.info(f"[CLEANUP] Removed {len(delete_ids)} duplicate history entries for book_id={dup['book_id']} status={dup['status']}")
+
+    if removed > 0:
+        conn.commit()
+        logger.info(f"[CLEANUP] Total: Removed {removed} duplicate history entries")
+
+    conn.close()
+    return removed
+
+
+def insert_history_entry(cursor, book_id, old_author, old_title, new_author, new_title,
+                         old_path, new_path, status, error_message=None,
+                         new_narrator=None, new_series=None, new_series_num=None,
+                         new_year=None, new_edition=None, new_variant=None):
+    """Insert a history entry with deduplication (Issue #79).
+
+    This function prevents duplicate history entries by:
+    1. Deleting any existing entries for the same book_id + status
+    2. Then inserting the new entry
+
+    This is the ONLY function that should insert into the history table.
+    All pipeline layers and app.py should use this instead of direct INSERT.
+
+    Args:
+        cursor: SQLite cursor (caller manages connection/commit)
+        book_id: The book's ID
+        old_author, old_title: Original values
+        new_author, new_title: New proposed values
+        old_path, new_path: Original and proposed paths
+        status: One of 'pending_fix', 'fixed', 'needs_attention', 'error', 'duplicate', 'corrupt_dest'
+        error_message: Optional error/reason message
+        new_narrator, new_series, new_series_num: Optional metadata
+        new_year, new_edition, new_variant: Optional metadata
+    """
+    # Delete any existing entry for this book_id + status combination
+    # This prevents duplicates when a book is re-processed
+    cursor.execute("DELETE FROM history WHERE book_id = ? AND status = ?", (book_id, status))
+
+    # Insert the new entry
+    cursor.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title,
+                                           old_path, new_path, status, error_message,
+                                           new_narrator, new_series, new_series_num,
+                                           new_year, new_edition, new_variant)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                   (book_id, old_author, old_title, new_author, new_title,
+                    old_path, new_path, status, error_message,
+                    new_narrator, new_series, new_series_num,
+                    new_year, new_edition, new_variant))
+
+
+__all__ = ['init_db', 'get_db', 'set_db_path', 'cleanup_garbage_entries',
+           'cleanup_duplicate_history_entries', 'insert_history_entry']

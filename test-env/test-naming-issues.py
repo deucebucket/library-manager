@@ -1236,6 +1236,69 @@ def main():
             failed += 1
 
     # ==========================================
+    # Issue #79: History Deduplication
+    # ==========================================
+    print("\n--- Issue #79: History Deduplication ---")
+
+    # Check insert_history_entry exists and is imported correctly
+    try:
+        from library_manager.database import insert_history_entry, cleanup_duplicate_history_entries
+        has_dedup = True
+    except ImportError:
+        has_dedup = False
+
+    if test_result("insert_history_entry function exists",
+                   has_dedup,
+                   "Failed to import insert_history_entry"):
+        passed += 1
+    else:
+        failed += 1
+
+    if test_result("cleanup_duplicate_history_entries function exists",
+                   has_dedup,
+                   "Failed to import cleanup_duplicate_history_entries"):
+        passed += 1
+    else:
+        failed += 1
+
+    # Check that layer files use insert_history_entry (not direct INSERT)
+    layer_files = [
+        'library_manager/pipeline/layer_ai_queue.py',
+        'library_manager/pipeline/layer_audio_id.py',
+        'library_manager/pipeline/layer_content.py',
+        'library_manager/pipeline/layer_audio_credits.py',
+    ]
+
+    for layer_file in layer_files:
+        if os.path.exists(layer_file):
+            with open(layer_file, 'r') as f:
+                content = f.read()
+            # Should NOT have direct INSERT INTO history
+            has_direct_insert = "c.execute('''INSERT INTO history" in content
+            # Should have insert_history_entry import
+            has_helper_import = "from library_manager.database import insert_history_entry" in content or \
+                               "insert_history_entry" in content
+
+            if test_result(f"{layer_file.split('/')[-1]} uses insert_history_entry",
+                          not has_direct_insert and has_helper_import,
+                          f"Direct INSERT found or helper not imported"):
+                passed += 1
+            else:
+                failed += 1
+
+    # Check that cleanup_duplicate_history_entries is called on startup
+    with open('app.py', 'r') as f:
+        app_content = f.read()
+    startup_cleanup = 'cleanup_duplicate_history_entries()' in app_content
+
+    if test_result("cleanup_duplicate_history_entries called on startup",
+                   startup_cleanup,
+                   "Startup cleanup not found in app.py"):
+        passed += 1
+    else:
+        failed += 1
+
+    # ==========================================
     # Summary
     # ==========================================
     print("\n" + "=" * 60)

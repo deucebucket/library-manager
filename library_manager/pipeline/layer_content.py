@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
 from library_manager.config import load_secrets
+from library_manager.database import insert_history_entry
 from library_manager.utils.validation import is_placeholder_author
 
 logger = logging.getLogger(__name__)
@@ -162,15 +163,15 @@ def process_layer_4_content(
                        f"{action_data['new_author']}/{action_data['new_title']} "
                        f"(confidence: {action_data['confidence']})")
 
-            c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                              new_narrator, new_series, new_series_num)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?)''',
-                     (row['book_id'], row['current_author'], row['current_title'],
-                      action_data['new_author'], action_data['new_title'],
-                      action_data['book_path'], action_data['new_path'],
-                      f"Identified via content analysis: {action_data.get('reasoning', '')[:100]}",
-                      action_data['new_narrator'], action_data['new_series'],
-                      str(action_data['new_series_num']) if action_data['new_series_num'] else None))
+            # Issue #79: Use helper function to prevent duplicates
+            insert_history_entry(
+                c, row['book_id'], row['current_author'], row['current_title'],
+                action_data['new_author'], action_data['new_title'],
+                action_data['book_path'], action_data['new_path'], 'pending_fix',
+                error_message=f"Identified via content analysis: {action_data.get('reasoning', '')[:100]}",
+                new_narrator=action_data['new_narrator'], new_series=action_data['new_series'],
+                new_series_num=str(action_data['new_series_num']) if action_data['new_series_num'] else None
+            )
             c.execute('UPDATE books SET status = ?, verification_layer = 5 WHERE id = ?',
                      ('pending_fix', row['book_id']))
             c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))

@@ -2,7 +2,7 @@
 import re
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,141 @@ def strip_unabridged_markers(title: str) -> str:
     for pattern in UNABRIDGED_PATTERNS:
         cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
     return cleaned.strip()
+
+
+# Common name prefixes (particles) that are part of surnames
+# These should stay with the last name: "de Balzac" -> last="de Balzac"
+NAME_PREFIXES = {
+    'de', 'da', 'di', 'del', 'della', 'van', 'von', 'der', 'den', 'ter',
+    'le', 'la', 'du', 'des', 'el', 'al', 'ibn', 'bin', 'ben', 'mc', "o'"
+}
+
+# Name suffixes that should be kept with the name but not treated as last name
+NAME_SUFFIXES = {
+    'jr', 'jr.', 'sr', 'sr.', 'ii', 'iii', 'iv', 'v', 'vi',
+    'phd', 'ph.d', 'ph.d.', 'md', 'm.d', 'm.d.', 'esq', 'esq.'
+}
+
+
+def parse_author_name(author: str) -> Tuple[str, str]:
+    """Parse author name into (first_name, last_name) components.
+
+    Issue #96: Support for "LastName, FirstName" folder format.
+
+    Handles various edge cases:
+    - Single names: "Madonna" -> ("", "Madonna")
+    - Standard names: "Brandon Sanderson" -> ("Brandon", "Sanderson")
+    - Multiple names: "J. R. R. Tolkien" -> ("J. R. R.", "Tolkien")
+    - Prefixes: "Ursula K. Le Guin" -> ("Ursula K.", "Le Guin")
+    - Suffixes: "Robert Downey Jr." -> ("Robert", "Downey Jr.")
+    - Already formatted: "Sanderson, Brandon" -> ("Brandon", "Sanderson")
+
+    Returns:
+        Tuple of (first_name, last_name). If single name, first_name is empty.
+    """
+    if not author or not isinstance(author, str):
+        return ('', '')
+
+    author = author.strip()
+    if not author:
+        return ('', '')
+
+    # Check if already in "Last, First" format
+    if ',' in author:
+        parts = [p.strip() for p in author.split(',', 1)]
+        if len(parts) == 2 and parts[0] and parts[1]:
+            # Handle suffix that might be after comma: "Downey, Robert Jr."
+            # vs actual Last, First format: "Sanderson, Brandon"
+            second_part = parts[1]
+            second_lower = second_part.lower().rstrip('.')
+
+            # Check if second part is just a suffix
+            if second_lower in NAME_SUFFIXES:
+                # This is "LastName, Jr." format - not a first name
+                # Re-parse without assuming comma format
+                pass
+            else:
+                # Standard "Last, First" format
+                return (parts[1], parts[0])
+
+    # Split into words
+    words = author.split()
+    if len(words) == 1:
+        # Single name like "Madonna" or "Prince"
+        return ('', words[0])
+
+    # Extract suffix if present at end
+    suffix = ''
+    while words and words[-1].lower().rstrip('.') in NAME_SUFFIXES:
+        suffix = words.pop() + (' ' + suffix if suffix else '')
+    suffix = suffix.strip()
+
+    if not words:
+        # Only had suffix somehow
+        return ('', suffix)
+
+    if len(words) == 1:
+        # Single name + suffix
+        last = words[0] + (' ' + suffix if suffix else '')
+        return ('', last)
+
+    # Check for name prefix patterns
+    # "Ursula K. Le Guin" -> Le Guin is last name (Le is prefix)
+    # "Ludwig van Beethoven" -> van Beethoven is last name (van is prefix)
+    # Strategy: scan backwards from end, collecting last name parts
+    # A prefix only counts if it's followed by another word
+
+    # First pass: identify where the last name starts
+    # Look for prefix patterns from position 1 onwards (not first word)
+    last_name_start = len(words) - 1  # Default: last word is the last name
+
+    for i in range(1, len(words)):
+        word_lower = words[i].lower().rstrip("'")
+        if word_lower in NAME_PREFIXES:
+            # Found a prefix - check if there's at least one word after it
+            if i < len(words) - 1:
+                last_name_start = i
+                break
+
+    # If no prefix found, just use the last word
+    last_parts = words[last_name_start:]
+    words = words[:last_name_start]
+
+    last_name = ' '.join(last_parts)
+    if suffix:
+        last_name = last_name + ' ' + suffix
+
+    first_name = ' '.join(words)
+
+    return (first_name, last_name)
+
+
+def format_author_lf(author: str) -> str:
+    """Format author as "LastName, FirstName".
+
+    Issue #96: Support for user-requested folder format.
+
+    Examples:
+        "Brandon Sanderson" -> "Sanderson, Brandon"
+        "J. R. R. Tolkien" -> "Tolkien, J. R. R."
+        "Madonna" -> "Madonna"
+        "Ursula K. Le Guin" -> "Le Guin, Ursula K."
+    """
+    first, last = parse_author_name(author)
+    if not first:
+        return last
+    return f"{last}, {first}"
+
+
+def format_author_fl(author: str) -> str:
+    """Format author as "FirstName LastName" (standard format).
+
+    Useful when input might be in "Last, First" format and needs normalizing.
+    """
+    first, last = parse_author_name(author)
+    if not first:
+        return last
+    return f"{first} {last}"
 
 
 def format_language_tag(lang_code: str, lang_name: str = None, fmt: str = "bracket_full") -> str:
@@ -316,7 +451,21 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
         # This allows {series_num.pad(2)} -> "01", {series_num.pad(3)} -> "001"
         path_str = _apply_template_modifiers(path_str, 'series_num', series_num_for_template or '')
 
+        # Issue #96: Author name format variations
+        author_first, author_last = parse_author_name(author)
+        safe_author_first = sanitize_path_component(author_first) if author_first else ''
+        safe_author_last = sanitize_path_component(author_last) if author_last else safe_author
+        # {author_lf} = "LastName, FirstName", {author_fl} = "FirstName LastName"
+        author_lf = format_author_lf(author)
+        author_fl = format_author_fl(author)
+        safe_author_lf = sanitize_path_component(author_lf) if author_lf else safe_author
+        safe_author_fl = sanitize_path_component(author_fl) if author_fl else safe_author
+
         path_str = path_str.replace('{author}', safe_author)
+        path_str = path_str.replace('{author_first}', safe_author_first)
+        path_str = path_str.replace('{author_last}', safe_author_last)
+        path_str = path_str.replace('{author_lf}', safe_author_lf)
+        path_str = path_str.replace('{author_fl}', safe_author_fl)
         path_str = path_str.replace('{title}', safe_title)
         path_str = path_str.replace('{series}', safe_series or '')
         path_str = path_str.replace('{series_num}', safe_series_num)
@@ -355,6 +504,14 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
         # Flat structure: Author - Title (single folder)
         folder_name = f"{safe_author} - {title_folder}"
         result_path = lib_path / folder_name
+    elif naming_format == 'author_lf/title':
+        # Issue #96: Library-style format: "LastName, FirstName/Title"
+        author_lf = format_author_lf(author)
+        safe_author_lf = sanitize_path_component(author_lf) if author_lf else safe_author
+        if series_grouping and safe_series:
+            result_path = lib_path / safe_author_lf / safe_series / title_folder
+        else:
+            result_path = lib_path / safe_author_lf / title_folder
     elif lang_subfolder:
         # Language subfolder: Author/Language/Title (or Author/Series/Language/Title)
         if series_grouping and safe_series:
@@ -396,5 +553,10 @@ __all__ = [
     'format_language_tag',
     'apply_language_tag',
     'strip_unabridged_markers',
+    'parse_author_name',
+    'format_author_lf',
+    'format_author_fl',
     'LANGUAGE_NAMES',
+    'NAME_PREFIXES',
+    'NAME_SUFFIXES',
 ]

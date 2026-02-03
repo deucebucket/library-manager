@@ -111,6 +111,9 @@
                                     <option value="author/title" {% if config.naming_format == 'author/title' or (not config.naming_format and not config.custom_naming_template) %}selected{% endif %}>
                                         Author/Title - Audiobookshelf, Plex, Jellyfin
                                     </option>
+                                    <option value="author_lf/title" {% if config.naming_format == 'author_lf/title' %}selected{% endif %}>
+                                        LastName, FirstName/Title - Library style
+                                    </option>
                                     <option value="author - title" {% if config.naming_format == 'author - title' %}selected{% endif %}>
                                         Author - Title (flat) - Booksonic, basic players
                                     </option>
@@ -138,6 +141,9 @@
                                     <small class="text-muted d-block mb-1">Click to add:</small>
                                     <div class="d-flex flex-wrap gap-1">
                                         <button type="button" class="btn btn-sm btn-outline-info naming-tag" onclick="insertTag('{author}')">{author}</button>
+                                        <button type="button" class="btn btn-sm btn-outline-info naming-tag" onclick="insertTag('{author_lf}')" title="LastName, FirstName: Sanderson, Brandon">{author_lf}</button>
+                                        <button type="button" class="btn btn-sm btn-outline-info naming-tag" onclick="insertTag('{author_last}')" title="Last name only: Sanderson">{author_last}</button>
+                                        <button type="button" class="btn btn-sm btn-outline-info naming-tag" onclick="insertTag('{author_first}')" title="First name only: Brandon">{author_first}</button>
                                         <button type="button" class="btn btn-sm btn-outline-info naming-tag" onclick="insertTag('{title}')">{title}</button>
                                         <button type="button" class="btn btn-sm btn-outline-warning naming-tag" onclick="insertTag('{series}')">{series}</button>
                                         <button type="button" class="btn btn-sm btn-outline-warning naming-tag" onclick="insertTag('{series_num}')">{series_num}</button>
@@ -148,6 +154,7 @@
                                         <button type="button" class="btn btn-sm btn-outline-primary naming-tag" onclick="insertTag('{lang_code}')" title="ISO code: en, ru, pl">{lang_code}</button>
                                     </div>
                                     <small class="text-muted d-block mt-1"><i class="bi bi-info-circle"></i> Use <code>.pad(N)</code> for zero-padding: <code>{series_num.pad(2)}</code> → 01, 02... 10</small>
+                                    <small class="text-muted d-block"><i class="bi bi-info-circle"></i> Author formats: <code>{author_lf}</code> → "Sanderson, Brandon", <code>{author_last}</code> → "Sanderson", <code>{author_first}</code> → "Brandon"</small>
                                 </div>
 
                                 <div class="alert alert-dark small py-2 mb-0">
@@ -1222,6 +1229,25 @@
                         </div>
                     </div>
 
+                    <!-- Database Maintenance -->
+                    <div class="card mb-3 border-warning">
+                        <div class="card-header py-2 text-warning">
+                            <i class="bi bi-tools"></i> Database Maintenance
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-2">Clean up system folder entries that were accidentally scanned.</p>
+                            <div class="d-flex gap-2 flex-wrap align-items-center">
+                                <button type="button" class="btn btn-sm btn-outline-warning" onclick="cleanupGarbageEntries()">
+                                    <i class="bi bi-trash3"></i> Cleanup Database
+                                </button>
+                                <span id="cleanup-result" class="small"></span>
+                            </div>
+                            <small class="text-muted d-block mt-2">
+                                <i class="bi bi-info-circle"></i> Removes @eaDir, #recycle, .AppleDouble, $RECYCLE.BIN and other system folder entries
+                            </small>
+                        </div>
+                    </div>
+
                     <!-- Danger Zone -->
                     <div class="card mb-3 border-danger">
                         <div class="card-header py-2 text-danger">
@@ -1584,7 +1610,19 @@ function installWhisper() {
 }
 
 // Custom Naming
-const sampleData = {author: 'Brandon Sanderson', title: 'The Final Empire', series: 'Mistborn', series_num: '1', narrator: 'Michael Kramer', year: '2006'};
+// Issue #96: Added author name format variations
+const sampleData = {
+    author: 'Brandon Sanderson',
+    author_lf: 'Sanderson, Brandon',
+    author_fl: 'Brandon Sanderson',
+    author_first: 'Brandon',
+    author_last: 'Sanderson',
+    title: 'The Final Empire',
+    series: 'Mistborn',
+    series_num: '1',
+    narrator: 'Michael Kramer',
+    year: '2006'
+};
 
 function toggleCustomNaming() {
     const builder = document.getElementById('custom-naming-builder');
@@ -1729,6 +1767,34 @@ function wipeEverything() {
         .then(() => fetch('/api/reset_database', {method: 'POST'}))
         .then(() => location.reload())
         .catch(e => alert('Wipe failed: ' + e));
+}
+
+// Issue #88: Database cleanup for garbage entries
+function cleanupGarbageEntries() {
+    const resultEl = document.getElementById('cleanup-result');
+    resultEl.innerHTML = '<i class="bi bi-hourglass-split"></i> Cleaning...';
+    resultEl.className = 'small text-info';
+
+    fetch('/api/cleanup-garbage', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                if (data.removed > 0) {
+                    resultEl.innerHTML = `<i class="bi bi-check-circle"></i> ${data.message}`;
+                    resultEl.className = 'small text-success';
+                } else {
+                    resultEl.innerHTML = `<i class="bi bi-info-circle"></i> ${data.message}`;
+                    resultEl.className = 'small text-muted';
+                }
+            } else {
+                resultEl.innerHTML = `<i class="bi bi-x-circle"></i> Error: ${data.error || 'Unknown error'}`;
+                resultEl.className = 'small text-danger';
+            }
+        })
+        .catch(e => {
+            resultEl.innerHTML = `<i class="bi bi-x-circle"></i> Error: ${e}`;
+            resultEl.className = 'small text-danger';
+        });
 }
 
 function startDeepVerification() {
