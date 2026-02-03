@@ -664,7 +664,7 @@
                                     <div class="card-body">
                                         <p class="small text-muted mb-2">
                                             API key gives you 1000 requests/hour (vs 500 without).
-                                            Your key will be shown here and emailed to you.
+                                            Your key will be emailed to you and automatically applied.
                                         </p>
                                         <div class="mb-2">
                                             <label class="form-label small mb-1">Email Address</label>
@@ -680,7 +680,7 @@
                                 {% endif %}
 
                                 <small class="text-muted d-block mt-1">
-                                    Higher rate limits (1000/hr). Or <a href="https://skaldleita.com/api/request-key" target="_blank">request on website</a>
+                                    Higher rate limits (1000/hr). Already have a key? Paste it above and save settings.
                                 </small>
                             </div>
 
@@ -1483,16 +1483,18 @@ function registerSkaldleita() {
     .then(r => r.json())
     .then(data => {
         if (data.success) {
-            document.getElementById('bookdb_api_key').value = data.api_key;
-            document.getElementById('bookdb_api_key').type = 'text';
-
+            // Key is auto-saved on server side, emailed to user - not shown on screen for security
             const msg = data.is_existing
-                ? '<i class="bi bi-check-circle"></i> Your existing API key has been restored!'
-                : '<i class="bi bi-check-circle"></i> API key registered! Also sent to your email.';
-            resultDiv.innerHTML = `<span class="text-success">${msg}</span><br><small class="text-muted">Save settings to apply.</small>`;
+                ? '<i class="bi bi-check-circle"></i> Your existing key was emailed and auto-applied!'
+                : '<i class="bi bi-check-circle"></i> API key registered! Check your email. Key auto-applied.';
+            resultDiv.innerHTML = `<span class="text-success">${msg}</span><br><small class="text-muted">Reload page to see updated status.</small>`;
 
             const card = document.getElementById('skaldleita-register-card');
             if (card) card.style.display = 'none';
+
+            // Update the key field to show something is there (masked)
+            document.getElementById('bookdb_api_key').value = '••••••••••••••••';
+            document.getElementById('bookdb_api_key').dataset.hasKey = 'true';
         } else {
             resultDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle"></i> ${escapeHtml(data.error)}</span>`;
         }
