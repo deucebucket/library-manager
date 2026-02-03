@@ -6,10 +6,11 @@ before wasting Skaldleita's time on garbage.
 """
 
 import subprocess
+import shutil
 import json
 import logging
 from pathlib import Path
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, List, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,18 @@ logger = logging.getLogger(__name__)
 MIN_DURATION_SECONDS = 600  # 10 minutes
 MIN_FILE_SIZE_BYTES = 1_000_000  # 1 MB
 FFPROBE_TIMEOUT = 30  # seconds
+
+
+def check_ffmpeg_available() -> Tuple[bool, str]:
+    """Check if ffprobe and ffmpeg are available."""
+    ffprobe = shutil.which('ffprobe')
+    ffmpeg = shutil.which('ffmpeg')
+
+    if not ffprobe:
+        return False, "ffprobe not found - install ffmpeg package"
+    if not ffmpeg:
+        return False, "ffmpeg not found - install ffmpeg package"
+    return True, "ok"
 
 
 def validate_audio_file(path: str) -> Tuple[bool, str, Dict[str, Any]]:
@@ -143,7 +156,11 @@ def can_seek_to_end(path: str) -> bool:
             timeout=FFPROBE_TIMEOUT
         )
         return result.returncode == 0
-    except:
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Seek timeout for {path}")
+        return False
+    except Exception as e:
+        logger.warning(f"Seek check failed for {path}: {e}")
         return False
 
 
@@ -157,7 +174,10 @@ def format_duration(seconds: float) -> str:
     return f"{minutes}:{secs:02d}"
 
 
-def batch_validate(paths: list, progress_callback=None) -> Dict[str, Dict]:
+def batch_validate(
+    paths: List[str],
+    progress_callback: Optional[Callable[[int, int, str, bool], None]] = None
+) -> Dict[str, Dict[str, Any]]:
     """
     Validate multiple files.
 
@@ -202,6 +222,7 @@ def get_validation_summary(results: Dict[str, Dict]) -> Dict[str, Any]:
 
 # Export public API
 __all__ = [
+    'check_ffmpeg_available',
     'validate_audio_file',
     'batch_validate',
     'get_validation_summary',
