@@ -92,8 +92,9 @@ def parse_author_name(author: str) -> Tuple[str, str]:
             # Check if second part is just a suffix
             if second_lower in NAME_SUFFIXES:
                 # This is "LastName, Jr." format - not a first name
-                # Re-parse without assuming comma format
-                pass
+                # Remove the comma and continue with regular parsing
+                # "Downey, Jr." -> "Downey Jr."
+                author = parts[0] + ' ' + parts[1]
             else:
                 # Standard "Last, First" format
                 return (parts[1], parts[0])
