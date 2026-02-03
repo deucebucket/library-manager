@@ -44,14 +44,19 @@ def validate_audio_file(path: str) -> Tuple[bool, str, Dict[str, Any]]:
     """
     file_path = Path(path)
 
-    # Basic checks
+    # Basic checks with TOCTOU protection
     if not file_path.exists():
         return False, "file_not_found", {}
 
     if not file_path.is_file():
         return False, "not_a_file", {}
 
-    file_size = file_path.stat().st_size
+    try:
+        file_size = file_path.stat().st_size
+    except (FileNotFoundError, OSError) as e:
+        logger.warning(f"File disappeared during validation {path}: {e}")
+        return False, "file_disappeared", {}
+
     if file_size < MIN_FILE_SIZE_BYTES:
         return False, "too_small", {"size": file_size}
 
@@ -88,7 +93,7 @@ def validate_audio_file(path: str) -> Tuple[bool, str, Dict[str, Any]]:
         return False, "ffprobe_not_installed", {}
     except Exception as e:
         logger.warning(f"Validation error for {path}: {e}")
-        return False, f"validation_error", {"error": str(e)}
+        return False, "validation_error", {"error": str(e)}
 
     # Extract metadata
     format_info = data.get("format", {})
