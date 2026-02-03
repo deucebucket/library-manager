@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.108-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.114-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,22 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.114** - 🔐 **Secure API Key Registration** (Issue #117)
+> - **Email-Only Delivery** - API keys no longer shown on screen, sent to email only
+> - **Prevents Key Theft** - Someone who knows your email can't see your key
+> - **Auto-Applied** - Key is still saved automatically, just not displayed
+
+> **beta.113** - 🔑 **In-App Skaldleita Registration** (Issue #115)
+> - **Register from Settings** - Get your API key directly in Library Manager
+> - **Instance ID** - Unique `SKALD-XXXXXX` identifier for your installation
+> - **Key Validation** - Verify your key works with one click
+> - **Rate Limits** - 1000 req/hr with key, 500 without
+
+> **beta.112** - ✅ **File Validation Module** (Issue #110)
+> - **Pre-rename Checks** - Validates files before attempting renames
+> - **Path Safety** - Checks for invalid characters, path length limits
+> - **Better Errors** - Clear messages when files can't be renamed
 
 > **beta.110** - 📊 **Enhanced Status Bar** (transparency for users)
 > - **Know Your APIs** - Status bar shows exactly which API is processing your books
