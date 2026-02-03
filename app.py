@@ -9952,6 +9952,131 @@ def api_ollama_models():
         })
 
 
+# ============== SKALDLEITA INSTANCE REGISTRATION ==============
+
+@app.route('/api/skaldleita/register', methods=['POST'])
+def api_skaldleita_register():
+    """Register this Library Manager instance with Skaldleita and get an API key."""
+    from library_manager.instance import get_instance_id, save_instance_data
+
+    data = request.get_json() or {}
+    email = data.get('email', '').strip().lower()
+
+    if not email or '@' not in email:
+        return jsonify({'success': False, 'error': 'Valid email address required'})
+
+    config = load_config()
+    bookdb_url = config.get('bookdb_url', 'https://bookdb.deucebucket.com')
+    instance_id = get_instance_id()
+
+    # Get library stats
+    try:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute('SELECT COUNT(*) FROM books')
+            total_books = c.fetchone()[0]
+    except:
+        total_books = 0
+
+    try:
+        resp = requests.post(
+            f"{bookdb_url}/api/register-instance",
+            json={
+                'instance_id': instance_id,
+                'email': email,
+                'app_version': APP_VERSION,
+                'total_books': total_books,
+                'library_name': data.get('library_name', '')
+            },
+            headers={
+                'User-Agent': f'LibraryManager/{APP_VERSION}',
+                'Content-Type': 'application/json'
+            },
+            timeout=30
+        )
+
+        if resp.status_code == 200:
+            result = resp.json()
+            if result.get('api_key'):
+                # Save the key to secrets
+                secrets = load_secrets()
+                secrets['bookdb_api_key'] = result['api_key']
+                save_secrets(secrets)
+
+                # Save registration info
+                save_instance_data({
+                    'registered_email': email,
+                    'registered_at': datetime.now().isoformat()
+                })
+
+                return jsonify({
+                    'success': True,
+                    'api_key': result['api_key'],
+                    'message': result.get('message', 'API key registered!'),
+                    'is_existing': result.get('is_existing', False),
+                    'email_sent': result.get('email_sent', False)
+                })
+            else:
+                return jsonify({'success': False, 'error': result.get('error', 'Registration failed')})
+        else:
+            return jsonify({'success': False, 'error': f'Registration failed (HTTP {resp.status_code})'})
+
+    except requests.exceptions.Timeout:
+        return jsonify({'success': False, 'error': 'Skaldleita server timeout - please try again'})
+    except requests.exceptions.ConnectionError:
+        return jsonify({'success': False, 'error': 'Cannot connect to Skaldleita'})
+    except Exception as e:
+        logger.error(f"Skaldleita registration error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/skaldleita/validate', methods=['POST'])
+def api_skaldleita_validate():
+    """Validate the current Skaldleita API key."""
+    config = load_config()
+    secrets = load_secrets()
+    api_key = secrets.get('bookdb_api_key', '')
+
+    if not api_key:
+        return jsonify({'success': False, 'valid': False, 'error': 'No API key configured'})
+
+    bookdb_url = config.get('bookdb_url', 'https://bookdb.deucebucket.com')
+
+    try:
+        resp = requests.get(
+            f"{bookdb_url}/api/validate-key",
+            headers={'X-API-Key': api_key, 'User-Agent': f'LibraryManager/{APP_VERSION}'},
+            timeout=10
+        )
+
+        if resp.status_code == 200:
+            data = resp.json()
+            return jsonify({
+                'success': True,
+                'valid': data.get('valid', False),
+                'rate_limit': data.get('rate_limit', 2000),
+                'email': data.get('email', '')
+            })
+        else:
+            return jsonify({'success': True, 'valid': False, 'error': 'Invalid or expired API key'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/instance/info', methods=['GET'])
+def api_instance_info():
+    """Get instance information including ID."""
+    from library_manager.instance import get_instance_id, get_instance_data
+
+    instance_data = get_instance_data()
+    return jsonify({
+        'instance_id': get_instance_id(),
+        'registered_email': instance_data.get('registered_email'),
+        'registered_at': instance_data.get('registered_at'),
+        'version': APP_VERSION
+    })
+
+
 # ============== API CONNECTION TESTING ==============
 
 @app.route('/api/test_bookdb', methods=['POST'])

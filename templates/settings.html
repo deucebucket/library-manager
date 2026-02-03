@@ -621,18 +621,30 @@
                                 <small class="text-muted">Get at <a href="https://openrouter.ai" target="_blank">openrouter.ai</a> - Free models, Whisper fallback</small>
                             </div>
 
-                            <!-- Skaldleita API Key -->
+                            <!-- Skaldleita API Key - Enhanced Registration -->
                             <div class="mb-3">
                                 <label class="form-label">
                                     <i class="bi bi-book text-primary"></i> Skaldleita API Key
                                     <span class="badge bg-secondary ms-1">Optional</span>
                                 </label>
+
+                                <!-- Instance ID display -->
+                                <div class="small text-muted mb-2">
+                                    Instance ID: <code id="instance-id">Loading...</code>
+                                    <button type="button" class="btn btn-link btn-sm p-0 ms-1" onclick="copyInstanceId()" title="Copy">
+                                        <i class="bi bi-clipboard"></i>
+                                    </button>
+                                </div>
+
                                 <div class="input-group">
                                     <input type="password" class="form-control bg-dark text-light" name="bookdb_api_key" id="bookdb_api_key"
                                            value="{{ config.bookdb_api_key or '' }}" placeholder="bdb_..."
                                            data-has-key="{{ 'true' if config.bookdb_api_key else 'false' }}">
                                     <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('bookdb_api_key')" title="Show/hide key">
                                         <i class="bi bi-eye"></i>
+                                    </button>
+                                    <button class="btn btn-outline-info" type="button" onclick="validateSkaldleitaKey()" title="Validate key">
+                                        <i class="bi bi-check-circle"></i>
                                     </button>
                                     {% if config.bookdb_api_key %}
                                     <span class="input-group-text bg-success text-white"><i class="bi bi-check"></i></span>
@@ -641,7 +653,35 @@
                                     </button>
                                     {% endif %}
                                 </div>
-                                <small class="text-muted">Higher rate limits (2000/hr) - <a href="https://skaldleita.com/api/request-key" target="_blank">Request free key</a></small>
+                                <div id="skaldleita-key-status" class="mt-1"></div>
+
+                                <!-- Registration Form (shown when no key) -->
+                                {% if not config.bookdb_api_key %}
+                                <div class="card mt-3 border-primary" id="skaldleita-register-card">
+                                    <div class="card-header bg-primary text-white py-2">
+                                        <i class="bi bi-key"></i> Get Free API Key
+                                    </div>
+                                    <div class="card-body">
+                                        <p class="small text-muted mb-2">
+                                            API key gives you 2000 requests/hour (vs 1000 without).
+                                            Your key will be shown here and emailed to you.
+                                        </p>
+                                        <div class="mb-2">
+                                            <label class="form-label small mb-1">Email Address</label>
+                                            <input type="email" class="form-control form-control-sm bg-dark text-light"
+                                                   id="skaldleita-email" placeholder="your@email.com">
+                                        </div>
+                                        <button type="button" class="btn btn-primary btn-sm" onclick="registerSkaldleita()">
+                                            <i class="bi bi-send"></i> Request API Key
+                                        </button>
+                                        <div id="skaldleita-register-result" class="mt-2"></div>
+                                    </div>
+                                </div>
+                                {% endif %}
+
+                                <small class="text-muted d-block mt-1">
+                                    Higher rate limits (2000/hr). Or <a href="https://skaldleita.com/api/request-key" target="_blank">request on website</a>
+                                </small>
                             </div>
 
                             <!-- Google Books API Key -->
@@ -1422,6 +1462,86 @@ function togglePasswordVisibility(inputId) {
         icon.classList.add('bi-eye');
     }
 }
+
+// Skaldleita Registration (Issue #115)
+function registerSkaldleita() {
+    const email = document.getElementById('skaldleita-email').value.trim();
+    const resultDiv = document.getElementById('skaldleita-register-result');
+
+    if (!email || !email.includes('@')) {
+        resultDiv.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle"></i> Please enter a valid email</span>';
+        return;
+    }
+
+    resultDiv.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split"></i> Registering...</span>';
+
+    fetch('/api/skaldleita/register', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({email: email})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            document.getElementById('bookdb_api_key').value = data.api_key;
+            document.getElementById('bookdb_api_key').type = 'text';
+
+            const msg = data.is_existing
+                ? '<i class="bi bi-check-circle"></i> Your existing API key has been restored!'
+                : '<i class="bi bi-check-circle"></i> API key registered! Also sent to your email.';
+            resultDiv.innerHTML = `<span class="text-success">${msg}</span><br><small class="text-muted">Save settings to apply.</small>`;
+
+            const card = document.getElementById('skaldleita-register-card');
+            if (card) card.style.display = 'none';
+        } else {
+            resultDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle"></i> ${escapeHtml(data.error)}</span>`;
+        }
+    })
+    .catch(e => {
+        resultDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle"></i> Error: ${escapeHtml(e.message)}</span>`;
+    });
+}
+
+function validateSkaldleitaKey() {
+    const statusDiv = document.getElementById('skaldleita-key-status');
+    statusDiv.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split"></i> Validating...</span>';
+
+    fetch('/api/skaldleita/validate', {method: 'POST'})
+    .then(r => r.json())
+    .then(data => {
+        if (data.success && data.valid) {
+            statusDiv.innerHTML = `<span class="text-success"><i class="bi bi-check-circle"></i> Valid (${data.rate_limit}/hr limit)</span>`;
+        } else if (data.success && !data.valid) {
+            statusDiv.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle"></i> Invalid key</span>';
+        } else {
+            statusDiv.innerHTML = `<span class="text-warning"><i class="bi bi-exclamation-circle"></i> ${escapeHtml(data.error || 'Could not validate')}</span>`;
+        }
+    })
+    .catch(e => {
+        statusDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle"></i> Error: ${escapeHtml(e.message)}</span>`;
+    });
+}
+
+function copyInstanceId() {
+    const id = document.getElementById('instance-id').textContent;
+    navigator.clipboard.writeText(id).then(() => {
+        showToast && showToast('Instance ID copied!', 'success');
+    });
+}
+
+// Load instance ID on page load
+document.addEventListener('DOMContentLoaded', function() {
+    fetch('/api/instance/info')
+    .then(r => r.json())
+    .then(data => {
+        const el = document.getElementById('instance-id');
+        if (el) el.textContent = data.instance_id || 'Unknown';
+    })
+    .catch(() => {
+        const el = document.getElementById('instance-id');
+        if (el) el.textContent = 'Error loading';
+    });
+});
 
 function toggleProviderFields() {
     const provider = document.getElementById('ai_provider').value;
