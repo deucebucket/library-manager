@@ -2,6 +2,26 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.109] - 2026-02-03
+
+### Fixed
+
+- **Issue #79: AI Hallucination on Generic Titles** - "Match Game" no longer gets fake authors
+  - Generic titles like "Match Game", "The Game", "Home", "Gone" were causing AI to invent authors
+  - Added `GENERIC TITLE WARNING` to AI prompts - warns about ambiguous titles
+  - Added `REASONING REQUIRED` - AI must explain why it identified the book
+  - Added `generic_patterns` detection: game, hunt, prey, gone, home, storm, dark, night, etc.
+  - Validation now flags "generic title + no input author" as low confidence
+  - Better to return null than hallucinate a fake author like "Doc Raymond"
+
+### Added
+
+- **Tester Log Lookup Script** - `test-env/lookup-tester.sh` for debugging user issues
+  - Look up Skaldleita logs by tester name or IP hint
+  - Shows recent activity, job history, and request stats
+
+---
+
 ## [0.9.0-beta.108] - 2026-02-03
 
 ### Added

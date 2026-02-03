@@ -16,6 +16,12 @@
 
 ## Recent Changes (stable)
 
+> **beta.109** - 🛡️ **AI Hallucination Prevention** (Issue #79)
+> - **Generic Title Protection** - Titles like "Match Game", "The Game", "Home" no longer get fake authors
+> - AI prompts now warn about ambiguous titles and require reasoning
+> - Validation flags "generic title + no author" as low confidence
+> - Better to return null than invent "Doc Raymond" for a Craig Alanson book
+
 > **beta.108** - 🎯 **Author Format & Duplicate History Fix** (Issues #96, #88, #79)
 > - **Author Name Templates** - New `{author_lf}` (LastName, FirstName), `{author_last}`, `{author_first}` for custom naming
 > - **Database Cleanup Button** - Settings → Advanced now has button to remove @eaDir, #recycle entries
