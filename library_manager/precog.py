@@ -9,6 +9,7 @@ When they disagree, something needs human review.
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Any
 from collections import defaultdict
@@ -164,7 +165,6 @@ class PrecogVoting:
         # Lowercase, strip
         normalized = text.lower().strip()
         # Remove punctuation (dots, commas, etc.) - helps with "J.R.R." vs "JRR"
-        import re
         normalized = re.sub(r'[^\w\s]', '', normalized)
         # Remove extra spaces
         normalized = " ".join(normalized.split())
@@ -207,7 +207,9 @@ class PrecogVoting:
         if not title:
             return False
         normalized = self._normalize_text(title)
-        return normalized in GENERIC_TITLES or len(normalized.split()) <= 2
+        # Only flag titles in our curated generic list
+        # Don't use word count - catches legitimate short titles like "Dune", "IT", "The Road"
+        return normalized in GENERIC_TITLES
 
     def _count_votes_for_field(self, field: str) -> Dict[str, float]:
         """
