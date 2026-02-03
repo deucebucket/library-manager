@@ -16,12 +16,17 @@ logger = logging.getLogger(__name__)
 # Instance file stored in data directory (survives container updates)
 INSTANCE_PATH = DATA_DIR / 'instance.json'
 
+# Instance ID format: "SKALD-" prefix (6 chars) + random suffix (6 chars) = 12 total
+INSTANCE_ID_PREFIX = "SKALD-"
+INSTANCE_ID_SUFFIX_LENGTH = 6
+INSTANCE_ID_TOTAL_LENGTH = len(INSTANCE_ID_PREFIX) + INSTANCE_ID_SUFFIX_LENGTH  # 12
+
 
 def _generate_instance_id() -> str:
     """Generate a new instance ID in format SKALD-XXXXXX (6 alphanumeric chars)."""
     chars = string.ascii_uppercase + string.digits
-    suffix = ''.join(secrets.choice(chars) for _ in range(6))
-    return f"SKALD-{suffix}"
+    suffix = ''.join(secrets.choice(chars) for _ in range(INSTANCE_ID_SUFFIX_LENGTH))
+    return f"{INSTANCE_ID_PREFIX}{suffix}"
 
 
 def get_instance_id() -> str:
@@ -35,7 +40,7 @@ def get_instance_id() -> str:
             with open(INSTANCE_PATH, 'r') as f:
                 data = json.load(f)
                 instance_id = data.get('instance_id', '')
-                if instance_id.startswith('SKALD-') and len(instance_id) == 12:
+                if instance_id.startswith(INSTANCE_ID_PREFIX) and len(instance_id) == INSTANCE_ID_TOTAL_LENGTH:
                     return instance_id
         except (json.JSONDecodeError, IOError) as e:
             logger.warning(f"Error reading instance file: {e}")

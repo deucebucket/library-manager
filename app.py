@@ -9972,13 +9972,14 @@ def api_skaldleita_register():
     bookdb_url = config.get('bookdb_url', 'https://bookdb.deucebucket.com')
     instance_id = get_instance_id()
 
-    # Get library stats
+    # Get library stats for registration metadata
     try:
         with get_db() as conn:
             c = conn.cursor()
             c.execute('SELECT COUNT(*) FROM books')
             total_books = c.fetchone()[0]
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Could not get book count for registration: {e}")
         total_books = 0
 
     try:
@@ -10002,9 +10003,13 @@ def api_skaldleita_register():
             result = resp.json()
             if result.get('api_key'):
                 # Save the key to secrets
-                secrets = load_secrets()
-                secrets['bookdb_api_key'] = result['api_key']
-                save_secrets(secrets)
+                try:
+                    secrets = load_secrets()
+                    secrets['bookdb_api_key'] = result['api_key']
+                    save_secrets(secrets)
+                except Exception as e:
+                    logger.error(f"Failed to save API key to secrets: {e}")
+                    return jsonify({'success': False, 'error': 'Got key but failed to save it locally'})
 
                 # Save registration info
                 save_instance_data({
@@ -10057,7 +10062,7 @@ def api_skaldleita_validate():
             return jsonify({
                 'success': True,
                 'valid': data.get('valid', False),
-                'rate_limit': data.get('rate_limit', 2000),
+                'rate_limit': data.get('rate_limit', 1000),  # Default to API key rate limit
                 'email': data.get('email', '')
             })
         else:
