@@ -106,6 +106,11 @@ from library_manager.worker import (
     clear_current_book,
     LAYER_NAMES,
 )
+from library_manager.instance import (
+    get_instance_id,
+    get_instance_data,
+    save_instance_data,
+)
 
 # Try to import P2P cache (optional - gracefully degrades if not available)
 try:
@@ -9957,8 +9962,6 @@ def api_ollama_models():
 @app.route('/api/skaldleita/register', methods=['POST'])
 def api_skaldleita_register():
     """Register this Library Manager instance with Skaldleita and get an API key."""
-    from library_manager.instance import get_instance_id, save_instance_data
-
     data = request.get_json() or {}
     email = data.get('email', '').strip().lower()
 
@@ -9975,7 +9978,7 @@ def api_skaldleita_register():
             c = conn.cursor()
             c.execute('SELECT COUNT(*) FROM books')
             total_books = c.fetchone()[0]
-    except:
+    except Exception:
         total_books = 0
 
     try:
@@ -10066,8 +10069,6 @@ def api_skaldleita_validate():
 @app.route('/api/instance/info', methods=['GET'])
 def api_instance_info():
     """Get instance information including ID."""
-    from library_manager.instance import get_instance_id, get_instance_data
-
     instance_data = get_instance_data()
     return jsonify({
         'instance_id': get_instance_id(),
@@ -10131,7 +10132,7 @@ def api_clear_api_key():
     key_name = data.get('key_name', '')
 
     # Whitelist of allowed keys to clear
-    allowed_keys = ['gemini_api_key', 'openrouter_api_key', 'google_books_api_key']
+    allowed_keys = ['gemini_api_key', 'openrouter_api_key', 'google_books_api_key', 'bookdb_api_key']
 
     if key_name not in allowed_keys:
         return jsonify({
