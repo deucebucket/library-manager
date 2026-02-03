@@ -1299,6 +1299,66 @@ def main():
         failed += 1
 
     # ==========================================
+    # Issue #79: Generic Title Hallucination Prevention (Merijeek)
+    # "Match Game" was being attributed to fake author "Doc Raymond"
+    # ==========================================
+    print("\n--- Issue #79: Generic Title Hallucination Prevention ---")
+
+    # Check that the prompt includes generic title warning
+    with open('app.py', 'r') as f:
+        app_content = f.read()
+
+    # Test 1: identify_book_with_ai prompt has generic title warning
+    if test_result("identify_book_with_ai prompt warns about generic titles",
+                   "GENERIC TITLE WARNING" in app_content and "Match Game" in app_content,
+                   "Prompt should warn about ambiguous titles like 'Match Game'"):
+        passed += 1
+    else:
+        failed += 1
+
+    # Test 2: build_prompt has generic title warning
+    if test_result("build_prompt warns about hallucinating authors",
+                   "DO NOT HALLUCINATE AUTHORS" in app_content,
+                   "build_prompt should warn against author hallucination"):
+        passed += 1
+    else:
+        failed += 1
+
+    # Test 3: validate_ai_result checks for generic titles
+    if test_result("validate_ai_result detects generic title + no author input",
+                   "generic_title_author_uncertain" in app_content,
+                   "Validation should flag generic titles with uncertain authors"):
+        passed += 1
+    else:
+        failed += 1
+
+    # Test 4: Generic word patterns are defined for detection
+    generic_patterns_defined = "generic_patterns = [" in app_content and "'game'" in app_content
+    if test_result("Generic title patterns defined (game, hunt, prey, etc.)",
+                   generic_patterns_defined,
+                   "Should have list of generic title words"):
+        passed += 1
+    else:
+        failed += 1
+
+    # Test 5: Reasoning requirement in prompt
+    if test_result("AI prompt requires reasoning for identification",
+                   "REASONING REQUIRED" in app_content or "reasoning" in app_content.lower(),
+                   "AI should explain why it identified the book"):
+        passed += 1
+    else:
+        failed += 1
+
+    # Test 6: Prompt instructs to return null over guessing
+    prefer_null = "return null rather than guess" in app_content.lower() or "prefer null over guessing" in app_content.lower() or "return null" in app_content.lower()
+    if test_result("AI prompt prefers null over guessing",
+                   prefer_null,
+                   "Prompt should tell AI to return null if uncertain"):
+        passed += 1
+    else:
+        failed += 1
+
+    # ==========================================
     # Summary
     # ==========================================
     print("\n" + "=" * 60)
