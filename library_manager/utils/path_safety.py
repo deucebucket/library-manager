@@ -455,7 +455,10 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
         # Issue #96: Author name format variations
         author_first, author_last = parse_author_name(author)
         safe_author_first = sanitize_path_component(author_first) if author_first else ''
-        safe_author_last = sanitize_path_component(author_last) if author_last else safe_author
+        # Fallback to full author if last name extraction fails (e.g., "James S. A" -> last='A' gets rejected)
+        safe_author_last = sanitize_path_component(author_last) if author_last else None
+        if not safe_author_last:
+            safe_author_last = safe_author  # Use full author name as fallback
         # {author_lf} = "LastName, FirstName", {author_fl} = "FirstName LastName"
         author_lf = format_author_lf(author)
         author_fl = format_author_fl(author)
