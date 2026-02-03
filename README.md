@@ -16,6 +16,13 @@
 
 ## Recent Changes (stable)
 
+> **beta.110** - 📊 **Enhanced Status Bar** (transparency for users)
+> - **Know Your APIs** - Status bar shows exactly which API is processing your books
+> - **FREE Badge** - Green badge shows when using free APIs (Skaldleita, Ollama) vs your quota
+> - **Current Step** - See "Transcribing audio...", "Querying database...", "Verifying with AI..."
+> - **Provider Icons** - Soundwave for Skaldleita, stars for Gemini, PC for Ollama
+> - **Crash Fix** - Truncated author names like "James S. A" no longer crash `{author_last}` template
+
 > **beta.109** - 🛡️ **AI Hallucination Prevention** (Issue #79)
 > - **Generic Title Protection** - Titles like "Match Game", "The Game", "Home" no longer get fake authors
 > - AI prompts now warn about ambiguous titles and require reasoning

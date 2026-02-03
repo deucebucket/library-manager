@@ -2,6 +2,27 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.110] - 2026-02-03
+
+### Added
+
+- **Enhanced Status Bar** - Know exactly what's happening with your library
+  - Shows current API/provider being used (Skaldleita, Gemini, Ollama, etc.)
+  - **FREE badge** - See when processing uses free APIs (not your quota)
+  - Current step display - "Transcribing audio...", "Querying database...", etc.
+  - Provider icons: soundwave for Skaldleita, stars for Gemini, PC for Ollama
+  - API latency tracking (for future display)
+
+### Fixed
+
+- **Crash: author_last template with truncated names** - "James S. A" no longer crashes
+  - When Skaldleita returns truncated author like "James S. A" (should be "Corey")
+  - The `{author_last}` template variable would crash: `replace() argument 2 must be str, not None`
+  - Single-letter last names like "A" were being rejected by sanitizer
+  - Now falls back to full author name instead of crashing
+
+---
+
 ## [0.9.0-beta.109] - 2026-02-03
 
 ### Fixed

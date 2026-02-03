@@ -13,6 +13,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from library_manager.models.book_profile import BookProfile
 from library_manager.utils.naming import calculate_title_similarity, extract_series_from_title
 from library_manager.utils.validation import is_placeholder_author
+from library_manager.worker import set_current_provider
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +159,9 @@ def process_layer_1_api(
         # Update status bar with current book
         if set_current_book:
             set_current_book(current_author or 'Unknown', current_title or 'Unknown', "API lookup...")
+
+        # Show we're using multiple free APIs for lookup
+        set_current_provider("BookDB + APIs", "Querying Audnexus, OpenLibrary, Google Books...", is_free=True)
 
         # Use existing API candidate gathering function (EXTERNAL CALLS HAPPEN HERE)
         candidates = gather_all_api_candidates(current_title, current_author, config)

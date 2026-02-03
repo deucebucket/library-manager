@@ -651,6 +651,45 @@
             font-weight: 600;
             text-transform: uppercase;
         }
+        .status-provider {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-left: 8px;
+        }
+        .provider-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            background: rgba(0, 200, 150, 0.2);
+            color: #00c896;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.7rem;
+            font-weight: 600;
+        }
+        .provider-badge.paid {
+            background: rgba(255, 193, 7, 0.2);
+            color: #ffc107;
+        }
+        .provider-free-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            background: rgba(0, 200, 150, 0.15);
+            color: #00c896;
+            padding: 2px 6px;
+            border-radius: 8px;
+            font-size: 0.6rem;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+        .status-step {
+            color: var(--theme-text-tertiary);
+            font-size: 0.75rem;
+            margin-left: 8px;
+            font-style: italic;
+        }
         .status-meta {
             display: flex;
             align-items: center;
@@ -777,9 +816,19 @@
                                 <i class="bi bi-layers"></i>
                                 <span id="status-layer-text">Layer 1</span>
                             </span>
+                            <span class="status-provider" id="status-provider" style="display: none;">
+                                <span class="provider-badge" id="provider-badge">
+                                    <i class="bi bi-cloud" id="provider-icon"></i>
+                                    <span id="provider-name">Skaldleita</span>
+                                </span>
+                                <span class="provider-free-badge" id="provider-free-badge" title="Free - Not using your API quota">
+                                    <i class="bi bi-gift"></i> FREE
+                                </span>
+                            </span>
                         </div>
                         <div class="status-secondary" id="status-secondary">
                             <span id="status-book-info"></span>
+                            <span id="status-step" class="status-step"></span>
                         </div>
                     </div>
                 </div>
@@ -889,6 +938,14 @@
                     // Update based on state
                     statusBar.classList.remove('processing', 'idle', 'stopped');
 
+                    // Provider display elements
+                    const statusProvider = document.getElementById('status-provider');
+                    const providerBadge = document.getElementById('provider-badge');
+                    const providerIcon = document.getElementById('provider-icon');
+                    const providerName = document.getElementById('provider-name');
+                    const providerFreeBadge = document.getElementById('provider-free-badge');
+                    const statusStep = document.getElementById('status-step');
+
                     if (data.state === 'processing') {
                         statusBar.classList.add('processing');
                         statusIcon.innerHTML = '<i class="bi bi-arrow-repeat"></i>';
@@ -897,6 +954,42 @@
                         // Show layer badge
                         statusLayer.style.display = 'inline-flex';
                         statusLayerText.textContent = data.processing.layer_name;
+
+                        // Show provider info if available
+                        if (data.processing.current_provider) {
+                            statusProvider.style.display = 'inline-flex';
+                            providerName.textContent = data.processing.current_provider;
+
+                            // Set icon based on provider
+                            const provider = data.processing.current_provider.toLowerCase();
+                            if (provider.includes('skaldleita')) {
+                                providerIcon.className = 'bi bi-soundwave';
+                            } else if (provider.includes('gemini')) {
+                                providerIcon.className = 'bi bi-stars';
+                            } else if (provider.includes('ollama')) {
+                                providerIcon.className = 'bi bi-pc-display';
+                            } else if (provider.includes('openrouter')) {
+                                providerIcon.className = 'bi bi-cloud';
+                            } else if (provider.includes('whisper')) {
+                                providerIcon.className = 'bi bi-mic';
+                            } else {
+                                providerIcon.className = 'bi bi-cpu';
+                            }
+
+                            // Show FREE badge if using free API
+                            providerFreeBadge.style.display = data.processing.is_free_api ? 'inline-flex' : 'none';
+                            providerBadge.classList.toggle('paid', !data.processing.is_free_api);
+                        } else {
+                            statusProvider.style.display = 'none';
+                        }
+
+                        // Show current step
+                        if (data.processing.current_step) {
+                            statusStep.textContent = data.processing.current_step;
+                            statusStep.style.display = 'inline';
+                        } else {
+                            statusStep.style.display = 'none';
+                        }
 
                         // Build primary text - show book title prominently
                         if (data.processing.current_book) {
@@ -935,6 +1028,8 @@
                         statusIcon.innerHTML = '<i class="bi bi-check-circle"></i>';
                         statusIcon.className = 'status-icon idle';
                         statusLayer.style.display = 'none';
+                        statusProvider.style.display = 'none';
+                        statusStep.style.display = 'none';
                         statusProgressContainer.style.display = 'none';
 
                         if (data.queue.count > 0) {
@@ -961,6 +1056,8 @@
                         statusIcon.innerHTML = '<i class="bi bi-pause-circle"></i>';
                         statusIcon.className = 'status-icon stopped';
                         statusLayer.style.display = 'none';
+                        statusProvider.style.display = 'none';
+                        statusStep.style.display = 'none';
                         statusProgressContainer.style.display = 'none';
                         statusPrimary.textContent = 'Worker stopped';
                         statusBookInfo.innerHTML = 'Start worker from Settings to process queue';

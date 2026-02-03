@@ -28,7 +28,15 @@ _processing_status = {
     "layer_name": "",  # Human-readable layer name
     "queue_remaining": 0,
     "last_activity": "",  # Last significant event
-    "last_activity_time": 0  # Timestamp of last activity
+    "last_activity_time": 0,  # Timestamp of last activity
+    # NEW: Detailed provider/API tracking
+    "current_provider": "",  # e.g., "Skaldleita", "Gemini", "BookDB API"
+    "current_step": "",  # e.g., "Transcribing audio...", "Querying database..."
+    "provider_chain": [],  # List of providers in order
+    "provider_index": 0,  # Current position in chain
+    "api_latency_ms": 0,  # Last API call latency
+    "confidence": 0,  # Current identification confidence
+    "is_free_api": True,  # Whether current API is free (user's data/quota not used)
 }
 
 # Layer name mapping for human-readable display
@@ -73,6 +81,42 @@ def clear_current_book() -> None:
     global _processing_status
     _processing_status["current_book"] = ""
     _processing_status["current_author"] = ""
+    _processing_status["current_provider"] = ""
+    _processing_status["current_step"] = ""
+    _processing_status["confidence"] = 0
+
+
+def set_current_provider(provider: str, step: str = "", is_free: bool = True,
+                         chain: list = None, chain_index: int = 0) -> None:
+    """Set the current provider/API for status display.
+
+    Args:
+        provider: Name of provider (e.g., "Skaldleita", "Gemini", "BookDB API")
+        step: Current step (e.g., "Transcribing audio...", "Querying database...")
+        is_free: Whether this API is free (not using user's quota)
+        chain: Full provider chain if applicable
+        chain_index: Current position in chain
+    """
+    global _processing_status
+    _processing_status["current_provider"] = provider
+    _processing_status["current_step"] = step
+    _processing_status["is_free_api"] = is_free
+    if chain:
+        _processing_status["provider_chain"] = chain
+        _processing_status["provider_index"] = chain_index
+    _processing_status["last_activity_time"] = time.time()
+
+
+def set_api_latency(latency_ms: int) -> None:
+    """Record API call latency."""
+    global _processing_status
+    _processing_status["api_latency_ms"] = latency_ms
+
+
+def set_confidence(confidence: int) -> None:
+    """Set current identification confidence (0-100)."""
+    global _processing_status
+    _processing_status["confidence"] = confidence
 
 
 def process_all_queue(

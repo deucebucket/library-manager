@@ -17,6 +17,7 @@ from library_manager.database import insert_history_entry
 from library_manager.utils.validation import (
     is_valid_author_for_recommendation, is_valid_title_for_recommendation
 )
+from library_manager.worker import set_current_provider
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +210,17 @@ def process_queue(
     logger.info(f"[DEBUG] Processing batch of {len(batch)} items:")
     for i, name in enumerate(messy_names):
         logger.info(f"[DEBUG]   Item {i+1}: {name}")
+
+    # Show which AI provider we're using
+    ai_provider = config.get('ai_provider', 'gemini')
+    is_free = ai_provider == 'ollama'  # Ollama is local/free
+    provider_name = ai_provider.title()
+    if ai_provider == 'gemini':
+        model = config.get('gemini_model', 'gemma-3-27b-it')
+        # Gemma models are free
+        is_free = 'gemma' in model.lower()
+        provider_name = f"Gemini ({model})"
+    set_current_provider(provider_name, "Verifying book identification...", is_free=is_free)
 
     # === PHASE 2: External AI call (NO database connection held) ===
     results = call_ai(messy_names, config)

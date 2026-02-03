@@ -7867,6 +7867,14 @@ def api_live_status():
             'current_author': status.get('current_author', ''),
             'processed': status.get('processed', 0),
             'total': status.get('total', 0),
+            # NEW: Detailed provider/API tracking
+            'current_provider': status.get('current_provider', ''),
+            'current_step': status.get('current_step', ''),
+            'provider_chain': status.get('provider_chain', []),
+            'provider_index': status.get('provider_index', 0),
+            'api_latency_ms': status.get('api_latency_ms', 0),
+            'confidence': status.get('confidence', 0),
+            'is_free_api': status.get('is_free_api', True),
         },
         'queue': {
             'count': queue_count,

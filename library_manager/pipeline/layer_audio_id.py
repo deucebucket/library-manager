@@ -25,6 +25,7 @@ from library_manager.utils.validation import (
     is_garbage_author_match, is_placeholder_author,
     is_valid_author_for_recommendation, is_valid_title_for_recommendation
 )
+from library_manager.worker import set_current_provider, set_api_latency, set_confidence
 
 # Language detection for multi-language naming
 def _detect_title_language(text):
@@ -396,6 +397,7 @@ def process_layer_1_audio(
                 if remaining > 0:
                     wait_time = min(remaining, 60)  # Wait up to 60s at a time
                     logger.info(f"[LAYER 1/AUDIO] Skaldleita circuit breaker open, waiting {wait_time}s ({remaining}s total remaining)")
+                    set_current_provider("Skaldleita", f"Circuit breaker open ({remaining}s)", is_free=True)
                     if update_processing_status:
                         update_processing_status(f"Layer 1: Waiting for Skaldleita ({remaining}s)")
                     time.sleep(wait_time)
@@ -403,7 +405,11 @@ def process_layer_1_audio(
                     processed += 1
                     continue
 
+            # Show status: Using Skaldleita (free, GPU Whisper)
+            set_current_provider("Skaldleita", "Transcribing audio with GPU Whisper...", is_free=True)
+            api_start = time.time()
             bookdb_result = identify_audio_with_bookdb(audio_file)
+            set_api_latency(int((time.time() - api_start) * 1000))
 
             # Phase 5: Handle requeue_suggested from SL (Skaldleita backbone)
             # If SL has author/title but suggests requeue (live scrape added to staging),
@@ -443,6 +449,9 @@ def process_layer_1_audio(
             elif bookdb_result and bookdb_result.get('author') and bookdb_result.get('title'):
                 # Skaldleita got a full identification - validate against path first
                 sl_source = bookdb_result.get('sl_source', 'audio')
+                sl_confidence = int(bookdb_result.get('confidence', 0.8) * 100)
+                set_current_provider("Skaldleita", f"Identified from {sl_source}", is_free=True)
+                set_confidence(sl_confidence)
                 logger.info(f"[LAYER 1/AUDIO] Skaldleita identified (source: {sl_source}): {bookdb_result['author']} - {bookdb_result['title']}")
                 # Sanity check: validate against path info to catch misparses
                 bookdb_result = _validate_ai_result_against_path(bookdb_result, folder_hint, book_path)
@@ -458,11 +467,13 @@ def process_layer_1_audio(
                 result = None  # Clear partial result to trigger AI fallback
         else:
             logger.info(f"[LAYER 1/AUDIO] Skaldleita audio disabled, using local transcription + AI")
+            set_current_provider("Local Whisper", "Transcribing audio locally...", is_free=True)
 
         # If no result yet, try local transcription + AI
         if not result:
             if not transcript:
                 # No transcript from Skaldleita (or Skaldleita disabled), do local transcription
+                set_current_provider("Local Whisper", "Transcribing audio locally...", is_free=True)
                 transcript = transcribe_audio_intro(audio_file)
 
             if not transcript:
@@ -479,6 +490,8 @@ def process_layer_1_audio(
                 continue
 
             # Parse with AI (fallback path - when Skaldleita disabled or didn't identify)
+            ai_provider = config.get('ai_provider', 'gemini')
+            set_current_provider(ai_provider.title(), "Parsing transcript with AI...", is_free=(ai_provider == 'ollama'))
             result = parse_transcript_with_ai(transcript, folder_hint, config)
 
             # Sanity check: validate AI result against path info
