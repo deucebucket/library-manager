@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.107-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.108-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,12 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.108** - 🎯 **Author Format & Duplicate History Fix** (Issues #96, #88, #79)
+> - **Author Name Templates** - New `{author_lf}` (LastName, FirstName), `{author_last}`, `{author_first}` for custom naming
+> - **Database Cleanup Button** - Settings → Advanced now has button to remove @eaDir, #recycle entries
+> - **Duplicate History Fix** - Centralized insert function prevents same book appearing 15x in history
+> - All 16 INSERT paths now use deduplication helper - finally kills the duplicate bug
 
 > **beta.107** - 🔧 **Series Path Fix** (Issue #94)
 > - **Series Number Without Name** - Custom naming templates no longer create broken paths

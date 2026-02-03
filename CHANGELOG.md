@@ -2,6 +2,36 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.108] - 2026-02-03
+
+### Added
+
+- **Issue #96: Author Name Format Templates** - New template variables for custom naming
+  - `{author_lf}` - "LastName, FirstName" format (e.g., "Sanderson, Brandon")
+  - `{author_last}` - Last name only (e.g., "Sanderson")
+  - `{author_first}` - First name only (e.g., "Brandon")
+  - `{author_fl}` - "FirstName LastName" format (normalizes existing names)
+  - New preset: "LastName, FirstName / Title - Library style"
+  - Handles edge cases: prefixes (van, de, le), suffixes (Jr., III), initials (J. R. R.)
+
+- **Issue #88: Database Cleanup Button** - Settings → Advanced → Database Maintenance
+  - One-click removal of @eaDir, #recycle, .AppleDouble, $RECYCLE.BIN entries
+  - Shows count of items removed
+  - No more manual SQLite editing needed
+
+### Fixed
+
+- **Issue #79: Duplicate History Entries** - ROOT CAUSE IDENTIFIED AND FIXED
+  - Found 16 separate `INSERT INTO history` statements across 5 files with no deduplication
+  - Created centralized `insert_history_entry()` helper that deletes existing book_id+status before inserting
+  - Converted ALL 16 locations to use the helper function
+  - Added `cleanup_duplicate_history_entries()` that runs on startup
+  - Added API endpoint `/api/cleanup_duplicate_history` for manual cleanup
+  - 7 new regression tests added
+  - This finally kills the bug where same book appeared 15+ times in history
+
+---
+
 ## [0.9.0-beta.107] - 2026-02-01
 
 ### Fixed
