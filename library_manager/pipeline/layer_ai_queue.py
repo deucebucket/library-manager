@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple, Type
 
+from library_manager.database import insert_history_entry
 from library_manager.utils.validation import (
     is_valid_author_for_recommendation, is_valid_title_for_recommendation
 )
@@ -565,14 +566,16 @@ def process_queue(
                                 else:
                                     # Audio is ambiguous - add to needs_attention list
                                     logger.warning(f"TRUST THE PROCESS: Audio ambiguous, flagging for attention")
-                                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?, ?, ?, ?, ?, ?)''',
-                                             (row['book_id'], row['current_author'], row['current_title'],
-                                              new_author, new_title, str(old_path), str(new_path),
-                                              f"Unidentifiable: AI uncertain, audio ambiguous. Audio heard: {audio_author}",
-                                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                              str(new_year) if new_year else None, new_edition, new_variant))
+                                    # Issue #79: Use helper function to prevent duplicates
+                                    insert_history_entry(
+                                        c, row['book_id'], row['current_author'], row['current_title'],
+                                        new_author, new_title, str(old_path), str(new_path), 'needs_attention',
+                                        error_message=f"Unidentifiable: AI uncertain, audio ambiguous. Audio heard: {audio_author}",
+                                        new_narrator=new_narrator, new_series=new_series,
+                                        new_series_num=str(new_series_num) if new_series_num else None,
+                                        new_year=str(new_year) if new_year else None,
+                                        new_edition=new_edition, new_variant=new_variant
+                                    )
                                     c.execute('UPDATE books SET status = ? WHERE id = ?', ('needs_attention', row['book_id']))
                                     c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                                     processed += 1
@@ -580,14 +583,16 @@ def process_queue(
                             else:
                                 # No audio analysis possible - flag for attention
                                 logger.warning(f"TRUST THE PROCESS: No audio available, flagging for attention")
-                                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                                  new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                             VALUES (?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?, ?, ?, ?, ?, ?)''',
-                                         (row['book_id'], row['current_author'], row['current_title'],
-                                          new_author, new_title, str(old_path), str(new_path),
-                                          f"Unidentifiable: AI uncertain, no audio analysis available",
-                                          new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                          str(new_year) if new_year else None, new_edition, new_variant))
+                                # Issue #79: Use helper function to prevent duplicates
+                                insert_history_entry(
+                                    c, row['book_id'], row['current_author'], row['current_title'],
+                                    new_author, new_title, str(old_path), str(new_path), 'needs_attention',
+                                    error_message=f"Unidentifiable: AI uncertain, no audio analysis available",
+                                    new_narrator=new_narrator, new_series=new_series,
+                                    new_series_num=str(new_series_num) if new_series_num else None,
+                                    new_year=str(new_year) if new_year else None,
+                                    new_edition=new_edition, new_variant=new_variant
+                                )
                                 c.execute('UPDATE books SET status = ? WHERE id = ?', ('needs_attention', row['book_id']))
                                 c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                                 processed += 1
@@ -609,14 +614,16 @@ def process_queue(
                                 processed += 1
                                 continue
                             # Record as pending_fix for manual review
-                            c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                              new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?, ?)''',
-                                     (row['book_id'], row['current_author'], row['current_title'],
-                                      new_author, new_title, str(old_path), str(new_path),
-                                      f"Uncertain: {verification.get('reasoning', 'needs review')}",
-                                      new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                      str(new_year) if new_year else None, new_edition, new_variant))
+                            # Issue #79: Use helper function to prevent duplicates
+                            insert_history_entry(
+                                c, row['book_id'], row['current_author'], row['current_title'],
+                                new_author, new_title, str(old_path), str(new_path), 'pending_fix',
+                                error_message=f"Uncertain: {verification.get('reasoning', 'needs review')}",
+                                new_narrator=new_narrator, new_series=new_series,
+                                new_series_num=str(new_series_num) if new_series_num else None,
+                                new_year=str(new_year) if new_year else None,
+                                new_edition=new_edition, new_variant=new_variant
+                            )
                             c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', row['book_id']))
                             c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                             processed += 1
@@ -638,14 +645,16 @@ def process_queue(
                             logger.info(f"TRUST THE PROCESS: Using audio metadata: {new_author} - {new_title}")
                         else:
                             # Audio failed or no audio files - flag for attention
-                            c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                              new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                         VALUES (?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?, ?, ?, ?, ?, ?)''',
-                                     (row['book_id'], row['current_author'], row['current_title'],
-                                      new_author, new_title, str(old_path), str(new_path),
-                                      f"Unidentifiable: All verification methods failed",
-                                      new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                      str(new_year) if new_year else None, new_edition, new_variant))
+                            # Issue #79: Use helper function to prevent duplicates
+                            insert_history_entry(
+                                c, row['book_id'], row['current_author'], row['current_title'],
+                                new_author, new_title, str(old_path), str(new_path), 'needs_attention',
+                                error_message=f"Unidentifiable: All verification methods failed",
+                                new_narrator=new_narrator, new_series=new_series,
+                                new_series_num=str(new_series_num) if new_series_num else None,
+                                new_year=str(new_year) if new_year else None,
+                                new_edition=new_edition, new_variant=new_variant
+                            )
                             c.execute('UPDATE books SET status = ? WHERE id = ?', ('needs_attention', row['book_id']))
                             c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                             processed += 1
@@ -726,14 +735,16 @@ def process_queue(
                 else:
                     # Audio analysis disabled - mark as needs_attention
                     logger.info(f"NEEDS ATTENTION (placeholder author '{new_author}', no audio analysis): {row['current_author']}/{row['current_title']}")
-                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?, ?, ?, ?, ?, ?)''',
-                             (row['book_id'], row['current_author'], row['current_title'],
-                              new_author, new_title, str(old_path), str(new_path),
-                              f"Could not identify author (got '{new_author}')",
-                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                              str(new_year) if new_year else None, new_edition, new_variant))
+                    # Issue #79: Use helper function to prevent duplicates
+                    insert_history_entry(
+                        c, row['book_id'], row['current_author'], row['current_title'],
+                        new_author, new_title, str(old_path), str(new_path), 'needs_attention',
+                        error_message=f"Could not identify author (got '{new_author}')",
+                        new_narrator=new_narrator, new_series=new_series,
+                        new_series_num=str(new_series_num) if new_series_num else None,
+                        new_year=str(new_year) if new_year else None,
+                        new_edition=new_edition, new_variant=new_variant
+                    )
                     c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
                              ('needs_attention', f"Could not identify author (got '{new_author}')", row['book_id']))
                     c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
@@ -813,14 +824,16 @@ def process_queue(
                                     else:
                                         # Can't create version path - just record the issue
                                         reason = comparison.get('reason', 'Destination files are corrupt/unreadable')
-                                        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                                          new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                                     VALUES (?, ?, ?, ?, ?, ?, ?, 'corrupt_dest', ?, ?, ?, ?, ?, ?, ?)''',
-                                                 (row['book_id'], row['current_author'], row['current_title'],
-                                                  new_author, new_title, str(old_path), str(new_path),
-                                                  f"{reason}. Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files (corrupt)",
-                                                  new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                                  str(new_year) if new_year else None, new_edition, new_variant))
+                                        # Issue #79: Use helper function to prevent duplicates
+                                        insert_history_entry(
+                                            c, row['book_id'], row['current_author'], row['current_title'],
+                                            new_author, new_title, str(old_path), str(new_path), 'corrupt_dest',
+                                            error_message=f"{reason}. Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files (corrupt)",
+                                            new_narrator=new_narrator, new_series=new_series,
+                                            new_series_num=str(new_series_num) if new_series_num else None,
+                                            new_year=str(new_year) if new_year else None,
+                                            new_edition=new_edition, new_variant=new_variant
+                                        )
                                         c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
                                                  ('corrupt_dest', f'Destination {new_path} is corrupt - source is valid', row['book_id']))
                                         c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
@@ -830,14 +843,16 @@ def process_queue(
                                 if comparison.get('source_corrupt'):
                                     # Source is corrupt - mark as duplicate (keep dest)
                                     logger.warning(f"CORRUPT SOURCE: {old_path} has corrupt/unreadable files, dest {new_path} is valid")
-                                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'duplicate', ?, ?, ?, ?, ?, ?, ?)''',
-                                             (row['book_id'], row['current_author'], row['current_title'],
-                                              new_author, new_title, str(old_path), str(new_path),
-                                              f"Source is corrupt/unreadable, destination is valid. Recommend removing corrupt source.",
-                                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                              str(new_year) if new_year else None, new_edition, new_variant))
+                                    # Issue #79: Use helper function to prevent duplicates
+                                    insert_history_entry(
+                                        c, row['book_id'], row['current_author'], row['current_title'],
+                                        new_author, new_title, str(old_path), str(new_path), 'duplicate',
+                                        error_message=f"Source is corrupt/unreadable, destination is valid. Recommend removing corrupt source.",
+                                        new_narrator=new_narrator, new_series=new_series,
+                                        new_series_num=str(new_series_num) if new_series_num else None,
+                                        new_year=str(new_year) if new_year else None,
+                                        new_edition=new_edition, new_variant=new_variant
+                                    )
                                     c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
                                              ('duplicate', f'Corrupt - valid copy exists at {new_path}', row['book_id']))
                                     c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
@@ -857,14 +872,16 @@ def process_queue(
                                         # Source is better - note this for user review
                                         logger.info(f"Note: Source is better ({reason})")
 
-                                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'duplicate', ?, ?, ?, ?, ?, ?, ?)''',
-                                             (row['book_id'], row['current_author'], row['current_title'],
-                                              new_author, new_title, str(old_path), str(new_path),
-                                              f"Duplicate detected ({comparison['overlap_ratio']:.0%} match, {comparison['matching_count']} files). Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files. {reason}",
-                                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                              str(new_year) if new_year else None, new_edition, new_variant))
+                                    # Issue #79: Use helper function to prevent duplicates
+                                    insert_history_entry(
+                                        c, row['book_id'], row['current_author'], row['current_title'],
+                                        new_author, new_title, str(old_path), str(new_path), 'duplicate',
+                                        error_message=f"Duplicate detected ({comparison['overlap_ratio']:.0%} match, {comparison['matching_count']} files). Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files. {reason}",
+                                        new_narrator=new_narrator, new_series=new_series,
+                                        new_series_num=str(new_series_num) if new_series_num else None,
+                                        new_year=str(new_year) if new_year else None,
+                                        new_edition=new_edition, new_variant=new_variant
+                                    )
                                     c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
                                              ('duplicate', f'Duplicate of {new_path}', row['book_id']))
                                     c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
@@ -942,14 +959,16 @@ def process_queue(
                                         else:
                                             # Still can't find unique path - now error
                                             logger.warning(f"CONFLICT: Could not create unique path for different version")
-                                            c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                                              new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                                         VALUES (?, ?, ?, ?, ?, ?, ?, 'error', ?, ?, ?, ?, ?, ?, ?)''',
-                                                     (row['book_id'], row['current_author'], row['current_title'],
-                                                      new_author, new_title, str(old_path), str(new_path),
-                                                      f"Different version exists, could not generate unique path. Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files",
-                                                      new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                                      str(new_year) if new_year else None, new_edition, new_variant))
+                                            # Issue #79: Use helper function to prevent duplicates
+                                            insert_history_entry(
+                                                c, row['book_id'], row['current_author'], row['current_title'],
+                                                new_author, new_title, str(old_path), str(new_path), 'error',
+                                                error_message=f"Different version exists, could not generate unique path. Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files",
+                                                new_narrator=new_narrator, new_series=new_series,
+                                                new_series_num=str(new_series_num) if new_series_num else None,
+                                                new_year=str(new_year) if new_year else None,
+                                                new_edition=new_edition, new_variant=new_variant
+                                            )
                                             c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
                                                      ('conflict', 'Different version exists, unique path generation failed', row['book_id']))
                                             c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
@@ -958,14 +977,16 @@ def process_queue(
                                     else:
                                         # No distinguisher at all - error
                                         logger.warning(f"CONFLICT: No distinguisher available for different version")
-                                        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status, error_message,
-                                                                          new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                                     VALUES (?, ?, ?, ?, ?, ?, ?, 'error', ?, ?, ?, ?, ?, ?, ?)''',
-                                                 (row['book_id'], row['current_author'], row['current_title'],
-                                                  new_author, new_title, str(old_path), str(new_path),
-                                                  f"Different version exists, no distinguisher available. Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files",
-                                                  new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                                                  str(new_year) if new_year else None, new_edition, new_variant))
+                                        # Issue #79: Use helper function to prevent duplicates
+                                        insert_history_entry(
+                                            c, row['book_id'], row['current_author'], row['current_title'],
+                                            new_author, new_title, str(old_path), str(new_path), 'error',
+                                            error_message=f"Different version exists, no distinguisher available. Source: {comparison['source_files']} files, Dest: {comparison['dest_files']} files",
+                                            new_narrator=new_narrator, new_series=new_series,
+                                            new_series_num=str(new_series_num) if new_series_num else None,
+                                            new_year=str(new_year) if new_year else None,
+                                            new_edition=new_edition, new_variant=new_variant
+                                        )
                                         c.execute('UPDATE books SET status = ?, error_message = ? WHERE id = ?',
                                                  ('conflict', 'Different version exists', row['book_id']))
                                         c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
@@ -998,18 +1019,19 @@ def process_queue(
 
                     logger.info(f"Fixed: {row['current_author']}/{row['current_title']} -> {new_author}/{new_title}")
 
-                    # Clean up any stale pending entries for this book before recording fix
-                    # Issue #79: Also prevent duplicate 'fixed' history entries by deleting existing ones
-                    c.execute("DELETE FROM history WHERE book_id = ? AND status IN ('pending_fix', 'fixed')", (row['book_id'],))
+                    # Issue #79: Use helper function to prevent duplicates
+                    # Also clean up any stale pending entries for this book before recording fix
+                    c.execute("DELETE FROM history WHERE book_id = ? AND status = 'pending_fix'", (row['book_id'],))
 
-                    # Record in history
-                    c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
-                                                      new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, 'fixed', ?, ?, ?, ?, ?, ?)''',
-                             (row['book_id'], row['current_author'], row['current_title'],
-                              new_author, new_title, str(old_path), str(new_path),
-                              new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                              str(new_year) if new_year else None, new_edition, new_variant))
+                    # Record in history using helper (handles dedup for 'fixed' status)
+                    insert_history_entry(
+                        c, row['book_id'], row['current_author'], row['current_title'],
+                        new_author, new_title, str(old_path), str(new_path), 'fixed',
+                        new_narrator=new_narrator, new_series=new_series,
+                        new_series_num=str(new_series_num) if new_series_num else None,
+                        new_year=str(new_year) if new_year else None,
+                        new_edition=new_edition, new_variant=new_variant
+                    )
                     history_id = c.lastrowid  # Capture the newly inserted history record ID
 
                     # Update book record - handle case where another book already has this path
@@ -1078,13 +1100,15 @@ def process_queue(
                     c.execute('UPDATE books SET status = ? WHERE id = ?', ('needs_attention', row['book_id']))
                     c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                     continue
-                c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
-                                                  new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?)''',
-                         (row['book_id'], row['current_author'], row['current_title'],
-                          new_author, new_title, str(old_path), str(new_path),
-                          new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                          str(new_year) if new_year else None, new_edition, new_variant))
+                # Issue #79: Use helper function to prevent duplicates
+                insert_history_entry(
+                    c, row['book_id'], row['current_author'], row['current_title'],
+                    new_author, new_title, str(old_path), str(new_path), 'pending_fix',
+                    new_narrator=new_narrator, new_series=new_series,
+                    new_series_num=str(new_series_num) if new_series_num else None,
+                    new_year=str(new_year) if new_year else None,
+                    new_edition=new_edition, new_variant=new_variant
+                )
                 c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', row['book_id']))
                 fixed += 1
         else:

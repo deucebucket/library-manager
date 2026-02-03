@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
 from library_manager.config import use_skaldleita_for_audio
+from library_manager.database import insert_history_entry
 from library_manager.utils.validation import (
     is_garbage_author_match, is_placeholder_author,
     is_valid_author_for_recommendation, is_valid_title_for_recommendation
@@ -339,12 +340,13 @@ def process_layer_1_audio(
                         continue
 
                     # Add to history as pending fix (with paths to prevent stale references)
-                    c.execute('''INSERT INTO history
-                                (book_id, old_author, old_title, new_author, new_title, new_series, new_series_num, old_path, new_path, status)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
-                             (row['book_id'], row['current_author'], row['current_title'],
-                              author, title, ebook_result.get('series'), ebook_result.get('series_num'),
-                              old_path_str, new_path_str))
+                    # Issue #79: Use helper function to prevent duplicates
+                    insert_history_entry(
+                        c, row['book_id'], row['current_author'], row['current_title'],
+                        author, title, old_path_str, new_path_str, 'pending_fix',
+                        new_series=ebook_result.get('series'),
+                        new_series_num=ebook_result.get('series_num')
+                    )
 
                     # Remove from queue
                     c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
@@ -614,12 +616,12 @@ def process_layer_1_audio(
                     continue
 
                 # Add to history (with paths to prevent stale references)
-                c.execute('''INSERT INTO history
-                            (book_id, old_author, old_title, new_author, new_title, new_narrator, new_series, new_series_num, old_path, new_path, status)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_fix')''',
-                         (row['book_id'], row['current_author'], row['current_title'],
-                          author, title, narrator, series, series_num,
-                          old_path_str, new_path_str))
+                # Issue #79: Use helper function to prevent duplicates
+                insert_history_entry(
+                    c, row['book_id'], row['current_author'], row['current_title'],
+                    author, title, old_path_str, new_path_str, 'pending_fix',
+                    new_narrator=narrator, new_series=series, new_series_num=series_num
+                )
 
                 # Remove from queue
                 c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))

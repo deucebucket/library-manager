@@ -49,7 +49,10 @@ from library_manager.config import (
     migrate_legacy_config, init_config, needs_setup,
     load_config, save_config, save_secrets, load_secrets
 )
-from library_manager.database import init_db, get_db, set_db_path, cleanup_garbage_entries
+from library_manager.database import (
+    init_db, get_db, set_db_path, cleanup_garbage_entries,
+    cleanup_duplicate_history_entries, insert_history_entry
+)
 from library_manager.models.book_profile import (
     SOURCE_WEIGHTS, FIELD_WEIGHTS, FieldValue, BookProfile,
     detect_multibook_vs_chapters, save_book_profile, load_book_profile,
@@ -10068,6 +10071,52 @@ def api_reset_database():
         })
 
 
+@app.route('/api/cleanup-garbage', methods=['POST'])
+def api_cleanup_garbage():
+    """Remove garbage entries from database (Issue #88).
+
+    Removes @eaDir, #recycle, .AppleDouble and other system folder entries
+    that were accidentally scanned.
+    """
+    try:
+        from library_manager.database import cleanup_garbage_entries
+        removed_count = cleanup_garbage_entries()
+        return jsonify({
+            'success': True,
+            'removed': removed_count,
+            'message': f'Removed {removed_count} garbage entries' if removed_count > 0 else 'No garbage entries found'
+        })
+    except Exception as e:
+        logger.error(f"Cleanup garbage error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+
+
+@app.route('/api/cleanup_duplicate_history', methods=['POST'])
+def api_cleanup_duplicate_history():
+    """Remove duplicate history entries (Issue #79).
+
+    When books are processed multiple times through the pipeline, duplicate
+    history entries can accumulate. This cleans them up, keeping only the
+    most recent entry per book_id + status combination.
+    """
+    try:
+        removed_count = cleanup_duplicate_history_entries()
+        return jsonify({
+            'success': True,
+            'removed': removed_count,
+            'message': f'Removed {removed_count} duplicate history entries' if removed_count > 0 else 'No duplicate entries found'
+        })
+    except Exception as e:
+        logger.error(f"Cleanup duplicate history error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+
+
 # ============== AUDIOBOOKSHELF INTEGRATION ==============
 
 def get_abs_client():
@@ -11012,16 +11061,16 @@ def api_manual_match():
         # Issue #57: Delete any existing pending/error/needs_attention entries for this book
         # When user manually matches, the old entries are superseded by the new fix
         # Also clear duplicate/corrupt_dest errors (Merijeek: manual fix should clear ALL error states)
-        c.execute("DELETE FROM history WHERE book_id = ? AND status IN ('pending_fix', 'error', 'needs_attention', 'duplicate', 'corrupt_dest')", (book_id,))
+        c.execute("DELETE FROM history WHERE book_id = ? AND status IN ('error', 'needs_attention', 'duplicate', 'corrupt_dest')", (book_id,))
 
-        # Insert as pending fix in history (like process_queue does)
-        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
-                                          new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?)''',
-                 (book_id, old_author, old_title,
-                  new_author, new_title, old_path, str(new_path),
-                  new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                  str(new_year) if new_year else None, None, None))
+        # Issue #79: Use helper function to prevent duplicate history entries
+        insert_history_entry(
+            c, book_id, old_author, old_title,
+            new_author, new_title, old_path, str(new_path), 'pending_fix',
+            new_narrator=new_narrator, new_series=new_series,
+            new_series_num=str(new_series_num) if new_series_num else None,
+            new_year=str(new_year) if new_year else None
+        )
 
         # Update book status
         c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', book_id))
@@ -11181,16 +11230,16 @@ def api_edit_book():
         # Issue #57: Delete any existing pending/error/needs_attention entries for this book
         # When user manually edits, the old entries are superseded by the new fix
         # Also clear duplicate/corrupt_dest errors (Merijeek: manual fix should clear ALL error states)
-        c.execute("DELETE FROM history WHERE book_id = ? AND status IN ('pending_fix', 'error', 'needs_attention', 'duplicate', 'corrupt_dest')", (book_id,))
+        c.execute("DELETE FROM history WHERE book_id = ? AND status IN ('error', 'needs_attention', 'duplicate', 'corrupt_dest')", (book_id,))
 
-        # Insert/update as pending fix
-        c.execute('''INSERT INTO history (book_id, old_author, old_title, new_author, new_title, old_path, new_path, status,
-                                          new_narrator, new_series, new_series_num, new_year, new_edition, new_variant)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_fix', ?, ?, ?, ?, ?, ?)''',
-                 (book_id, old_author, old_title,
-                  new_author, new_title, old_path, str(new_path),
-                  new_narrator, new_series, str(new_series_num) if new_series_num else None,
-                  str(new_year) if new_year else None, None, None))
+        # Issue #79: Use helper function to prevent duplicate history entries
+        insert_history_entry(
+            c, book_id, old_author, old_title,
+            new_author, new_title, old_path, str(new_path), 'pending_fix',
+            new_narrator=new_narrator, new_series=new_series,
+            new_series_num=str(new_series_num) if new_series_num else None,
+            new_year=str(new_year) if new_year else None
+        )
 
         # Update book status and LOCK it - user has set metadata, never change it
         c.execute('UPDATE books SET status = ?, user_locked = 1, current_author = ?, current_title = ? WHERE id = ?',
@@ -11401,6 +11450,7 @@ if __name__ == '__main__':
     init_config()  # Create config files if they don't exist
     init_db()
     cleanup_garbage_entries()  # Remove @eaDir, #recycle, etc. from database (Issue #88)
+    cleanup_duplicate_history_entries()  # Remove duplicate history entries (Issue #79)
     start_worker()
     port = int(os.environ.get('PORT', 5757))
     app.run(host='0.0.0.0', port=port, debug=False)
