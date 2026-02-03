@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.113"
+APP_VERSION = "0.9.0-beta.114"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -10017,10 +10017,11 @@ def api_skaldleita_register():
                     'registered_at': datetime.now().isoformat()
                 })
 
+                # Don't return the API key in response - email-only delivery for security
+                # Key is already saved to secrets above, so it's auto-applied
                 return jsonify({
                     'success': True,
-                    'api_key': result['api_key'],
-                    'message': result.get('message', 'API key registered!'),
+                    'message': result.get('message', 'API key registered and emailed!'),
                     'is_existing': result.get('is_existing', False),
                     'email_sent': result.get('email_sent', False)
                 })
