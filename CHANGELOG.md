@@ -2,6 +2,69 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.115] - 2026-02-05
+
+### Added
+
+- **Issue #119: HMAC Request Signing** - Cryptographic security for Skaldleita API
+  - All requests now include `X-LM-Signature` (HMAC-SHA256) and `X-LM-Timestamp` headers
+  - Prevents unauthorized API usage - requests without valid signatures rejected
+  - Timestamp validation prevents replay attacks
+  - Fixed missing headers on `contribute_to_bookdb()` and `lookup_community_consensus()`
+
+---
+
+## [0.9.0-beta.114] - 2026-02-03
+
+### Changed
+
+- **Issue #117: Email-Only API Key Delivery** - Keys no longer displayed on screen
+  - API key removed from registration response
+  - Key is auto-saved and emailed to user
+  - Prevents key theft if someone knows your email but doesn't have email access
+  - UI shows masked placeholder after registration
+
+---
+
+## [0.9.0-beta.113] - 2026-02-03
+
+### Added
+
+- **Issue #115: In-App Skaldleita API Key Registration**
+  - New `library_manager/instance.py` module - Generates persistent `SKALD-XXXXXX` instance IDs
+  - Register for API key directly from Settings page
+  - New endpoints: `/api/skaldleita/register`, `/api/skaldleita/validate`, `/api/instance/info`
+  - Auto-saves key to `secrets.json` on successful registration
+  - Rate limits: 1000 req/hr with key, 500 without
+
+---
+
+## [0.9.0-beta.112] - 2026-02-03
+
+### Added
+
+- **Issue #110: File Validation Module** - Pre-processing file checks
+  - New `library_manager/file_validation.py` module
+  - `validate_audio_file()` - Check single file with ffprobe
+  - `batch_validate()` - Check multiple files
+  - Catches: corrupt files, missing audio streams, truncated downloads, files < 10 min
+
+---
+
+## [0.9.0-beta.111] - 2026-02-03
+
+### Added
+
+- **Issue #102: Precog Consensus Voting System** - "Minority Report" style identification
+  - New `library_manager/precog.py` module (450+ lines)
+  - Multiple sources vote on book identity with weighted consensus
+  - Source weights: audio (90) > metadata (80) > API (70) > AI (55) > path (30)
+  - Generic title protection: "Match Game", "The End" require 85% consensus (vs 70% normal)
+  - Human review flags: split votes, drastic author changes, low confidence
+  - 10 unit tests in `test-env/test-precog.py`
+
+---
+
 ## [0.9.0-beta.110] - 2026-02-03
 
 ### Added
