@@ -58,12 +58,17 @@ def get_user_agent():
 
 
 # Request signing for Skaldleita API
-# NOTE: This is a speed bump, not real security. The secret is in public source code.
+# NOTE: This is a speed bump, not real security. The secret is derivable from version.
 # It identifies LM traffic, enables version-based blocking, and stops casual curl scrapers.
-# Determined attackers can extract the secret - if abuse continues, Skaldleita will
-# require per-user API keys (LM will still work with local/other providers).
-# See issue #119
-_LM_SIGNING_SECRET = 'skaldleita-lm-2024-v1'
+# Secret rotates with each release - scrapers must update to match.
+# If abuse continues, Skaldleita will require per-user API keys.
+# See issues #119, #121
+_LM_SIGNING_SALT = 'skaldleita-lm-2024'
+
+
+def _derive_signing_secret(version):
+    """Derive version-specific signing secret. Rotates with each release."""
+    return hashlib.sha256(f"{_LM_SIGNING_SALT}:{version}".encode()).hexdigest()[:32]
 
 
 def get_signed_headers():
@@ -71,19 +76,21 @@ def get_signed_headers():
     Generate signed headers for Skaldleita API requests.
 
     Returns dict with User-Agent, X-LM-Signature, and X-LM-Timestamp.
-    Signature = HMAC-SHA256(secret, "{timestamp}:{version}")[:32]
+    Secret is derived from version - changes with each release.
+    Skaldleita accepts signatures from recent versions (last ~5).
 
-    This identifies traffic as coming from Library Manager and allows
-    Skaldleita to block specific versions if needed. It's not real auth -
-    the secret is public. See module-level comment for details.
+    This identifies traffic as coming from Library Manager. It's not real
+    auth - the derivation is public. But scrapers must update with each
+    LM release. See module-level comment for details.
     """
     timestamp = str(int(time.time()))
     lm_version = get_lm_version()
+    secret = _derive_signing_secret(lm_version)
 
-    # HMAC signature: timestamp:version signed with shared secret
+    # HMAC signature: timestamp:version signed with version-derived secret
     message = f"{timestamp}:{lm_version}"
     signature = hmac.new(
-        _LM_SIGNING_SECRET.encode(),
+        secret.encode(),
         message.encode(),
         hashlib.sha256
     ).hexdigest()[:32]
