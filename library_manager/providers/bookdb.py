@@ -12,6 +12,8 @@ Note: Internal names use 'bookdb' for backwards compatibility with existing conf
 
 import os
 import time
+import hmac
+import hashlib
 import logging
 import subprocess
 import tempfile
@@ -38,18 +40,51 @@ BOOKDB_API_URL = "https://bookdb.deucebucket.com"  # URL unchanged for backwards
 BOOKDB_PUBLIC_KEY = "lm-public-2024_85TbJ2lbrXGm38tBgliPAcAexLA_AeWxyqvHPbwRIrA"
 
 # User-Agent for tracking requests (helps identify Library Manager traffic)
-def get_user_agent():
-    """Get User-Agent string with version from app.py"""
+def get_lm_version():
+    """Get Library Manager version from app.py"""
     try:
         import sys
         # Try to get version from app module if loaded
         if 'app' in sys.modules:
-            version = getattr(sys.modules['app'], 'APP_VERSION', 'unknown')
-        else:
-            version = 'unknown'
+            return getattr(sys.modules['app'], 'APP_VERSION', 'unknown')
     except:
-        version = 'unknown'
-    return f"LibraryManager/{version}"
+        pass
+    return 'unknown'
+
+
+def get_user_agent():
+    """Get User-Agent string with version from app.py"""
+    return f"LibraryManager/{get_lm_version()}"
+
+
+# Request signing for Skaldleita API (prevents unauthorized API usage)
+# See issue #119 - shared secret between Library Manager and Skaldleita
+_LM_SIGNING_SECRET = 'skaldleita-lm-2024-v1'
+
+
+def get_signed_headers():
+    """
+    Generate signed headers for Skaldleita API requests.
+
+    Returns dict with User-Agent, X-LM-Signature, and X-LM-Timestamp.
+    Signature = HMAC-SHA256(secret, "{timestamp}:{version}")[:32]
+    """
+    timestamp = str(int(time.time()))
+    lm_version = get_lm_version()
+
+    # HMAC signature: timestamp:version signed with shared secret
+    message = f"{timestamp}:{lm_version}"
+    signature = hmac.new(
+        _LM_SIGNING_SECRET.encode(),
+        message.encode(),
+        hashlib.sha256
+    ).hexdigest()[:32]
+
+    return {
+        'User-Agent': f'LibraryManager/{lm_version}',
+        'X-LM-Signature': signature,
+        'X-LM-Timestamp': timestamp,
+    }
 
 
 def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=None, config=None,
@@ -306,7 +341,7 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                     f"{url}/api/identify_audio",
                     files=files,
                     data=data,
-                    headers={"User-Agent": get_user_agent()},
+                    headers=get_signed_headers(),
                     timeout=30  # Just submitting, should be fast
                 )
 
@@ -337,7 +372,7 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                     waited += poll_interval
 
                     try:
-                        poll_response = requests.get(poll_url, headers={"User-Agent": get_user_agent()}, timeout=10)
+                        poll_response = requests.get(poll_url, headers=get_signed_headers(), timeout=10)
                         if poll_response.status_code != 200:
                             continue
 
@@ -476,6 +511,7 @@ def contribute_to_bookdb(title, author=None, narrator=None, series=None,
         response = requests.post(
             f"{url}/api/contribute",
             json=payload,
+            headers=get_signed_headers(),
             timeout=10
         )
 
@@ -534,6 +570,7 @@ def lookup_community_consensus(title, author=None, bookdb_url=None):
         response = requests.get(
             f"{url}/api/community/lookup",
             params=params,
+            headers=get_signed_headers(),
             timeout=10
         )
 
@@ -557,6 +594,7 @@ def lookup_community_consensus(title, author=None, bookdb_url=None):
 __all__ = [
     'BOOKDB_API_URL',
     'BOOKDB_PUBLIC_KEY',
+    'get_signed_headers',
     'search_bookdb',
     'identify_audio_with_bookdb',
     'contribute_to_bookdb',
