@@ -57,8 +57,12 @@ def get_user_agent():
     return f"LibraryManager/{get_lm_version()}"
 
 
-# Request signing for Skaldleita API (prevents unauthorized API usage)
-# See issue #119 - shared secret between Library Manager and Skaldleita
+# Request signing for Skaldleita API
+# NOTE: This is a speed bump, not real security. The secret is in public source code.
+# It identifies LM traffic, enables version-based blocking, and stops casual curl scrapers.
+# Determined attackers can extract the secret - if abuse continues, Skaldleita will
+# require per-user API keys (LM will still work with local/other providers).
+# See issue #119
 _LM_SIGNING_SECRET = 'skaldleita-lm-2024-v1'
 
 
@@ -68,6 +72,10 @@ def get_signed_headers():
 
     Returns dict with User-Agent, X-LM-Signature, and X-LM-Timestamp.
     Signature = HMAC-SHA256(secret, "{timestamp}:{version}")[:32]
+
+    This identifies traffic as coming from Library Manager and allows
+    Skaldleita to block specific versions if needed. It's not real auth -
+    the secret is public. See module-level comment for details.
     """
     timestamp = str(int(time.time()))
     lm_version = get_lm_version()
