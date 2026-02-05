@@ -12,8 +12,6 @@ Note: Internal names use 'bookdb' for backwards compatibility with existing conf
 
 import os
 import time
-import hmac
-import hashlib
 import logging
 import subprocess
 import tempfile
@@ -57,18 +55,10 @@ def get_user_agent():
     return f"LibraryManager/{get_lm_version()}"
 
 
-# Request signing for Skaldleita API
-# NOTE: This is a speed bump, not real security. The secret is derivable from version.
-# It identifies LM traffic, enables version-based blocking, and stops casual curl scrapers.
-# Secret rotates with each release - scrapers must update to match.
-# If abuse continues, Skaldleita will require per-user API keys.
-# See issues #119, #121
-_LM_SIGNING_SALT = 'skaldleita-lm-2024'
-
-
-def _derive_signing_secret(version):
-    """Derive version-specific signing secret. Rotates with each release."""
-    return hashlib.sha256(f"{_LM_SIGNING_SALT}:{version}".encode()).hexdigest()[:32]
+# Request signing - uses shared module for Skaldleita sync
+# See library_manager/signing.py for constants and derivation logic
+# Skaldleita fetches that file to stay in sync automatically
+from library_manager.signing import generate_signature
 
 
 def get_signed_headers():
@@ -77,23 +67,13 @@ def get_signed_headers():
 
     Returns dict with User-Agent, X-LM-Signature, and X-LM-Timestamp.
     Secret is derived from version - changes with each release.
-    Skaldleita accepts signatures from recent versions (last ~5).
+    Skaldleita fetches signing.py to stay in sync.
 
-    This identifies traffic as coming from Library Manager. It's not real
-    auth - the derivation is public. But scrapers must update with each
-    LM release. See module-level comment for details.
+    See library_manager/signing.py for derivation logic.
     """
     timestamp = str(int(time.time()))
     lm_version = get_lm_version()
-    secret = _derive_signing_secret(lm_version)
-
-    # HMAC signature: timestamp:version signed with version-derived secret
-    message = f"{timestamp}:{lm_version}"
-    signature = hmac.new(
-        secret.encode(),
-        message.encode(),
-        hashlib.sha256
-    ).hexdigest()[:32]
+    signature = generate_signature(lm_version, timestamp)
 
     return {
         'User-Agent': f'LibraryManager/{lm_version}',
