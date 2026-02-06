@@ -3,6 +3,7 @@ import re
 import logging
 from pathlib import Path
 from typing import Optional, Tuple
+from library_manager.utils.naming import strip_encoding_junk
 
 logger = logging.getLogger(__name__)
 
@@ -330,6 +331,10 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
     """
     naming_format = config.get('naming_format', 'author/title') if config else 'author/title'
     series_grouping = config.get('series_grouping', False) if config else False
+
+    # Issue #125: Strip encoding/format junk before path building
+    author = strip_encoding_junk(author)
+    title = strip_encoding_junk(title)
 
     # CRITICAL SAFETY: Sanitize all path components
     safe_author = sanitize_path_component(author)
