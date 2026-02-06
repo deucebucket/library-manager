@@ -51,6 +51,16 @@
     </div>
 </div>
 
+<!-- Toast container for action feedback -->
+<div class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 1080;">
+    <div id="action-toast" class="toast align-items-center border-0" role="alert" aria-live="assertive" aria-atomic="true">
+        <div class="d-flex">
+            <div class="toast-body" id="action-toast-body"></div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+        </div>
+    </div>
+</div>
+
 <!-- Floating Quick Actions Button -->
 <div class="position-fixed bottom-0 end-0 m-4" style="z-index: 1050;">
     <div class="dropup">
@@ -346,12 +356,16 @@ function applyAllPending() {
     fetch('/api/apply_all_pending', {method: 'POST'})
         .then(r => r.json())
         .then(data => {
-            alert(data.message);
-            location.reload();
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-check-all"></i> Apply All Pending';
+            showToast(data.message || 'Fixes applied');
+            refreshDashboard();
+            if (typeof updateLiveStatus === 'function') updateLiveStatus();
         })
         .catch(e => {
             btn.disabled = false;
-            alert('Error: ' + e);
+            btn.innerHTML = '<i class="bi bi-check-all"></i> Apply All Pending';
+            showToast('Error: ' + e, 'danger');
         });
 }
 
@@ -362,13 +376,14 @@ function undoFix(historyId) {
         .then(r => r.json())
         .then(data => {
             if (data.success) {
-                alert(data.message);
-                location.reload();
+                showToast(data.message || 'Fix undone');
+                refreshDashboard();
+                if (typeof updateLiveStatus === 'function') updateLiveStatus();
             } else {
-                alert('Error: ' + (data.error || 'Unknown error'));
+                showToast('Error: ' + (data.error || 'Unknown error'), 'danger');
             }
         })
-        .catch(e => alert('Error: ' + e));
+        .catch(e => showToast('Error: ' + e, 'danger'));
 }
 
 // Auto-refresh stats and recent activity
@@ -458,6 +473,14 @@ function refreshDashboard() {
             }
         })
         .catch(e => console.error('Activity refresh error:', e));
+}
+
+function showToast(message, type) {
+    const toast = document.getElementById('action-toast');
+    const body = document.getElementById('action-toast-body');
+    toast.className = 'toast align-items-center border-0 text-bg-' + (type || 'success');
+    body.textContent = message;
+    new bootstrap.Toast(toast, {delay: 3000}).show();
 }
 
 function escapeHtml(text) {
