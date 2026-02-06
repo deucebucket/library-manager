@@ -332,6 +332,7 @@ __all__ = [
     'calculate_title_similarity',
     'extract_series_from_title',
     'clean_search_title',
+    'strip_encoding_junk',
     'standardize_initials',
     'clean_author_name',
     'extract_author_title',
