@@ -346,11 +346,14 @@ function applyAllPending() {
     fetch('/api/apply_all_pending', {method: 'POST'})
         .then(r => r.json())
         .then(data => {
-            alert(data.message);
-            location.reload();
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-check-all"></i> Apply All Pending';
+            refreshDashboard();
+            if (typeof updateLiveStatus === 'function') updateLiveStatus();
         })
         .catch(e => {
             btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-check-all"></i> Apply All Pending';
             alert('Error: ' + e);
         });
 }
@@ -362,8 +365,8 @@ function undoFix(historyId) {
         .then(r => r.json())
         .then(data => {
             if (data.success) {
-                alert(data.message);
-                location.reload();
+                refreshDashboard();
+                if (typeof updateLiveStatus === 'function') updateLiveStatus();
             } else {
                 alert('Error: ' + (data.error || 'Unknown error'));
             }

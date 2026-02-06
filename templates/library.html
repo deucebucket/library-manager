@@ -827,6 +827,7 @@ function applyAllPending() {
             isProcessing = false;
             addActivity(data.message, data.success ? 'success' : 'error');
             loadLibrary();
+            if (typeof updateLiveStatus === 'function') updateLiveStatus();
         })
         .catch(e => {
             btn.disabled = false;
@@ -868,6 +869,7 @@ function applyFix(id) {
             if (data.success) {
                 addActivity('Fix applied', 'success');
                 loadLibrary();
+                if (typeof updateLiveStatus === 'function') updateLiveStatus();
             } else {
                 addActivity(`Error: ${data.message}`, 'error');
             }
@@ -883,6 +885,7 @@ function rejectFix(id) {
             if (data.success) {
                 addActivity('Fix rejected', 'info');
                 loadLibrary();
+                if (typeof updateLiveStatus === 'function') updateLiveStatus();
             } else {
                 addActivity(`Error: ${data.error}`, 'error');
             }
@@ -898,6 +901,7 @@ function undoFix(id) {
             if (data.success) {
                 addActivity('Fix undone', 'info');
                 loadLibrary();
+                if (typeof updateLiveStatus === 'function') updateLiveStatus();
             } else {
                 addActivity(`Error: ${data.error}`, 'error');
             }
@@ -908,7 +912,10 @@ function dismissError(id) {
     fetch(`/api/dismiss_error/${id}`, {method: 'POST'})
         .then(r => r.json())
         .then(data => {
-            if (data.success) loadLibrary();
+            if (data.success) {
+                loadLibrary();
+                if (typeof updateLiveStatus === 'function') updateLiveStatus();
+            }
         });
 }
 
