@@ -326,8 +326,8 @@ def process_layer_1_audio(
                             try:
                                 if Path(book_path).resolve().is_relative_to(Path(watch_folder).resolve()):
                                     dest_path = Path(watch_output)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"Watch folder path check failed: {e}")
                         # Detect language for multi-language naming
                         lang_code = _detect_title_language(title)
                         computed_path = build_new_path(

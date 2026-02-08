@@ -236,8 +236,8 @@ def process_layer_3_audio(
                         if book_path.resolve().is_relative_to(Path(watch_folder).resolve()):
                             lib_path = Path(watch_output)
                             logger.info(f"[LAYER 3] Watch folder book: routing to output folder {lib_path}")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Watch folder path check failed: {e}")
 
                 if lib_path is None:
                     lib_path = book_path.parent.parent
