@@ -810,6 +810,12 @@ function processQueue() {
                         addActivity('Processing complete', 'success');
                         loadLibrary();
                     }
+                }).catch(() => {
+                    clearInterval(pollInterval);
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue';
+                    isProcessing = false;
+                    addActivity('Status polling failed - refresh to check', 'error');
                 });
             }, 3000);
         })

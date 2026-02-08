@@ -334,6 +334,10 @@ function processQueue() {
                         btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue';
                         refreshDashboard();
                     }
+                }).catch(() => {
+                    clearInterval(pollInterval);
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue';
                 });
             }, 3000);
         })
