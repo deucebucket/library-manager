@@ -2,6 +2,27 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.117] - 2026-02-08
+
+### Fixed
+
+- **Issue #131: Queue count mismatch** - Dashboard "ready to process" badge now counts only
+  actually processable items, matching the filters used by the processing pipeline. Previously
+  counted all queue items including ones blocked by status or layer filters.
+- **Issue #131: Orphaned queue items** - Books that exhaust all processing layers are now
+  properly marked as "Needs Attention" instead of being stuck in an invisible limbo state.
+- **Issue #132: Duplicate book entries** - Library scan now resolves all paths before database
+  insertion, preventing duplicate entries when symlinks or mount points cause the same file to
+  have different path representations.
+- **Issue #133: Series grouping with custom templates** - When `series_grouping` is enabled
+  and the custom naming template doesn't include `{series_num}`, the series number is now
+  automatically prepended to the title folder (matching built-in format behavior).
+- **Issue #135: Output folder routing** - All pipeline layers (audio ID, audio credits, AI
+  queue) now route watch folder items to the configured output folder. Previously only Layer 4
+  honored the output folder setting.
+
+---
+
 ## [0.9.0-beta.110] - 2026-02-03
 
 ### Added
