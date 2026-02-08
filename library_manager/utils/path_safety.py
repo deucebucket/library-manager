@@ -506,6 +506,20 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
             logger.error(f"BLOCKED: Custom template resulted in empty path")
             return None
 
+        # Issue #133: When series_grouping is enabled but the custom template doesn't
+        # include {series_num}, auto-prepend series number to the title folder (last part)
+        # so the behavior matches built-in naming formats
+        if series_grouping and safe_series and series_num and '{series_num' not in custom_template:
+            try:
+                num = float(str(series_num).replace(',', '.'))
+                if num == int(num):
+                    formatted_num = f"{int(num):02d}"
+                else:
+                    formatted_num = str(series_num)
+            except (ValueError, TypeError):
+                formatted_num = str(series_num)
+            parts[-1] = f"{formatted_num} - {parts[-1]}"
+
         result_path = lib_path
         for part in parts:
             result_path = result_path / part

@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.116"
+APP_VERSION = "0.9.0-beta.117"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -4859,7 +4859,8 @@ def deep_scan_library(config):
                 # Parse filename to extract searchable title
                 filename = loose_file.stem  # filename without extension
                 cleaned_filename = clean_search_title(filename)
-                path_str = str(loose_file)
+                # Issue #132: Resolve path to prevent duplicates from symlinks/mount differences
+                path_str = str(loose_file.resolve())
 
                 # Check if already in books table
                 c.execute('SELECT id, user_locked FROM books WHERE path = ?', (path_str,))
@@ -4969,7 +4970,8 @@ def deep_scan_library(config):
 
                 # Extract author/title from folder name
                 flat_author, flat_title = extract_author_title(author)
-                flat_path = str(author_dir)
+                # Issue #132: Resolve path to prevent duplicates
+                flat_path = str(author_dir.resolve())
 
                 checked += 1
 
@@ -5017,7 +5019,8 @@ def deep_scan_library(config):
                     continue
 
                 title = title_dir.name
-                path = str(title_dir)
+                # Issue #132: Resolve path to prevent duplicates from symlinks/mount differences
+                path = str(title_dir.resolve())
 
                 # Issue #53: Strip author prefix from book folder name
                 # If folder is "David Baldacci - Dream Town" and parent is "David Baldacci",
@@ -8577,7 +8580,11 @@ def api_stats():
     c.execute('SELECT COUNT(*) as count FROM books')
     total = c.fetchone()['count']
 
-    c.execute('SELECT COUNT(*) as count FROM queue')
+    # Issue #131: Count only processable queue items (matching process_queue filters)
+    c.execute('''SELECT COUNT(*) as count FROM queue q
+                 JOIN books b ON q.book_id = b.id
+                 WHERE b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                   AND (b.user_locked IS NULL OR b.user_locked = 0)''')
     queue = c.fetchone()['count']
 
     c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'fixed'")

@@ -402,7 +402,26 @@ def process_all_queue(
                 empty_batch_count += 1
                 logger.warning(f"No items processed but {remaining} remain (attempt {empty_batch_count}/3)")
                 if empty_batch_count >= 3:
-                    logger.info(f"Layer 4 cannot process remaining {remaining} items")
+                    logger.info(f"Layer 4 cannot process remaining {remaining} items - marking as needs_attention")
+                    # Issue #131: Mark orphaned queue items as needs_attention
+                    # so they're visible to the user instead of stuck in limbo
+                    conn2 = get_db()
+                    c2 = conn2.cursor()
+                    c2.execute('''UPDATE books SET status = 'needs_attention',
+                                    error_message = 'All processing layers exhausted - could not identify this book automatically'
+                                 WHERE id IN (
+                                     SELECT q.book_id FROM queue q
+                                     JOIN books b ON q.book_id = b.id
+                                     WHERE b.status NOT IN ('verified', 'fixed', 'needs_attention')
+                                 )''')
+                    orphaned = c2.rowcount
+                    c2.execute('''DELETE FROM queue WHERE book_id IN (
+                                     SELECT id FROM books WHERE status = 'needs_attention'
+                                 )''')
+                    conn2.commit()
+                    conn2.close()
+                    if orphaned:
+                        logger.info(f"Marked {orphaned} orphaned queue items as needs_attention")
                     break
                 time.sleep(10)
                 continue
