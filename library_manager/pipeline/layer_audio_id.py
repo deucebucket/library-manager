@@ -318,10 +318,20 @@ def process_layer_1_audio(
                     library_paths = current_config.get('library_paths', [])
                     new_path_str = None
                     if library_paths:
+                        # Issue #135: Use output folder for watch folder items
+                        dest_path = Path(library_paths[0])
+                        watch_folder = current_config.get('watch_folder', '').strip()
+                        watch_output = current_config.get('watch_output_folder', '').strip()
+                        if watch_folder and watch_output:
+                            try:
+                                if Path(book_path).resolve().is_relative_to(Path(watch_folder).resolve()):
+                                    dest_path = Path(watch_output)
+                            except Exception:
+                                pass
                         # Detect language for multi-language naming
                         lang_code = _detect_title_language(title)
                         computed_path = build_new_path(
-                            Path(library_paths[0]), author, title,
+                            dest_path, author, title,
                             series=ebook_result.get('series'),
                             series_num=ebook_result.get('series_num'),
                             language_code=lang_code,
@@ -599,10 +609,20 @@ def process_layer_1_audio(
                 library_paths = audio_config.get('library_paths', [])
                 new_path_str = None
                 if library_paths:
+                    # Issue #135: Use output folder for watch folder items
+                    dest_path = Path(library_paths[0])
+                    watch_folder = audio_config.get('watch_folder', '').strip()
+                    watch_output = audio_config.get('watch_output_folder', '').strip()
+                    if watch_folder and watch_output:
+                        try:
+                            if Path(book_path).resolve().is_relative_to(Path(watch_folder).resolve()):
+                                dest_path = Path(watch_output)
+                        except Exception:
+                            pass
                     # Detect language for multi-language naming
                     lang_code = _detect_title_language(title)
                     computed_path = build_new_path(
-                        Path(library_paths[0]), author, title,
+                        dest_path, author, title,
                         series=series, series_num=series_num, narrator=narrator,
                         language_code=lang_code,
                         config=audio_config

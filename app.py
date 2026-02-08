@@ -5988,7 +5988,7 @@ def apply_fix(history_id):
         except ValueError:
             pass
 
-    # Check new_path is in a library (always required - this is where the book goes)
+    # Check new_path is in a library or output folder (this is where the book goes)
     new_in_library = False
     for lib in library_paths:
         try:
@@ -5997,6 +5997,16 @@ def apply_fix(history_id):
             break
         except ValueError:
             continue
+
+    # Issue #135: Also accept output folder as valid destination
+    if not new_in_library:
+        watch_output_folder = config.get('watch_output_folder', '').strip()
+        if watch_output_folder:
+            try:
+                new_path.resolve().relative_to(Path(watch_output_folder).resolve())
+                new_in_library = True
+            except ValueError:
+                pass
 
     # Issue #49: Allow watch folder items to have old_path in watch folder
     old_path_valid = old_in_library or (is_watch_folder_item and old_in_watch_folder)

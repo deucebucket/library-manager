@@ -228,6 +228,17 @@ def process_layer_3_audio(
                     except ValueError:
                         continue
 
+                # Issue #135: Route watch folder items to output folder
+                watch_folder = config.get('watch_folder', '').strip()
+                watch_output = config.get('watch_output_folder', '').strip()
+                if watch_folder and watch_output and lib_path is None:
+                    try:
+                        if book_path.resolve().is_relative_to(Path(watch_folder).resolve()):
+                            lib_path = Path(watch_output)
+                            logger.info(f"[LAYER 3] Watch folder book: routing to output folder {lib_path}")
+                    except Exception:
+                        pass
+
                 if lib_path is None:
                     lib_path = book_path.parent.parent
                     logger.warning(f"[LAYER 3] Book path {book_path} not under any configured library, guessing lib_path={lib_path}")
