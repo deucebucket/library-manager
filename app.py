@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.118"
+APP_VERSION = "0.9.0-beta.119"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -6692,6 +6692,13 @@ def process_watch_folder(config: dict) -> int:
                                      (path, current_author, current_title, status, source_type, added_at, updated_at)
                                      VALUES (?, ?, ?, 'pending', 'watch_folder', datetime('now'), datetime('now'))''',
                                   (new_path, author, title))
+                        # Issue #126: Auto-enqueue for full pipeline processing
+                        book_id = c.lastrowid
+                        c.execute('''INSERT OR IGNORE INTO queue (book_id, reason, priority)
+                                    VALUES (?, ?, ?)''',
+                                 (book_id, 'watch_folder_new', 3))
+                        c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
+                        logger.info(f"Watch folder: Auto-enqueued for processing: {author}/{title}")
                     conn.commit()
                 except Exception as e:
                     logger.debug(f"Watch folder: Could not add to books table: {e}")
