@@ -2,6 +2,17 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.119] - 2026-02-08
+
+### Added
+
+- **Issue #126: Auto-enqueue after watch folder processing** - Books moved from the watch
+  folder to the library are now automatically added to the processing queue. Previously they
+  sat idle with status 'pending' until the user manually triggered a scan or processing.
+  Now they enter the full pipeline (audio ID, AI verification, etc.) immediately.
+
+---
+
 ## [0.9.0-beta.118] - 2026-02-08
 
 ### Fixed
