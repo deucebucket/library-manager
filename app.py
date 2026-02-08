@@ -6698,7 +6698,7 @@ def process_watch_folder(config: dict) -> int:
                                     VALUES (?, ?, ?)''',
                                  (book_id, 'watch_folder_new', 3))
                         c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
-                            logger.info(f"Watch folder: Auto-enqueued for processing: {author}/{title}")
+                        logger.info(f"Watch folder: Auto-enqueued for processing: {author}/{title}")
                     conn.commit()
                 except Exception as e:
                     logger.debug(f"Watch folder: Could not add to books table: {e}")
