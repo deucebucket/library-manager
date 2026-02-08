@@ -782,24 +782,36 @@ function processQueue() {
     const btn = document.getElementById('btn-process');
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Processing...';
-    addActivity('Processing queue...', 'info');
+    addActivity('Starting full pipeline processing...', 'info');
     isProcessing = true;
     suppressProcessingWarning = false;  // Reset warning suppression for new processing session
 
-    fetch('/api/process', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({limit: 5})})
+    // Issue #137: Use background endpoint so status bar shows live updates
+    // (audio analysis via Skaldleita can take 30+ seconds per book)
+    fetch('/api/process_background', {method: 'POST'})
         .then(r => r.json())
         .then(data => {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue';
-            isProcessing = false;
-            // Issue #57: Show clearer status message explaining fixed vs verified
-            if (data.message) {
-                addActivity(data.message, data.status === 'complete' ? 'success' : 'info');
-            } else {
-                // Fallback for older API response format
-                addActivity(`Processed ${data.fixed} items`, 'success');
+            if (!data.success) {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue';
+                isProcessing = false;
+                addActivity(data.message || 'Processing already running', 'warning');
+                return;
             }
-            loadLibrary();
+            addActivity('Background processing started - watch the status bar', 'info');
+            // Poll for completion - status bar handles live updates
+            const pollInterval = setInterval(() => {
+                fetch('/api/process_status').then(r => r.json()).then(status => {
+                    if (!status.active) {
+                        clearInterval(pollInterval);
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue';
+                        isProcessing = false;
+                        addActivity('Processing complete', 'success');
+                        loadLibrary();
+                    }
+                });
+            }, 3000);
         })
         .catch(e => {
             btn.disabled = false;

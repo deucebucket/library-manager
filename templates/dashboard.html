@@ -313,23 +313,33 @@ function deepRescan() {
 function processQueue() {
     const btn = document.getElementById('process-btn');
     btn.disabled = true;
-    btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Processing...';
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Processing...';
 
-    fetch('/api/process', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({limit: 3})
-    })
+    // Issue #137: Use background endpoint so status bar shows live updates
+    fetch('/api/process_background', {method: 'POST'})
         .then(r => r.json())
         .then(data => {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue (1 batch)';
-            alert(`Processed! ${data.fixed} books analyzed.`);
-            location.reload();
+            if (!data.success) {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue';
+                alert(data.message || 'Processing already running');
+                return;
+            }
+            // Poll for completion - status bar handles live updates
+            const pollInterval = setInterval(() => {
+                fetch('/api/process_status').then(r => r.json()).then(status => {
+                    if (!status.active) {
+                        clearInterval(pollInterval);
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue';
+                        refreshDashboard();
+                    }
+                });
+            }, 3000);
         })
         .catch(e => {
             btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue (1 batch)';
+            btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue';
             alert('Error: ' + e);
         });
 }
