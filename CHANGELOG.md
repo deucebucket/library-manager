@@ -2,6 +2,18 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.118] - 2026-02-08
+
+### Fixed
+
+- **Issue #137: "Process Queue" button stalls** - The button now uses background processing
+  with live status bar updates instead of blocking the browser. Previously the HTTP request
+  would block while waiting for Skaldleita audio analysis (30+ seconds per book) with no
+  feedback to the user. Now runs the full pipeline (all layers including audio) and the
+  status bar shows exactly what's happening: current book, provider, queue position, etc.
+
+---
+
 ## [0.9.0-beta.117] - 2026-02-08
 
 ### Fixed

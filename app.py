@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.117"
+APP_VERSION = "0.9.0-beta.118"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -7751,55 +7751,17 @@ def api_process_background():
         _bg_processing_active = True
         try:
             config = load_config()
-            update_processing_status('active', True)
-
-            # Get queue count for progress tracking
-            conn = get_db()
-            c = conn.cursor()
-            c.execute('SELECT COUNT(*) FROM queue')
-            total_queue = c.fetchone()[0]
-            conn.close()
-
-            update_processing_status('total', total_queue)
-            processed_count = 0
-
-            # Process in batches until queue is empty or we hit a limit
-            max_batches = 100  # Safety limit
-            for batch in range(max_batches):
-                # Check remaining
-                conn = get_db()
-                c = conn.cursor()
-                c.execute('SELECT COUNT(*) FROM queue')
-                remaining = c.fetchone()[0]
-                conn.close()
-
-                if remaining == 0:
-                    break
-
-                update_processing_status('queue_remaining', remaining)
-
-                # Process one batch (Layer 1 + Layer 2)
-                if config.get('enable_api_lookups', True):
-                    update_processing_status('layer', 3)  # API Lookup
-                    l1_processed, l1_resolved = process_layer_1_api(config, limit=3)
-                    processed_count += l1_processed
-
-                if config.get('enable_ai_verification', True):
-                    update_processing_status('layer', 4)  # AI Verify
-                    l2_processed, l2_fixed = process_queue(config, limit=3)
-                    processed_count += l2_processed
-
-                update_processing_status('processed', processed_count)
-
-                # Brief pause to allow status polling
-                import time
-                time.sleep(0.1)
-
+            # Issue #137: Use full pipeline (process_all_queue) instead of just Layers 1+2
+            # This runs audio analysis, Skaldleita identification, AI verification, etc.
+            # Status bar updates happen inside process_all_queue via update_processing_status
+            processed, fixed = process_all_queue(config)
+            logger.info(f"Background processing complete: {processed} processed, {fixed} fixed")
         except Exception as e:
-            logger.error(f"Background processing error: {e}")
+            logger.error(f"Background processing error: {e}", exc_info=True)
         finally:
             update_processing_status('active', False)
             update_processing_status('layer', 0)
+            update_processing_status('layer_name', 'Idle')
             clear_current_book()
             _bg_processing_active = False
 
