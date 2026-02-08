@@ -6693,14 +6693,11 @@ def process_watch_folder(config: dict) -> int:
                                      VALUES (?, ?, ?, 'pending', 'watch_folder', datetime('now'), datetime('now'))''',
                                   (new_path, author, title))
                         # Issue #126: Auto-enqueue for full pipeline processing
-                        c.execute('SELECT id FROM books WHERE path = ?', (new_path,))
-                        book_row = c.fetchone()
-                        if book_row:
-                            book_id = book_row['id']
-                            c.execute('''INSERT OR IGNORE INTO queue (book_id, reason, priority)
-                                        VALUES (?, ?, ?)''',
-                                     (book_id, 'watch_folder_new', 3))
-                            c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
+                        book_id = c.lastrowid
+                        c.execute('''INSERT OR IGNORE INTO queue (book_id, reason, priority)
+                                    VALUES (?, ?, ?)''',
+                                 (book_id, 'watch_folder_new', 3))
+                        c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
                             logger.info(f"Watch folder: Auto-enqueued for processing: {author}/{title}")
                     conn.commit()
                 except Exception as e:
