@@ -138,10 +138,13 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
         # Build the filename to match - include author if we have it
         filename = f"{author} - {title}" if author else title
 
+        headers = get_signed_headers()
+        headers["X-API-Key"] = api_key
+
         resp = requests.post(
             f"{base_url}/match",
             json={"filename": filename},
-            headers={"X-API-Key": api_key, "User-Agent": get_user_agent()},
+            headers=headers,
             timeout=10
         )
 
