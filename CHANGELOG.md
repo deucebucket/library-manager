@@ -2,6 +2,18 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.120] - 2026-02-09
+
+### Fixed
+
+- **Issue #140: Missing HMAC signing on /match requests** - The security commit (beta.117)
+  added HMAC request signing to all Skaldleita endpoints but missed `search_bookdb()`. Now
+  `/match` requests include `X-LM-Signature` and `X-LM-Timestamp` headers consistent with
+  all other Skaldleita API calls. Note: most of the search issues reported in #140 are
+  Skaldleita data gaps tracked in deucebucket/skaldleita#83, #84, #85.
+
+---
+
 ## [0.9.0-beta.119] - 2026-02-08
 
 ### Added
