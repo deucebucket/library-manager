@@ -79,7 +79,7 @@ DEFAULT_CONFIG = {
     "update_channel": "beta",  # "stable", "beta", or "nightly"
     "naming_format": "author/title",  # "author/title", "author - title", "custom"
     "custom_naming_template": "{author}/{title}",  # Custom template with {author}, {title}, {series}, etc.
-    "standardize_author_initials": False,  # Normalize initials: "James S A Corey" -> "James S. A. Corey" (Issue #54)
+    "standardize_author_initials": True,  # Normalize initials: "James S A Corey" -> "James S. A. Corey" (Issue #54)
     # Metadata embedding settings
     "metadata_embedding_enabled": False,  # Embed tags into audio files when fixes are applied
     "metadata_embedding_overwrite_managed": True,  # Overwrite managed fields (title/author/series/etc)

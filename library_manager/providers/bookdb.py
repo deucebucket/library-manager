@@ -222,6 +222,14 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
             'confidence': data.get('confidence', 0)
         }
 
+        # Defense-in-depth: also checked in BookProfile.finalize(), but catching
+        # here prevents bad data propagation through cache and downstream layers
+        # Skaldleita bug #90 - series name imported as author entity
+        if result.get('author') and result.get('series'):
+            if result['author'].lower().strip() == result['series'].lower().strip():
+                logger.warning(f"[BOOKDB] Corrupt data: author '{result['author']}' equals series name, discarding")
+                result['author'] = None
+
         if result['title'] and result['author']:
             logger.info(f"Skaldleita found: {result['author']} - {result['title']}" +
                        (f" ({result['series']} #{result['series_num']})" if result['series'] else "") +

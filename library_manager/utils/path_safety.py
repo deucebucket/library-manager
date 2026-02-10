@@ -1,9 +1,10 @@
 """Path sanitization and building utilities."""
 import re
 import logging
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Optional, Tuple
-from library_manager.utils.naming import strip_encoding_junk
+from library_manager.utils.naming import strip_encoding_junk, standardize_initials
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +302,81 @@ def sanitize_path_component(name):
     return name
 
 
+def _normalize_author_for_matching(name):
+    """Normalize an author name for fuzzy comparison.
+    Lowercases, collapses whitespace, strips punctuation except periods in initials."""
+    if not name:
+        return ''
+    n = name.lower().strip()
+    # Collapse whitespace
+    n = re.sub(r'\s+', ' ', n)
+    # Remove non-alphanumeric except spaces and periods (keep periods for initials)
+    n = re.sub(r"[^\w\s.]", '', n)
+    return n.strip()
+
+
+def find_existing_author_folder(lib_path, target_author) -> Optional[str]:
+    """Find an existing author folder that matches target_author (Issue #142).
+
+    Prevents duplicate folders like "James S.A. Corey" vs "James S. A. Corey"
+    or "Alistair MacLean" vs "Alistair Maclean".
+
+    Matching strategies (in order):
+    1. Exact normalized match (case-insensitive, whitespace-collapsed)
+    2. Standardized initials match (both through standardize_initials())
+    3. difflib.SequenceMatcher fuzzy match (ratio >= 0.85)
+
+    Returns the existing folder name if found, None otherwise.
+    """
+    if not target_author or not lib_path:
+        return None
+
+    try:
+        lib = Path(lib_path)
+        if not lib.is_dir():
+            return None
+
+        # List only top-level directories
+        existing_dirs = [d.name for d in lib.iterdir() if d.is_dir()]
+    except OSError as e:
+        logger.debug(f"Error listing library directory {lib_path}: {e}")
+        return None
+
+    if not existing_dirs:
+        return None
+
+    target_normalized = _normalize_author_for_matching(target_author)
+    target_initials = _normalize_author_for_matching(standardize_initials(target_author))
+
+    best_match = None
+    best_ratio = 0.0
+
+    for dirname in existing_dirs:
+        dir_normalized = _normalize_author_for_matching(dirname)
+
+        # Strategy 1: Exact normalized match
+        if target_normalized == dir_normalized:
+            return dirname
+
+        # Strategy 2: Standardized initials match
+        dir_initials = _normalize_author_for_matching(standardize_initials(dirname))
+        if target_initials == dir_initials:
+            return dirname
+
+        # Strategy 3: Fuzzy match with SequenceMatcher
+        ratio = SequenceMatcher(None, target_normalized, dir_normalized).ratio()
+        if ratio >= 0.85 and ratio > best_ratio:
+            best_ratio = ratio
+            best_match = dirname
+
+    if best_match:
+        logger.info(f"[DEDUP] Reusing existing folder '{best_match}' for author '{target_author}' "
+                    f"(similarity: {best_ratio:.2f})")
+        return best_match
+
+    return None
+
+
 def build_new_path(lib_path, author, title, series=None, series_num=None, narrator=None, year=None,
                    edition=None, variant=None, language=None, language_code=None, config=None):
     """Build a new path based on the naming format configuration.
@@ -345,6 +421,12 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
     if not safe_author or not safe_title:
         logger.error(f"BLOCKED: Invalid author '{author}' or title '{title}' - would create dangerous path")
         return None
+
+    # Issue #142: Check for existing author folder with similar name
+    # Prevents duplicate folders like "James S.A. Corey" vs "James S. A. Corey"
+    existing_folder = find_existing_author_folder(lib_path, safe_author)
+    if existing_folder:
+        safe_author = existing_folder
 
     # Issue #92: Strip "Unabridged"/"Abridged" markers if enabled
     if config and config.get('strip_unabridged', False):
@@ -531,6 +613,10 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
         # Issue #96: Library-style format: "LastName, FirstName/Title"
         author_lf = format_author_lf(author)
         safe_author_lf = sanitize_path_component(author_lf) if author_lf else safe_author
+        # Issue #142: Dedup for LF format too
+        existing_lf = find_existing_author_folder(lib_path, safe_author_lf)
+        if existing_lf:
+            safe_author_lf = existing_lf
         if series_grouping and safe_series:
             result_path = lib_path / safe_author_lf / safe_series / title_folder
         else:
@@ -573,6 +659,7 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
 __all__ = [
     'sanitize_path_component',
     'build_new_path',
+    'find_existing_author_folder',
     'format_language_tag',
     'apply_language_tag',
     'strip_unabridged_markers',

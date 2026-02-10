@@ -2,6 +2,23 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.121] - 2026-02-10
+
+### Fixed
+
+- **Issue #142: Duplicate author folders from name variants** - New `find_existing_author_folder()`
+  deduplicates author folders using 3-tier matching: exact normalized, standardized initials, and
+  fuzzy match (SequenceMatcher >= 85%). Prevents separate folders like "James S.A. Corey" vs
+  "James S. A. Corey" or "Alistair MacLean" vs "Alistair Maclean". Applied to both standard and
+  `author_lf/title` naming formats.
+- **Issue #143: Series name used as author folder** - Defensive filter in BookDB provider discards
+  results where author equals series name (corrupt Skaldleita data per skaldleita#90, e.g. author
+  "Laundry Files" instead of "Charles Stross"). Defense-in-depth check in BookProfile.finalize()
+  catches this from any source, with automatic fallback to next-best author candidate.
+- `standardize_author_initials` now defaults to `True` to reduce author folder fragmentation.
+
+---
+
 ## [0.9.0-beta.120] - 2026-02-09
 
 ### Fixed
