@@ -1,11 +1,14 @@
 """Book Profile system - confidence-scored metadata profiles for comprehensive book identification."""
 
 import json
+import logging
 import re
 from datetime import datetime
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 # Source weights for confidence calculation (higher = more trusted)
@@ -306,6 +309,7 @@ class BookProfile:
         if (self.author.value and self.series.value and
                 str(self.author.value).lower().strip() == str(self.series.value).lower().strip()):
             bad_author = self.author.value
+            logger.warning(f"[PROFILE] Series-as-author detected: '{bad_author}' == '{self.series.value}', finding alternative")
             # Try to find an alternative author from the raw values
             alternative = self._find_alternative_author(bad_author)
             if alternative:
@@ -321,7 +325,7 @@ class BookProfile:
         self.calculate_overall_confidence()
         self.last_updated = datetime.now().isoformat()
 
-    def _find_alternative_author(self, bad_value: str):
+    def _find_alternative_author(self, bad_value: str) -> Optional[Tuple[str, int]]:
         """Find the next-best author candidate, excluding the bad value.
         Returns (value, confidence) or None."""
         if not self.author.raw_values:

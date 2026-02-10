@@ -316,7 +316,7 @@ def _normalize_author_for_matching(name):
     return n.strip()
 
 
-def find_existing_author_folder(lib_path, target_author):
+def find_existing_author_folder(lib_path, target_author) -> Optional[str]:
     """Find an existing author folder that matches target_author (Issue #142).
 
     Prevents duplicate folders like "James S.A. Corey" vs "James S. A. Corey"
