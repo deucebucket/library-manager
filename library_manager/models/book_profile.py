@@ -306,8 +306,9 @@ class BookProfile:
 
         # Defense-in-depth: reject author that equals series name (Skaldleita #90)
         # Corrupt data can arrive from any source, not just BookDB
-        if (self.author.value and self.series.value and
-                str(self.author.value).lower().strip() == str(self.series.value).lower().strip()):
+        author_normalized = str(self.author.value).lower().strip() if self.author.value else None
+        series_normalized = str(self.series.value).lower().strip() if self.series.value else None
+        if author_normalized and series_normalized and author_normalized == series_normalized:
             bad_author = self.author.value
             logger.warning(f"[PROFILE] Series-as-author detected: '{bad_author}' == '{self.series.value}', finding alternative")
             # Try to find an alternative author from the raw values

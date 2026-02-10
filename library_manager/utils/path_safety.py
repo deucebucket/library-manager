@@ -1,5 +1,4 @@
 """Path sanitization and building utilities."""
-import os
 import re
 import logging
 from difflib import SequenceMatcher
@@ -338,8 +337,9 @@ def find_existing_author_folder(lib_path, target_author) -> Optional[str]:
             return None
 
         # List only top-level directories
-        existing_dirs = [d for d in os.listdir(lib) if os.path.isdir(lib / d)]
-    except OSError:
+        existing_dirs = [d.name for d in lib.iterdir() if d.is_dir()]
+    except OSError as e:
+        logger.debug(f"Error listing library directory {lib_path}: {e}")
         return None
 
     if not existing_dirs:
