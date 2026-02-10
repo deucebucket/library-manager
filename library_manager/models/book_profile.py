@@ -301,8 +301,66 @@ class BookProfile:
                 fv.value = value
                 fv.confidence = confidence
 
+        # Defense-in-depth: reject author that equals series name (Skaldleita #90)
+        # Corrupt data can arrive from any source, not just BookDB
+        if (self.author.value and self.series.value and
+                str(self.author.value).lower().strip() == str(self.series.value).lower().strip()):
+            bad_author = self.author.value
+            # Try to find an alternative author from the raw values
+            alternative = self._find_alternative_author(bad_author)
+            if alternative:
+                self.author.value = alternative[0]
+                self.author.confidence = alternative[1]
+            else:
+                self.author.value = None
+                self.author.confidence = 0
+            if 'series_as_author' not in self.issues:
+                self.issues.append('series_as_author')
+            self.needs_attention = True
+
         self.calculate_overall_confidence()
         self.last_updated = datetime.now().isoformat()
+
+    def _find_alternative_author(self, bad_value: str):
+        """Find the next-best author candidate, excluding the bad value.
+        Returns (value, confidence) or None."""
+        if not self.author.raw_values:
+            return None
+
+        def normalize(val):
+            return str(val).lower().strip() if val else None
+
+        bad_normalized = normalize(bad_value)
+
+        # Group by normalized value (same logic as calculate_field_confidence)
+        value_groups = {}
+        for source, value in self.author.raw_values.items():
+            if value is None:
+                continue
+            normalized = normalize(value)
+            if normalized == bad_normalized:
+                continue  # Skip the corrupt value
+            if normalized not in value_groups:
+                value_groups[normalized] = []
+            weight = SOURCE_WEIGHTS.get(source, 30)
+            value_groups[normalized].append((source, value, weight))
+
+        if not value_groups:
+            return None
+
+        # Pick the best remaining candidate
+        best_value = None
+        best_weight = 0
+        for normalized, sources in value_groups.items():
+            total_weight = sum(w for _, _, w in sources)
+            if total_weight > best_weight:
+                best_weight = total_weight
+                best_source = max(sources, key=lambda x: x[2])
+                best_value = best_source[1]
+
+        if best_value:
+            return (best_value, min(best_weight, 100))
+        return None
 
     def calculate_overall_confidence(self) -> int:
         """Calculate weighted overall confidence from field confidences."""
