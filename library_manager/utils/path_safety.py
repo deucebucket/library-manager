@@ -321,6 +321,10 @@ def find_existing_author_folder(lib_path, target_author) -> Optional[str]:
     Prevents duplicate folders like "James S.A. Corey" vs "James S. A. Corey"
     or "Alistair MacLean" vs "Alistair Maclean".
 
+    Args:
+        lib_path: Path to library directory to search for existing author folders.
+        target_author: Author name to match against existing folders.
+
     Matching strategies (in order):
     1. Exact normalized match (case-insensitive, whitespace-collapsed)
     2. Standardized initials match (both through standardize_initials())
@@ -339,7 +343,7 @@ def find_existing_author_folder(lib_path, target_author) -> Optional[str]:
         # List only top-level directories
         existing_dirs = [d.name for d in lib.iterdir() if d.is_dir()]
     except OSError as e:
-        logger.debug(f"Error listing library directory {lib_path}: {e}")
+        logger.warning(f"Error listing library directory {lib_path}: {e}")
         return None
 
     if not existing_dirs:
