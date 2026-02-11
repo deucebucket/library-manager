@@ -455,6 +455,8 @@ function loadLibrary() {
         .then(r => r.json())
         .then(data => {
             libraryData = data;
+            currentSort = data.sort || '';
+            currentSortDir = data.sort_dir || 'asc';
             updateCounts(data.counts);
             renderItems(data.items);
             renderPagination(data.page, data.total_pages);
