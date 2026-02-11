@@ -8955,10 +8955,11 @@ def api_library():
     offset = (page - 1) * per_page
 
     # Issue #111: Sortable columns
-    sort_by = request.args.get('sort', '')
+    sort_by = request.args.get('sort', '')[:20]
     sort_dir = request.args.get('sort_dir', 'asc')
     if sort_dir not in ('asc', 'desc'):
         sort_dir = 'asc'
+    sort_direction = 'ASC' if sort_dir == 'asc' else 'DESC'
 
     # Whitelist of sortable columns per table context
     BOOK_SORT_COLS = {'author': 'current_author', 'title': 'current_title', 'status': 'status'}
@@ -8966,10 +8967,10 @@ def api_library():
     QUEUE_SORT_COLS = {'author': 'b.current_author', 'title': 'b.current_title', 'priority': 'q.priority'}
 
     def build_order_by(sort_cols, default_order):
-        """Build ORDER BY clause from user sort or fall back to default."""
+        """Build ORDER BY clause from whitelisted sort columns or default."""
         if sort_by and sort_by in sort_cols:
-            return f"ORDER BY {sort_cols[sort_by]} {sort_dir.upper()}"
-        return f"ORDER BY {default_order}"
+            return 'ORDER BY ' + sort_cols[sort_by] + ' ' + sort_direction
+        return 'ORDER BY ' + default_order
 
     items = []
 
@@ -9081,13 +9082,13 @@ def api_library():
     elif status_filter == 'pending':
         # Items with pending fixes
         order = build_order_by(HISTORY_SORT_COLS, 'h.fixed_at DESC')
-        c.execute(f'''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
+        c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
                             h.old_path, h.new_path, h.status, h.fixed_at, h.error_message,
                             b.path, b.current_author, b.current_title
                      FROM history h
                      JOIN books b ON h.book_id = b.id
                      WHERE h.status = 'pending_fix'
-                     {order}
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9109,12 +9110,12 @@ def api_library():
         # Items in the processing queue
         # Issue #36: Filter out series_folder and multi_book_files - they should never appear in queue
         order = build_order_by(QUEUE_SORT_COLS, 'q.priority, q.added_at')
-        c.execute(f'''SELECT q.id as queue_id, q.reason, q.added_at, q.priority,
+        c.execute('''SELECT q.id as queue_id, q.reason, q.added_at, q.priority,
                             b.id as book_id, b.path, b.current_author, b.current_title, b.status
                      FROM queue q
                      JOIN books b ON q.book_id = b.id
                      WHERE b.status NOT IN ('series_folder', 'multi_book_files', 'verified', 'fixed')
-                     {order}
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9133,13 +9134,13 @@ def api_library():
     elif status_filter == 'fixed':
         # Successfully fixed items
         order = build_order_by(HISTORY_SORT_COLS, 'h.fixed_at DESC')
-        c.execute(f'''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
+        c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
                             h.old_path, h.new_path, h.status, h.fixed_at,
                             b.path
                      FROM history h
                      JOIN books b ON h.book_id = b.id
                      WHERE h.status = 'fixed'
-                     {order}
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9160,10 +9161,10 @@ def api_library():
     elif status_filter == 'verified':
         # Verified/OK books - include profile for source display
         order = build_order_by(BOOK_SORT_COLS, 'updated_at DESC')
-        c.execute(f'''SELECT id, path, current_author, current_title, status, updated_at, profile, confidence, user_locked
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, profile, confidence, user_locked
                      FROM books
                      WHERE status = 'verified'
-                     {order}
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             item = {
@@ -9195,13 +9196,13 @@ def api_library():
     elif status_filter == 'error':
         # Error items from history
         order = build_order_by(HISTORY_SORT_COLS, 'h.fixed_at DESC')
-        c.execute(f'''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
+        c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
                             h.old_path, h.new_path, h.status, h.fixed_at, h.error_message,
                             b.path
                      FROM history h
                      JOIN books b ON h.book_id = b.id
                      WHERE h.status IN ('error', 'duplicate', 'corrupt_dest')
-                     {order}
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9223,13 +9224,13 @@ def api_library():
     elif status_filter == 'attention':
         # Items needing attention
         order = build_order_by(HISTORY_SORT_COLS, 'h.fixed_at DESC')
-        c.execute(f'''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
+        c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
                             h.old_path, h.new_path, h.status, h.fixed_at, h.error_message,
                             b.path
                      FROM history h
                      JOIN books b ON h.book_id = b.id
                      WHERE h.status = 'needs_attention'
-                     {order}
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9246,10 +9247,10 @@ def api_library():
             })
         # Also get books with structure issues or watch folder errors
         order2 = build_order_by(BOOK_SORT_COLS, 'current_author, current_title')
-        c.execute(f'''SELECT id, path, current_author, current_title, status, error_message, source_type
+        c.execute('''SELECT id, path, current_author, current_title, status, error_message, source_type
                      FROM books
                      WHERE status IN ('needs_attention', 'structure_reversed', 'watch_folder_error')
-                     {order2}
+                     ''' + order2 + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9267,10 +9268,10 @@ def api_library():
     elif status_filter == 'locked':
         # User-locked books - books where user has manually set metadata
         order = build_order_by(BOOK_SORT_COLS, 'updated_at DESC')
-        c.execute(f'''SELECT id, path, current_author, current_title, status, updated_at, user_locked
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked
                      FROM books
                      WHERE user_locked = 1
-                     {order}
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9287,10 +9288,10 @@ def api_library():
     # Issue #53: Media type filters
     elif status_filter == 'audiobook_only':
         order = build_order_by(BOOK_SORT_COLS, 'current_author, current_title')
-        c.execute(f'''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
                      FROM books
                      WHERE media_type = 'audiobook' OR media_type IS NULL
-                     {order}
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9307,10 +9308,10 @@ def api_library():
 
     elif status_filter == 'ebook_only':
         order = build_order_by(BOOK_SORT_COLS, 'current_author, current_title')
-        c.execute(f'''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
                      FROM books
                      WHERE media_type = 'ebook'
-                     {order}
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9327,10 +9328,10 @@ def api_library():
 
     elif status_filter == 'both_formats':
         order = build_order_by(BOOK_SORT_COLS, 'current_author, current_title')
-        c.execute(f'''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
                      FROM books
                      WHERE media_type = 'both'
-                     {order}
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9349,10 +9350,10 @@ def api_library():
         # Search across all books by author or title
         search_pattern = f'%{search_query}%'
         order = build_order_by(BOOK_SORT_COLS, 'current_author, current_title')
-        c.execute(f'''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
                      FROM books
                      WHERE current_author LIKE ? OR current_title LIKE ?
-                     {order}
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (search_pattern, search_pattern, per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9375,12 +9376,12 @@ def api_library():
     else:  # 'all' - show everything mixed
         # Get recent history items (includes pending, fixed, errors)
         order = build_order_by(HISTORY_SORT_COLS, 'h.fixed_at DESC')
-        c.execute(f'''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
+        c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
                             h.old_path, h.new_path, h.status, h.fixed_at, h.error_message,
                             b.path, b.current_author, b.current_title, b.user_locked
                      FROM history h
                      JOIN books b ON h.book_id = b.id
-                     {order}
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             item_type = 'pending_fix' if row['status'] == 'pending_fix' else \
