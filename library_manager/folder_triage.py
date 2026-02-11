@@ -11,14 +11,15 @@ Issue #110 Part 2
 import os
 import re
 import logging
+from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
 # Scene release tags, torrent markers, quality indicators
-MESSY_PATTERNS = [
+MESSY_PATTERNS: List[str] = [
     r'\{[a-z]+\}',              # {mb}, {cbt}
     r'\[[A-Z0-9]+\]',           # [FLAC], [MP3]
-    r'\([A-Za-z]+\)',            # (Thorne), (narrator)
+    r'\([^)]*(?:narrator|read by|unabridged|abridged|rip|scene|kbps)\b[^)]*\)',  # (narrator: Thorne), (Unabridged)
     r'^\d{4}\s*-',              # 2023 -
     r'\d{2}\.\d{2}\.\d{2}',     # 01.10.42
     r'\d+k\b',                  # 62k, 128k
@@ -32,7 +33,7 @@ MESSY_PATTERNS = [
 ]
 
 # Completely useless folder names
-GARBAGE_PATTERNS = [
+GARBAGE_PATTERNS: List[str] = [
     r'^[a-f0-9]{12,}$',         # Hash-only names (12+ hex chars)
     r'^[\d\s\-\.]+$',           # Numbers only
     r'^(New Folder|tmp|downloads?|torrents?|audiobooks?|untitled)$',
@@ -45,7 +46,7 @@ _MESSY_COMPILED = [re.compile(p, re.IGNORECASE) for p in MESSY_PATTERNS]
 _GARBAGE_COMPILED = [re.compile(p, re.IGNORECASE) for p in GARBAGE_PATTERNS]
 
 
-def triage_folder(folder_name):
+def triage_folder(folder_name: str) -> str:
     """
     Categorize a folder name by cleanliness.
 
@@ -72,7 +73,7 @@ def triage_folder(folder_name):
     return 'clean'
 
 
-def triage_book_path(book_path):
+def triage_book_path(book_path: str) -> Tuple[str, str]:
     """
     Triage the book folder from a full book path.
 
@@ -86,12 +87,12 @@ def triage_book_path(book_path):
     return triage_folder(folder_name), folder_name
 
 
-def should_use_path_hints(triage_result):
+def should_use_path_hints(triage_result: str) -> bool:
     """Whether path-derived hints should be trusted for this triage category."""
     return triage_result == 'clean'
 
 
-def confidence_modifier(triage_result):
+def confidence_modifier(triage_result: str) -> int:
     """Confidence adjustment based on folder triage category."""
     if triage_result == 'garbage':
         return -10

@@ -9174,7 +9174,7 @@ def api_library():
                 'reason': row['reason'],
                 'priority': row['priority'],
                 'added_at': row['added_at'],
-                'folder_triage': row['folder_triage'] or 'clean'
+                'folder_triage': row['folder_triage']
             })
 
     elif status_filter == 'fixed':
