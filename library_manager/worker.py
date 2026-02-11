@@ -145,7 +145,10 @@ def process_all_queue(
 
     Args:
         config: Configuration dict
-        get_db: Function to get database connection
+        get_db: Function to get database connection. Returns a new
+            sqlite3 connection each call (standard Flask-SQLite pattern).
+            Safe to call multiple times in the same scope - each call
+            gets its own connection, no shared state.
         load_config: Function to reload config
         is_circuit_open: Function to check circuit breaker status
         get_circuit_breaker: Function to get circuit breaker state
