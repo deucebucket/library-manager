@@ -2,6 +2,18 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.122] - 2026-02-11
+
+### Added
+
+- **Issue #111: Sortable columns** - Library table columns (Author, Title, Status) can now be
+  sorted by clicking column headers. Click once for ascending, again for descending, third click
+  clears sort back to default order. Visual arrow indicators show active sort column and direction.
+  Sort state preserved during pagination and filter changes. Backend validates sort columns against
+  a whitelist to prevent SQL injection.
+
+---
+
 ## [0.9.0-beta.121] - 2026-02-10
 
 ### Fixed

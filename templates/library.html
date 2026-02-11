@@ -73,6 +73,18 @@
         padding: 2px 8px;
         font-size: 0.8rem;
     }
+    /* Issue #111: Sortable column headers */
+    th[onclick]:hover {
+        color: #00d9ff;
+    }
+    .sort-icon {
+        font-size: 0.7rem;
+        opacity: 0.5;
+    }
+    .sort-icon.active {
+        opacity: 1;
+        color: #00d9ff;
+    }
 </style>
 
 <!-- Filter Chips -->
@@ -206,9 +218,15 @@
             <thead style="position: sticky; top: 0; background: rgba(22, 33, 62, 0.98); z-index: 10;">
                 <tr>
                     <th style="width: 3%;"><input type="checkbox" id="select-all" onclick="toggleSelectAll()" title="Select all visible"></th>
-                    <th style="width: 23%;">Author</th>
-                    <th style="width: 29%;">Title</th>
-                    <th style="width: 14%;">Status</th>
+                    <th style="width: 23%; cursor: pointer; user-select: none;" onclick="toggleSort('author')" title="Sort by author">
+                        Author <span class="sort-icon" id="sort-icon-author"></span>
+                    </th>
+                    <th style="width: 29%; cursor: pointer; user-select: none;" onclick="toggleSort('title')" title="Sort by title">
+                        Title <span class="sort-icon" id="sort-icon-title"></span>
+                    </th>
+                    <th style="width: 14%; cursor: pointer; user-select: none;" onclick="toggleSort('status')" title="Sort by status">
+                        Status <span class="sort-icon" id="sort-icon-status"></span>
+                    </th>
                     <th style="width: 18%;">Details</th>
                     <th style="width: 13%;">Actions</th>
                 </tr>
@@ -348,6 +366,8 @@
 <script>
 let currentFilter = 'all';
 let currentPage = 1;
+let currentSort = '';
+let currentSortDir = 'asc';
 let libraryData = null;
 let skipConfirmations = {{ 'true' if config.get('skip_confirmations') else 'false' }};
 let isProcessing = false;
@@ -381,6 +401,38 @@ function setFilter(filter) {
 
 let currentSearch = '';
 
+// Issue #111: Sort column toggle
+function toggleSort(column) {
+    if (currentSort === column) {
+        // Same column: toggle direction, or clear on third click
+        if (currentSortDir === 'asc') {
+            currentSortDir = 'desc';
+        } else {
+            currentSort = '';
+            currentSortDir = 'asc';
+        }
+    } else {
+        currentSort = column;
+        currentSortDir = 'asc';
+    }
+    currentPage = 1;
+    loadLibrary();
+}
+
+function updateSortIcons() {
+    document.querySelectorAll('.sort-icon').forEach(icon => {
+        icon.textContent = '';
+        icon.classList.remove('active');
+    });
+    if (currentSort) {
+        const icon = document.getElementById(`sort-icon-${currentSort}`);
+        if (icon) {
+            icon.textContent = currentSortDir === 'asc' ? '\u25B2' : '\u25BC';
+            icon.classList.add('active');
+        }
+    }
+}
+
 function loadLibrary() {
     const tbody = document.getElementById('items-table');
     tbody.innerHTML = `
@@ -396,13 +448,19 @@ function loadLibrary() {
     if (currentSearch) {
         url += `&search=${encodeURIComponent(currentSearch)}`;
     }
+    if (currentSort) {
+        url += `&sort=${currentSort}&sort_dir=${currentSortDir}`;
+    }
     fetch(url)
         .then(r => r.json())
         .then(data => {
             libraryData = data;
+            currentSort = data.sort || '';
+            currentSortDir = data.sort_dir || 'asc';
             updateCounts(data.counts);
             renderItems(data.items);
             renderPagination(data.page, data.total_pages);
+            updateSortIcons();
 
             // Show/hide contextual buttons (with null checks for robustness)
             const btnApplyAll = document.getElementById('btn-apply-all');
