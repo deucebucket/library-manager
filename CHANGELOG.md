@@ -13,6 +13,12 @@ All notable changes to Library Manager will be documented in this file.
   placeholders) also skip path hints and get a confidence penalty. Triage results stored in DB
   and logged during scans. Integrated into Whisper transcription hints, AI identification
   prompts, and the processing pipeline queue.
+- **Issue #103: In-app hints and tooltips** - New `library_manager/hints.py` module with contextual
+  documentation for all features and settings. Hover over the (?) icon next to any setting to see a
+  plain-language explanation of what it does. Tooltips added to: all identification layers, AI
+  providers, confidence threshold, trust modes, safety toggles, watch folder, ebook management,
+  metadata embedding, community features, and more. Library page filter chips and action buttons also
+  show helpful tooltips on hover. Users never need to ask "what does this do?" again.
 
 ---
 

@@ -2,6 +2,64 @@
 {% block title %}Settings - Library Manager{% endblock %}
 
 {% block content %}
+<style>
+    .hint-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        border: 1px solid rgba(0, 217, 255, 0.4);
+        color: rgba(0, 217, 255, 0.6);
+        font-size: 10px;
+        font-weight: bold;
+        font-style: normal;
+        cursor: help;
+        margin-left: 4px;
+        position: relative;
+        vertical-align: middle;
+        line-height: 1;
+        flex-shrink: 0;
+    }
+    .hint-icon:hover {
+        border-color: #00d9ff;
+        color: #00d9ff;
+    }
+    .hint-icon .hint-text {
+        display: none;
+        position: absolute;
+        bottom: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(15, 52, 96, 0.95);
+        border: 1px solid rgba(0, 217, 255, 0.3);
+        color: #eee;
+        padding: 8px 12px;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        font-weight: normal;
+        font-style: normal;
+        line-height: 1.4;
+        white-space: normal;
+        width: 280px;
+        z-index: 1000;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        pointer-events: none;
+    }
+    .hint-icon .hint-text::after {
+        content: '';
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        border: 6px solid transparent;
+        border-top-color: rgba(0, 217, 255, 0.3);
+    }
+    .hint-icon:hover .hint-text {
+        display: block;
+    }
+</style>
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2><i class="bi bi-gear"></i> Settings</h2>
     <span class="text-muted">v{{ version }}</span>
@@ -169,6 +227,7 @@
                                        {% if config.series_grouping %}checked{% endif %}>
                                 <label class="form-check-label" for="series_grouping">
                                     <strong>Series Grouping</strong>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.series_grouping }}</span></span>
                                     <br><small class="text-muted">Use <code>Author/Series/1 - Title/</code> format</small>
                                 </label>
                             </div>
@@ -178,6 +237,7 @@
                                        {% if config.standardize_author_initials %}checked{% endif %}>
                                 <label class="form-check-label" for="standardize_author_initials">
                                     <strong>Standardize Author Initials</strong>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.standardize_initials }}</span></span>
                                     <br><small class="text-muted">Normalize to <code>J. R. R. Tolkien</code> format</small>
                                 </label>
                             </div>
@@ -187,6 +247,7 @@
                                        {% if config.strip_unabridged %}checked{% endif %}>
                                 <label class="form-check-label" for="strip_unabridged">
                                     <strong>Strip "Unabridged" from Titles</strong>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.strip_unabridged }}</span></span>
                                     <br><small class="text-muted">Remove (Unabridged), [Unabridged], etc. from book titles</small>
                                 </label>
                             </div>
@@ -264,6 +325,7 @@
                                        {% if config.watch_mode %}checked{% endif %} onchange="toggleWatchOptions()">
                                 <label class="form-check-label" for="watch_mode">
                                     <strong>Enable Watch Folder</strong>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.watch_folder }}</span></span>
                                     <br><small class="text-muted">Auto-organize new audiobooks from a folder</small>
                                 </label>
                             </div>
@@ -324,6 +386,7 @@
                                        {% if config.ebook_management %}checked{% endif %} onchange="toggleEbookOptions()">
                                 <label class="form-check-label" for="ebook_management">
                                     <strong>Enable Ebook Management</strong>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.ebook_management }}</span></span>
                                     <br><small class="text-muted">Organize .epub, .mobi, .azw3, .pdf files</small>
                                 </label>
                             </div>
@@ -344,6 +407,7 @@
                                            {% if config.enable_isbn_lookup %}checked{% endif %}>
                                     <label class="form-check-label" for="enable_isbn_lookup">
                                         <strong>ISBN Lookup</strong>
+                                        <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.isbn_lookup }}</span></span>
                                         <br><small class="text-muted">Extract ISBN from EPUB/PDF metadata for better matching (requires ebooklib/pypdf)</small>
                                     </label>
                                 </div>
@@ -369,6 +433,7 @@
                                        {% if config.enabled %}checked{% endif %}>
                                 <label class="form-check-label" for="enabled">
                                     <strong>Enable Background Processing</strong>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.background_processing }}</span></span>
                                     <br><small class="text-muted">Automatically process queue items in the background</small>
                                 </label>
                             </div>
@@ -408,12 +473,15 @@
                                        id="deep_scan_mode" {% if config.deep_scan_mode %}checked{% endif %}>
                                 <label class="form-check-label" for="deep_scan_mode">
                                     <strong>Deep Scan Mode</strong>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.deep_scan_mode }}</span></span>
                                     <br><small class="text-muted">Run ALL enabled layers for every book (slower, more thorough)</small>
                                 </label>
                             </div>
 
                             <div class="mb-0">
-                                <label class="form-label">Confidence Threshold: <strong id="threshold-display">{{ config.profile_confidence_threshold or 85 }}%</strong></label>
+                                <label class="form-label">Confidence Threshold: <strong id="threshold-display">{{ config.profile_confidence_threshold or 85 }}%</strong>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.confidence_threshold }}</span></span>
+                                </label>
                                 <input type="range" class="form-range" name="profile_confidence_threshold"
                                        id="profile_confidence_threshold" min="50" max="100" step="5"
                                        value="{{ config.profile_confidence_threshold or 85 }}"
@@ -440,6 +508,7 @@
                                 <label class="form-label mb-1">
                                     <i class="bi bi-shield-check text-success"></i>
                                     <strong>Skaldleita Trust Mode</strong>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.skaldleita }}</span></span>
                                 </label>
                                 <select name="sl_trust_mode" class="form-select form-select-sm">
                                     <option value="full" {% if config.sl_trust_mode == 'full' or config.sl_trust_mode is not defined %}selected{% endif %}>
@@ -465,6 +534,7 @@
                                 <label class="form-check-label" for="enable_api_lookups">
                                     <i class="bi bi-cloud text-info"></i> <strong>Layer 1: Database Lookups</strong>
                                     <span class="badge bg-success">Free</span>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.layer_1 }}</span></span>
                                     <br><small class="text-muted">Skaldleita, Audnexus, OpenLibrary, Google Books</small>
                                 </label>
                             </div>
@@ -475,6 +545,7 @@
                                 <label class="form-check-label" for="enable_ai_verification">
                                     <i class="bi bi-robot text-warning"></i> <strong>Layer 2: AI Verification</strong>
                                     <span class="badge bg-warning text-dark">Uses Tokens</span>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.layer_2 }}</span></span>
                                     <br><small class="text-muted">Ask AI when databases don't have a confident match</small>
                                 </label>
                             </div>
@@ -487,6 +558,7 @@
                                     <i class="bi bi-soundwave text-danger"></i> <strong>Layer 3: Audio Analysis</strong>
                                     <span class="badge bg-warning text-dark">Uses Tokens</span>
                                     {% if not config.gemini_api_key %}<span class="badge bg-secondary">Needs Gemini</span>{% endif %}
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.layer_3 }}</span></span>
                                     <br><small class="text-muted">Listen to first 90 seconds for narrator intro</small>
                                 </label>
                             </div>
@@ -498,6 +570,7 @@
                                 <label class="form-check-label" for="use_skaldleita_for_audio">
                                     <i class="bi bi-cloud-arrow-up text-primary"></i> Use Skaldleita for Audio ID
                                     <span class="badge bg-success">Recommended</span>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.skaldleita }}</span></span>
                                     <br><small class="text-muted">GPU Whisper + 50M book database (faster, no rate limits). Disable to use your own AI/Whisper.</small>
                                 </label>
                             </div>
@@ -509,6 +582,7 @@
                                 <label class="form-check-label" for="enable_voice_id">
                                     <i class="bi bi-person-badge text-success"></i> Voice ID (Skaldleita)
                                     <span class="badge bg-info text-dark">NEW</span>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.voice_id }}</span></span>
                                     <br><small class="text-muted">Identify narrators by voice fingerprint - like Shazam for audiobooks. Builds community narrator library.</small>
                                 </label>
                             </div>
@@ -520,6 +594,7 @@
                                 <label class="form-check-label" for="enable_content_analysis">
                                     <i class="bi bi-book text-info"></i> <strong>Layer 4: Content Analysis</strong>
                                     <span class="badge bg-info text-dark">Final Resort</span>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.layer_4 }}</span></span>
                                     <br><small class="text-muted">Transcribe story text to identify book (uses Whisper + AI)</small>
                                 </label>
                             </div>
@@ -949,6 +1024,7 @@
                                 <label class="form-check-label" for="auto_fix">
                                     <strong>Auto-Apply Fixes</strong>
                                     <span class="badge bg-warning text-dark">Caution</span>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.auto_fix }}</span></span>
                                     <br><small class="text-muted">Apply safe fixes automatically (non-drastic changes only)</small>
                                 </label>
                             </div>
@@ -959,6 +1035,7 @@
                                 <label class="form-check-label" for="protect_author_changes">
                                     <strong>Require Approval for Author Changes</strong>
                                     <span class="badge bg-success">Recommended</span>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.protect_author_changes }}</span></span>
                                     <br><small class="text-muted">When author changes completely (e.g. "Unknown" → "Stephen King"), send to Pending</small>
                                 </label>
                             </div>
@@ -978,6 +1055,7 @@
                                 <label class="form-check-label" for="trust_the_process">
                                     <strong class="text-danger">Trust the Process</strong>
                                     <span class="badge bg-danger">YOLO MODE</span>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.trust_the_process }}</span></span>
                                     <br><small class="text-muted">Auto-apply <strong>ALL</strong> changes when AI + audio analysis agree. No safety net.</small>
                                     <br><small class="text-danger"><i class="bi bi-exclamation-triangle"></i> Can rename entire library automatically. BACKUP FIRST!</small>
                                 </label>
@@ -996,6 +1074,7 @@
                                        {% if config.skip_confirmations %}checked{% endif %}>
                                 <label class="form-check-label" for="skip_confirmations">
                                     <strong>Skip Confirmation Dialogs</strong>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.skip_confirmations }}</span></span>
                                     <br><small class="text-muted">No "Are you sure?" popups when clicking Apply, Reject, or Undo</small>
                                 </label>
                             </div>
@@ -1016,6 +1095,7 @@
                                        {% if config.metadata_embedding_enabled %}checked{% endif %} onchange="toggleEmbeddingOptions()">
                                 <label class="form-check-label" for="metadata_embedding_enabled">
                                     <strong>Enable Metadata Embedding</strong>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.metadata_embedding }}</span></span>
                                     <br><small class="text-muted">Write metadata tags into audio files when fixes are applied</small>
                                 </label>
                             </div>
@@ -1112,6 +1192,7 @@
                                        {% if config.strict_language_matching is not defined or config.strict_language_matching %}checked{% endif %}>
                                 <label class="form-check-label" for="strict_language_matching">
                                     <strong>Strict Language Matching</strong>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.strict_language_matching }}</span></span>
                                     <br><small class="text-muted">Only match books in your preferred language (prevents cross-language mismatches)</small>
                                 </label>
                             </div>
@@ -1129,6 +1210,7 @@
                                 <label class="form-check-label" for="detect_language_from_audio">
                                     <strong>Detect Language from Audio</strong>
                                     <span class="badge bg-info">BETA</span>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.language_detection }}</span></span>
                                     <br><small class="text-muted">Use Gemini to detect spoken language</small>
                                 </label>
                             </div>
@@ -1146,6 +1228,7 @@
                                        {% if config.anonymous_error_reporting %}checked{% endif %} onchange="toggleErrorReportingOptions()">
                                 <label class="form-check-label" for="anonymous_error_reporting">
                                     <strong>Anonymous Error Reporting</strong>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.error_reporting }}</span></span>
                                     <br><small class="text-muted">Help improve Library Manager by sharing anonymous error reports</small>
                                 </label>
                             </div>
@@ -1175,6 +1258,7 @@
                                        {% if config.contribute_to_community %}checked{% endif %}>
                                 <label class="form-check-label" for="contribute_to_community">
                                     <strong>Contribute to Community Database</strong>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.community_contributions }}</span></span>
                                     <br><small class="text-muted">Help others identify audiobooks by sharing metadata extracted from audio</small>
                                 </label>
                             </div>
@@ -1197,6 +1281,7 @@
                                        {% if config.enable_p2p_cache %}checked{% endif %}>
                                 <label class="form-check-label" for="enable_p2p_cache">
                                     <strong>Enable P2P Book Cache</strong>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.p2p_cache }}</span></span>
                                     <br><small class="text-muted">Share book lookup cache with other Library Manager users via decentralized network</small>
                                 </label>
                             </div>

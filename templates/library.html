@@ -85,6 +85,61 @@
         opacity: 1;
         color: #00d9ff;
     }
+    .hint-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 1px solid rgba(0, 217, 255, 0.4);
+        color: rgba(0, 217, 255, 0.6);
+        font-size: 9px;
+        font-weight: bold;
+        font-style: normal;
+        cursor: help;
+        margin-left: 3px;
+        position: relative;
+        vertical-align: middle;
+        line-height: 1;
+    }
+    .hint-icon:hover {
+        border-color: #00d9ff;
+        color: #00d9ff;
+    }
+    .hint-icon .hint-text {
+        display: none;
+        position: absolute;
+        bottom: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(15, 52, 96, 0.95);
+        border: 1px solid rgba(0, 217, 255, 0.3);
+        color: #eee;
+        padding: 8px 12px;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        font-weight: normal;
+        font-style: normal;
+        line-height: 1.4;
+        white-space: normal;
+        width: 260px;
+        z-index: 1000;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        pointer-events: none;
+    }
+    .hint-icon .hint-text::after {
+        content: '';
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        border: 6px solid transparent;
+        border-top-color: rgba(0, 217, 255, 0.3);
+    }
+    .hint-icon:hover .hint-text {
+        display: block;
+    }
 </style>
 
 <!-- Filter Chips -->
@@ -95,42 +150,42 @@
             <span class="ms-2">All</span>
             <span class="count" id="count-all">0</span>
         </a>
-        <a href="#" class="filter-chip" data-filter="pending" onclick="setFilter('pending'); return false;">
+        <a href="#" class="filter-chip" data-filter="pending" onclick="setFilter('pending'); return false;" title="{{ hints.status_pending }}">
             <i class="bi bi-hourglass-split text-warning"></i>
             <span class="ms-2">Pending</span>
             <span class="count" id="count-pending">0</span>
         </a>
-        <a href="#" class="filter-chip" data-filter="orphan" onclick="setFilter('orphan'); return false;">
+        <a href="#" class="filter-chip" data-filter="orphan" onclick="setFilter('orphan'); return false;" title="{{ hints.status_orphan }}">
             <i class="bi bi-file-earmark-music text-info"></i>
             <span class="ms-2">Orphans</span>
             <span class="count" id="count-orphan">0</span>
         </a>
-        <a href="#" class="filter-chip" data-filter="queue" onclick="setFilter('queue'); return false;">
+        <a href="#" class="filter-chip" data-filter="queue" onclick="setFilter('queue'); return false;" title="{{ hints.status_queued }}">
             <i class="bi bi-list-task text-primary"></i>
             <span class="ms-2">Queue</span>
             <span class="count" id="count-queue">0</span>
         </a>
-        <a href="#" class="filter-chip" data-filter="fixed" onclick="setFilter('fixed'); return false;" title="Books that were renamed/moved to new locations">
+        <a href="#" class="filter-chip" data-filter="fixed" onclick="setFilter('fixed'); return false;" title="{{ hints.status_fixed }}">
             <i class="bi bi-check-circle text-success"></i>
             <span class="ms-2">Fixed</span>
             <span class="count" id="count-fixed">0</span>
         </a>
-        <a href="#" class="filter-chip" data-filter="verified" onclick="setFilter('verified'); return false;" title="Books already in correct location - no changes needed">
+        <a href="#" class="filter-chip" data-filter="verified" onclick="setFilter('verified'); return false;" title="{{ hints.status_verified }}">
             <i class="bi bi-patch-check text-success"></i>
             <span class="ms-2">Verified</span>
             <span class="count" id="count-verified">0</span>
         </a>
-        <a href="#" class="filter-chip" data-filter="error" onclick="setFilter('error'); return false;">
+        <a href="#" class="filter-chip" data-filter="error" onclick="setFilter('error'); return false;" title="{{ hints.status_error }}">
             <i class="bi bi-exclamation-triangle text-danger"></i>
             <span class="ms-2">Errors</span>
             <span class="count" id="count-error">0</span>
         </a>
-        <a href="#" class="filter-chip" data-filter="attention" onclick="setFilter('attention'); return false;">
+        <a href="#" class="filter-chip" data-filter="attention" onclick="setFilter('attention'); return false;" title="{{ hints.status_attention }}">
             <i class="bi bi-eye text-warning"></i>
             <span class="ms-2">Attention</span>
             <span class="count" id="count-attention">0</span>
         </a>
-        <a href="#" class="filter-chip" data-filter="locked" onclick="setFilter('locked'); return false;">
+        <a href="#" class="filter-chip" data-filter="locked" onclick="setFilter('locked'); return false;" title="{{ hints.status_locked }}">
             <i class="bi bi-lock-fill text-info"></i>
             <span class="ms-2">Locked</span>
             <span class="count" id="count-locked">0</span>
@@ -177,10 +232,10 @@
 <div class="card mb-4">
     <div class="card-body py-2">
         <div class="d-flex flex-wrap align-items-center gap-2">
-            <button class="btn btn-primary btn-sm" onclick="scanLibrary()" id="btn-scan">
+            <button class="btn btn-primary btn-sm" onclick="scanLibrary()" id="btn-scan" title="{{ hints.scan_library }}">
                 <i class="bi bi-search"></i> Scan Library
             </button>
-            <button class="btn btn-success btn-sm" onclick="processQueue()" id="btn-process">
+            <button class="btn btn-success btn-sm" onclick="processQueue()" id="btn-process" title="{{ hints.process_queue }}">
                 <i class="bi bi-play-fill"></i> Process Queue
             </button>
             <button class="btn btn-warning btn-sm" onclick="applyAllPending()" id="btn-apply-all" style="display: none;">
@@ -227,7 +282,7 @@
                     <th style="width: 14%; cursor: pointer; user-select: none;" onclick="toggleSort('status')" title="Sort by status">
                         Status <span class="sort-icon" id="sort-icon-status"></span>
                     </th>
-                    <th style="width: 18%;">Details</th>
+                    <th style="width: 18%;">Details <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.confidence_percentage }}</span></span></th>
                     <th style="width: 13%;">Actions</th>
                 </tr>
             </thead>

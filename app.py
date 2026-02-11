@@ -112,6 +112,7 @@ from library_manager.instance import (
     save_instance_data,
 )
 from library_manager.folder_triage import triage_folder, triage_book_path, should_use_path_hints, confidence_modifier
+from library_manager.hints import get_all_hints
 
 # Try to import P2P cache (optional - gracefully degrades if not available)
 try:
@@ -6804,6 +6805,12 @@ def is_worker_running():
 def inject_worker_status():
     """Inject worker_running into all templates automatically."""
     return {'worker_running': is_worker_running()}
+
+
+@app.context_processor
+def inject_hints():
+    """Inject hints dictionary into all templates for tooltips."""
+    return {'hints': get_all_hints()}
 
 # ============== ROUTES ==============
 
