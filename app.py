@@ -112,7 +112,6 @@ from library_manager.instance import (
     save_instance_data,
 )
 from library_manager.hints import get_all_hints
-from library_manager.folder_triage import triage_folder, triage_book_path, should_use_path_hints, confidence_modifier
 
 # Try to import P2P cache (optional - gracefully degrades if not available)
 try:
@@ -3198,39 +3197,31 @@ def search_book_searxng(query, duration_hours=None):
     return []
 
 
-def calculate_input_quality(folder_name, filenames, info, folder_triage='clean'):
+def calculate_input_quality(folder_name, filenames, info):
     """
     Score the quality of input data for AI identification.
     Returns a score 0-100 and list of usable clues found.
 
     Low quality inputs (random numbers, 'unknown', no words) should not be
     trusted to AI as it will hallucinate famous books.
-
-    Issue #110: folder_triage controls whether folder name is trusted as input.
     """
     score = 0
     clues = []
 
-    # Issue #110: Only trust folder name for clean folders
-    use_folder = should_use_path_hints(folder_triage)
+    # Check folder name for useful info
+    folder_clean = re.sub(r'[_\-\d\.\[\]\(\)]', ' ', folder_name or '').strip()
+    words = [w for w in folder_clean.split() if len(w) > 2 and w.lower() not in ('unknown', 'audiobook', 'audio', 'book', 'mp3', 'the', 'and', 'part')]
 
-    if use_folder:
-        # Check folder name for useful info
-        folder_clean = re.sub(r'[_\-\d\.\[\]\(\)]', ' ', folder_name or '').strip()
-        words = [w for w in folder_clean.split() if len(w) > 2 and w.lower() not in ('unknown', 'audiobook', 'audio', 'book', 'mp3', 'the', 'and', 'part')]
+    if words:
+        score += min(40, len(words) * 10)  # Up to 40 points for meaningful words
+        clues.append(f"folder_words: {words[:5]}")
 
-        if words:
-            score += min(40, len(words) * 10)  # Up to 40 points for meaningful words
-            clues.append(f"folder_words: {words[:5]}")
+    # Check for author-title pattern (e.g., "Author - Title")
+    if ' - ' in (folder_name or ''):
+        score += 20
+        clues.append("has_author_title_separator")
 
-        # Check for author-title pattern (e.g., "Author - Title")
-        if ' - ' in (folder_name or ''):
-            score += 20
-            clues.append("has_author_title_separator")
-    else:
-        clues.append(f"folder_skipped: triage={folder_triage}")
-
-    # Check metadata tags (always trusted regardless of folder triage)
+    # Check metadata tags
     if info.get('title') and info.get('title') not in ('none', 'Unknown', ''):
         score += 25
         clues.append(f"has_title_tag: {info.get('title')[:30]}")
@@ -3248,12 +3239,6 @@ def calculate_input_quality(folder_name, filenames, info, folder_triage='clean')
     if re.match(r'^(unknown|audiobook|audio|book)?[\s_\-]*\d+$', folder_name or '', re.IGNORECASE):
         score = max(0, score - 50)  # Heavy penalty for "unknown_123" type names
         clues.append("PENALTY: numeric_garbage_name")
-
-    # Issue #110: Apply confidence modifier for garbage folders
-    modifier = confidence_modifier(folder_triage)
-    if modifier:
-        score = max(0, score + modifier)
-        clues.append(f"triage_modifier: {modifier}")
 
     return min(100, score), clues
 
@@ -4988,8 +4973,6 @@ def deep_scan_library(config):
                 flat_author, flat_title = extract_author_title(author)
                 # Issue #132: Resolve path to prevent duplicates
                 flat_path = str(author_dir.resolve())
-                # Issue #110: Triage folder name quality
-                flat_triage = triage_folder(author)
 
                 checked += 1
 
@@ -5005,15 +4988,13 @@ def deep_scan_library(config):
                         if has_profile:
                             continue
                     flat_book_id = existing_flat['id']
-                    c.execute('UPDATE books SET folder_triage = ? WHERE id = ?',
-                             (flat_triage, flat_book_id))
                 else:
-                    c.execute('''INSERT INTO books (path, current_author, current_title, status, folder_triage)
-                                 VALUES (?, ?, ?, 'pending', ?)''', (flat_path, flat_author, flat_title, flat_triage))
+                    c.execute('''INSERT INTO books (path, current_author, current_title, status)
+                                 VALUES (?, ?, ?, 'pending')''', (flat_path, flat_author, flat_title))
                     conn.commit()
                     flat_book_id = c.lastrowid
                     scanned += 1
-                    logger.info(f"Added flat book: {flat_author} - {flat_title} (triage: {flat_triage})")
+                    logger.info(f"Added flat book: {flat_author} - {flat_title}")
 
                 # Queue for processing
                 c.execute('SELECT id FROM queue WHERE book_id = ?', (flat_book_id,))
@@ -5156,8 +5137,6 @@ def deep_scan_library(config):
                                 continue  # No audio files, skip
 
                             checked += 1
-                            # Issue #110: Triage folder name quality
-                            series_book_triage = triage_folder(book_title)
 
                             # Check if already tracked
                             c.execute('SELECT id, status, profile, user_locked FROM books WHERE path = ?', (book_path,))
@@ -5171,11 +5150,9 @@ def deep_scan_library(config):
                                     if has_profile:
                                         continue
                                 book_id = existing_book['id']
-                                c.execute('UPDATE books SET folder_triage = ? WHERE id = ?',
-                                         (series_book_triage, book_id))
                             else:
-                                c.execute('''INSERT INTO books (path, current_author, current_title, status, folder_triage)
-                                             VALUES (?, ?, ?, 'pending', ?)''', (book_path, author, book_title, series_book_triage))
+                                c.execute('''INSERT INTO books (path, current_author, current_title, status)
+                                             VALUES (?, ?, ?, 'pending')''', (book_path, author, book_title))
                                 conn.commit()
                                 book_id = c.lastrowid
                                 scanned += 1
@@ -5218,11 +5195,6 @@ def deep_scan_library(config):
 
                 # This is a valid book folder - count it
                 checked += 1
-
-                # Issue #110: Triage folder name quality
-                folder_triage_result = triage_folder(title)
-                if folder_triage_result != 'clean':
-                    logger.info(f"Folder triage: {folder_triage_result} - {title[:60]}")
 
                 # Analyze title
                 title_issues = analyze_title(title, author)
@@ -5286,12 +5258,9 @@ def deep_scan_library(config):
                             queued += 1
                             continue
                     book_id = existing['id']
-                    # Update triage for existing books (backfill)
-                    c.execute('UPDATE books SET folder_triage = ? WHERE id = ?',
-                             (folder_triage_result, book_id))
                 else:
-                    c.execute('''INSERT INTO books (path, current_author, current_title, status, folder_triage)
-                                 VALUES (?, ?, ?, 'pending', ?)''', (path, author, title, folder_triage_result))
+                    c.execute('''INSERT INTO books (path, current_author, current_title, status)
+                                 VALUES (?, ?, ?, 'pending')''', (path, author, title))
                     conn.commit()
                     book_id = c.lastrowid
                     scanned += 1
@@ -5544,26 +5513,19 @@ def transcribe_audio_intro(file_path, duration_seconds=45):
                 initial_prompt = "This is an audiobook introduction. The narrator typically announces the book title, author name, and narrator."
 
                 # Add folder hints to the prompt if available
-                # Issue #110: Only use folder hints for clean triage folders
                 folder_path = Path(file_path).parent
                 folder_name = folder_path.name
                 parent_name = folder_path.parent.name if folder_path.parent else ""
 
-                # Check folder triage before trusting folder names as hints
-                folder_triage_result = triage_folder(folder_name)
+                # Extract potential author/title from folder structure for spelling hints
+                hints = []
+                if parent_name and parent_name not in ['audiobooks', 'Unknown', '']:
+                    hints.append(parent_name)
+                if folder_name and folder_name not in ['audiobooks', 'Unknown', '']:
+                    hints.append(folder_name)
 
-                if should_use_path_hints(folder_triage_result):
-                    # Extract potential author/title from folder structure for spelling hints
-                    hints = []
-                    if parent_name and parent_name not in ['audiobooks', 'Unknown', '']:
-                        hints.append(parent_name)
-                    if folder_name and folder_name not in ['audiobooks', 'Unknown', '']:
-                        hints.append(folder_name)
-
-                    if hints:
-                        initial_prompt += f" Possible names: {', '.join(hints)}."
-                else:
-                    logger.info(f"[LAYER 1/AUDIO] Skipping folder hints (triage: {folder_triage_result}): {folder_name[:40]}")
+                if hints:
+                    initial_prompt += f" Possible names: {', '.join(hints)}."
 
                 # Transcribe with better settings for accuracy
                 segments, info = whisper_model.transcribe(
@@ -9156,8 +9118,7 @@ def api_library():
         # Issue #36: Filter out series_folder and multi_book_files - they should never appear in queue
         order = build_order_by(QUEUE_SORT_COLS, 'q.priority, q.added_at')
         c.execute('''SELECT q.id as queue_id, q.reason, q.added_at, q.priority,
-                            b.id as book_id, b.path, b.current_author, b.current_title, b.status,
-                            b.folder_triage
+                            b.id as book_id, b.path, b.current_author, b.current_title, b.status
                      FROM queue q
                      JOIN books b ON q.book_id = b.id
                      WHERE b.status NOT IN ('series_folder', 'multi_book_files', 'verified', 'fixed')
@@ -9174,8 +9135,7 @@ def api_library():
                 'status': 'in_queue',
                 'reason': row['reason'],
                 'priority': row['priority'],
-                'added_at': row['added_at'],
-                'folder_triage': row['folder_triage'] or 'clean'
+                'added_at': row['added_at']
             })
 
     elif status_filter == 'fixed':
