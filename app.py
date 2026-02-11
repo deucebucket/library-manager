@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.122"
+APP_VERSION = "0.9.0-beta.123"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -111,6 +111,7 @@ from library_manager.instance import (
     get_instance_data,
     save_instance_data,
 )
+from library_manager.hints import get_all_hints
 
 # Try to import P2P cache (optional - gracefully degrades if not available)
 try:
@@ -6760,6 +6761,12 @@ def is_worker_running():
 def inject_worker_status():
     """Inject worker_running into all templates automatically."""
     return {'worker_running': is_worker_running()}
+
+
+@app.context_processor
+def inject_hints():
+    """Inject hints dictionary into all templates for tooltips."""
+    return {'hints': get_all_hints()}
 
 # ============== ROUTES ==============
 
