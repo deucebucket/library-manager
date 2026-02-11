@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.123"
+APP_VERSION = "0.9.0-beta.124"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -3364,11 +3364,14 @@ def identify_book_with_ai(file_group, config):
     info = file_group.get('detected_info', {})
     folder_name = file_group.get('folder_name', '')
 
+    # Issue #110: Determine folder triage for this book
+    ft = file_group.get('folder_triage') or triage_folder(folder_name)
+
     # Build context for AI
     filenames = [Path(f).name if isinstance(f, str) else f.name for f in files[:20]]
 
     # === HALLUCINATION PREVENTION: Input quality check ===
-    input_quality, clues = calculate_input_quality(folder_name, filenames, info)
+    input_quality, clues = calculate_input_quality(folder_name, filenames, info, folder_triage=ft)
 
     if input_quality < 25:
         # Input is garbage - don't even try AI, it will hallucinate
@@ -3402,7 +3405,7 @@ You MUST explain WHY you think this is the correct book. What evidence supports 
 - Or are you GUESSING based on a generic title? (If guessing, return null!)
 
 Input information:
-- Folder name: {folder_name}
+- Folder name: {folder_name if should_use_path_hints(ft) else '[UNRELIABLE - ignore folder name]'}
 - Files ({len(files)} total): {', '.join(filenames[:10])}{'...' if len(filenames) > 10 else ''}
 - Duration: {info.get('duration_hours', 'unknown')} hours
 - Album tag: {info.get('title', 'none')}
@@ -4831,6 +4834,7 @@ def deep_scan_library(config):
     scanned = 0  # New books added to tracking
     queued = 0   # Books added to fix queue
     issues_found = {}  # path -> list of issues
+    triage_counts = {'clean': 0, 'messy': 0, 'garbage': 0}  # Issue #110: Folder triage stats
 
     # Track files for duplicate detection
     file_signatures = {}  # signature -> list of paths
@@ -5221,6 +5225,7 @@ def deep_scan_library(config):
 
                 # Issue #110: Triage folder name quality
                 folder_triage_result = triage_folder(title)
+                triage_counts[folder_triage_result] = triage_counts.get(folder_triage_result, 0) + 1
                 if folder_triage_result != 'clean':
                     logger.info(f"Folder triage: {folder_triage_result} - {title[:60]}")
 
@@ -5351,6 +5356,7 @@ def deep_scan_library(config):
     logger.info(f"Scanned: {scanned} new books added to tracking")
     logger.info(f"Queued: {queued} books need fixing")
     logger.info(f"Already correct: {checked - queued} books")
+    logger.info(f"Folder triage: {triage_counts['clean']} clean, {triage_counts['messy']} messy, {triage_counts['garbage']} garbage")
 
     return checked, scanned, queued
 
