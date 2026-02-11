@@ -6,6 +6,13 @@ All notable changes to Library Manager will be documented in this file.
 
 ### Added
 
+- **Issue #110 Part 2: Folder triage** - New `library_manager/folder_triage.py` module that
+  categorizes folder names as clean/messy/garbage before processing. Clean folders use path hints
+  normally. Messy folders (scene release tags, torrent markers, quality indicators) skip path
+  parsing and rely on audio/metadata only. Garbage folders (hash names, numbers-only, generic
+  placeholders) also skip path hints and get a confidence penalty. Triage results stored in DB
+  and logged during scans. Integrated into Whisper transcription hints, AI identification
+  prompts, and the processing pipeline queue.
 - **Issue #103: In-app hints and tooltips** - New `library_manager/hints.py` module with contextual
   documentation for all features and settings. Hover over the (?) icon next to any setting to see a
   plain-language explanation of what it does. Tooltips added to: all identification layers, AI

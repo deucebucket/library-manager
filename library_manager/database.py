@@ -126,6 +126,13 @@ def init_db(db_path=None):
         except:
             pass  # Column already exists
 
+    # Add folder_triage column - categorizes folder name quality (clean/messy/garbage)
+    # Issue #110: Used to decide whether to trust path-derived hints
+    try:
+        c.execute("ALTER TABLE books ADD COLUMN folder_triage TEXT DEFAULT 'clean'")
+    except:
+        pass  # Column already exists
+
     # Stats table - daily stats
     c.execute('''CREATE TABLE IF NOT EXISTS stats (
         id INTEGER PRIMARY KEY,
