@@ -177,25 +177,16 @@ class PrecogVoting:
     def _expand_collapsed_initials(self, word: str) -> List[str]:
         """Expand collapsed initials like 'jrr' into ['j', 'r', 'r'].
 
-        Only expands words that are 2-3 lowercase letters (post-normalization)
-        and look like collapsed initials rather than short words.
+        Only expands words that are 2-3 consonant-only letters, which is the
+        hallmark of collapsed initials (JRR, JK, CS, etc.). Real names and
+        words virtually always contain vowels (Lee, Amy, Sam, Ed, etc.) so
+        this avoids false expansion.
         """
-        # After normalization, "JRR" becomes "jrr". Only expand 2-3 char words
-        # that are all letters (not real short words like "of", "an", "by").
+        vowels = set("aeiou")
         if len(word) in (2, 3) and word.isalpha():
-            # Avoid expanding common short words
-            common_short = {"of", "in", "on", "by", "to", "at", "or", "an", "is",
-                            "it", "no", "so", "do", "my", "me", "we", "he", "if",
-                            "up", "us", "am", "as", "be", "go", "ha", "hi", "ok",
-                            "ox", "la", "le", "de", "du", "el", "al",
-                            "the", "and", "for", "are", "but", "not", "you", "all",
-                            "can", "had", "her", "was", "one", "our", "out", "has",
-                            "his", "how", "its", "may", "new", "now", "old", "see",
-                            "way", "who", "did", "get", "let", "say", "she", "too",
-                            "use", "man", "day", "any", "few", "got", "him", "own",
-                            "try", "run", "end", "far", "set", "big", "own", "put",
-                            "red", "war", "van", "sir", "von", "mac", "don", "ben"}
-            if word not in common_short:
+            # Collapsed initials are consonant-only: "jrr", "jk", "cs", "jb"
+            # Real names always have vowels: "lee", "amy", "sam", "ed", "jo"
+            if not any(c in vowels for c in word):
                 return list(word)
         return [word]
 

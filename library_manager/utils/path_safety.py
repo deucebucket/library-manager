@@ -335,11 +335,14 @@ def _is_initial_match_for_author(name1_words, name2_words) -> bool:
     initial_matches = 0
 
     for w1, w2 in zip(name1_words, name2_words):
-        if w1 == w2:
+        # Strip trailing periods for initial detection ("j." -> "j")
+        w1_clean = w1.rstrip('.')
+        w2_clean = w2.rstrip('.')
+        if w1_clean == w2_clean:
             exact_matches += 1
-        elif len(w1) == 1 and len(w2) > 1 and w2.startswith(w1):
+        elif len(w1_clean) == 1 and len(w2_clean) > 1 and w2_clean.startswith(w1_clean):
             initial_matches += 1
-        elif len(w2) == 1 and len(w1) > 1 and w1.startswith(w2):
+        elif len(w2_clean) == 1 and len(w1_clean) > 1 and w1_clean.startswith(w2_clean):
             initial_matches += 1
         else:
             return False
