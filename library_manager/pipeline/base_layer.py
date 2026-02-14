@@ -140,7 +140,7 @@ class ProcessingLayer(ABC):
                      FROM queue q
                      JOIN books b ON q.book_id = b.id
                      WHERE b.verification_layer = ?
-                       AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files')
+                       AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
                        AND (b.user_locked IS NULL OR b.user_locked = 0)
                      ORDER BY q.priority, q.added_at
                      LIMIT ?''', (self.layer_number, limit))
