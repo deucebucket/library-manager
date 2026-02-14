@@ -186,6 +186,7 @@ class PrecogVoting:
         if len(word) in (2, 3) and word.isalpha():
             # Collapsed initials are consonant-only: "jrr", "jk", "cs", "jb"
             # Real names always have vowels: "lee", "amy", "sam", "ed", "jo"
+            # Note: rare vowel-less surnames like "Ng" won't expand (acceptable)
             if not any(c in vowels for c in word):
                 return list(word)
         return [word]
@@ -208,6 +209,9 @@ class PrecogVoting:
         Single-letter initials match full words starting with that letter,
         weighted at 0.7 instead of 1.0 for exact matches. Collapsed initials
         like 'jrr' are expanded to ['j', 'r', 'r'] before comparison.
+
+        Returns:
+            Similarity score between 0.0 and 1.0.
         """
         # Expand collapsed initials in both lists
         expanded1 = []
@@ -227,21 +231,17 @@ class PrecogVoting:
         used = set()  # Track which indices in longer list have been matched
 
         for sw in shorter:
-            matched = False
             for i, lw in enumerate(longer):
                 if i in used:
                     continue
                 if sw == lw:
                     score += 1.0
                     used.add(i)
-                    matched = True
                     break
                 if self._is_initial_match(sw, lw):
                     score += 0.7
                     used.add(i)
-                    matched = True
                     break
-            # Unmatched words contribute nothing
 
         max_words = max(len(expanded1), len(expanded2))
         return score / max_words if max_words > 0 else 0

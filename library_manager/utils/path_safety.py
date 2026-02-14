@@ -315,7 +315,7 @@ def _normalize_author_for_matching(name):
     return n.strip()
 
 
-def _is_initial_match_for_author(name1_words, name2_words) -> bool:
+def _is_initial_match_for_author(name1_words: list, name2_words: list) -> bool:
     """Check if two author name word lists match with initial awareness.
 
     Handles cases like "C Alanson" matching "Craig Alanson" where
