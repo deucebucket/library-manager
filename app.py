@@ -6829,7 +6829,11 @@ def dashboard():
     c.execute("SELECT COUNT(*) as count FROM books WHERE status NOT IN ('series_folder', 'multi_book_files')")
     total_books = c.fetchone()['count']
 
-    c.execute('SELECT COUNT(*) as count FROM queue')
+    # Issue #131: Count only processable queue items (matching process_queue filters)
+    c.execute('''SELECT COUNT(*) as count FROM queue q
+                 JOIN books b ON q.book_id = b.id
+                 WHERE b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                   AND (b.user_locked IS NULL OR b.user_locked = 0)''')
     queue_size = c.fetchone()['count']
 
     c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'fixed'")
@@ -9066,10 +9070,11 @@ def api_library():
                  WHERE h.status = 'pending_fix' ''')
     counts['pending'] = c.fetchone()[0]
 
-    # Issue #36: Queue count should exclude series_folder and multi_book_files
+    # Issue #131: Count only processable queue items (matching process_queue filters)
     c.execute('''SELECT COUNT(*) FROM queue q
                  JOIN books b ON q.book_id = b.id
-                 WHERE b.status NOT IN ('series_folder', 'multi_book_files', 'verified', 'fixed')''')
+                 WHERE b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                   AND (b.user_locked IS NULL OR b.user_locked = 0)''')
     counts['queue'] = c.fetchone()[0]
 
     # Issue #79: Use JOIN to match the fetch query - only count items with existing books
