@@ -234,7 +234,7 @@ def process_layer_1_audio(
     c = conn.cursor()
 
     # Process items that haven't been through audio identification yet
-    # ALSO include 'needs_attention' items - they failed old system, might succeed with audio
+    # Exclude needs_attention - items requiring human review should not be auto-processed
     c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
                         b.path, b.current_author, b.current_title, b.verification_layer
                  FROM queue q
