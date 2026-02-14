@@ -234,13 +234,13 @@ def process_layer_1_audio(
     c = conn.cursor()
 
     # Process items that haven't been through audio identification yet
-    # ALSO include 'needs_attention' items - they failed old system, might succeed with audio
+    # Exclude needs_attention - items requiring human review should not be auto-processed
     c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
                         b.path, b.current_author, b.current_title, b.verification_layer
                  FROM queue q
                  JOIN books b ON q.book_id = b.id
                  WHERE b.verification_layer IN (0, 1)
-                   AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files')
+                   AND b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
                    AND (b.user_locked IS NULL OR b.user_locked = 0)
                  ORDER BY q.priority, q.added_at
                  LIMIT ?''', (batch_size,))
