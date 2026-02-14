@@ -174,6 +174,78 @@ class PrecogVoting:
                 normalized = normalized[len(prefix):]
         return normalized
 
+    def _expand_collapsed_initials(self, word: str) -> List[str]:
+        """Expand collapsed initials like 'jrr' into ['j', 'r', 'r'].
+
+        Only expands words that are 2-3 consonant-only letters, which is the
+        hallmark of collapsed initials (JRR, JK, CS, etc.). Real names and
+        words virtually always contain vowels (Lee, Amy, Sam, Ed, etc.) so
+        this avoids false expansion.
+        """
+        vowels = set("aeiou")
+        if len(word) in (2, 3) and word.isalpha():
+            # Collapsed initials are consonant-only: "jrr", "jk", "cs", "jb"
+            # Real names always have vowels: "lee", "amy", "sam", "ed", "jo"
+            # Note: rare vowel-less surnames like "Ng" won't expand (acceptable)
+            if not any(c in vowels for c in word):
+                return list(word)
+        return [word]
+
+    def _is_initial_match(self, word1: str, word2: str) -> bool:
+        """Check if one word is an initial of the other.
+
+        Returns True if a single-character word matches the first letter of
+        the other word (e.g., 'c' matches 'craig').
+        """
+        if len(word1) == 1 and len(word2) > 1:
+            return word2.startswith(word1)
+        if len(word2) == 1 and len(word1) > 1:
+            return word1.startswith(word2)
+        return False
+
+    def _initial_aware_similarity(self, words1: List[str], words2: List[str]) -> float:
+        """Calculate similarity between word lists with initial-aware matching.
+
+        Single-letter initials match full words starting with that letter,
+        weighted at 0.7 instead of 1.0 for exact matches. Collapsed initials
+        like 'jrr' are expanded to ['j', 'r', 'r'] before comparison.
+
+        Returns:
+            Similarity score between 0.0 and 1.0.
+        """
+        # Expand collapsed initials in both lists
+        expanded1 = []
+        for w in words1:
+            expanded1.extend(self._expand_collapsed_initials(w))
+        expanded2 = []
+        for w in words2:
+            expanded2.extend(self._expand_collapsed_initials(w))
+
+        # Use the shorter list as the reference to match against the longer
+        if len(expanded1) <= len(expanded2):
+            shorter, longer = expanded1, expanded2
+        else:
+            shorter, longer = expanded2, expanded1
+
+        score = 0.0
+        used = set()  # Track which indices in longer list have been matched
+
+        for sw in shorter:
+            for i, lw in enumerate(longer):
+                if i in used:
+                    continue
+                if sw == lw:
+                    score += 1.0
+                    used.add(i)
+                    break
+                if self._is_initial_match(sw, lw):
+                    score += 0.7
+                    used.add(i)
+                    break
+
+        max_words = max(len(expanded1), len(expanded2))
+        return score / max_words if max_words > 0 else 0
+
     def _texts_match(self, text1: Optional[str], text2: Optional[str], threshold: float = 0.8) -> bool:
         """Check if two texts match (fuzzy comparison)."""
         norm1 = self._normalize_text(text1)
@@ -200,7 +272,13 @@ class PrecogVoting:
         max_words = max(len(words1), len(words2))
         similarity = overlap / max_words if max_words > 0 else 0
 
-        return similarity >= threshold
+        if similarity >= threshold:
+            return True
+
+        # Initial-aware matching: handles "C Alanson" vs "Craig Alanson",
+        # "JRR Tolkien" vs "J R R Tolkien", etc.
+        initial_sim = self._initial_aware_similarity(norm1.split(), norm2.split())
+        return initial_sim >= threshold
 
     def _is_generic_title(self, title: Optional[str]) -> bool:
         """Check if a title is generic and prone to mismatches."""

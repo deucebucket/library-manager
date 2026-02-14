@@ -315,6 +315,43 @@ def _normalize_author_for_matching(name):
     return n.strip()
 
 
+def _is_initial_match_for_author(name1_words: list, name2_words: list) -> bool:
+    """Check if two author name word lists match with initial awareness.
+
+    Handles cases like "C Alanson" matching "Craig Alanson" where
+    a single-character word matches the first letter of the corresponding word.
+
+    Args:
+        name1_words: List of lowercase words from first name.
+        name2_words: List of lowercase words from second name.
+
+    Returns True if all words match (exact or initial) and at least one
+    non-initial word matches exactly.
+    """
+    if not name1_words or not name2_words or len(name1_words) != len(name2_words):
+        return False
+
+    exact_matches = 0
+    initial_matches = 0
+
+    for w1, w2 in zip(name1_words, name2_words):
+        # Strip trailing periods for initial detection ("j." -> "j")
+        w1_clean = w1.rstrip('.')
+        w2_clean = w2.rstrip('.')
+        if w1_clean == w2_clean:
+            exact_matches += 1
+        elif len(w1_clean) == 1 and len(w2_clean) > 1 and w2_clean.startswith(w1_clean):
+            initial_matches += 1
+        elif len(w2_clean) == 1 and len(w1_clean) > 1 and w1_clean.startswith(w2_clean):
+            initial_matches += 1
+        else:
+            return False
+
+    # Must have at least one exact word match (the surname) to avoid
+    # "A B" matching "Agatha Brown" when it shouldn't
+    return exact_matches >= 1 and initial_matches >= 1
+
+
 def find_existing_author_folder(lib_path, target_author) -> Optional[str]:
     """Find an existing author folder that matches target_author (Issue #142).
 
@@ -328,7 +365,8 @@ def find_existing_author_folder(lib_path, target_author) -> Optional[str]:
     Matching strategies (in order):
     1. Exact normalized match (case-insensitive, whitespace-collapsed)
     2. Standardized initials match (both through standardize_initials())
-    3. difflib.SequenceMatcher fuzzy match (ratio >= 0.85)
+    3. Initial-aware match ("C Alanson" matches "Craig Alanson")
+    4. difflib.SequenceMatcher fuzzy match (ratio >= 0.85)
 
     Returns the existing folder name if found, None otherwise.
     """
@@ -351,6 +389,7 @@ def find_existing_author_folder(lib_path, target_author) -> Optional[str]:
 
     target_normalized = _normalize_author_for_matching(target_author)
     target_initials = _normalize_author_for_matching(standardize_initials(target_author))
+    target_words = target_normalized.split()
 
     best_match = None
     best_ratio = 0.0
@@ -367,7 +406,14 @@ def find_existing_author_folder(lib_path, target_author) -> Optional[str]:
         if target_initials == dir_initials:
             return dirname
 
-        # Strategy 3: Fuzzy match with SequenceMatcher
+        # Strategy 3: Initial-aware match (e.g., "C Alanson" vs "Craig Alanson")
+        dir_words = dir_normalized.split()
+        if _is_initial_match_for_author(target_words, dir_words):
+            logger.info(f"[DEDUP] Reusing existing folder '{dirname}' for author '{target_author}' "
+                        f"(initial match)")
+            return dirname
+
+        # Strategy 4: Fuzzy match with SequenceMatcher
         ratio = SequenceMatcher(None, target_normalized, dir_normalized).ratio()
         if ratio >= 0.85 and ratio > best_ratio:
             best_ratio = ratio
