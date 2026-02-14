@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.114-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.125-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,11 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.125** - **Bug Fixes: Badge Counts, Author Matching, Pipeline Filters** (Issues #150, #152)
+> - **Badge count fix** - Dashboard and library page queue counts now match actual processable items
+> - **Author initial matching** - "C Alanson" now correctly matches "Craig Alanson", "JRR Tolkien" matches "J R R Tolkien"
+> - **Pipeline consistency** - All processing layers now skip `needs_attention` books instead of wasting cycles
 
 > **beta.114** - 🔐 **Secure API Key Registration** (Issue #117)
 > - **Email-Only Delivery** - API keys no longer shown on screen, sent to email only

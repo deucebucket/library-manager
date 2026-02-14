@@ -2,6 +2,23 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.125] - 2026-02-14
+
+### Fixed
+
+- **Issue #150: Badge count regression** - Dashboard initial render and `/api/library` queue count
+  now use the same filtered query as `/api/stats` (regression from #131 fix). Excludes
+  `needs_attention`, `user_locked`, and container statuses. Badge no longer flickers on page load.
+- **Issue #150: Author initial matching** - Precog voting system now handles initial-only author
+  names. "C Alanson" matches "Craig Alanson", "JRR Tolkien" matches "J R R Tolkien". Uses
+  consonant-only detection for collapsed initials and 0.7 weighted scoring for initial matches.
+  Also added initial-aware folder dedup in `path_safety.py` to prevent duplicate author folders.
+- **Issue #152: Pipeline fetch consistency** - `base_layer.py` and `layer_audio_id.py` now exclude
+  `needs_attention` books from queue fetch, matching all other pipeline layers. Prevents wasting
+  processing cycles on items that need human review.
+
+---
+
 ## [0.9.0-beta.123] - 2026-02-11
 
 ### Added
