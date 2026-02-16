@@ -1256,8 +1256,13 @@ function searchBookDB() {
     resultsDiv.style.display = 'block';
 
     fetch(`/api/search_bookdb?q=${encodeURIComponent(query)}&limit=20`)
-        .then(r => r.json())
-        .then(data => {
+        .then(r => r.json().then(data => ({status: r.status, data})))
+        .then(({status, data}) => {
+            if (data.rate_limited) {
+                resultsList.innerHTML = `<div class="list-group-item bg-dark text-warning">Rate limited. Try again in ${data.retry_after || 60}s.</div>`;
+                if (typeof showToast === 'function') showToast(`Skaldleita rate limited. Retry in ${data.retry_after || 60}s.`, 'warning');
+                return;
+            }
             if (data.error) {
                 resultsList.innerHTML = `<div class="list-group-item bg-dark text-danger">${data.error}</div>`;
                 return;
