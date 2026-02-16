@@ -2,10 +2,15 @@
 
 All notable changes to Library Manager will be documented in this file.
 
-## [0.9.0-beta.127] - 2026-02-16
+## [0.9.0-beta.128] - 2026-02-16
 
 ### Added
 
+- **Issue #113: User feedback and crash reporting** - New feedback system with floating button in
+  bottom-right corner. Users can submit bug reports, corrections, and feature requests with
+  optional session activity log and system info. Includes crash auto-prompt on 500 errors,
+  path/API key sanitization, and best-effort forwarding to Skaldleita API. Local storage in
+  `feedback.json` ensures feedback is never lost.
 - **Issue #127: Path-based completion for partial results** - When Skaldleita returns truncated
   names (e.g., "James S. A" instead of "James S. A. Corey"), the system now uses folder path
   information to complete the full name. Also extracts series information from path structure

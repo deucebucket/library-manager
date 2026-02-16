@@ -892,6 +892,110 @@
         </div>
     </div>
 
+    <!-- Feedback Button -->
+    <button id="feedback-btn" onclick="showFeedbackModal()" title="{{ _('Send Feedback') }}"
+        style="position: fixed; bottom: 24px; right: 24px; z-index: 1040;
+               width: 48px; height: 48px; border-radius: 50%; border: none;
+               background: var(--theme-accent-primary); color: #fff;
+               box-shadow: 0 4px 16px rgba(0,0,0,0.4); cursor: pointer;
+               display: flex; align-items: center; justify-content: center;
+               font-size: 1.3rem; transition: transform 0.2s, box-shadow 0.2s;">
+        <i class="bi bi-chat-dots"></i>
+    </button>
+    <style>
+        #feedback-btn:hover { transform: scale(1.1); box-shadow: 0 6px 24px rgba(0,0,0,0.5); }
+    </style>
+
+    <!-- Feedback Modal -->
+    <div class="modal fade" id="feedbackModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content" style="background: var(--theme-bg-secondary); color: var(--theme-text-primary);">
+                <div class="modal-header" style="border-color: var(--theme-border-primary);">
+                    <h5 class="modal-title"><i class="bi bi-chat-dots"></i> {{ _('Send Feedback') }}</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">{{ _('Category') }}</label>
+                        <select class="form-select" id="feedback-category"
+                            style="background: var(--theme-bg-card); color: var(--theme-text-primary); border-color: var(--theme-border-primary);">
+                            <option value="bug">{{ _('Bug Report') }}</option>
+                            <option value="correction">{{ _('Correction') }}</option>
+                            <option value="feature">{{ _('Feature Request') }}</option>
+                            <option value="other">{{ _('Other') }}</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">{{ _('Description') }}</label>
+                        <textarea class="form-control" id="feedback-description" rows="4"
+                            placeholder="{{ _('Describe the issue or suggestion...') }}"
+                            style="background: var(--theme-bg-card); color: var(--theme-text-primary); border-color: var(--theme-border-primary);"></textarea>
+                    </div>
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" id="feedback-include-log" checked>
+                        <label class="form-check-label" for="feedback-include-log">
+                            {{ _('Include session activity log') }}
+                            <small class="text-muted d-block">{{ _('Recent actions (paths are anonymized)') }}</small>
+                        </label>
+                    </div>
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" id="feedback-include-system" checked>
+                        <label class="form-check-label" for="feedback-include-system">
+                            {{ _('Include system info') }}
+                            <small class="text-muted d-block">{{ _('App version, OS, Python version') }}</small>
+                        </label>
+                    </div>
+                </div>
+                <div class="modal-footer" style="border-color: var(--theme-border-primary);">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{{ _('Cancel') }}</button>
+                    <button type="button" class="btn btn-primary" onclick="submitFeedback()" id="feedback-submit-btn">
+                        <i class="bi bi-send"></i> {{ _('Submit') }}
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Error Feedback Prompt (shown after crashes) -->
+    <div class="modal fade" id="errorFeedbackModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content" style="background: var(--theme-bg-secondary); color: var(--theme-text-primary);">
+                <div class="modal-header" style="border-color: var(--theme-border-primary);">
+                    <h5 class="modal-title"><i class="bi bi-exclamation-triangle text-warning"></i> {{ _('Something went wrong') }}</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p>{{ _('An error occurred. Would you like to send a report to help us fix it?') }}</p>
+                    <div class="mb-3">
+                        <label for="error-feedback-description" class="form-label">{{ _('What were you doing?') }}</label>
+                        <textarea class="form-control" id="error-feedback-description" rows="3"
+                                  placeholder="{{ _('Optional: describe what you were doing when the error occurred...') }}"
+                                  style="background: var(--theme-bg-card); color: var(--theme-text-primary); border-color: var(--theme-border-primary);"></textarea>
+                    </div>
+                    <div class="p-2 small" style="background: rgba(0,0,0,0.2); border-radius: 8px;">
+                        <strong>{{ _('Error') }}:</strong> <span id="error-feedback-message" class="text-danger"></span>
+                    </div>
+                </div>
+                <div class="modal-footer" style="border-color: var(--theme-border-primary);">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{{ _('Dismiss') }}</button>
+                    <button type="button" class="btn btn-warning" onclick="submitErrorFeedback()" id="error-feedback-submit-btn">
+                        <i class="bi bi-send"></i> {{ _('Send Report') }}
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Feedback Toast -->
+    <div class="position-fixed bottom-0 end-0 p-3" style="z-index: 1090;">
+        <div id="feedbackToast" class="toast" role="alert" style="background: var(--theme-bg-secondary); color: var(--theme-text-primary); border: 1px solid var(--theme-border-primary);">
+            <div class="toast-body d-flex align-items-center gap-2">
+                <i id="feedbackToastIcon" class="bi bi-check-circle text-success"></i>
+                <span id="feedbackToastMsg">Feedback submitted!</span>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         let updateData = null;
@@ -1220,6 +1324,111 @@
                     setTimeout(() => { window.location.reload(); }, 5000);
                 });
         }
+
+        // ===== Feedback System =====
+        function showFeedbackModal() {
+            document.getElementById('feedback-description').value = '';
+            document.getElementById('feedback-category').value = 'bug';
+            document.getElementById('feedback-submit-btn').disabled = false;
+            document.getElementById('feedback-submit-btn').innerHTML = '<i class="bi bi-send"></i> Submit';
+            new bootstrap.Modal(document.getElementById('feedbackModal')).show();
+        }
+
+        function submitFeedback() {
+            var desc = document.getElementById('feedback-description').value.trim();
+            if (!desc) {
+                document.getElementById('feedback-description').classList.add('is-invalid');
+                return;
+            }
+            document.getElementById('feedback-description').classList.remove('is-invalid');
+
+            var btn = document.getElementById('feedback-submit-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Sending...';
+
+            fetch('/api/feedback', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    category: document.getElementById('feedback-category').value,
+                    description: desc,
+                    include_session_log: document.getElementById('feedback-include-log').checked,
+                    include_system_info: document.getElementById('feedback-include-system').checked
+                })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                bootstrap.Modal.getInstance(document.getElementById('feedbackModal')).hide();
+                showFeedbackToast(data.success, data.success ? 'Feedback submitted. Thank you!' : (data.error || 'Failed to submit'));
+            })
+            .catch(function(e) {
+                bootstrap.Modal.getInstance(document.getElementById('feedbackModal')).hide();
+                showFeedbackToast(false, 'Failed to submit feedback');
+            });
+        }
+
+        function showFeedbackToast(success, msg) {
+            var icon = document.getElementById('feedbackToastIcon');
+            icon.className = success ? 'bi bi-check-circle text-success' : 'bi bi-exclamation-circle text-danger';
+            document.getElementById('feedbackToastMsg').textContent = msg;
+            var toast = new bootstrap.Toast(document.getElementById('feedbackToast'), {delay: 4000});
+            toast.show();
+        }
+
+        // ===== Error Crash Auto-Prompt =====
+        var _lastErrorContext = null;
+
+        function showErrorFeedbackPrompt(errorMessage) {
+            _lastErrorContext = errorMessage;
+            document.getElementById('error-feedback-message').textContent = errorMessage || 'Unknown error';
+            document.getElementById('error-feedback-description').value = '';
+            document.getElementById('error-feedback-submit-btn').disabled = false;
+            document.getElementById('error-feedback-submit-btn').innerHTML = '<i class="bi bi-send"></i> Send Report';
+            new bootstrap.Modal(document.getElementById('errorFeedbackModal')).show();
+        }
+
+        function submitErrorFeedback() {
+            var description = document.getElementById('error-feedback-description').value.trim();
+            var errorMsg = _lastErrorContext || 'Unknown error';
+            var btn = document.getElementById('error-feedback-submit-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Sending...';
+
+            fetch('/api/feedback', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    category: 'bug',
+                    description: (description ? description + '\n\n' : '') + 'Auto-reported error: ' + errorMsg,
+                    include_session_log: true,
+                    include_system_info: true
+                })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                bootstrap.Modal.getInstance(document.getElementById('errorFeedbackModal')).hide();
+                showFeedbackToast(data.success, data.success ? 'Error report submitted. Thank you!' : 'Could not submit report.');
+            })
+            .catch(function() {
+                bootstrap.Modal.getInstance(document.getElementById('errorFeedbackModal')).hide();
+                showFeedbackToast(false, 'Could not submit report.');
+            });
+        }
+
+        // Intercept fetch responses to detect 500 errors with suggest_feedback
+        var _originalFetch = window.fetch;
+        window.fetch = function() {
+            return _originalFetch.apply(this, arguments).then(function(response) {
+                if (response.status === 500) {
+                    response.clone().json().then(function(data) {
+                        if (data && data.suggest_feedback) {
+                            showErrorFeedbackPrompt(data.error || 'Internal server error');
+                        }
+                    }).catch(function() {});
+                }
+                return response;
+            });
+        };
     </script>
     {% block scripts %}{% endblock %}
 </body>
