@@ -86,7 +86,7 @@ def record_api_success(api_name):
         API_CIRCUIT_BREAKER[api_name]['failures'] = 0
 
 
-def handle_rate_limit_response(response, api_name, retry_count=0, max_retries=2):
+def handle_rate_limit_response(response, api_name: str, retry_count: int = 0, max_retries: int = 2) -> dict:
     """
     Handle a 429 response with exponential backoff and circuit breaker.
 
