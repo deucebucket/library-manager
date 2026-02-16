@@ -3043,7 +3043,7 @@ def search_bookdb_api(title, author=None, retry_count=0):
     # Build headers with auth (Skaldleita requires auth on all endpoints)
     secrets = load_secrets()
     api_key = secrets.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
-    headers = get_signed_headers()
+    headers = get_signed_headers() or {}
     headers['X-API-Key'] = api_key
 
     try:
@@ -10954,7 +10954,7 @@ def api_search_bookdb():
         # Build headers with auth (Skaldleita requires auth on all endpoints)
         secrets = load_secrets()
         api_key = secrets.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
-        headers = get_signed_headers()
+        headers = get_signed_headers() or {}
         headers['X-API-Key'] = api_key
 
         if search_type == 'all':
