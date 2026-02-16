@@ -111,6 +111,10 @@ from library_manager.instance import (
     get_instance_data,
     save_instance_data,
 )
+from library_manager.feedback import (
+    log_action, get_session_log, log_error as feedback_log_error,
+    get_system_info, store_feedback, sanitize_string as feedback_sanitize,
+)
 from library_manager.folder_triage import triage_folder, triage_book_path, should_use_path_hints, confidence_modifier
 from library_manager.hints import get_all_hints
 
@@ -609,6 +613,31 @@ _startup_logger.info(f"Data directory: {DATA_DIR} (config persistence location)"
 # ============== LEGACY CONFIGURATION REMOVED ==============
 # Configuration code has been moved to library_manager/config.py
 # Database code has been moved to library_manager/database.py
+
+# ============== ERROR HANDLERS ==============
+
+@app.errorhandler(500)
+def handle_500(error):
+    feedback_log_error(error, context="500_error")
+    logger.error(f"Internal server error: {error}")
+    if request.path.startswith('/api/'):
+        return jsonify({
+            'success': False,
+            'error': 'Internal server error',
+            'suggest_feedback': True,
+        }), 500
+    return render_template('base.html',
+        config=load_config(),
+        worker_running=is_worker_running(),
+    ), 500
+
+
+@app.errorhandler(404)
+def handle_404(error):
+    if request.path.startswith('/api/'):
+        return jsonify({'success': False, 'error': 'Not found'}), 404
+    return redirect('/')
+
 
 # ============== ANONYMOUS ERROR REPORTING ==============
 
@@ -7263,6 +7292,7 @@ def api_scan():
 
     config = load_config()
     checked, scanned, queued = scan_library(config)
+    log_action("scan", detail=f"checked={checked} scanned={scanned} queued={queued}", result="success")
     return jsonify({
         'success': True,
         'checked': checked,      # Total book folders examined
@@ -7769,6 +7799,8 @@ def api_process():
     update_processing_status('active', False)
     clear_current_book()
 
+    log_action("process", detail=f"processed={processed} fixed={fixed} remaining={remaining}", result="success")
+
     # Build helpful status message
     if remaining == 0:
         status = 'complete'
@@ -7932,6 +7964,7 @@ def api_live_status():
 def api_apply_fix(history_id):
     """Apply a specific fix."""
     success, message = apply_fix(history_id)
+    log_action("apply_fix", detail=f"history_id={history_id}", result="success" if success else "error")
     return jsonify({'success': success, 'message': message})
 
 @app.route('/api/reject_fix/<int:history_id>', methods=['POST'])
@@ -7959,6 +7992,7 @@ def api_reject_fix(history_id):
     conn.close()
 
     logger.info(f"Rejected fix {history_id}, book {book_id} marked as verified")
+    log_action("reject_fix", detail=f"history_id={history_id}", result="success")
     return jsonify({'success': True})
 
 @app.route('/api/dismiss_error/<int:history_id>', methods=['POST'])
@@ -8005,6 +8039,7 @@ def api_apply_all_pending():
         else:
             errors += 1
 
+    log_action("apply_all", detail=f"applied={applied} errors={errors}", result="success")
     return jsonify({
         'success': True,
         'applied': applied,
@@ -8696,6 +8731,37 @@ def api_send_error_reports():
     return jsonify(result)
 
 
+@app.route('/api/feedback', methods=['POST'])
+def api_feedback():
+    data = request.get_json()
+    if not data:
+        return jsonify({'success': False, 'error': 'No data provided'}), 400
+    category = data.get('category', '').strip()
+    description = data.get('description', '').strip()
+    if not description:
+        return jsonify({'success': False, 'error': 'Description is required'}), 400
+    valid_categories = ['bug', 'correction', 'feature', 'other']
+    if category not in valid_categories:
+        category = 'other'
+    feedback_id = f"fb-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{get_instance_id()[-4:]}"
+    entry = {
+        "feedback_id": feedback_id,
+        "timestamp": datetime.now().isoformat(),
+        "instance_id": get_instance_id(),
+        "app_version": APP_VERSION,
+        "category": category,
+        "description": feedback_sanitize(description[:2000]),
+    }
+    if data.get('include_session_log', True):
+        entry["session_log"] = get_session_log()
+    if data.get('include_system_info', True):
+        entry["system_info"] = get_system_info(APP_VERSION)
+    result = store_feedback(entry)
+    if result.get('success'):
+        log_action('feedback_submit', detail=category, result='success')
+    return jsonify(result)
+
+
 @app.route('/api/analyze_path', methods=['POST'])
 def api_analyze_path():
     """
@@ -8748,12 +8814,14 @@ def api_analyze_path():
 def api_start_worker():
     """Start background worker."""
     start_worker()
+    log_action("worker_start", result="success")
     return jsonify({'success': True})
 
 @app.route('/api/worker/stop', methods=['POST'])
 def api_stop_worker():
     """Stop background worker."""
     stop_worker()
+    log_action("worker_stop", result="success")
     return jsonify({'success': True})
 
 
