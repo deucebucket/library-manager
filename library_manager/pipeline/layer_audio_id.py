@@ -276,7 +276,7 @@ def _complete_result_from_path(result: Dict, folder_hint: str, book_path: str) -
                 if series_match:
                     potential_series = series_match.group(1).strip()
                     potential_num = series_match.group(2).strip()
-                    # Only use if the series name is meaningful (not just the title)
+                    # Min length 3 to avoid false matches like "The" or "No"
                     if (len(potential_series) >= 3
                             and potential_series.lower() != sl_title.lower()
                             and potential_series.lower() != (result.get('author') or '').lower()):
@@ -292,12 +292,20 @@ def _complete_result_from_path(result: Dict, folder_hint: str, book_path: str) -
         raw_conf = result.get('confidence', 0.7)
         try:
             if isinstance(raw_conf, str):
-                # String confidence levels - bump up one tier
-                if raw_conf == 'low':
-                    result['confidence'] = 'medium'
-                elif raw_conf == 'medium':
-                    result['confidence'] = 'high'
-                # 'high' stays high
+                # SL can return string levels or numeric strings like "0.7"
+                try:
+                    numeric = float(raw_conf)
+                    if numeric <= 1:
+                        result['confidence'] = min(0.95, numeric + 0.05)
+                    else:
+                        result['confidence'] = min(95, numeric + 5)
+                except ValueError:
+                    # Named confidence levels - bump up one tier
+                    if raw_conf == 'low':
+                        result['confidence'] = 'medium'
+                    elif raw_conf == 'medium':
+                        result['confidence'] = 'high'
+                    # 'high' stays high
             elif isinstance(raw_conf, (int, float)):
                 # Numeric confidence - small boost (5%) for path agreement, cap at 0.95
                 if raw_conf <= 1:
