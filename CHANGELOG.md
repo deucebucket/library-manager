@@ -2,6 +2,18 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Issue #113: User feedback and crash reporting** - New feedback system with floating button in
+  bottom-right corner. Users can submit bug reports, corrections, and feature requests with
+  optional session activity log and system info. Includes crash auto-prompt on 500 errors,
+  path/API key sanitization, and best-effort forwarding to Skaldleita API. Local storage in
+  `feedback.json` ensures feedback is never lost.
+
+---
+
 ## [0.9.0-beta.125] - 2026-02-14
 
 ### Fixed

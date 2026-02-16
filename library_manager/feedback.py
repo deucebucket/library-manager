@@ -157,7 +157,7 @@ def store_feedback(feedback_data):
         feedback_id = feedback_data.get("feedback_id", "unknown")
         logger.info(f"Feedback stored locally: {feedback_id}")
 
-    except Exception as e:
+    except (IOError, OSError, json.JSONDecodeError) as e:
         logger.error(f"Failed to store feedback: {e}")
         return {"success": False, "error": str(e)}
 
