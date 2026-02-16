@@ -3040,13 +3040,13 @@ def search_bookdb_api(title, author=None, retry_count=0):
 
     rate_limit_wait('bookdb')  # 3.6s delay = max 1000/hr, never skips
 
-    try:
-        # Build headers with auth (Skaldleita requires auth on all endpoints)
-        secrets = load_secrets()
-        api_key = secrets.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
-        headers = get_signed_headers()
-        headers['X-API-Key'] = api_key
+    # Build headers with auth (Skaldleita requires auth on all endpoints)
+    secrets = load_secrets()
+    api_key = secrets.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
+    headers = get_signed_headers()
+    headers['X-API-Key'] = api_key
 
+    try:
         # Use longer timeout for cold start (embedding model can take 45-60s to load)
         # Retry once on timeout
         for attempt in range(2):
@@ -10953,9 +10953,9 @@ def api_search_bookdb():
 
         # Build headers with auth (Skaldleita requires auth on all endpoints)
         secrets = load_secrets()
-        sl_api_key = secrets.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
-        sl_headers = get_signed_headers()
-        sl_headers['X-API-Key'] = sl_api_key
+        api_key = secrets.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
+        headers = get_signed_headers()
+        headers['X-API-Key'] = api_key
 
         if search_type == 'all':
             endpoint = f"{BOOKDB_API_URL}/search"
@@ -10963,7 +10963,7 @@ def api_search_bookdb():
             endpoint = f"{BOOKDB_API_URL}/search/{search_type}"
 
         # Longer timeout for cold start (embedding model can take 45-60s to load)
-        resp = requests.get(endpoint, params=params, headers=sl_headers, timeout=60)
+        resp = requests.get(endpoint, params=params, headers=headers, timeout=60)
 
         if resp.status_code == 429:
             retry_after = resp.headers.get('Retry-After', '60')

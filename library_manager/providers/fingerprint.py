@@ -145,6 +145,8 @@ def lookup_fingerprint(
         )
 
         if response.status_code == 429:
+            # Fingerprint lookups are supplementary - fail fast, don't retry.
+            # The circuit breaker will back off future requests automatically.
             rl = handle_rate_limit_response(response, 'bookdb')
             logger.warning(f"[FINGERPRINT] Rate limited (retry_after: {rl['retry_after']})")
             return None
@@ -228,6 +230,7 @@ def contribute_fingerprint(
         )
 
         if response.status_code == 429:
+            # Contributions are best-effort - fail fast, don't retry
             rl = handle_rate_limit_response(response, 'bookdb')
             logger.warning(f"[FINGERPRINT] Contribution rate limited (retry_after: {rl['retry_after']})")
             return False
@@ -520,6 +523,7 @@ def lookup_narrator(
         )
 
         if response.status_code == 429:
+            # Narrator lookups are supplementary - fail fast, don't retry
             handle_rate_limit_response(response, 'bookdb')
             logger.warning("[NARRATOR] Lookup rate limited")
             return None
