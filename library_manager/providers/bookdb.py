@@ -23,6 +23,7 @@ from library_manager.providers.rate_limiter import (
     is_circuit_open,
     record_api_failure,
     record_api_success,
+    handle_rate_limit_response,
     API_CIRCUIT_BREAKER,
 )
 from library_manager.utils.voice_embedding import (
@@ -148,30 +149,14 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
             timeout=10
         )
 
-        # Handle rate limiting - respect Retry-After header from server
+        # Handle rate limiting with exponential backoff
         if resp.status_code == 429:
-            # Increment circuit breaker failures
-            if 'bookdb' in API_CIRCUIT_BREAKER:
-                cb = API_CIRCUIT_BREAKER['bookdb']
-                cb['failures'] = cb.get('failures', 0) + 1
-                if cb['failures'] >= cb.get('max_failures', 5):
-                    cb['circuit_open_until'] = time.time() + cb.get('cooldown', 120)
-                    logger.warning(f"Skaldleita: Circuit OPEN after {cb['failures']} rate limits, backing off for {cb['cooldown']}s")
-                    return None
-
-            if retry_count < 2:  # Reduced retries since we have circuit breaker now
-                retry_after = resp.headers.get('Retry-After', '60')
-                try:
-                    wait_time = min(int(retry_after), 120)  # Cap at 2 minutes
-                except ValueError:
-                    wait_time = 30 * (retry_count + 1)  # Fallback: 30s, 60s
-                logger.info(f"Skaldleita rate limited, waiting {wait_time}s (Retry-After: {retry_after})...")
-                time.sleep(wait_time)
+            rl = handle_rate_limit_response(resp, 'bookdb', retry_count)
+            if rl['should_retry']:
+                time.sleep(rl['wait_seconds'])
                 return search_bookdb(title, author, api_key, retry_count + 1, bookdb_url,
                                      config, data_dir, cache_getter)
-            else:
-                logger.warning("Skaldleita rate limited, max retries reached")
-                return None
+            return None
 
         if resp.status_code != 200:
             logger.debug(f"Skaldleita returned status {resp.status_code}")

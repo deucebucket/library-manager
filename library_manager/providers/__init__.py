@@ -19,6 +19,7 @@ from library_manager.providers.rate_limiter import (
     is_circuit_open,
     record_api_failure,
     record_api_success,
+    handle_rate_limit_response,
     API_RATE_LIMITS,
     API_CIRCUIT_BREAKER,
 )
@@ -29,6 +30,7 @@ from library_manager.providers.hardcover import search_hardcover
 from library_manager.providers.bookdb import (
     BOOKDB_API_URL,
     BOOKDB_PUBLIC_KEY,
+    get_signed_headers,
     search_bookdb,
     identify_audio_with_bookdb,
 )
@@ -82,6 +84,7 @@ __all__ = [
     'is_circuit_open',
     'record_api_failure',
     'record_api_success',
+    'handle_rate_limit_response',
     'API_RATE_LIMITS',
     'API_CIRCUIT_BREAKER',
     # API providers
@@ -92,6 +95,7 @@ __all__ = [
     # Skaldleita (legacy name: BookDB)
     'BOOKDB_API_URL',
     'BOOKDB_PUBLIC_KEY',
+    'get_signed_headers',
     'search_bookdb',
     'identify_audio_with_bookdb',
     # Ollama
