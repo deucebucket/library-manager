@@ -20,6 +20,8 @@ from threading import Lock
 import requests
 
 from .config import DATA_DIR
+from .signing import generate_signature
+from .providers.bookdb import get_lm_version
 
 logger = logging.getLogger(__name__)
 
@@ -174,9 +176,6 @@ def store_feedback(feedback_data):
 def _proxy_to_skaldleita(entry):
     """Forward feedback to Skaldleita API. Best-effort, never raises."""
     try:
-        from .signing import generate_signature
-        from .providers.bookdb import get_lm_version
-
         version = get_lm_version()
         timestamp = str(int(time.time()))
         headers = {
@@ -198,7 +197,7 @@ def _proxy_to_skaldleita(entry):
         else:
             logger.debug(f"Skaldleita feedback API returned {resp.status_code}")
             return False
-    except Exception as e:
+    except (requests.RequestException, KeyError, AttributeError) as e:
         logger.debug(f"Failed to proxy feedback to Skaldleita: {e}")
         return False
 
