@@ -3,18 +3,21 @@
 Provides:
 - Session action logger (circular buffer of recent user actions)
 - Path/data sanitizer (strips sensitive info)
-- Feedback storage (local JSON, structured for future Skaldleita API forwarding)
+- Feedback storage (local JSON + best-effort proxy to Skaldleita API)
 """
 import json
+import os
 import re
 import platform
 import sys
 import logging
+import time
 import traceback as tb_module
 from collections import deque
 from datetime import datetime
-from pathlib import Path
 from threading import Lock
+
+import requests
 
 from .config import DATA_DIR
 
@@ -115,11 +118,18 @@ def get_system_info(app_version):
         "os": platform.system(),
         "os_version": platform.release(),
         "arch": platform.machine(),
+        "docker": os.path.exists('/.dockerenv') or os.path.exists('/run/.containerenv'),
     }
 
 
+FEEDBACK_API_URL = "https://bookdb.deucebucket.com/api/feedback"
+
+
 def store_feedback(feedback_data):
-    """Store feedback entry locally in feedback.json.
+    """Store feedback locally, then attempt to proxy to Skaldleita API.
+
+    Local storage is the primary method. The Skaldleita proxy is
+    best-effort -- feedback is never lost if the API is unreachable.
 
     Args:
         feedback_data: dict with category, description, and optional metadata
@@ -127,6 +137,7 @@ def store_feedback(feedback_data):
     Returns:
         dict with success status and feedback_id
     """
+    # Always store locally first
     try:
         entries = []
         if FEEDBACK_PATH.exists():
@@ -145,11 +156,51 @@ def store_feedback(feedback_data):
 
         feedback_id = feedback_data.get("feedback_id", "unknown")
         logger.info(f"Feedback stored locally: {feedback_id}")
-        return {"success": True, "feedback_id": feedback_id}
 
     except Exception as e:
         logger.error(f"Failed to store feedback: {e}")
         return {"success": False, "error": str(e)}
+
+    # Attempt to proxy to Skaldleita (best-effort)
+    proxied = _proxy_to_skaldleita(feedback_data)
+
+    return {
+        "success": True,
+        "feedback_id": feedback_id,
+        "proxied": proxied,
+    }
+
+
+def _proxy_to_skaldleita(entry):
+    """Forward feedback to Skaldleita API. Best-effort, never raises."""
+    try:
+        from .signing import generate_signature
+        from .providers.bookdb import get_lm_version
+
+        version = get_lm_version()
+        timestamp = str(int(time.time()))
+        headers = {
+            'User-Agent': f'LibraryManager/{version}',
+            'X-LM-Signature': generate_signature(version, timestamp),
+            'X-LM-Timestamp': timestamp,
+            'Content-Type': 'application/json',
+        }
+
+        resp = requests.post(
+            FEEDBACK_API_URL,
+            json=entry,
+            headers=headers,
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            logger.info("Feedback proxied to Skaldleita successfully")
+            return True
+        else:
+            logger.debug(f"Skaldleita feedback API returned {resp.status_code}")
+            return False
+    except Exception as e:
+        logger.debug(f"Failed to proxy feedback to Skaldleita: {e}")
+        return False
 
 
 def get_stored_feedback():

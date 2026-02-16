@@ -956,6 +956,36 @@
         </div>
     </div>
 
+    <!-- Error Feedback Prompt (shown after crashes) -->
+    <div class="modal fade" id="errorFeedbackModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content" style="background: var(--theme-bg-secondary); color: var(--theme-text-primary);">
+                <div class="modal-header" style="border-color: var(--theme-border-primary);">
+                    <h5 class="modal-title"><i class="bi bi-exclamation-triangle text-warning"></i> {{ _('Something went wrong') }}</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p>{{ _('An error occurred. Would you like to send a report to help us fix it?') }}</p>
+                    <div class="mb-3">
+                        <label for="error-feedback-description" class="form-label">{{ _('What were you doing?') }}</label>
+                        <textarea class="form-control" id="error-feedback-description" rows="3"
+                                  placeholder="{{ _('Optional: describe what you were doing when the error occurred...') }}"
+                                  style="background: var(--theme-bg-card); color: var(--theme-text-primary); border-color: var(--theme-border-primary);"></textarea>
+                    </div>
+                    <div class="p-2 small" style="background: rgba(0,0,0,0.2); border-radius: 8px;">
+                        <strong>{{ _('Error') }}:</strong> <span id="error-feedback-message" class="text-danger"></span>
+                    </div>
+                </div>
+                <div class="modal-footer" style="border-color: var(--theme-border-primary);">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{{ _('Dismiss') }}</button>
+                    <button type="button" class="btn btn-warning" onclick="submitErrorFeedback()" id="error-feedback-submit-btn">
+                        <i class="bi bi-send"></i> {{ _('Send Report') }}
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Feedback Toast -->
     <div class="position-fixed bottom-0 end-0 p-3" style="z-index: 1090;">
         <div id="feedbackToast" class="toast" role="alert" style="background: var(--theme-bg-secondary); color: var(--theme-text-primary); border: 1px solid var(--theme-border-primary);">
@@ -1344,6 +1374,61 @@
             var toast = new bootstrap.Toast(document.getElementById('feedbackToast'), {delay: 4000});
             toast.show();
         }
+
+        // ===== Error Crash Auto-Prompt =====
+        var _lastErrorContext = null;
+
+        function showErrorFeedbackPrompt(errorMessage) {
+            _lastErrorContext = errorMessage;
+            document.getElementById('error-feedback-message').textContent = errorMessage || 'Unknown error';
+            document.getElementById('error-feedback-description').value = '';
+            document.getElementById('error-feedback-submit-btn').disabled = false;
+            document.getElementById('error-feedback-submit-btn').innerHTML = '<i class="bi bi-send"></i> Send Report';
+            new bootstrap.Modal(document.getElementById('errorFeedbackModal')).show();
+        }
+
+        function submitErrorFeedback() {
+            var description = document.getElementById('error-feedback-description').value.trim();
+            var errorMsg = _lastErrorContext || 'Unknown error';
+            var btn = document.getElementById('error-feedback-submit-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Sending...';
+
+            fetch('/api/feedback', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    category: 'bug',
+                    description: (description ? description + '\n\n' : '') + 'Auto-reported error: ' + errorMsg,
+                    include_session_log: true,
+                    include_system_info: true
+                })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                bootstrap.Modal.getInstance(document.getElementById('errorFeedbackModal')).hide();
+                showFeedbackToast(data.success, data.success ? 'Error report submitted. Thank you!' : 'Could not submit report.');
+            })
+            .catch(function() {
+                bootstrap.Modal.getInstance(document.getElementById('errorFeedbackModal')).hide();
+                showFeedbackToast(false, 'Could not submit report.');
+            });
+        }
+
+        // Intercept fetch responses to detect 500 errors with suggest_feedback
+        var _originalFetch = window.fetch;
+        window.fetch = function() {
+            return _originalFetch.apply(this, arguments).then(function(response) {
+                if (response.status === 500) {
+                    response.clone().json().then(function(data) {
+                        if (data && data.suggest_feedback) {
+                            showErrorFeedbackPrompt(data.error || 'Internal server error');
+                        }
+                    }).catch(function() {});
+                }
+                return response;
+            });
+        };
     </script>
     {% block scripts %}{% endblock %}
 </body>
