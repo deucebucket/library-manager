@@ -259,11 +259,10 @@ def _complete_result_from_path(result: Dict, folder_hint: str, book_path: str) -
         path_obj = Path(book_path) if book_path else None
         if path_obj:
             # Check parent directory names for series info not captured by SL
-            # The folder structure is typically: library/Author/SeriesOrTitle/BookTitle
-            # or: library/Author/Title
+            # Typical structure: library/Author/SeriesOrTitle/BookTitle
+            # Only check the last 3-4 relevant dirs, not filesystem root
             parts = path_obj.parts
-            # Look at path components between author and book for series folders
-            for part in parts:
+            for part in parts[-4:-1]:
                 # Match patterns like "Series Name 01" or "Series Name - Book 01"
                 series_match = re.match(
                     r'^(.+?)\s*[-–]\s*(?:Book\s+)?(\d+(?:\.\d+)?)\s*$',

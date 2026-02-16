@@ -2,6 +2,17 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Issue #127: Path-based completion for partial results** - When Skaldleita returns truncated
+  names (e.g., "James S. A" instead of "James S. A. Corey"), the system now uses folder path
+  information to complete the full name. Also extracts series information from path structure
+  when missing from audio identification. Requires minimum 4-char prefix match for safety.
+
+---
+
 ## [0.9.0-beta.125] - 2026-02-14
 
 ### Fixed
