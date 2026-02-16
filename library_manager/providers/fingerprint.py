@@ -18,6 +18,8 @@ from typing import Optional, Dict, Any, Tuple
 
 import requests
 
+from library_manager.providers.rate_limiter import handle_rate_limit_response
+
 logger = logging.getLogger(__name__)
 
 # Skaldleita fingerprint endpoints
@@ -142,6 +144,11 @@ def lookup_fingerprint(
             timeout=10
         )
 
+        if response.status_code == 429:
+            rl = handle_rate_limit_response(response, 'bookdb')
+            logger.warning(f"[FINGERPRINT] Rate limited (retry_after: {rl['retry_after']})")
+            return None
+
         if response.status_code == 200:
             data = response.json()
             if data.get('match'):
@@ -219,6 +226,11 @@ def contribute_fingerprint(
             headers=headers,
             timeout=10
         )
+
+        if response.status_code == 429:
+            rl = handle_rate_limit_response(response, 'bookdb')
+            logger.warning(f"[FINGERPRINT] Contribution rate limited (retry_after: {rl['retry_after']})")
+            return False
 
         if response.status_code in (200, 201):
             data = response.json()
@@ -506,6 +518,11 @@ def lookup_narrator(
             headers=headers,
             timeout=10
         )
+
+        if response.status_code == 429:
+            handle_rate_limit_response(response, 'bookdb')
+            logger.warning("[NARRATOR] Lookup rate limited")
+            return None
 
         if response.status_code == 200:
             data = response.json()

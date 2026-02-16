@@ -86,6 +86,67 @@ def record_api_success(api_name):
         API_CIRCUIT_BREAKER[api_name]['failures'] = 0
 
 
+def handle_rate_limit_response(response, api_name, retry_count=0, max_retries=2):
+    """
+    Handle a 429 response with exponential backoff and circuit breaker.
+
+    Args:
+        response: The requests.Response object (must be status 429)
+        api_name: API name for circuit breaker tracking (e.g. 'bookdb')
+        retry_count: Current retry attempt (0-based)
+        max_retries: Maximum number of retries before giving up
+
+    Returns:
+        dict with:
+            'should_retry': bool - whether caller should retry the request
+            'wait_seconds': int - how long to wait before retrying (0 if not retrying)
+            'circuit_open': bool - whether circuit breaker tripped
+            'retry_after': str - raw Retry-After header value
+    """
+    retry_after_raw = response.headers.get('Retry-After', '')
+
+    result = {
+        'should_retry': False,
+        'wait_seconds': 0,
+        'circuit_open': False,
+        'retry_after': retry_after_raw,
+    }
+
+    # Update circuit breaker
+    record_api_failure(api_name)
+
+    cb = API_CIRCUIT_BREAKER.get(api_name, {})
+    if cb.get('circuit_open_until', 0) > time.time():
+        result['circuit_open'] = True
+        logger.warning(f"[RATE LIMIT] {api_name}: Circuit breaker tripped, backing off")
+        return result
+
+    if retry_count >= max_retries:
+        logger.warning(f"[RATE LIMIT] {api_name}: Max retries ({max_retries}) reached")
+        return result
+
+    # Calculate wait time: use Retry-After header, with exponential backoff fallback
+    try:
+        wait_time = int(retry_after_raw) if retry_after_raw else 0
+    except ValueError:
+        wait_time = 0
+
+    if wait_time <= 0:
+        # Exponential backoff: 30s, 60s, 120s...
+        wait_time = 30 * (2 ** retry_count)
+
+    # Cap at 5 minutes
+    wait_time = min(wait_time, 300)
+
+    result['should_retry'] = True
+    result['wait_seconds'] = wait_time
+
+    logger.info(f"[RATE LIMIT] {api_name}: Rate limited, waiting {wait_time}s "
+                f"(attempt {retry_count + 1}/{max_retries}, Retry-After: {retry_after_raw or 'none'})")
+
+    return result
+
+
 __all__ = [
     'API_RATE_LIMITS',
     'API_RATE_LOCK',
@@ -94,4 +155,5 @@ __all__ = [
     'is_circuit_open',
     'record_api_failure',
     'record_api_success',
+    'handle_rate_limit_response',
 ]
