@@ -73,9 +73,10 @@ from library_manager.utils import (
 )
 from library_manager.providers import (
     rate_limit_wait, is_circuit_open, record_api_failure, record_api_success,
+    handle_rate_limit_response,
     API_RATE_LIMITS, API_CIRCUIT_BREAKER,
     search_audnexus, search_openlibrary, search_google_books, search_hardcover,
-    BOOKDB_API_URL, BOOKDB_PUBLIC_KEY,
+    BOOKDB_API_URL, BOOKDB_PUBLIC_KEY, get_signed_headers,
     search_bookdb as _search_bookdb_raw, identify_audio_with_bookdb,
     call_ollama as _call_ollama_raw, call_ollama_simple as _call_ollama_simple_raw,
     get_ollama_models, test_ollama_connection,
@@ -3021,7 +3022,7 @@ def group_loose_files(files):
 
 def search_bookdb_api(title, author=None, retry_count=0):
     """
-    Search the BookBucket API for a book (public endpoint, no auth needed).
+    Search the Skaldleita API for a book.
     Uses Qdrant vector search - fast even with 50M books.
     Returns dict with author, title, series if found.
     Filters garbage matches using title similarity.
@@ -3039,6 +3040,12 @@ def search_bookdb_api(title, author=None, retry_count=0):
 
     rate_limit_wait('bookdb')  # 3.6s delay = max 1000/hr, never skips
 
+    # Build headers with auth (Skaldleita requires auth on all endpoints)
+    secrets = load_secrets()
+    api_key = secrets.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
+    headers = get_signed_headers() or {}
+    headers['X-API-Key'] = api_key
+
     try:
         # Use longer timeout for cold start (embedding model can take 45-60s to load)
         # Retry once on timeout
@@ -3047,6 +3054,7 @@ def search_bookdb_api(title, author=None, retry_count=0):
                 response = requests.get(
                     f"{BOOKDB_API_URL}/search",
                     params={"q": search_title, "limit": 5},
+                    headers=headers,
                     timeout=60 if attempt == 0 else 30
                 )
                 break
@@ -3056,16 +3064,13 @@ def search_bookdb_api(title, author=None, retry_count=0):
                     continue
                 raise
 
-        # Handle rate limiting - respect Retry-After header from server
-        if response.status_code == 429 and retry_count < 3:
-            retry_after = response.headers.get('Retry-After', '60')
-            try:
-                wait_time = min(int(retry_after), 300)  # Cap at 5 minutes
-            except ValueError:
-                wait_time = 60 * (retry_count + 1)  # Fallback: 60s, 120s, 180s
-            logger.info(f"BookDB API rate limited, waiting {wait_time}s (Retry-After: {retry_after})...")
-            time.sleep(wait_time)
-            return search_bookdb_api(title, retry_count + 1)
+        # Handle rate limiting with exponential backoff
+        if response.status_code == 429:
+            rl = handle_rate_limit_response(response, 'bookdb', retry_count)
+            if rl['should_retry']:
+                time.sleep(rl['wait_seconds'])
+                return search_bookdb_api(title, author, retry_count + 1)
+            return None
 
         if response.status_code == 200:
             results = response.json()
@@ -10894,13 +10899,9 @@ def api_abs_remove_exclude():
 
 # ============== MANUAL BOOK MATCHING ==============
 
-# Use the public BookBucket API - same as metadata pipeline
-# No API key required - the search endpoints are public
-
 @app.route('/api/search_bookdb')
 def api_search_bookdb():
-    """Search BookBucket for books/series to manually match.
-    Uses the public /search endpoint - no API key required.
+    """Search Skaldleita for books/series to manually match.
     Falls back to Google Books if BookDB is unavailable or returns no results.
     """
     query = request.args.get('q', '').strip()
@@ -10950,14 +10951,32 @@ def api_search_bookdb():
         if author:
             params['author'] = author
 
-        # Use public /search endpoint (no auth required)
+        # Build headers with auth (Skaldleita requires auth on all endpoints)
+        secrets = load_secrets()
+        api_key = secrets.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
+        headers = get_signed_headers() or {}
+        headers['X-API-Key'] = api_key
+
         if search_type == 'all':
             endpoint = f"{BOOKDB_API_URL}/search"
         else:
             endpoint = f"{BOOKDB_API_URL}/search/{search_type}"
 
         # Longer timeout for cold start (embedding model can take 45-60s to load)
-        resp = requests.get(endpoint, params=params, timeout=60)
+        resp = requests.get(endpoint, params=params, headers=headers, timeout=60)
+
+        if resp.status_code == 429:
+            retry_after = resp.headers.get('Retry-After', '60')
+            try:
+                wait_seconds = int(retry_after)
+            except ValueError:
+                wait_seconds = 60
+            return jsonify({
+                'error': f'Skaldleita rate limited. Try again in {wait_seconds}s.',
+                'rate_limited': True,
+                'retry_after': wait_seconds,
+                'results': []
+            }), 429
 
         if resp.status_code == 200:
             results = resp.json()

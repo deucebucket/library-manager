@@ -11,6 +11,16 @@ All notable changes to Library Manager will be documented in this file.
   information to complete the full name. Also extracts series information from path structure
   when missing from audio identification. Requires minimum 4-char prefix match for safety.
 
+### Fixed
+
+- **Issue #155: API key not sent on /search requests** - All Skaldleita API endpoints now include
+  authentication headers. GET /search requests were missing the X-API-Key header, causing 403
+  Forbidden errors after Skaldleita added auth requirements to all endpoints.
+- **Issue #154: Rate limit handling** - Centralized rate limit handling in `handle_rate_limit_response()`
+  with exponential backoff (30s/60s/120s), Retry-After header parsing, and circuit breaker
+  integration. Applied to bookdb.py and fingerprint.py providers. Frontend displays rate limit
+  warnings with retry countdown on library, queue, and history pages.
+
 ---
 
 ## [0.9.0-beta.125] - 2026-02-14
