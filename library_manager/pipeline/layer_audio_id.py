@@ -14,6 +14,7 @@ Part of the Skaldleita voice ID system - "Shazam for audiobook narrators"
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -146,7 +147,6 @@ def _validate_ai_result_against_path(result: Dict, folder_hint: str, book_path: 
 
     # Clean up - remove common noise
     def clean_text(text):
-        import re
         # Remove brackets, hashes, special chars
         text = re.sub(r'\[[^\]]*\]', ' ', text)
         text = re.sub(r'[^a-z0-9\s]', ' ', text)
@@ -184,6 +184,129 @@ def _validate_ai_result_against_path(result: Dict, folder_hint: str, book_path: 
                 result['confidence'] = 'medium'
             elif result.get('confidence') == 'medium':
                 result['confidence'] = 'low'
+
+    return result
+
+
+def _complete_result_from_path(result: Dict, folder_hint: str, book_path: str) -> Dict:
+    """
+    Use path info to complete partial/truncated Skaldleita results.
+
+    When SL returns a truncated name (e.g., "James S. A" instead of "James S. A. Corey"),
+    the file path often contains the full name. If the path version starts with the SL
+    version, use the longer path version.
+
+    Only completes - never replaces a longer SL result with a shorter path fragment.
+
+    Args:
+        result: The identification result dict (author, title, series, etc.)
+        folder_hint: "current_author - current_title" string from path parsing
+        book_path: Full filesystem path to the book folder
+
+    Returns:
+        The result dict with potentially completed fields.
+    """
+    if not result or not folder_hint:
+        return result
+
+    # Parse the folder hint into author and title components
+    # folder_hint format: "current_author - current_title"
+    hint_parts = folder_hint.split(' - ', 1)
+    path_author = hint_parts[0].strip() if len(hint_parts) >= 1 else ''
+    path_title = hint_parts[1].strip() if len(hint_parts) >= 2 else ''
+
+    def _is_truncated_version(shorter: str, longer: str) -> bool:
+        """Check if 'shorter' is a truncated prefix of 'longer'.
+
+        Returns True if the shorter string is a prefix of the longer string
+        (case-insensitive), and the longer string has meaningful additional content.
+        Requires the shorter version to be at least 4 characters to avoid false
+        matches on trivial prefixes.
+        """
+        if not shorter or not longer:
+            return False
+        s = shorter.strip()
+        l = longer.strip()
+        if len(s) < 4 or len(s) >= len(l):
+            return False
+        return l.lower().startswith(s.lower())
+
+    completed_any = False
+
+    # Complete author if truncated
+    sl_author = result.get('author', '') or ''
+    if sl_author and path_author and _is_truncated_version(sl_author, path_author):
+        logger.info(f"[PATH COMPLETE] Author: '{sl_author}' -> '{path_author}' (path has full name)")
+        result['author'] = path_author
+        result['path_completed_author'] = True
+        completed_any = True
+
+    # Complete title if truncated
+    sl_title = result.get('title', '') or ''
+    if sl_title and path_title and _is_truncated_version(sl_title, path_title):
+        logger.info(f"[PATH COMPLETE] Title: '{sl_title}' -> '{path_title}' (path has full name)")
+        result['title'] = path_title
+        result['path_completed_title'] = True
+        completed_any = True
+
+    # Try to extract series info from path if SL returned none
+    # Path often has patterns like "The Stormlight Archive 01" or "Series Name/Book 01"
+    sl_series = result.get('series', '') or ''
+    if not sl_series and path_title:
+        # Check for series number patterns in the path title
+        # e.g., "The Way of Kings (Stormlight Archive 01)" or "Book Title - Series Name 01"
+        # Look for series patterns in the full path (parent directories)
+        path_obj = Path(book_path) if book_path else None
+        if path_obj:
+            # Check parent directory names for series info not captured by SL
+            # The folder structure is typically: library/Author/SeriesOrTitle/BookTitle
+            # or: library/Author/Title
+            parts = path_obj.parts
+            # Look at path components between author and book for series folders
+            for part in parts:
+                # Match patterns like "Series Name 01" or "Series Name - Book 01"
+                series_match = re.match(
+                    r'^(.+?)\s*[-–]\s*(?:Book\s+)?(\d+(?:\.\d+)?)\s*$',
+                    part, re.IGNORECASE
+                )
+                if not series_match:
+                    series_match = re.match(
+                        r'^(.+?)\s+(\d+(?:\.\d+)?)\s*$',
+                        part, re.IGNORECASE
+                    )
+                if series_match:
+                    potential_series = series_match.group(1).strip()
+                    potential_num = series_match.group(2).strip()
+                    # Only use if the series name is meaningful (not just the title)
+                    if (len(potential_series) >= 3
+                            and potential_series.lower() != sl_title.lower()
+                            and potential_series.lower() != (result.get('author') or '').lower()):
+                        logger.info(f"[PATH COMPLETE] Series: '{potential_series}' #{potential_num} (extracted from path)")
+                        result['series'] = potential_series
+                        result['series_num'] = potential_num
+                        result['path_completed_series'] = True
+                        completed_any = True
+                        break
+
+    # If we completed anything, give a small confidence boost since path corroborates SL
+    if completed_any:
+        raw_conf = result.get('confidence', 0.7)
+        try:
+            if isinstance(raw_conf, str):
+                # String confidence levels - bump up one tier
+                if raw_conf == 'low':
+                    result['confidence'] = 'medium'
+                elif raw_conf == 'medium':
+                    result['confidence'] = 'high'
+                # 'high' stays high
+            elif isinstance(raw_conf, (int, float)):
+                # Numeric confidence - small boost (5%) for path agreement, cap at 0.95
+                if raw_conf <= 1:
+                    result['confidence'] = min(0.95, raw_conf + 0.05)
+                else:
+                    result['confidence'] = min(95, raw_conf + 5)
+        except (ValueError, TypeError):
+            pass  # Leave confidence unchanged if we can't parse it
 
     return result
 
@@ -444,6 +567,8 @@ def process_layer_1_audio(
                         'sl_source': sl_source,
                         'requeue_suggested': True
                     }
+                    # Issue #127: Complete truncated SL results using path info
+                    result = _complete_result_from_path(result, folder_hint, book_path)
                     # Continue processing - let the normal flow create pending_fix
                     # The requeue flag will be used to schedule a future recheck
                 else:
@@ -475,6 +600,8 @@ def process_layer_1_audio(
                     transcript = bookdb_result.get('transcript')  # Keep transcript for AI
                     result = None  # Clear to trigger AI fallback
                 else:
+                    # Issue #127: Complete truncated SL results using path info
+                    bookdb_result = _complete_result_from_path(bookdb_result, folder_hint, book_path)
                     result = bookdb_result  # Passed sanity check
             else:
                 # Skaldleita didn't get a full match - might have a transcript though
@@ -513,6 +640,9 @@ def process_layer_1_audio(
             # This catches cases where AI completely misparses (e.g., narrator name as author)
             if result:
                 result = _validate_ai_result_against_path(result, folder_hint, book_path)
+                # Issue #127: Complete truncated AI results using path info
+                if result and not result.get('sanity_failed'):
+                    result = _complete_result_from_path(result, folder_hint, book_path)
 
         if result and result.get('author') and result.get('title') and result.get('confidence') != 'none':
             # Got identification from audio!
