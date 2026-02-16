@@ -2,7 +2,7 @@
 
 All notable changes to Library Manager will be documented in this file.
 
-## [Unreleased]
+## [0.9.0-beta.127] - 2026-02-16
 
 ### Added
 
