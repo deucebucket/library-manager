@@ -2,6 +2,17 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.129] - 2026-02-18
+
+### Changed
+
+- **Issue #159: Feedback widget moved to nav bar** - Replaced floating bottom-right feedback button
+  with a bug icon (`bi-bug`) in the top navigation bar. Eliminates confusing overlap with the
+  dashboard Quick Actions button. Consistent placement and behavior across all pages. Feedback
+  modal and error auto-reporting remain unchanged.
+
+---
+
 ## [0.9.0-beta.128] - 2026-02-16
 
 ### Added

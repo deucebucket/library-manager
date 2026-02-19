@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.128-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.129-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,10 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.129** - **UI: Feedback Widget Moved to Nav Bar** (Issue #159)
+> - **Bug icon in nav bar** - Feedback/bug report button moved from floating bottom-right circle to a consistent bug icon in the top navigation bar
+> - **No more overlapping buttons** - Eliminates confusing dual floating buttons on the dashboard page
 
 > **beta.125** - **Bug Fixes: Badge Counts, Author Matching, Pipeline Filters** (Issues #150, #152)
 > - **Badge count fix** - Dashboard and library page queue counts now match actual processable items
