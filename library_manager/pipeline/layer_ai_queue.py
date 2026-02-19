@@ -100,7 +100,7 @@ def process_queue(
     allowed, calls_made, max_calls = check_rate_limit(config)
     if not allowed:
         logger.warning(f"Rate limit reached: {calls_made}/{max_calls} calls. Waiting...")
-        return 0, 0
+        return -1, 0  # Signal rate-limited (distinct from 0,0 = nothing to process)
 
     # Check if AI verification is enabled (before opening connection)
     if not config.get('enable_ai_verification', True):

@@ -391,7 +391,33 @@ def process_all_queue(
         # At this point, we're trusting folder names as a last resort
         processed, fixed = process_queue(config, verification_layer=4)
 
+        # Issue #160: processed == -1 means rate-limited, NOT "nothing to process"
+        # Don't count rate-limited batches toward the 3-strike exhaustion rule
+        if processed == -1:
+            logger.info("Batch skipped due to rate limiting - not counting toward exhaustion")
+            _processing_status["current"] = "Rate limited, waiting for cooldown..."
+            _processing_status["last_activity"] = "Waiting for rate limit cooldown"
+            _processing_status["last_activity_time"] = time.time()
+            time.sleep(30)
+            continue
+
         if processed == 0:
+            # Check if AI providers are circuit-broken before counting as empty
+            # If providers are unavailable, this isn't a real "empty" result
+            ai_provider = config.get('ai_provider', 'gemini')
+            providers_to_check = [ai_provider]
+            if ai_provider != 'bookdb':
+                providers_to_check.append('bookdb')
+            any_circuit_open = any(is_circuit_open(p) for p in providers_to_check)
+
+            if any_circuit_open:
+                logger.info(f"AI providers circuit-broken ({', '.join(p for p in providers_to_check if is_circuit_open(p))}) - waiting for recovery, not counting toward exhaustion")
+                _processing_status["current"] = "AI provider cooling down, waiting..."
+                _processing_status["last_activity"] = "Waiting for circuit breaker recovery"
+                _processing_status["last_activity_time"] = time.time()
+                time.sleep(30)
+                continue
+
             conn = get_db()
             c = conn.cursor()
             c.execute('SELECT COUNT(*) as count FROM queue')
