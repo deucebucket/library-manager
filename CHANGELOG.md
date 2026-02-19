@@ -2,6 +2,20 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.130] - 2026-02-18
+
+### Fixed
+
+- **Issue #160: Rate-limited batches no longer trigger false exhaustion** - Layer 4 processing
+  now distinguishes between "genuinely unidentifiable books" and "AI providers temporarily
+  unavailable." Rate-limited batches return a distinct signal (`-1`) and are not counted toward
+  the 3-strike exhaustion rule. When circuit breakers are open on AI providers, the worker waits
+  for recovery instead of marking books as "all processing layers exhausted." Previously, books
+  that were perfectly identifiable could be permanently marked as failed if providers were
+  rate-limited during processing.
+
+---
+
 ## [0.9.0-beta.129] - 2026-02-18
 
 ### Changed
