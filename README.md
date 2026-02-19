@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.129-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.130-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,11 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.130** - **Fix: Rate-Limited Batches No Longer Trigger False Exhaustion** (Issue #160)
+> - **Rate-limited batches skipped** - When AI providers are rate-limited, batches are no longer counted toward the 3-strike "all processing layers exhausted" rule
+> - **Circuit breaker awareness** - Layer 4 now waits for providers to recover instead of permanently marking identifiable books as failed
+> - **Distinct signal for rate limiting** - `process_queue` returns `-1` (rate-limited) vs `0` (genuinely empty) so the worker can react correctly
 
 > **beta.129** - **UI: Feedback Widget Moved to Nav Bar** (Issue #159)
 > - **Bug icon in nav bar** - Feedback/bug report button moved from floating bottom-right circle to a consistent bug icon in the top navigation bar
