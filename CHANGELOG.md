@@ -2,7 +2,7 @@
 
 All notable changes to Library Manager will be documented in this file.
 
-## [0.9.0-beta.130] - 2026-02-18
+## [0.9.0-beta.131] - 2026-02-18
 
 ### Fixed
 
@@ -13,6 +13,9 @@ All notable changes to Library Manager will be documented in this file.
   for recovery instead of marking books as "all processing layers exhausted." Previously, books
   that were perfectly identifiable could be permanently marked as failed if providers were
   rate-limited during processing.
+- **Issue #160: Guard sentinel in manual process endpoint** - The `-1` rate-limit sentinel from
+  `process_queue` was leaking into the `/api/process` endpoint response, showing `processed: -1`
+  in the UI. Now guarded with `max(0, l2_processed)`. (Caught by vibe-check review.)
 
 ---
 
