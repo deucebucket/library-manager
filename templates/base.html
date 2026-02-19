@@ -788,6 +788,9 @@
                     </li>
                 </ul>
                 <div class="d-flex align-items-center">
+                    <a href="#" class="nav-link me-2 p-1" onclick="showFeedbackModal(); return false;" title="{{ _('Report Bug') }}"
+                        <i class="bi bi-bug" style="font-size: 1.1rem;"></i>
+                    </a>
                     <span id="update-badge" class="badge bg-success me-2" style="display: none; cursor: pointer;" onclick="showUpdateModal()">
                         <i class="bi bi-arrow-up-circle"></i> {{ _('Update Available') }}
                     </span>
@@ -891,20 +894,6 @@
             </div>
         </div>
     </div>
-
-    <!-- Feedback Button -->
-    <button id="feedback-btn" onclick="showFeedbackModal()" title="{{ _('Send Feedback') }}"
-        style="position: fixed; bottom: 24px; right: 24px; z-index: 1040;
-               width: 48px; height: 48px; border-radius: 50%; border: none;
-               background: var(--theme-accent-primary); color: #fff;
-               box-shadow: 0 4px 16px rgba(0,0,0,0.4); cursor: pointer;
-               display: flex; align-items: center; justify-content: center;
-               font-size: 1.3rem; transition: transform 0.2s, box-shadow 0.2s;">
-        <i class="bi bi-chat-dots"></i>
-    </button>
-    <style>
-        #feedback-btn:hover { transform: scale(1.1); box-shadow: 0 6px 24px rgba(0,0,0,0.5); }
-    </style>
 
     <!-- Feedback Modal -->
     <div class="modal fade" id="feedbackModal" tabindex="-1">
