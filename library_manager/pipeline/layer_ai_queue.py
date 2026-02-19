@@ -88,7 +88,8 @@ def process_queue(
         verification_layer: Which layer's items to process (2=AI, 4=folder fallback)
 
     Returns:
-        Tuple of (processed_count, fixed_count)
+        Tuple of (processed_count, fixed_count). Returns (-1, 0) when rate-limited
+        (distinct from (0, 0) which means nothing to process).
 
     NOTE: This function uses a 3-phase approach to avoid holding DB locks during
     external AI API calls (which can take 5-30+ seconds):

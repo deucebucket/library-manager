@@ -7779,7 +7779,8 @@ def api_process():
         # Layer 2: AI verification for items that passed through Layer 1
         if config.get('enable_ai_verification', True):
             l2_processed, l2_fixed = process_queue(config, limit)
-            total_processed += l2_processed
+            # Issue #160: process_queue returns -1 when rate-limited
+            total_processed += max(0, l2_processed)
             total_fixed += l2_fixed
 
         # Layer 3: Audio analysis (if enabled)
