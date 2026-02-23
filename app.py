@@ -9513,38 +9513,65 @@ def api_library():
                   (search_pattern, search_pattern))
         counts['search'] = c.fetchone()[0]
 
-    else:  # 'all' - show everything mixed
-        # Get recent history items (includes pending, fixed, errors)
-        order = build_order_by(HISTORY_SORT_COLS, 'h.fixed_at DESC')
-        c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
-                            h.old_path, h.new_path, h.status, h.fixed_at, h.error_message,
-                            b.path, b.current_author, b.current_title, b.user_locked
-                     FROM history h
-                     JOIN books b ON h.book_id = b.id
+    else:  # 'all' - show everything from books table
+        order = build_order_by(BOOK_SORT_COLS, 'current_author ASC, current_title ASC')
+        c.execute('''SELECT b.id, b.path, b.current_author, b.current_title, b.status,
+                            b.user_locked, b.confidence, b.media_type,
+                            h.old_author, h.old_title, h.new_author, h.new_title,
+                            h.old_path, h.new_path, h.status as history_status,
+                            h.fixed_at, h.error_message
+                     FROM books b
+                     LEFT JOIN history h ON h.book_id = b.id
+                     WHERE b.status NOT IN ('series_folder', 'multi_book_files')
                      ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
-            item_type = 'pending_fix' if row['status'] == 'pending_fix' else \
-                        'fixed' if row['status'] == 'fixed' else \
-                        'error' if row['status'] in ('error', 'duplicate', 'corrupt_dest') else 'history'
-            items.append({
+            # Map book status to display type
+            book_status = row['status']
+            history_status = row['history_status']
+            if history_status == 'pending_fix':
+                item_type = 'pending_fix'
+            elif book_status == 'verified':
+                item_type = 'book'
+            elif book_status == 'fixed':
+                item_type = 'fixed'
+            elif book_status in ('needs_attention', 'structure_reversed', 'watch_folder_error'):
+                item_type = 'needs_attention'
+            elif book_status == 'in_queue':
+                item_type = 'in_queue'
+            elif book_status == 'orphan':
+                item_type = 'orphan'
+            elif history_status in ('error', 'duplicate', 'corrupt_dest'):
+                item_type = 'error'
+            else:
+                item_type = 'book'
+            item = {
                 'id': row['id'],
                 'type': item_type,
-                'book_id': row['book_id'],
-                'author': row['old_author'] if row['status'] == 'pending_fix' else row['new_author'],
-                'title': row['old_title'] if row['status'] == 'pending_fix' else row['new_title'],
-                'old_author': row['old_author'],
-                'old_title': row['old_title'],
-                'new_author': row['new_author'],
-                'new_title': row['new_title'],
-                'old_path': row['old_path'],
-                'new_path': row['new_path'],
+                'book_id': row['id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
                 'path': row['path'],
-                'status': row['status'],
-                'error_message': row['error_message'],
-                'fixed_at': row['fixed_at'],
-                'user_locked': row['user_locked'] == 1
-            })
+                'status': history_status or book_status,
+                'confidence': row['confidence'] or 0,
+                'user_locked': row['user_locked'] == 1,
+                'media_type': row['media_type'] or 'audiobook'
+            }
+            # Overlay history data when present
+            if history_status:
+                item['old_author'] = row['old_author']
+                item['old_title'] = row['old_title']
+                item['new_author'] = row['new_author']
+                item['new_title'] = row['new_title']
+                item['old_path'] = row['old_path']
+                item['new_path'] = row['new_path']
+                item['fixed_at'] = row['fixed_at']
+                item['error_message'] = row['error_message']
+                # For pending_fix, show old (current) author/title
+                if history_status == 'pending_fix':
+                    item['author'] = row['old_author']
+                    item['title'] = row['old_title']
+            items.append(item)
 
     conn.close()
 
