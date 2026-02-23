@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.131-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.132-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,11 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.132** - **Feature: Post-Processing Hooks** (Issue #166)
+> - **Run commands or webhooks after renames** - Trigger external scripts (m4binder, ABS scan, Discord notifications) when a book is successfully renamed
+> - **Template variables** - Use `{{author}}`, `{{title}}`, `{{new_path}}`, etc. in commands with automatic shell escaping
+> - **Settings UI** - New Post-Processing tab with hook management, test button, and execution log
 
 > **beta.130** - **Fix: Rate-Limited Batches No Longer Trigger False Exhaustion** (Issue #160)
 > - **Rate-limited batches skipped** - When AI providers are rate-limited, batches are no longer counted toward the 3-strike "all processing layers exhausted" rule
