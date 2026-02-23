@@ -9,6 +9,7 @@ import json
 import logging
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import threading
 import time
@@ -78,7 +79,7 @@ def init_hook_tables(db_path):
 def get_hook_log(get_db, limit=50):
     """Get recent hook execution log entries."""
     conn = get_db()
-    conn.row_factory = __import__('sqlite3').Row
+    conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute('''SELECT * FROM hook_log ORDER BY executed_at DESC LIMIT ?''', (limit,))
     rows = c.fetchall()
@@ -328,6 +329,9 @@ def run_hooks(context, config, get_db, secrets=None):
                 any_error = True
                 if not first_error:
                     first_error = result.get('error') or result.get('stderr', '')[:200]
+                if hook.get('on_error') == 'stop':
+                    logger.warning(f"[HOOKS] Stopping chain due to on_error=stop for: {hook_name}")
+                    break
 
     # Update history with hook status summary
     if history_id:
