@@ -6870,13 +6870,17 @@ def dashboard():
                    AND (b.user_locked IS NULL OR b.user_locked = 0)''')
     queue_size = c.fetchone()['count']
 
-    c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'fixed'")
+    c.execute('''SELECT COUNT(*) as count FROM history h
+                 JOIN books b ON h.book_id = b.id
+                 WHERE h.status = 'fixed' ''')
     fixed_count = c.fetchone()['count']
 
     c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'verified'")
     verified_count = c.fetchone()['count']
 
-    c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'pending_fix'")
+    c.execute('''SELECT COUNT(*) as count FROM history h
+                 JOIN books b ON h.book_id = b.id
+                 WHERE h.status = 'pending_fix' ''')
     pending_fixes = c.fetchone()['count']
 
     # Get recent history (use LEFT JOIN in case book was deleted)
@@ -8652,7 +8656,7 @@ def api_stats():
     conn = get_db()
     c = conn.cursor()
 
-    c.execute('SELECT COUNT(*) as count FROM books')
+    c.execute("SELECT COUNT(*) as count FROM books WHERE status NOT IN ('series_folder', 'multi_book_files')")
     total = c.fetchone()['count']
 
     # Issue #131: Count only processable queue items (matching process_queue filters)
@@ -8662,10 +8666,14 @@ def api_stats():
                    AND (b.user_locked IS NULL OR b.user_locked = 0)''')
     queue = c.fetchone()['count']
 
-    c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'fixed'")
+    c.execute('''SELECT COUNT(*) as count FROM history h
+                 JOIN books b ON h.book_id = b.id
+                 WHERE h.status = 'fixed' ''')
     fixed = c.fetchone()['count']
 
-    c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'pending_fix'")
+    c.execute('''SELECT COUNT(*) as count FROM history h
+                 JOIN books b ON h.book_id = b.id
+                 WHERE h.status = 'pending_fix' ''')
     pending = c.fetchone()['count']
 
     c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'verified'")
