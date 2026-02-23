@@ -147,6 +147,10 @@ def init_db(db_path=None):
     conn.commit()
     conn.close()
 
+    # Initialize hook tables (Issue #166)
+    from library_manager.hooks import init_hook_tables
+    init_hook_tables(path)
+
 
 def cleanup_garbage_entries(db_path=None):
     """Remove garbage entries from database on startup.

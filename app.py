@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.131"
+APP_VERSION = "0.9.0-beta.132"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -118,6 +118,7 @@ from library_manager.feedback import (
 )
 from library_manager.folder_triage import triage_folder, triage_book_path, should_use_path_hints, confidence_modifier
 from library_manager.hints import get_all_hints
+from library_manager.hooks import hooks_bp, run_hooks, build_hook_context
 
 # Try to import P2P cache (optional - gracefully degrades if not available)
 try:
@@ -557,6 +558,7 @@ logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 app = Flask(__name__)
 app.secret_key = 'library-manager-secret-key-2024'
+app.register_blueprint(hooks_bp)
 
 # ============== INTERNATIONALIZATION (i18n) ==============
 # Flask-Babel for UI translations - book metadata (author/title) is NOT translated
@@ -6247,6 +6249,25 @@ def apply_fix(history_id):
 
         conn.commit()
         conn.close()
+
+        # Post-processing hooks (Issue #166)
+        try:
+            hook_context = build_hook_context(
+                book_id=book_id, history_id=history_id,
+                old_path=str(old_path), new_path=str(new_path),
+                old_author=fix['old_author'], old_title=fix['old_title'],
+                new_author=fix['new_author'], new_title=fix['new_title'],
+                new_narrator=fix['new_narrator'] if fix['new_narrator'] else '',
+                new_series=fix['new_series'] if fix['new_series'] else '',
+                new_series_num=fix['new_series_num'] if fix['new_series_num'] else '',
+                new_year=fix['new_year'] if fix['new_year'] else '',
+                media_type=source_type or 'audiobook',
+                event='fixed'
+            )
+            run_hooks(hook_context, config, get_db, load_secrets())
+        except Exception as hook_e:
+            logger.error(f"[POST-PROCESS] Hook orchestration error: {hook_e}")
+
         return True, "Fix applied successfully"
     except Exception as e:
         error_msg = str(e)

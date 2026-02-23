@@ -2,6 +2,19 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.132] - 2026-02-23
+
+### Added
+
+- **Issue #166: Post-processing hooks** - Run external commands or webhooks after a book is
+  successfully renamed. First Flask Blueprint in the codebase (`library_manager/hooks.py`).
+  New "Post-Processing" tab in Settings with hook list, edit modal, test button, and execution log.
+  Template variables (`{{author}}`, `{{title}}`, `{{new_path}}`, etc.) with automatic shell escaping
+  for command safety. Supports sync/async execution, configurable timeouts, and webhook mode.
+  Hook failures never undo successful renames. Requested by grapefruit89 for m4binder integration.
+
+---
+
 ## [0.9.0-beta.131] - 2026-02-18
 
 ### Fixed

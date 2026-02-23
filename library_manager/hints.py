@@ -105,6 +105,9 @@ HINTS = {
     'uses_tokens_badge': 'This feature uses API calls from your configured provider. Check your provider dashboard for usage.',
     'scan_library': 'Scans your library paths for new or changed audiobook folders. Does not process them - just discovers what needs to be identified.',
     'process_queue': 'Starts processing all queued books through the identification pipeline (Layer 1 through Layer 4, depending on your settings).',
+
+    # === Post-Processing Hooks ===
+    'post_processing': 'Run external scripts or webhooks after a book is successfully renamed. Use for M4B conversion, Audiobookshelf library scans, Discord notifications, backup scripts, etc. Hook failures never undo a successful rename.',
 }
 
 

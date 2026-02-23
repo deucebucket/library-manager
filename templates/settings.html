@@ -117,6 +117,11 @@
                 <i class="bi bi-gear-wide-connected"></i> Advanced
             </button>
         </li>
+        <li class="nav-item">
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-hooks" type="button">
+                <i class="bi bi-terminal"></i> Post-Processing
+            </button>
+        </li>
     </ul>
 
     <!-- Tab Content -->
@@ -1468,6 +1473,12 @@
                 </div>
             </div>
         </div>
+
+        <!-- ==================== POST-PROCESSING TAB ==================== -->
+        <div class="tab-pane fade" id="tab-hooks">
+            {% include 'hooks_settings.html' %}
+        </div>
+
     </div>
 
     <!-- Save Button (sticky) -->
@@ -2218,5 +2229,272 @@ document.addEventListener('mouseup', function() {
         draggedItem = null;
     }
 });
+
+// ============== POST-PROCESSING HOOKS (Issue #166) ==============
+
+let hooksData = {{ config.post_processing_hooks | default([], true) | tojson }};
+
+function renderHooksList() {
+    const list = document.getElementById('hooks-list');
+    const empty = document.getElementById('hooks-empty');
+    if (!hooksData.length) {
+        list.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+    }
+    empty.style.display = 'none';
+    list.innerHTML = hooksData.map((hook, i) => `
+        <div class="d-flex align-items-center border-bottom border-secondary px-3 py-2">
+            <div class="form-check form-switch me-2 mb-0">
+                <input class="form-check-input" type="checkbox" ${hook.enabled ? 'checked' : ''}
+                       onchange="toggleHookEnabled(${i}, this.checked)">
+            </div>
+            <div class="flex-grow-1">
+                <strong>${escapeHtml(hook.name)}</strong>
+                <span class="badge ${hook.type === 'webhook' ? 'bg-info' : 'bg-secondary'} ms-1" style="font-size: 0.65rem;">${hook.type}</span>
+                <span class="badge ${hook.mode === 'async' ? 'bg-warning text-dark' : 'bg-dark'} ms-1" style="font-size: 0.65rem;">${hook.mode || 'sync'}</span>
+                <br><small class="text-muted font-monospace">${escapeHtml(hook.type === 'webhook' ? (hook.url || '').substring(0, 60) : (hook.command || '').substring(0, 60))}${(hook.type === 'webhook' ? hook.url : hook.command || '').length > 60 ? '...' : ''}</small>
+            </div>
+            <div class="btn-group btn-group-sm ms-2">
+                <button class="btn btn-outline-info py-0" onclick="testHookByIndex(${i})" title="Test"><i class="bi bi-play-circle"></i></button>
+                <button class="btn btn-outline-secondary py-0" onclick="editHook(${i})" title="Edit"><i class="bi bi-pencil"></i></button>
+                <button class="btn btn-outline-danger py-0" onclick="removeHook(${i})" title="Remove"><i class="bi bi-trash"></i></button>
+            </div>
+            <div class="ms-2">
+                <button class="btn btn-sm btn-outline-secondary py-0 px-1" onclick="moveHook(${i}, -1)" ${i === 0 ? 'disabled' : ''} title="Move up"><i class="bi bi-chevron-up"></i></button>
+                <button class="btn btn-sm btn-outline-secondary py-0 px-1" onclick="moveHook(${i}, 1)" ${i === hooksData.length - 1 ? 'disabled' : ''} title="Move down"><i class="bi bi-chevron-down"></i></button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str || '';
+    return div.innerHTML;
+}
+
+function toggleHookEnabled(index, enabled) {
+    hooksData[index].enabled = enabled;
+    saveHooksToServer();
+}
+
+function addHook() {
+    document.getElementById('hook-edit-index').value = '-1';
+    document.getElementById('hookEditModalTitle').innerHTML = '<i class="bi bi-terminal"></i> Add Hook';
+    document.getElementById('hook-name').value = '';
+    document.getElementById('hook-type').value = 'command';
+    document.getElementById('hook-command').value = '';
+    document.getElementById('hook-url').value = '';
+    document.getElementById('hook-method').value = 'POST';
+    document.getElementById('hook-headers').value = '';
+    document.getElementById('hook-timeout').value = '300';
+    document.getElementById('hook-mode').value = 'sync';
+    document.getElementById('hook-on-error').value = 'log';
+    document.getElementById('hook-test-result').style.display = 'none';
+    toggleHookTypeFields();
+    new bootstrap.Modal(document.getElementById('hookEditModal')).show();
+}
+
+function editHook(index) {
+    const hook = hooksData[index];
+    document.getElementById('hook-edit-index').value = index;
+    document.getElementById('hookEditModalTitle').innerHTML = '<i class="bi bi-pencil"></i> Edit Hook';
+    document.getElementById('hook-name').value = hook.name || '';
+    document.getElementById('hook-type').value = hook.type || 'command';
+    document.getElementById('hook-command').value = hook.command || '';
+    document.getElementById('hook-url').value = hook.url || '';
+    document.getElementById('hook-method').value = hook.method || 'POST';
+    document.getElementById('hook-headers').value = hook.headers ? JSON.stringify(hook.headers) : '';
+    document.getElementById('hook-timeout').value = hook.timeout || 300;
+    document.getElementById('hook-mode').value = hook.mode || 'sync';
+    document.getElementById('hook-on-error').value = hook.on_error || 'log';
+    document.getElementById('hook-test-result').style.display = 'none';
+    toggleHookTypeFields();
+    new bootstrap.Modal(document.getElementById('hookEditModal')).show();
+}
+
+function removeHook(index) {
+    if (!confirm('Remove hook "' + hooksData[index].name + '"?')) return;
+    hooksData.splice(index, 1);
+    renderHooksList();
+    saveHooksToServer();
+}
+
+function moveHook(index, direction) {
+    const newIndex = index + direction;
+    if (newIndex < 0 || newIndex >= hooksData.length) return;
+    const temp = hooksData[index];
+    hooksData[index] = hooksData[newIndex];
+    hooksData[newIndex] = temp;
+    renderHooksList();
+    saveHooksToServer();
+}
+
+function toggleHookTypeFields() {
+    const type = document.getElementById('hook-type').value;
+    document.getElementById('hook-command-fields').style.display = type === 'command' ? 'block' : 'none';
+    document.getElementById('hook-webhook-fields').style.display = type === 'webhook' ? 'block' : 'none';
+    // Adjust default timeout
+    const timeoutField = document.getElementById('hook-timeout');
+    if (type === 'webhook' && timeoutField.value === '300') timeoutField.value = '30';
+    if (type === 'command' && timeoutField.value === '30') timeoutField.value = '300';
+}
+
+function saveHookFromModal() {
+    const index = parseInt(document.getElementById('hook-edit-index').value);
+    const type = document.getElementById('hook-type').value;
+    const name = document.getElementById('hook-name').value.trim();
+    if (!name) { alert('Please enter a hook name'); return; }
+
+    let headersObj = {};
+    const headersStr = document.getElementById('hook-headers').value.trim();
+    if (headersStr) {
+        try { headersObj = JSON.parse(headersStr); }
+        catch (e) { alert('Invalid JSON in headers field'); return; }
+    }
+
+    const hook = {
+        name: name,
+        type: type,
+        command: type === 'command' ? document.getElementById('hook-command').value.trim() : undefined,
+        url: type === 'webhook' ? document.getElementById('hook-url').value.trim() : undefined,
+        method: type === 'webhook' ? document.getElementById('hook-method').value : undefined,
+        headers: type === 'webhook' ? headersObj : undefined,
+        timeout: parseInt(document.getElementById('hook-timeout').value) || 300,
+        mode: document.getElementById('hook-mode').value,
+        on_error: document.getElementById('hook-on-error').value,
+        enabled: true,
+        run_on: ['fixed']
+    };
+
+    // Validate
+    if (type === 'command' && !hook.command) { alert('Please enter a command'); return; }
+    if (type === 'webhook' && !hook.url) { alert('Please enter a URL'); return; }
+
+    if (index >= 0) {
+        hook.enabled = hooksData[index].enabled;
+        hooksData[index] = hook;
+    } else {
+        hooksData.push(hook);
+    }
+
+    bootstrap.Modal.getInstance(document.getElementById('hookEditModal')).hide();
+    renderHooksList();
+    saveHooksToServer();
+}
+
+function saveHooksToServer() {
+    fetch('/api/hooks/save', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({hooks: hooksData})
+    }).then(r => r.json()).then(data => {
+        if (!data.success) console.error('Failed to save hooks:', data.error);
+    }).catch(err => console.error('Save hooks error:', err));
+}
+
+function testHookByIndex(index) {
+    const hook = hooksData[index];
+    fetch('/api/hooks/test', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(hook)
+    }).then(r => r.json()).then(data => {
+        let msg = hook.name + ' - Test Result:\n';
+        if (data.success) {
+            msg += '✓ SUCCESS\n';
+        } else {
+            msg += '✗ FAILED: ' + (data.error || '') + '\n';
+        }
+        if (data.resolved_command) msg += 'Command: ' + data.resolved_command + '\n';
+        if (data.binary_found === false) msg += 'Binary not found: ' + data.binary + '\n';
+        if (data.exit_code !== undefined) msg += 'Status: ' + data.exit_code + '\n';
+        if (data.duration_ms) msg += 'Duration: ' + data.duration_ms + 'ms\n';
+        if (data.stdout) msg += 'Output: ' + data.stdout.substring(0, 200) + '\n';
+        alert(msg);
+    }).catch(err => alert('Test error: ' + err));
+}
+
+function testCurrentHook() {
+    const type = document.getElementById('hook-type').value;
+    const hook = {
+        name: document.getElementById('hook-name').value || 'Test',
+        type: type,
+        command: type === 'command' ? document.getElementById('hook-command').value : undefined,
+        url: type === 'webhook' ? document.getElementById('hook-url').value : undefined,
+        method: type === 'webhook' ? document.getElementById('hook-method').value : undefined,
+        timeout: parseInt(document.getElementById('hook-timeout').value) || 300,
+    };
+
+    const resultDiv = document.getElementById('hook-test-result');
+    const output = document.getElementById('hook-test-output');
+    resultDiv.style.display = 'block';
+    output.textContent = 'Testing...';
+
+    fetch('/api/hooks/test', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(hook)
+    }).then(r => r.json()).then(data => {
+        let lines = [];
+        if (data.success) {
+            lines.push('✓ SUCCESS');
+        } else {
+            lines.push('✗ FAILED: ' + (data.error || 'Unknown error'));
+        }
+        if (data.resolved_command) lines.push('Resolved command: ' + data.resolved_command);
+        if (data.binary !== undefined) lines.push('Binary: ' + data.binary + (data.binary_found ? ' (found)' : ' (NOT FOUND)'));
+        if (data.resolved_url) lines.push('URL: ' + data.resolved_url);
+        if (data.exit_code !== undefined) lines.push('HTTP Status: ' + data.exit_code);
+        if (data.duration_ms) lines.push('Duration: ' + data.duration_ms + 'ms');
+        if (data.stdout) lines.push('Response: ' + data.stdout.substring(0, 500));
+        output.textContent = lines.join('\n');
+    }).catch(err => {
+        output.textContent = 'Error: ' + err;
+    });
+}
+
+function refreshHookLog() {
+    fetch('/api/hooks/log').then(r => r.json()).then(data => {
+        const tbody = document.getElementById('hook-log-body');
+        if (!data.entries || !data.entries.length) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No hook executions yet</td></tr>';
+            return;
+        }
+        tbody.innerHTML = data.entries.map(e => {
+            const time = e.executed_at ? new Date(e.executed_at + 'Z').toLocaleString() : '';
+            const status = e.success ? '<span class="text-success">OK</span>' : '<span class="text-danger">FAIL</span>';
+            const detail = e.error || (e.exit_code !== null ? 'exit ' + e.exit_code : '');
+            return `<tr>
+                <td>${escapeHtml(time)}</td>
+                <td>${escapeHtml(e.hook_name || '')}</td>
+                <td>${escapeHtml(e.hook_type || '')}</td>
+                <td>${status}</td>
+                <td>${e.duration_ms || 0}ms</td>
+                <td title="${escapeHtml(detail)}">${escapeHtml((detail || '').substring(0, 50))}</td>
+            </tr>`;
+        }).join('');
+    }).catch(err => {
+        document.getElementById('hook-log-body').innerHTML = '<tr><td colspan="6" class="text-danger">Error loading log</td></tr>';
+    });
+}
+
+function clearHookLog() {
+    if (!confirm('Clear hook execution log?')) return;
+    fetch('/api/hooks/log/clear', {method: 'POST'}).then(r => r.json()).then(data => {
+        if (data.success) refreshHookLog();
+    });
+}
+
+// Load hooks on tab show
+document.querySelector('[data-bs-target="#tab-hooks"]')?.addEventListener('shown.bs.tab', function() {
+    renderHooksList();
+    refreshHookLog();
+});
+
+// Initial render if hooks exist
+if (hooksData.length) renderHooksList();
+else document.getElementById('hooks-empty') && (document.getElementById('hooks-empty').style.display = 'block');
 </script>
 {% endblock %}
