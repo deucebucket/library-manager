@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.133-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.134-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,13 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.134** - **Hotfix: Settings Page Crash** (Issue #173)
+> - Jinja2 template recursion bug in hooks_settings.html caused blank settings page for all users on beta.133
+
+> **beta.133** - **Fix: Stop Re-Searching Unresolved Books** (Issue #168)
+> - Books marked `needs_attention` no longer re-queued every scan cycle (was causing 642K+ wasted API requests)
+> - Added retry tracking with exponential backoff and configurable max retries
 
 > **beta.132** - **Feature: Post-Processing Hooks** (Issue #166)
 > - **Run commands or webhooks after renames** - Trigger external scripts (m4binder, ABS scan, Discord notifications) when a book is successfully renamed
