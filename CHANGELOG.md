@@ -2,6 +2,18 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.134] - 2026-02-28
+
+### Fixed
+
+- **Issue #173: Settings page crash from infinite template recursion** - `hooks_settings.html`
+  had `{% include 'hooks_settings.html' %}` inside an HTML comment. Jinja2 processes template
+  tags inside HTML comments, causing infinite self-inclusion (RecursionError after 971 iterations).
+  Settings page returned 500 for all users on beta.133. Fixed by using a Jinja comment (`{# #}`)
+  instead.
+
+---
+
 ## [0.9.0-beta.133] - 2026-02-28
 
 ### Fixed
