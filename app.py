@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.132"
+APP_VERSION = "0.9.0-beta.133"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -51,7 +51,8 @@ from library_manager.config import (
 )
 from library_manager.database import (
     init_db, get_db, set_db_path, cleanup_garbage_entries,
-    cleanup_duplicate_history_entries, insert_history_entry
+    cleanup_duplicate_history_entries, insert_history_entry,
+    should_requeue_book
 )
 from library_manager.models.book_profile import (
     SOURCE_WEIGHTS, FIELD_WEIGHTS, FieldValue, BookProfile,
@@ -4919,12 +4920,16 @@ def deep_scan_library(config):
                 path_str = str(loose_file.resolve())
 
                 # Check if already in books table
-                c.execute('SELECT id, user_locked FROM books WHERE path = ?', (path_str,))
+                c.execute('''SELECT id, user_locked, status, profile, attempt_count,
+                                    last_attempted, max_layer_reached, verification_layer
+                             FROM books WHERE path = ?''', (path_str,))
                 existing = c.fetchone()
 
                 if existing:
-                    # Skip user-locked books
-                    if existing['user_locked']:
+                    # Issue #168: Check if this book should be re-queued
+                    max_retries = config.get('max_book_retries', 3)
+                    should_queue, reset_layer = should_requeue_book(existing, max_retries)
+                    if not should_queue:
                         continue
                     book_id = existing['id']
                 else:
@@ -4933,6 +4938,7 @@ def deep_scan_library(config):
                                 VALUES (?, ?, ?, ?)''',
                              (path_str, 'Unknown', cleaned_filename, 'loose_file'))
                     book_id = c.lastrowid
+                    reset_layer = 1  # New books always start at layer 1
 
                 # Add to queue with special "loose_file" reason
                 c.execute('''INSERT OR REPLACE INTO queue
@@ -4940,8 +4946,8 @@ def deep_scan_library(config):
                             VALUES (?, ?, ?, ?)''',
                          (book_id, f'loose_file_needs_folder:{filename}',
                           datetime.now().isoformat(), 1))  # High priority
-                # Set verification_layer=1 to start at Layer 1 (API lookup)
-                c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
+                # Issue #168: Only reset layer if should_requeue_book says so
+                c.execute('UPDATE books SET verification_layer = ? WHERE id = ?', (reset_layer, book_id))
                 queued += 1
                 issues_found[path_str] = ['loose_file_no_folder']
                 logger.info(f"Queued loose file: {filename} -> search for: {cleaned_filename}")
@@ -4960,12 +4966,16 @@ def deep_scan_library(config):
                     cleaned_filename = clean_search_title(filename)
                     path_str = str(loose_ebook)
 
-                    c.execute('SELECT id, user_locked FROM books WHERE path = ?', (path_str,))
+                    c.execute('''SELECT id, user_locked, status, profile, attempt_count,
+                                        last_attempted, max_layer_reached, verification_layer
+                                 FROM books WHERE path = ?''', (path_str,))
                     existing = c.fetchone()
 
                     if existing:
-                        # Skip user-locked books
-                        if existing['user_locked']:
+                        # Issue #168: Check if this book should be re-queued
+                        max_retries = config.get('max_book_retries', 3)
+                        should_queue, reset_layer = should_requeue_book(existing, max_retries)
+                        if not should_queue:
                             continue
                         book_id = existing['id']
                     else:
@@ -4973,14 +4983,15 @@ def deep_scan_library(config):
                                     VALUES (?, ?, ?, ?)''',
                                  (path_str, 'Unknown', cleaned_filename, 'ebook_loose'))
                         book_id = c.lastrowid
+                        reset_layer = 1
 
                     c.execute('''INSERT OR REPLACE INTO queue
                                 (book_id, reason, added_at, priority)
                                 VALUES (?, ?, ?, ?)''',
                              (book_id, f'ebook_loose:{filename}',
                               datetime.now().isoformat(), 2))
-                    # Set verification_layer=1 to start at Layer 1 (API lookup)
-                    c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
+                    # Issue #168: Only reset layer if should_requeue_book says so
+                    c.execute('UPDATE books SET verification_layer = ? WHERE id = ?', (reset_layer, book_id))
                     queued += 1
                     issues_found[path_str] = ['ebook_loose_file']
                     logger.info(f"Queued loose ebook: {filename}")
@@ -5034,16 +5045,17 @@ def deep_scan_library(config):
                 checked += 1
 
                 # Check if already tracked
-                c.execute('SELECT id, status, profile, user_locked FROM books WHERE path = ?', (flat_path,))
+                c.execute('''SELECT id, status, profile, user_locked, attempt_count,
+                                    last_attempted, max_layer_reached, verification_layer
+                             FROM books WHERE path = ?''', (flat_path,))
                 existing_flat = c.fetchone()
 
                 if existing_flat:
-                    if existing_flat['user_locked']:
+                    # Issue #168: Use should_requeue_book for unified skip logic
+                    max_retries = config.get('max_book_retries', 3)
+                    should_queue, reset_layer = should_requeue_book(existing_flat, max_retries)
+                    if not should_queue:
                         continue
-                    if existing_flat['status'] in ['verified', 'fixed']:
-                        has_profile = existing_flat['profile'] and len(existing_flat['profile']) > 2
-                        if has_profile:
-                            continue
                     flat_book_id = existing_flat['id']
                     c.execute('UPDATE books SET folder_triage = ? WHERE id = ?',
                              (flat_triage, flat_book_id))
@@ -5053,6 +5065,7 @@ def deep_scan_library(config):
                     conn.commit()
                     flat_book_id = c.lastrowid
                     scanned += 1
+                    reset_layer = 1
                     logger.info(f"Added flat book: {flat_author} - {flat_title} (triage: {flat_triage})")
 
                 # Queue for processing
@@ -5061,7 +5074,8 @@ def deep_scan_library(config):
                     c.execute('''INSERT INTO queue (book_id, reason, priority)
                                 VALUES (?, ?, ?)''',
                              (flat_book_id, 'flat_book_folder', 3))
-                    c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (flat_book_id,))
+                    # Issue #168: Don't reset layer unconditionally
+                    c.execute('UPDATE books SET verification_layer = ? WHERE id = ?', (reset_layer, flat_book_id))
                     conn.commit()
                     queued += 1
 
@@ -5200,16 +5214,17 @@ def deep_scan_library(config):
                             series_book_triage = triage_folder(book_title)
 
                             # Check if already tracked
-                            c.execute('SELECT id, status, profile, user_locked FROM books WHERE path = ?', (book_path,))
+                            c.execute('''SELECT id, status, profile, user_locked, attempt_count,
+                                                last_attempted, max_layer_reached, verification_layer
+                                         FROM books WHERE path = ?''', (book_path,))
                             existing_book = c.fetchone()
 
                             if existing_book:
-                                if existing_book['user_locked']:
+                                # Issue #168: Use should_requeue_book for unified skip logic
+                                max_retries = config.get('max_book_retries', 3)
+                                should_queue, reset_layer = should_requeue_book(existing_book, max_retries)
+                                if not should_queue:
                                     continue
-                                if existing_book['status'] in ['verified', 'fixed']:
-                                    has_profile = existing_book['profile'] and len(existing_book['profile']) > 2
-                                    if has_profile:
-                                        continue
                                 book_id = existing_book['id']
                                 c.execute('UPDATE books SET folder_triage = ? WHERE id = ?',
                                          (series_book_triage, book_id))
@@ -5219,6 +5234,7 @@ def deep_scan_library(config):
                                 conn.commit()
                                 book_id = c.lastrowid
                                 scanned += 1
+                                reset_layer = 1
 
                             # Queue for processing
                             c.execute('SELECT id FROM queue WHERE book_id = ?', (book_id,))
@@ -5226,7 +5242,8 @@ def deep_scan_library(config):
                                 c.execute('''INSERT INTO queue (book_id, reason, priority)
                                             VALUES (?, ?, ?)''',
                                          (book_id, f'series_book:{series_name}', 3))
-                                c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
+                                # Issue #168: Don't reset layer unconditionally
+                                c.execute('UPDATE books SET verification_layer = ? WHERE id = ?', (reset_layer, book_id))
                                 conn.commit()
                                 queued += 1
 
@@ -5302,30 +5319,31 @@ def deep_scan_library(config):
                     issues_found[path] = all_issues
 
                 # Add to database
-                c.execute('SELECT id, status, profile, user_locked FROM books WHERE path = ?', (path,))
+                c.execute('''SELECT id, status, profile, user_locked, attempt_count,
+                                    last_attempted, max_layer_reached, verification_layer
+                             FROM books WHERE path = ?''', (path,))
                 existing = c.fetchone()
 
                 if existing:
-                    # Skip user-locked books - user has manually set metadata, never change it
-                    if existing['user_locked']:
+                    # Issue #168: Use should_requeue_book for unified skip logic
+                    max_retries = config.get('max_book_retries', 3)
+                    should_queue, reset_layer = should_requeue_book(existing, max_retries)
+                    if not should_queue:
                         continue
 
-                    # Skip books that are properly verified (have profile data)
-                    # Re-queue "legacy" verified books that have no profile
+                    # Special case: legacy verified without profile still gets re-queued
                     if existing['status'] in ['verified', 'fixed']:
-                        has_profile = existing['profile'] and len(existing['profile']) > 2
-                        if has_profile:
-                            continue  # Properly verified, skip
-                        else:
-                            # Legacy verified without profile - re-queue for proper verification
+                        has_profile = existing['profile'] and len(str(existing['profile'])) > 2
+                        if not has_profile:
                             logger.info(f"Re-queuing legacy verified book (no profile): {author}/{title}")
-                            c.execute('UPDATE books SET status = ?, verification_layer = 1 WHERE id = ?',
-                                     ('pending', existing['id']))
+                            c.execute('UPDATE books SET status = ?, verification_layer = ? WHERE id = ?',
+                                     ('pending', reset_layer, existing['id']))
                             c.execute('''INSERT OR IGNORE INTO queue (book_id, reason, priority)
                                         VALUES (?, ?, ?)''',
                                      (existing['id'], 'legacy_needs_profile', 3))
                             queued += 1
                             continue
+
                     book_id = existing['id']
                     # Update triage for existing books (backfill)
                     c.execute('UPDATE books SET folder_triage = ? WHERE id = ?',
@@ -5336,6 +5354,7 @@ def deep_scan_library(config):
                     conn.commit()
                     book_id = c.lastrowid
                     scanned += 1
+                    reset_layer = 1
 
                 # Add to queue if has issues
                 if all_issues:
@@ -5356,8 +5375,8 @@ def deep_scan_library(config):
                         c.execute('''INSERT INTO queue (book_id, reason, priority)
                                     VALUES (?, ?, ?)''',
                                  (book_id, reason, min(len(all_issues), 10)))
-                        # Set verification_layer=1 to start at Layer 1 (API lookup)
-                        c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
+                        # Issue #168: Don't reset layer unconditionally
+                        c.execute('UPDATE books SET verification_layer = ? WHERE id = ?', (reset_layer, book_id))
                         conn.commit()
                         queued += 1
 
@@ -7118,6 +7137,9 @@ def settings_page():
         # Clamp rate limit to safe range (10-500) to prevent API bans
         user_rate = int(request.form.get('max_requests_per_hour', 30))
         config['max_requests_per_hour'] = max(10, min(user_rate, 500))
+        # Issue #168: Max book retries (0=unlimited, capped at 10)
+        user_retries = int(request.form.get('max_book_retries', 3))
+        config['max_book_retries'] = max(0, min(user_retries, 10))
         config['auto_fix'] = 'auto_fix' in request.form
         config['trust_the_process'] = 'trust_the_process' in request.form
         config['protect_author_changes'] = 'protect_author_changes' in request.form

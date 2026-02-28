@@ -174,9 +174,10 @@ class ProcessingLayer(ABC):
                             status = 'pending_fix',
                             verification_layer = ?,
                             profile = ?,
-                            confidence = ?
+                            confidence = ?,
+                            max_layer_reached = MAX(COALESCE(max_layer_reached, 0), ?)
                             WHERE id = ?''',
-                         (self.layer_number, profile_json, result.confidence, item['book_id']))
+                         (self.layer_number, profile_json, result.confidence, self.layer_number, item['book_id']))
 
                 c.execute('DELETE FROM queue WHERE id = ?', (item['queue_id'],))
                 conn.commit()
@@ -190,9 +191,10 @@ class ProcessingLayer(ABC):
 
                 c.execute('''UPDATE books SET
                             verification_layer = ?,
+                            max_layer_reached = MAX(COALESCE(max_layer_reached, 0), ?),
                             status = CASE WHEN status = 'needs_attention' THEN 'pending' ELSE status END
                             WHERE id = ?''',
-                         (next_layer, item['book_id']))
+                         (next_layer, next_layer, item['book_id']))
                 conn.commit()
 
                 self.logger.debug(f"[{self.layer_name}] Advancing to layer {next_layer}: {item.get('current_title', 'Unknown')}")

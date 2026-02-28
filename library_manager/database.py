@@ -1,6 +1,7 @@
 """Database operations for Library Manager."""
 import sqlite3
 import logging
+from datetime import datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,25 @@ def init_db(db_path=None):
         c.execute("ALTER TABLE books ADD COLUMN folder_triage TEXT DEFAULT 'clean'")
     except:
         pass  # Column already exists
+
+    # Issue #168: Retry tracking columns - prevent re-searching unresolved books every scan
+    retry_columns = [
+        ('attempt_count', 'INTEGER DEFAULT 0'),      # Full processing cycles completed
+        ('last_attempted', 'TIMESTAMP'),              # When last processed (for backoff)
+        ('max_layer_reached', 'INTEGER DEFAULT 0'),   # Highest layer ever reached (prevents resetting)
+    ]
+    for col_name, col_type in retry_columns:
+        try:
+            c.execute(f'ALTER TABLE books ADD COLUMN {col_name} {col_type}')
+        except:
+            pass  # Column already exists
+
+    # Backfill: existing needs_attention books already went through at least one cycle
+    try:
+        c.execute('''UPDATE books SET attempt_count = 1
+                     WHERE status = 'needs_attention' AND (attempt_count IS NULL OR attempt_count = 0)''')
+    except:
+        pass
 
     # Stats table - daily stats
     c.execute('''CREATE TABLE IF NOT EXISTS stats (
@@ -331,5 +351,76 @@ def insert_history_entry(cursor, book_id, old_author, old_title, new_author, new
                     new_year, new_edition, new_variant))
 
 
+def should_requeue_book(book_row, max_retries=3):
+    """Decide whether a book should be re-added to the processing queue.
+
+    Issue #168: Prevents re-searching unresolved books every scan cycle.
+    Called by deep_scan_library() before inserting into queue.
+
+    Args:
+        book_row: sqlite3.Row or dict with book columns (status, user_locked,
+                  profile, attempt_count, last_attempted, max_layer_reached,
+                  verification_layer)
+        max_retries: Maximum processing attempts before giving up (0=unlimited)
+
+    Returns:
+        (should_queue: bool, reset_layer_to: int or None)
+        reset_layer_to is the layer to set, or None to keep current layer
+    """
+    status = book_row.get('status', 'pending') if isinstance(book_row, dict) else book_row['status']
+    user_locked = book_row.get('user_locked', 0) if isinstance(book_row, dict) else book_row['user_locked']
+    profile = book_row.get('profile', None) if isinstance(book_row, dict) else book_row['profile']
+    attempt_count = book_row.get('attempt_count', 0) if isinstance(book_row, dict) else book_row['attempt_count']
+    last_attempted = book_row.get('last_attempted', None) if isinstance(book_row, dict) else book_row['last_attempted']
+    max_layer = book_row.get('max_layer_reached', 0) if isinstance(book_row, dict) else book_row['max_layer_reached']
+
+    # Coerce NULLs
+    attempt_count = attempt_count or 0
+    max_layer = max_layer or 0
+
+    # Never requeue these statuses
+    skip_statuses = {'user_locked', 'needs_attention', 'needs_split', 'series_folder', 'multi_book_files'}
+    if status in skip_statuses:
+        return (False, None)
+
+    # Skip user-locked books
+    if user_locked:
+        return (False, None)
+
+    # Skip verified/fixed books that have a real profile
+    if status in ('verified', 'fixed'):
+        has_profile = profile and len(str(profile)) > 2
+        if has_profile:
+            return (False, None)
+
+    # Skip if exceeded max retries (0 = unlimited)
+    if max_retries > 0 and attempt_count >= max_retries:
+        logger.debug(f"Skipping book (attempt_count={attempt_count} >= max_retries={max_retries})")
+        return (False, None)
+
+    # Skip if within exponential backoff window: 24h * 2^attempt_count
+    if attempt_count > 0 and last_attempted:
+        try:
+            if isinstance(last_attempted, str):
+                last_attempted = datetime.fromisoformat(last_attempted)
+            backoff_hours = 24 * (2 ** min(attempt_count, 5))  # Cap at 768h (~32 days)
+            next_eligible = last_attempted + timedelta(hours=backoff_hours)
+            if datetime.now() < next_eligible:
+                logger.debug(f"Skipping book (backoff: next eligible {next_eligible})")
+                return (False, None)
+        except (ValueError, TypeError):
+            pass  # Bad timestamp, allow requeue
+
+    # Determine layer reset: don't reset if book already progressed past layer 1
+    if max_layer > 1:
+        # Resume from where it left off (or layer 1 if it's at 0)
+        current_layer = book_row.get('verification_layer', 0) if isinstance(book_row, dict) else book_row['verification_layer']
+        reset_layer = current_layer if current_layer and current_layer > 0 else 1
+        return (True, reset_layer)
+    else:
+        return (True, 1)
+
+
 __all__ = ['init_db', 'get_db', 'set_db_path', 'cleanup_garbage_entries',
-           'cleanup_duplicate_history_entries', 'insert_history_entry']
+           'cleanup_duplicate_history_entries', 'insert_history_entry',
+           'should_requeue_book']

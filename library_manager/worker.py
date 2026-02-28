@@ -437,8 +437,12 @@ def process_all_queue(
                     conn2 = get_db()
                     try:
                         c2 = conn2.cursor()
+                        # Issue #168: Increment attempt_count and record last_attempted
                         c2.execute('''UPDATE books SET status = 'needs_attention',
-                                        error_message = 'All processing layers exhausted - could not identify this book automatically'
+                                        error_message = 'All processing layers exhausted - could not identify this book automatically',
+                                        attempt_count = COALESCE(attempt_count, 0) + 1,
+                                        last_attempted = CURRENT_TIMESTAMP,
+                                        max_layer_reached = MAX(COALESCE(max_layer_reached, 0), COALESCE(verification_layer, 0))
                                      WHERE id IN (
                                          SELECT q.book_id FROM queue q
                                          JOIN books b ON q.book_id = b.id
