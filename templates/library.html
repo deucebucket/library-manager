@@ -73,6 +73,73 @@
         padding: 2px 8px;
         font-size: 0.8rem;
     }
+    /* Issue #111: Sortable column headers */
+    th[onclick]:hover {
+        color: #00d9ff;
+    }
+    .sort-icon {
+        font-size: 0.7rem;
+        opacity: 0.5;
+    }
+    .sort-icon.active {
+        opacity: 1;
+        color: #00d9ff;
+    }
+    .hint-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 1px solid rgba(0, 217, 255, 0.4);
+        color: rgba(0, 217, 255, 0.6);
+        font-size: 9px;
+        font-weight: bold;
+        font-style: normal;
+        cursor: help;
+        margin-left: 3px;
+        position: relative;
+        vertical-align: middle;
+        line-height: 1;
+    }
+    .hint-icon:hover {
+        border-color: #00d9ff;
+        color: #00d9ff;
+    }
+    .hint-icon .hint-text {
+        display: none;
+        position: absolute;
+        bottom: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(15, 52, 96, 0.95);
+        border: 1px solid rgba(0, 217, 255, 0.3);
+        color: #eee;
+        padding: 8px 12px;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        font-weight: normal;
+        font-style: normal;
+        line-height: 1.4;
+        white-space: normal;
+        width: 260px;
+        z-index: 1000;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        pointer-events: none;
+    }
+    .hint-icon .hint-text::after {
+        content: '';
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        border: 6px solid transparent;
+        border-top-color: rgba(0, 217, 255, 0.3);
+    }
+    .hint-icon:hover .hint-text {
+        display: block;
+    }
 </style>
 
 <!-- Filter Chips -->
@@ -83,42 +150,42 @@
             <span class="ms-2">All</span>
             <span class="count" id="count-all">0</span>
         </a>
-        <a href="#" class="filter-chip" data-filter="pending" onclick="setFilter('pending'); return false;">
+        <a href="#" class="filter-chip" data-filter="pending" onclick="setFilter('pending'); return false;" title="{{ hints.status_pending }}">
             <i class="bi bi-hourglass-split text-warning"></i>
             <span class="ms-2">Pending</span>
             <span class="count" id="count-pending">0</span>
         </a>
-        <a href="#" class="filter-chip" data-filter="orphan" onclick="setFilter('orphan'); return false;">
+        <a href="#" class="filter-chip" data-filter="orphan" onclick="setFilter('orphan'); return false;" title="{{ hints.status_orphan }}">
             <i class="bi bi-file-earmark-music text-info"></i>
             <span class="ms-2">Orphans</span>
             <span class="count" id="count-orphan">0</span>
         </a>
-        <a href="#" class="filter-chip" data-filter="queue" onclick="setFilter('queue'); return false;">
+        <a href="#" class="filter-chip" data-filter="queue" onclick="setFilter('queue'); return false;" title="{{ hints.status_queued }}">
             <i class="bi bi-list-task text-primary"></i>
             <span class="ms-2">Queue</span>
             <span class="count" id="count-queue">0</span>
         </a>
-        <a href="#" class="filter-chip" data-filter="fixed" onclick="setFilter('fixed'); return false;" title="Books that were renamed/moved to new locations">
+        <a href="#" class="filter-chip" data-filter="fixed" onclick="setFilter('fixed'); return false;" title="{{ hints.status_fixed }}">
             <i class="bi bi-check-circle text-success"></i>
             <span class="ms-2">Fixed</span>
             <span class="count" id="count-fixed">0</span>
         </a>
-        <a href="#" class="filter-chip" data-filter="verified" onclick="setFilter('verified'); return false;" title="Books already in correct location - no changes needed">
+        <a href="#" class="filter-chip" data-filter="verified" onclick="setFilter('verified'); return false;" title="{{ hints.status_verified }}">
             <i class="bi bi-patch-check text-success"></i>
             <span class="ms-2">Verified</span>
             <span class="count" id="count-verified">0</span>
         </a>
-        <a href="#" class="filter-chip" data-filter="error" onclick="setFilter('error'); return false;">
+        <a href="#" class="filter-chip" data-filter="error" onclick="setFilter('error'); return false;" title="{{ hints.status_error }}">
             <i class="bi bi-exclamation-triangle text-danger"></i>
             <span class="ms-2">Errors</span>
             <span class="count" id="count-error">0</span>
         </a>
-        <a href="#" class="filter-chip" data-filter="attention" onclick="setFilter('attention'); return false;">
+        <a href="#" class="filter-chip" data-filter="attention" onclick="setFilter('attention'); return false;" title="{{ hints.status_attention }}">
             <i class="bi bi-eye text-warning"></i>
             <span class="ms-2">Attention</span>
             <span class="count" id="count-attention">0</span>
         </a>
-        <a href="#" class="filter-chip" data-filter="locked" onclick="setFilter('locked'); return false;">
+        <a href="#" class="filter-chip" data-filter="locked" onclick="setFilter('locked'); return false;" title="{{ hints.status_locked }}">
             <i class="bi bi-lock-fill text-info"></i>
             <span class="ms-2">Locked</span>
             <span class="count" id="count-locked">0</span>
@@ -165,10 +232,10 @@
 <div class="card mb-4">
     <div class="card-body py-2">
         <div class="d-flex flex-wrap align-items-center gap-2">
-            <button class="btn btn-primary btn-sm" onclick="scanLibrary()" id="btn-scan">
+            <button class="btn btn-primary btn-sm" onclick="scanLibrary()" id="btn-scan" title="{{ hints.scan_library }}">
                 <i class="bi bi-search"></i> Scan Library
             </button>
-            <button class="btn btn-success btn-sm" onclick="processQueue()" id="btn-process">
+            <button class="btn btn-success btn-sm" onclick="processQueue()" id="btn-process" title="{{ hints.process_queue }}">
                 <i class="bi bi-play-fill"></i> Process Queue
             </button>
             <button class="btn btn-warning btn-sm" onclick="applyAllPending()" id="btn-apply-all" style="display: none;">
@@ -206,10 +273,16 @@
             <thead style="position: sticky; top: 0; background: rgba(22, 33, 62, 0.98); z-index: 10;">
                 <tr>
                     <th style="width: 3%;"><input type="checkbox" id="select-all" onclick="toggleSelectAll()" title="Select all visible"></th>
-                    <th style="width: 23%;">Author</th>
-                    <th style="width: 29%;">Title</th>
-                    <th style="width: 14%;">Status</th>
-                    <th style="width: 18%;">Details</th>
+                    <th style="width: 23%; cursor: pointer; user-select: none;" onclick="toggleSort('author')" title="Sort by author">
+                        Author <span class="sort-icon" id="sort-icon-author"></span>
+                    </th>
+                    <th style="width: 29%; cursor: pointer; user-select: none;" onclick="toggleSort('title')" title="Sort by title">
+                        Title <span class="sort-icon" id="sort-icon-title"></span>
+                    </th>
+                    <th style="width: 14%; cursor: pointer; user-select: none;" onclick="toggleSort('status')" title="Sort by status">
+                        Status <span class="sort-icon" id="sort-icon-status"></span>
+                    </th>
+                    <th style="width: 18%;">Details <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.confidence_percentage }}</span></span></th>
                     <th style="width: 13%;">Actions</th>
                 </tr>
             </thead>
@@ -348,6 +421,8 @@
 <script>
 let currentFilter = 'all';
 let currentPage = 1;
+let currentSort = '';
+let currentSortDir = 'asc';
 let libraryData = null;
 let skipConfirmations = {{ 'true' if config.get('skip_confirmations') else 'false' }};
 let isProcessing = false;
@@ -381,6 +456,38 @@ function setFilter(filter) {
 
 let currentSearch = '';
 
+// Issue #111: Sort column toggle
+function toggleSort(column) {
+    if (currentSort === column) {
+        // Same column: toggle direction, or clear on third click
+        if (currentSortDir === 'asc') {
+            currentSortDir = 'desc';
+        } else {
+            currentSort = '';
+            currentSortDir = 'asc';
+        }
+    } else {
+        currentSort = column;
+        currentSortDir = 'asc';
+    }
+    currentPage = 1;
+    loadLibrary();
+}
+
+function updateSortIcons() {
+    document.querySelectorAll('.sort-icon').forEach(icon => {
+        icon.textContent = '';
+        icon.classList.remove('active');
+    });
+    if (currentSort) {
+        const icon = document.getElementById(`sort-icon-${currentSort}`);
+        if (icon) {
+            icon.textContent = currentSortDir === 'asc' ? '\u25B2' : '\u25BC';
+            icon.classList.add('active');
+        }
+    }
+}
+
 function loadLibrary() {
     const tbody = document.getElementById('items-table');
     tbody.innerHTML = `
@@ -396,13 +503,19 @@ function loadLibrary() {
     if (currentSearch) {
         url += `&search=${encodeURIComponent(currentSearch)}`;
     }
+    if (currentSort) {
+        url += `&sort=${currentSort}&sort_dir=${currentSortDir}`;
+    }
     fetch(url)
         .then(r => r.json())
         .then(data => {
             libraryData = data;
+            currentSort = data.sort || '';
+            currentSortDir = data.sort_dir || 'asc';
             updateCounts(data.counts);
             renderItems(data.items);
             renderPagination(data.page, data.total_pages);
+            updateSortIcons();
 
             // Show/hide contextual buttons (with null checks for robustness)
             const btnApplyAll = document.getElementById('btn-apply-all');
@@ -782,24 +895,42 @@ function processQueue() {
     const btn = document.getElementById('btn-process');
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Processing...';
-    addActivity('Processing queue...', 'info');
+    addActivity('Starting full pipeline processing...', 'info');
     isProcessing = true;
     suppressProcessingWarning = false;  // Reset warning suppression for new processing session
 
-    fetch('/api/process', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({limit: 5})})
+    // Issue #137: Use background endpoint so status bar shows live updates
+    // (audio analysis via Skaldleita can take 30+ seconds per book)
+    fetch('/api/process_background', {method: 'POST'})
         .then(r => r.json())
         .then(data => {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue';
-            isProcessing = false;
-            // Issue #57: Show clearer status message explaining fixed vs verified
-            if (data.message) {
-                addActivity(data.message, data.status === 'complete' ? 'success' : 'info');
-            } else {
-                // Fallback for older API response format
-                addActivity(`Processed ${data.fixed} items`, 'success');
+            if (!data.success) {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue';
+                isProcessing = false;
+                addActivity(data.message || 'Processing already running', 'warning');
+                return;
             }
-            loadLibrary();
+            addActivity('Background processing started - watch the status bar', 'info');
+            // Poll for completion - status bar handles live updates
+            const pollInterval = setInterval(() => {
+                fetch('/api/process_status').then(r => r.json()).then(status => {
+                    if (!status.active) {
+                        clearInterval(pollInterval);
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue';
+                        isProcessing = false;
+                        addActivity('Processing complete', 'success');
+                        loadLibrary();
+                    }
+                }).catch(() => {
+                    clearInterval(pollInterval);
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="bi bi-play-fill"></i> Process Queue';
+                    isProcessing = false;
+                    addActivity('Status polling failed - refresh to check', 'error');
+                });
+            }, 3000);
         })
         .catch(e => {
             btn.disabled = false;
@@ -827,6 +958,7 @@ function applyAllPending() {
             isProcessing = false;
             addActivity(data.message, data.success ? 'success' : 'error');
             loadLibrary();
+            if (typeof updateLiveStatus === 'function') updateLiveStatus();
         })
         .catch(e => {
             btn.disabled = false;
@@ -868,6 +1000,7 @@ function applyFix(id) {
             if (data.success) {
                 addActivity('Fix applied', 'success');
                 loadLibrary();
+                if (typeof updateLiveStatus === 'function') updateLiveStatus();
             } else {
                 addActivity(`Error: ${data.message}`, 'error');
             }
@@ -883,6 +1016,7 @@ function rejectFix(id) {
             if (data.success) {
                 addActivity('Fix rejected', 'info');
                 loadLibrary();
+                if (typeof updateLiveStatus === 'function') updateLiveStatus();
             } else {
                 addActivity(`Error: ${data.error}`, 'error');
             }
@@ -898,6 +1032,7 @@ function undoFix(id) {
             if (data.success) {
                 addActivity('Fix undone', 'info');
                 loadLibrary();
+                if (typeof updateLiveStatus === 'function') updateLiveStatus();
             } else {
                 addActivity(`Error: ${data.error}`, 'error');
             }
@@ -908,7 +1043,10 @@ function dismissError(id) {
     fetch(`/api/dismiss_error/${id}`, {method: 'POST'})
         .then(r => r.json())
         .then(data => {
-            if (data.success) loadLibrary();
+            if (data.success) {
+                loadLibrary();
+                if (typeof updateLiveStatus === 'function') updateLiveStatus();
+            }
         });
 }
 
@@ -1118,8 +1256,13 @@ function searchBookDB() {
     resultsDiv.style.display = 'block';
 
     fetch(`/api/search_bookdb?q=${encodeURIComponent(query)}&limit=20`)
-        .then(r => r.json())
-        .then(data => {
+        .then(r => r.json().then(data => ({status: r.status, data})))
+        .then(({status, data}) => {
+            if (data.rate_limited) {
+                resultsList.innerHTML = `<div class="list-group-item bg-dark text-warning">Rate limited. Try again in ${data.retry_after || 60}s.</div>`;
+                if (typeof showToast === 'function') showToast(`Skaldleita rate limited. Retry in ${data.retry_after || 60}s.`, 'warning');
+                return;
+            }
             if (data.error) {
                 resultsList.innerHTML = `<div class="list-group-item bg-dark text-danger">${data.error}</div>`;
                 return;

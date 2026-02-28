@@ -88,7 +88,8 @@ def process_queue(
         verification_layer: Which layer's items to process (2=AI, 4=folder fallback)
 
     Returns:
-        Tuple of (processed_count, fixed_count)
+        Tuple of (processed_count, fixed_count). Returns (-1, 0) when rate-limited
+        (distinct from (0, 0) which means nothing to process).
 
     NOTE: This function uses a 3-phase approach to avoid holding DB locks during
     external AI API calls (which can take 5-30+ seconds):
@@ -100,7 +101,7 @@ def process_queue(
     allowed, calls_made, max_calls = check_rate_limit(config)
     if not allowed:
         logger.warning(f"Rate limit reached: {calls_made}/{max_calls} calls. Waiting...")
-        return 0, 0
+        return -1, 0  # Signal rate-limited (distinct from 0,0 = nothing to process)
 
     # Check if AI verification is enabled (before opening connection)
     if not config.get('enable_ai_verification', True):
@@ -125,7 +126,7 @@ def process_queue(
         # Process items at specified layer (or layer 4 for folder fallback)
         c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
                             b.path, b.current_author, b.current_title,
-                            b.confidence, b.profile
+                            b.confidence, b.profile, b.folder_triage
                      FROM queue q
                      JOIN books b ON q.book_id = b.id
                      WHERE b.verification_layer = ?
@@ -137,7 +138,7 @@ def process_queue(
         # API disabled - process all queue items directly with AI
         c.execute('''SELECT q.id as queue_id, q.book_id, q.reason,
                             b.path, b.current_author, b.current_title,
-                            b.confidence, b.profile
+                            b.confidence, b.profile, b.folder_triage
                      FROM queue q
                      JOIN books b ON q.book_id = b.id
                      WHERE b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
@@ -205,7 +206,18 @@ def process_queue(
         return len(garbage_batch), 0  # (processed, fixed)
 
     # Build messy names for AI
-    messy_names = [f"{row['current_author']} - {row['current_title']}" for row in batch]
+    # Issue #110: For messy/garbage triage folders, mark the folder name as unreliable
+    messy_names = []
+    for row in batch:
+        triage = row.get('folder_triage') or 'clean'
+        name = f"{row['current_author']} - {row['current_title']}"
+        if triage == 'garbage':
+            name += " [FOLDER NAME UNRELIABLE - use audio/metadata only]"
+            logger.info(f"[{layer_name}] Garbage triage folder, suppressing path hints: {row['current_title'][:40]}")
+        elif triage == 'messy':
+            name += " [FOLDER NAME MAY BE UNRELIABLE]"
+            logger.info(f"[{layer_name}] Messy triage folder: {row['current_title'][:40]}")
+        messy_names.append(name)
 
     logger.info(f"[DEBUG] Processing batch of {len(batch)} items:")
     for i, name in enumerate(messy_names):

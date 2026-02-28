@@ -1088,6 +1088,70 @@ def main():
             failed += 1
 
     # ==========================================
+    # Issue #125: strip_encoding_junk() in build_new_path
+    # ==========================================
+    print("\n--- Issue #125: Encoding Junk Stripped from Proposed Renames ---")
+
+    from library_manager.utils.naming import strip_encoding_junk
+
+    encoding_junk_tests = [
+        # Bitrates
+        ("Foundation 128k", "Foundation"),
+        ("Dune 64kbps", "Dune"),
+        ("The Martian 320 kbps", "The Martian"),
+        # Codec+bitrate combos
+        ("Starter Villain MP3 320k", "Starter Villain"),
+        ("Live Suit M4B 64k", "Live Suit"),
+        ("Foundation AAC 256k", "Foundation"),
+        # Standalone codecs
+        ("Gateway MP3", "Gateway"),
+        ("The Hobbit FLAC", "The Hobbit"),
+        # Quality modes
+        ("Neuromancer VBR", "Neuromancer"),
+        ("Ender's Game CBR", "Ender's Game"),
+        # File sizes
+        ("Project Hail Mary 463mb", "Project Hail Mary"),
+        ("The Stand 1.2gb", "The Stand"),
+        # Curly brace file sizes
+        ("Kayan's Crew {mb}", "Kayan's Crew"),
+        ("Blue Collar Space {465mb}", "Blue Collar Space"),
+        ("The Space Opera {1.27gb}", "The Space Opera"),
+        # Duration timestamps
+        ("Kayan's Crew 01.10.42", "Kayan's Crew"),
+        ("Warp Speed Charlie 09.44.26", "Warp Speed Charlie"),
+        # Channel info
+        ("The Stand mono", "The Stand"),
+        ("Blue Collar Space multi", "Blue Collar Space"),
+        # Bracketed junk
+        ("Dune [bitsearch.to]", "Dune"),
+        ("Foundation [rarbg]", "Foundation"),
+        # Format markers
+        ("The Hobbit (Unabridged)", "The Hobbit"),
+        ("Dune (audiobook)", "Dune"),
+        ("The Stand (multi)", "The Stand"),
+        # Version numbers
+        ("The New Space Opera v01", "The New Space Opera"),
+        # File extensions
+        ("The Martian.m4b", "The Martian"),
+        # Combined garbage (Merijeek's real examples)
+        ("Kayan's Crew 62k 01.10.42 {mb}", "Kayan's Crew"),
+        ("Blue Collar Space 128k 08.27.27 {465mb}", "Blue Collar Space"),
+        # Safe titles that should NOT be modified
+        ("11/22/63", "11/22/63"),
+        ("Catch-22", "Catch-22"),
+        ("The 39 Steps", "The 39 Steps"),
+    ]
+
+    for input_text, expected in encoding_junk_tests:
+        result = strip_encoding_junk(input_text)
+        if test_result(f"strip_encoding_junk: '{input_text}' → '{expected}'",
+                       result == expected,
+                       f"Got: '{result}'"):
+            passed += 1
+        else:
+            failed += 1
+
+    # ==========================================
     # Issue #92: Strip Unabridged from titles
     # ==========================================
     print("\n--- Issue #92: Strip Unabridged Toggle ---")

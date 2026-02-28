@@ -2,66 +2,207 @@
 
 All notable changes to Library Manager will be documented in this file.
 
-## [0.9.0-beta.115] - 2026-02-05
+## [0.9.0-beta.133] - 2026-02-28
 
-### Added
+### Fixed
 
-- **Issue #119: HMAC Request Signing** - Cryptographic security for Skaldleita API
-  - All requests now include `X-LM-Signature` (HMAC-SHA256) and `X-LM-Timestamp` headers
-  - Prevents unauthorized API usage - requests without valid signatures rejected
-  - Timestamp validation prevents replay attacks
-  - Fixed missing headers on `contribute_to_bookdb()` and `lookup_community_consensus()`
+- **Issue #168: Stop re-searching unresolved books every scan cycle** - Background scans were
+  re-queuing every unresolved book and resetting `verification_layer` to 1, wiping all progress.
+  Books that exhausted all 4 layers and were marked `needs_attention` got re-queued because the
+  scan didn't check for that status — same books searched 60+ times/day (642K+ wasted API requests
+  in 14 days). Added retry tracking (`attempt_count`, `last_attempted`, `max_layer_reached`) with
+  exponential backoff (24h × 2^attempts, capped at ~32 days). New `should_requeue_book()` helper
+  gates all re-queuing sites. Configurable `max_book_retries` in Settings > Processing (default 3,
+  0 = unlimited with backoff).
 
 ---
 
-## [0.9.0-beta.114] - 2026-02-03
+## [0.9.0-beta.132] - 2026-02-23
+
+### Added
+
+- **Issue #166: Post-processing hooks** - Run external commands or webhooks after a book is
+  successfully renamed. First Flask Blueprint in the codebase (`library_manager/hooks.py`).
+  New "Post-Processing" tab in Settings with hook list, edit modal, test button, and execution log.
+  Template variables (`{{author}}`, `{{title}}`, `{{new_path}}`, etc.) with automatic shell escaping
+  for command safety. Supports sync/async execution, configurable timeouts, and webhook mode.
+  Hook failures never undo successful renames. Requested by grapefruit89 for m4binder integration.
+
+---
+
+## [0.9.0-beta.131] - 2026-02-18
+
+### Fixed
+
+- **Issue #160: Rate-limited batches no longer trigger false exhaustion** - Layer 4 processing
+  now distinguishes between "genuinely unidentifiable books" and "AI providers temporarily
+  unavailable." Rate-limited batches return a distinct signal (`-1`) and are not counted toward
+  the 3-strike exhaustion rule. When circuit breakers are open on AI providers, the worker waits
+  for recovery instead of marking books as "all processing layers exhausted." Previously, books
+  that were perfectly identifiable could be permanently marked as failed if providers were
+  rate-limited during processing.
+- **Issue #160: Guard sentinel in manual process endpoint** - The `-1` rate-limit sentinel from
+  `process_queue` was leaking into the `/api/process` endpoint response, showing `processed: -1`
+  in the UI. Now guarded with `max(0, l2_processed)`. (Caught by vibe-check review.)
+
+---
+
+## [0.9.0-beta.129] - 2026-02-18
 
 ### Changed
 
-- **Issue #117: Email-Only API Key Delivery** - Keys no longer displayed on screen
-  - API key removed from registration response
-  - Key is auto-saved and emailed to user
-  - Prevents key theft if someone knows your email but doesn't have email access
-  - UI shows masked placeholder after registration
+- **Issue #159: Feedback widget moved to nav bar** - Replaced floating bottom-right feedback button
+  with a bug icon (`bi-bug`) in the top navigation bar. Eliminates confusing overlap with the
+  dashboard Quick Actions button. Consistent placement and behavior across all pages. Feedback
+  modal and error auto-reporting remain unchanged.
 
 ---
 
-## [0.9.0-beta.113] - 2026-02-03
+## [0.9.0-beta.128] - 2026-02-16
 
 ### Added
 
-- **Issue #115: In-App Skaldleita API Key Registration**
-  - New `library_manager/instance.py` module - Generates persistent `SKALD-XXXXXX` instance IDs
-  - Register for API key directly from Settings page
-  - New endpoints: `/api/skaldleita/register`, `/api/skaldleita/validate`, `/api/instance/info`
-  - Auto-saves key to `secrets.json` on successful registration
-  - Rate limits: 1000 req/hr with key, 500 without
+- **Issue #113: User feedback and crash reporting** - New feedback system with floating button in
+  bottom-right corner. Users can submit bug reports, corrections, and feature requests with
+  optional session activity log and system info. Includes crash auto-prompt on 500 errors,
+  path/API key sanitization, and best-effort forwarding to Skaldleita API. Local storage in
+  `feedback.json` ensures feedback is never lost.
+- **Issue #127: Path-based completion for partial results** - When Skaldleita returns truncated
+  names (e.g., "James S. A" instead of "James S. A. Corey"), the system now uses folder path
+  information to complete the full name. Also extracts series information from path structure
+  when missing from audio identification. Requires minimum 4-char prefix match for safety.
+
+### Fixed
+
+- **Issue #155: API key not sent on /search requests** - All Skaldleita API endpoints now include
+  authentication headers. GET /search requests were missing the X-API-Key header, causing 403
+  Forbidden errors after Skaldleita added auth requirements to all endpoints.
+- **Issue #154: Rate limit handling** - Centralized rate limit handling in `handle_rate_limit_response()`
+  with exponential backoff (30s/60s/120s), Retry-After header parsing, and circuit breaker
+  integration. Applied to bookdb.py and fingerprint.py providers. Frontend displays rate limit
+  warnings with retry countdown on library, queue, and history pages.
 
 ---
 
-## [0.9.0-beta.112] - 2026-02-03
+## [0.9.0-beta.125] - 2026-02-14
 
-### Added
+### Fixed
 
-- **Issue #110: File Validation Module** - Pre-processing file checks
-  - New `library_manager/file_validation.py` module
-  - `validate_audio_file()` - Check single file with ffprobe
-  - `batch_validate()` - Check multiple files
-  - Catches: corrupt files, missing audio streams, truncated downloads, files < 10 min
+- **Issue #150: Badge count regression** - Dashboard initial render and `/api/library` queue count
+  now use the same filtered query as `/api/stats` (regression from #131 fix). Excludes
+  `needs_attention`, `user_locked`, and container statuses. Badge no longer flickers on page load.
+- **Issue #150: Author initial matching** - Precog voting system now handles initial-only author
+  names. "C Alanson" matches "Craig Alanson", "JRR Tolkien" matches "J R R Tolkien". Uses
+  consonant-only detection for collapsed initials and 0.7 weighted scoring for initial matches.
+  Also added initial-aware folder dedup in `path_safety.py` to prevent duplicate author folders.
+- **Issue #152: Pipeline fetch consistency** - `base_layer.py` and `layer_audio_id.py` now exclude
+  `needs_attention` books from queue fetch, matching all other pipeline layers. Prevents wasting
+  processing cycles on items that need human review.
 
 ---
 
-## [0.9.0-beta.111] - 2026-02-03
+## [0.9.0-beta.123] - 2026-02-11
 
 ### Added
 
-- **Issue #102: Precog Consensus Voting System** - "Minority Report" style identification
-  - New `library_manager/precog.py` module (450+ lines)
-  - Multiple sources vote on book identity with weighted consensus
-  - Source weights: audio (90) > metadata (80) > API (70) > AI (55) > path (30)
-  - Generic title protection: "Match Game", "The End" require 85% consensus (vs 70% normal)
-  - Human review flags: split votes, drastic author changes, low confidence
-  - 10 unit tests in `test-env/test-precog.py`
+- **Issue #110 Part 2: Folder triage** - New `library_manager/folder_triage.py` module that
+  categorizes folder names as clean/messy/garbage before processing. Clean folders use path hints
+  normally. Messy folders (scene release tags, torrent markers, quality indicators) skip path
+  parsing and rely on audio/metadata only. Garbage folders (hash names, numbers-only, generic
+  placeholders) also skip path hints and get a confidence penalty. Triage results stored in DB
+  and logged during scans. Integrated into Whisper transcription hints, AI identification
+  prompts, and the processing pipeline queue.
+- **Issue #103: In-app hints and tooltips** - New `library_manager/hints.py` module with contextual
+  documentation for all features and settings. Hover over the (?) icon next to any setting to see a
+  plain-language explanation of what it does. Tooltips added to: all identification layers, AI
+  providers, confidence threshold, trust modes, safety toggles, watch folder, ebook management,
+  metadata embedding, community features, and more. Library page filter chips and action buttons also
+  show helpful tooltips on hover. Users never need to ask "what does this do?" again.
+
+---
+
+## [0.9.0-beta.122] - 2026-02-11
+
+### Added
+
+- **Issue #111: Sortable columns** - Library table columns (Author, Title, Status) can now be
+  sorted by clicking column headers. Click once for ascending, again for descending, third click
+  clears sort back to default order. Visual arrow indicators show active sort column and direction.
+  Sort state preserved during pagination and filter changes. Backend validates sort columns against
+  a whitelist to prevent SQL injection.
+
+---
+
+## [0.9.0-beta.121] - 2026-02-10
+
+### Fixed
+
+- **Issue #142: Duplicate author folders from name variants** - New `find_existing_author_folder()`
+  deduplicates author folders using 3-tier matching: exact normalized, standardized initials, and
+  fuzzy match (SequenceMatcher >= 85%). Prevents separate folders like "James S.A. Corey" vs
+  "James S. A. Corey" or "Alistair MacLean" vs "Alistair Maclean". Applied to both standard and
+  `author_lf/title` naming formats.
+- **Issue #143: Series name used as author folder** - Defensive filter in BookDB provider discards
+  results where author equals series name (corrupt Skaldleita data per skaldleita#90, e.g. author
+  "Laundry Files" instead of "Charles Stross"). Defense-in-depth check in BookProfile.finalize()
+  catches this from any source, with automatic fallback to next-best author candidate.
+- `standardize_author_initials` now defaults to `True` to reduce author folder fragmentation.
+
+---
+
+## [0.9.0-beta.120] - 2026-02-09
+
+### Fixed
+
+- **Issue #140: Missing HMAC signing on /match requests** - The security commit (beta.117)
+  added HMAC request signing to all Skaldleita endpoints but missed `search_bookdb()`. Now
+  `/match` requests include `X-LM-Signature` and `X-LM-Timestamp` headers consistent with
+  all other Skaldleita API calls. Note: most of the search issues reported in #140 are
+  Skaldleita data gaps tracked in deucebucket/skaldleita#83, #84, #85.
+
+---
+
+## [0.9.0-beta.119] - 2026-02-08
+
+### Added
+
+- **Issue #126: Auto-enqueue after watch folder processing** - Books moved from the watch
+  folder to the library are now automatically added to the processing queue. Previously they
+  sat idle with status 'pending' until the user manually triggered a scan or processing.
+  Now they enter the full pipeline (audio ID, AI verification, etc.) immediately.
+
+---
+
+## [0.9.0-beta.118] - 2026-02-08
+
+### Fixed
+
+- **Issue #137: "Process Queue" button stalls** - The button now uses background processing
+  with live status bar updates instead of blocking the browser. Previously the HTTP request
+  would block while waiting for Skaldleita audio analysis (30+ seconds per book) with no
+  feedback to the user. Now runs the full pipeline (all layers including audio) and the
+  status bar shows exactly what's happening: current book, provider, queue position, etc.
+
+---
+
+## [0.9.0-beta.117] - 2026-02-08
+
+### Fixed
+
+- **Issue #131: Queue count mismatch** - Dashboard "ready to process" badge now counts only
+  actually processable items, matching the filters used by the processing pipeline. Previously
+  counted all queue items including ones blocked by status or layer filters.
+- **Issue #131: Orphaned queue items** - Books that exhaust all processing layers are now
+  properly marked as "Needs Attention" instead of being stuck in an invisible limbo state.
+- **Issue #132: Duplicate book entries** - Library scan now resolves all paths before database
+  insertion, preventing duplicate entries when symlinks or mount points cause the same file to
+  have different path representations.
+- **Issue #133: Series grouping with custom templates** - When `series_grouping` is enabled
+  and the custom naming template doesn't include `{series_num}`, the series number is now
+  automatically prepended to the title folder (matching built-in format behavior).
+- **Issue #135: Output folder routing** - All pipeline layers (audio ID, audio credits, AI
+  queue) now route watch folder items to the configured output folder. Previously only Layer 4
+  honored the output folder setting.
 
 ---
 

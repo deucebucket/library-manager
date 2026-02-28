@@ -69,6 +69,7 @@ DEFAULT_CONFIG = {
     "scan_interval_hours": 6,
     "batch_size": 10,
     "max_requests_per_hour": 200,
+    "max_book_retries": 3,  # Issue #168: Max times to re-process a book before giving up (0=unlimited)
     "auto_fix": False,
     "protect_author_changes": True,  # Require manual approval when author changes completely
     "enabled": True,
@@ -79,7 +80,7 @@ DEFAULT_CONFIG = {
     "update_channel": "beta",  # "stable", "beta", or "nightly"
     "naming_format": "author/title",  # "author/title", "author - title", "custom"
     "custom_naming_template": "{author}/{title}",  # Custom template with {author}, {title}, {series}, etc.
-    "standardize_author_initials": False,  # Normalize initials: "James S A Corey" -> "James S. A. Corey" (Issue #54)
+    "standardize_author_initials": True,  # Normalize initials: "James S A Corey" -> "James S. A. Corey" (Issue #54)
     # Metadata embedding settings
     "metadata_embedding_enabled": False,  # Embed tags into audio files when fixes are applied
     "metadata_embedding_overwrite_managed": True,  # Overwrite managed fields (title/author/series/etc)
@@ -133,14 +134,17 @@ DEFAULT_CONFIG = {
     "watch_use_hard_links": False,         # Hard link instead of move (saves space, same filesystem only)
     "watch_interval_seconds": 60,          # How often to check for new files
     "watch_delete_empty_folders": True,    # Remove empty source folders after moving
-    "watch_min_file_age_seconds": 30       # Minimum file age before processing (wait for downloads to complete)
+    "watch_min_file_age_seconds": 30,      # Minimum file age before processing (wait for downloads to complete)
+    # Post-processing hooks - run commands/webhooks after a book is renamed (Issue #166)
+    "post_processing_hooks": []
 }
 
 DEFAULT_SECRETS = {
     "openrouter_api_key": "",
     "gemini_api_key": "",
     "bookdb_api_key": "",  # Optional API key for Skaldleita (not required for public endpoints)
-    "abs_api_token": ""
+    "abs_api_token": "",
+    "webhook_secret": ""   # Shared secret for webhook authentication (referenced as {{webhook_secret}} in hook headers)
 }
 
 
@@ -272,7 +276,7 @@ def load_config():
 def save_config(config):
     """Save configuration to file (excludes secrets)."""
     # Separate secrets from config
-    secrets_keys = ['openrouter_api_key', 'gemini_api_key', 'google_books_api_key', 'abs_api_token']
+    secrets_keys = ['openrouter_api_key', 'gemini_api_key', 'google_books_api_key', 'abs_api_token', 'webhook_secret']
     config_only = {k: v for k, v in config.items() if k not in secrets_keys}
 
     with open(CONFIG_PATH, 'w') as f:
