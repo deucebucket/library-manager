@@ -69,6 +69,7 @@ DEFAULT_CONFIG = {
     "scan_interval_hours": 6,
     "batch_size": 10,
     "max_requests_per_hour": 200,
+    "max_book_retries": 3,  # Issue #168: Max times to re-process a book before giving up (0=unlimited)
     "auto_fix": False,
     "protect_author_changes": True,  # Require manual approval when author changes completely
     "enabled": True,

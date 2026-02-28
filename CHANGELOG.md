@@ -2,6 +2,21 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.133] - 2026-02-28
+
+### Fixed
+
+- **Issue #168: Stop re-searching unresolved books every scan cycle** - Background scans were
+  re-queuing every unresolved book and resetting `verification_layer` to 1, wiping all progress.
+  Books that exhausted all 4 layers and were marked `needs_attention` got re-queued because the
+  scan didn't check for that status — same books searched 60+ times/day (642K+ wasted API requests
+  in 14 days). Added retry tracking (`attempt_count`, `last_attempted`, `max_layer_reached`) with
+  exponential backoff (24h × 2^attempts, capped at ~32 days). New `should_requeue_book()` helper
+  gates all re-queuing sites. Configurable `max_book_retries` in Settings > Processing (default 3,
+  0 = unlimited with backoff).
+
+---
+
 ## [0.9.0-beta.132] - 2026-02-23
 
 ### Added

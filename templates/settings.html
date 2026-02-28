@@ -458,11 +458,19 @@
                                            value="{{ config.batch_size }}" min="1" max="10">
                                 </div>
                             </div>
-                            <div class="mb-0">
-                                <label class="form-label small">Max API Calls/Hour</label>
-                                <input type="number" class="form-control form-control-sm bg-dark text-light" name="max_requests_per_hour"
-                                       value="{{ config.max_requests_per_hour }}" min="10" max="500" style="max-width: 120px;">
-                                <small class="text-muted">Range: 10-500 (prevents API rate limiting)</small>
+                            <div class="row">
+                                <div class="col-6 mb-2">
+                                    <label class="form-label small">Max API Calls/Hour</label>
+                                    <input type="number" class="form-control form-control-sm bg-dark text-light" name="max_requests_per_hour"
+                                           value="{{ config.max_requests_per_hour }}" min="10" max="500">
+                                    <small class="text-muted">10-500 (prevents rate limiting)</small>
+                                </div>
+                                <div class="col-6 mb-2">
+                                    <label class="form-label small">Max Book Retries</label>
+                                    <input type="number" class="form-control form-control-sm bg-dark text-light" name="max_book_retries"
+                                           value="{{ config.max_book_retries }}" min="0" max="10">
+                                    <small class="text-muted">0 = unlimited (with backoff)</small>
+                                </div>
                             </div>
                         </div>
                     </div>
