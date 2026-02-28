@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.115-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.133-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -16,10 +16,24 @@
 
 ## Recent Changes (stable)
 
-> **beta.115** - 🔒 **HMAC Request Signing** (Issue #119)
-> - **Cryptographic Signatures** - All Skaldleita API requests now signed with HMAC-SHA256
-> - **Prevents Unauthorized Use** - Requests without valid signatures are rejected
-> - **Timestamp Protection** - Replay attacks blocked via time-based validation
+> **beta.132** - **Feature: Post-Processing Hooks** (Issue #166)
+> - **Run commands or webhooks after renames** - Trigger external scripts (m4binder, ABS scan, Discord notifications) when a book is successfully renamed
+> - **Template variables** - Use `{{author}}`, `{{title}}`, `{{new_path}}`, etc. in commands with automatic shell escaping
+> - **Settings UI** - New Post-Processing tab with hook management, test button, and execution log
+
+> **beta.130** - **Fix: Rate-Limited Batches No Longer Trigger False Exhaustion** (Issue #160)
+> - **Rate-limited batches skipped** - When AI providers are rate-limited, batches are no longer counted toward the 3-strike "all processing layers exhausted" rule
+> - **Circuit breaker awareness** - Layer 4 now waits for providers to recover instead of permanently marking identifiable books as failed
+> - **Distinct signal for rate limiting** - `process_queue` returns `-1` (rate-limited) vs `0` (genuinely empty) so the worker can react correctly
+
+> **beta.129** - **UI: Feedback Widget Moved to Nav Bar** (Issue #159)
+> - **Bug icon in nav bar** - Feedback/bug report button moved from floating bottom-right circle to a consistent bug icon in the top navigation bar
+> - **No more overlapping buttons** - Eliminates confusing dual floating buttons on the dashboard page
+
+> **beta.125** - **Bug Fixes: Badge Counts, Author Matching, Pipeline Filters** (Issues #150, #152)
+> - **Badge count fix** - Dashboard and library page queue counts now match actual processable items
+> - **Author initial matching** - "C Alanson" now correctly matches "Craig Alanson", "JRR Tolkien" matches "J R R Tolkien"
+> - **Pipeline consistency** - All processing layers now skip `needs_attention` books instead of wasting cycles
 
 > **beta.114** - 🔐 **Secure API Key Registration** (Issue #117)
 > - **Email-Only Delivery** - API keys no longer shown on screen, sent to email only
@@ -36,12 +50,6 @@
 > - **Pre-rename Checks** - Validates files before attempting renames
 > - **Path Safety** - Checks for invalid characters, path length limits
 > - **Better Errors** - Clear messages when files can't be renamed
-
-> **beta.111** - 🎯 **Precog Consensus Voting** (Issue #102)
-> - **Multi-Source Voting** - Audio, metadata, API, and AI sources vote on book identity
-> - **Weighted Consensus** - Audio (90) > Metadata (80) > API (70) > AI (55) > Path (30)
-> - **Generic Title Protection** - Ambiguous titles require 85% consensus instead of 70%
-> - **Human Review Flags** - Split votes and drastic changes flagged for review
 
 > **beta.110** - 📊 **Enhanced Status Bar** (transparency for users)
 > - **Know Your APIs** - Status bar shows exactly which API is processing your books

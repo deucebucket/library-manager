@@ -334,25 +334,35 @@ def process_layer_1_api(
         if action['type'] == 'trust_sl':
             # SL audio ID was high confidence - mark as resolved, skip Layer 2 (AI)
             # Advance to Layer 4 for final verification/fix application
-            c.execute('UPDATE books SET verification_layer = 4 WHERE id = ?', (action['book_id'],))
+            c.execute('''UPDATE books SET verification_layer = 4,
+                        max_layer_reached = MAX(COALESCE(max_layer_reached, 0), 4)
+                        WHERE id = ?''', (action['book_id'],))
             c.execute('DELETE FROM queue WHERE id = ?', (action['queue_id'],))
             resolved += 1
         elif action['type'] == 'verified':
             # Save profile and mark as verified
-            c.execute('UPDATE books SET status = ?, verification_layer = 4, profile = ?, confidence = ? WHERE id = ?',
+            c.execute('''UPDATE books SET status = ?, verification_layer = 4, profile = ?, confidence = ?,
+                        max_layer_reached = MAX(COALESCE(max_layer_reached, 0), 4)
+                        WHERE id = ?''',
                      ('verified', action['profile_json'], action['confidence'], action['book_id']))
             c.execute('DELETE FROM queue WHERE id = ?', (action['queue_id'],))
             resolved += 1
         elif action['type'] == 'advance_to_layer4':
             # Skip Layer 2 (AI), go directly to Layer 4 (final verification/fix)
-            c.execute('UPDATE books SET verification_layer = 4 WHERE id = ?', (action['book_id'],))
+            c.execute('''UPDATE books SET verification_layer = 4,
+                        max_layer_reached = MAX(COALESCE(max_layer_reached, 0), 4)
+                        WHERE id = ?''', (action['book_id'],))
         elif action['type'] == 'advance_to_layer2':
-            c.execute('UPDATE books SET verification_layer = 2 WHERE id = ?', (action['book_id'],))
+            c.execute('''UPDATE books SET verification_layer = 2,
+                        max_layer_reached = MAX(COALESCE(max_layer_reached, 0), 2)
+                        WHERE id = ?''', (action['book_id'],))
         elif action['type'] == 'garbage_rejected':
             # System folder/garbage input - mark for user cleanup, don't process further
             c.execute('''UPDATE books SET status = 'needs_attention',
                         error_message = 'System folder detected - remove from library',
-                        verification_layer = 4 WHERE id = ?''', (action['book_id'],))
+                        verification_layer = 4,
+                        max_layer_reached = MAX(COALESCE(max_layer_reached, 0), 4)
+                        WHERE id = ?''', (action['book_id'],))
             c.execute('DELETE FROM queue WHERE id = ?', (action['queue_id'],))
 
         processed += 1

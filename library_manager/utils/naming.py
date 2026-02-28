@@ -136,6 +136,67 @@ def clean_search_title(messy_name):
     return clean
 
 
+def strip_encoding_junk(text):
+    """Issue #125: Strip encoding/format info from finalized title or author.
+
+    Applied in build_new_path() as a last-gate filter so no matter where
+    data comes from (BookDB, AI, API), encoding garbage is caught before
+    it becomes a rename proposal.
+    """
+    if not text or not isinstance(text, str):
+        return text
+
+    clean = text
+
+    # Bracketed junk: [bitsearch.to], [rarbg], [EN], [64420]
+    clean = re.sub(r'\[(?:bitsearch\.to|rarbg|EN|\d+)\]', '', clean, flags=re.IGNORECASE)
+
+    # Format markers in parentheses
+    clean = re.sub(r'\((?:unabridged|abridged|audiobook|audio|graphicaudio|'
+                   r'uk\s*version|us\s*version|uk|us|multi|mono|stereo|'
+                   r'r\d+\.\d+|[A-Z])\)',
+                   '', clean, flags=re.IGNORECASE)
+
+    # Curly brace content: {465mb}, {narrator}, {mb}, {1.27gb}
+    clean = re.sub(r'\{[^}]*\}', '', clean)
+
+    # Codec+bitrate combos: MP3 320kbps, M4B 64k, AAC 256k
+    clean = re.sub(r'\b(?:mp3|m4b|aac)\s*\d+\s*k(?:bps)?\b', '', clean, flags=re.IGNORECASE)
+    # Bitrates: 62k, 64k, 128k, 192k, 320k, 320kbps
+    clean = re.sub(r'\b\d{2,3}\s*k(?:bps)?\b', '', clean, flags=re.IGNORECASE)
+    # File extensions in names (before standalone codec strip)
+    clean = re.sub(r'\.(?:mp3|m4b|m4a|epub|pdf|mobi|webm|opus|flac|wav|ogg)$',
+                   '', clean, flags=re.IGNORECASE)
+
+    # Standalone codecs (with lookahead to protect "MP3 Player" etc.)
+    clean = re.sub(r'\bmp3\b(?!\s+\w)', '', clean, flags=re.IGNORECASE)
+    clean = re.sub(r'\bm4b\b(?!\s+\w)', '', clean, flags=re.IGNORECASE)
+    clean = re.sub(r'\bflac\b(?!\s+\w)', '', clean, flags=re.IGNORECASE)
+    clean = re.sub(r'\baac\b(?!\s+\w)', '', clean, flags=re.IGNORECASE)
+    # Quality modes
+    clean = re.sub(r'\bvbr\b', '', clean, flags=re.IGNORECASE)
+    clean = re.sub(r'\bcbr\b', '', clean, flags=re.IGNORECASE)
+
+    # File sizes: 463mb, 1.2gb (without braces - braces already handled above)
+    clean = re.sub(r'\b\d+(?:\.\d+)?(?:mb|gb|kb)\b', '', clean, flags=re.IGNORECASE)
+
+    # Duration timestamps: 01.10.42, 23.35.16, 69.35.47
+    clean = re.sub(r'\b\d{1,2}\.\d{2}\.\d{2}\b', '', clean)
+
+    # Channel info
+    clean = re.sub(r'\b(?:mono|stereo|multi)\b', '', clean, flags=re.IGNORECASE)
+
+    # Version numbers: v01, v02
+    clean = re.sub(r'\bv\d+\b', '', clean, flags=re.IGNORECASE)
+
+    # Clean up whitespace and trailing junk
+    clean = re.sub(r'\s+', ' ', clean).strip()
+    clean = re.sub(r'^[-_\s]+|[-_\s]+$', '', clean)
+    clean = re.sub(r'\s*-\s*$', '', clean)
+
+    return clean or text  # Fall back to original if we stripped everything
+
+
 def standardize_initials(name):
     """Issue #54: Normalize author initials to consistent "A. B." format.
 
@@ -271,6 +332,7 @@ __all__ = [
     'calculate_title_similarity',
     'extract_series_from_title',
     'clean_search_title',
+    'strip_encoding_junk',
     'standardize_initials',
     'clean_author_name',
     'extract_author_title',

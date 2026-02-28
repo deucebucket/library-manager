@@ -1,0 +1,223 @@
+<!-- Post-Processing Hooks Tab (Issue #166) -->
+<!-- Included in settings.html via {% include 'hooks_settings.html' %} -->
+
+<div class="row">
+    <div class="col-lg-8">
+        <!-- Hook List -->
+        <div class="card mb-3">
+            <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                <span>
+                    <i class="bi bi-terminal"></i> Post-Processing Hooks
+                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.post_processing }}</span></span>
+                </span>
+                <button type="button" class="btn btn-sm btn-outline-primary py-0" onclick="addHook()">
+                    <i class="bi bi-plus-lg"></i> Add Hook
+                </button>
+            </div>
+            <div class="card-body p-0">
+                <div id="hooks-list">
+                    <!-- Populated by JS -->
+                </div>
+                <div id="hooks-empty" class="text-center text-muted py-4" style="display: none;">
+                    <i class="bi bi-terminal" style="font-size: 2rem;"></i>
+                    <p class="mt-2 mb-0">No hooks configured</p>
+                    <small>Add a hook to run commands or webhooks after books are renamed</small>
+                </div>
+            </div>
+        </div>
+
+        <!-- Hook Execution Log -->
+        <div class="card mb-3">
+            <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-journal-text"></i> Execution Log</span>
+                <div>
+                    <button type="button" class="btn btn-sm btn-outline-secondary py-0" onclick="refreshHookLog()">
+                        <i class="bi bi-arrow-clockwise"></i>
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-danger py-0 ms-1" onclick="clearHookLog()">
+                        <i class="bi bi-trash"></i> Clear
+                    </button>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div id="hook-log" style="max-height: 300px; overflow-y: auto;">
+                    <table class="table table-sm table-dark mb-0" style="font-size: 0.8rem;">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Hook</th>
+                                <th>Type</th>
+                                <th>Status</th>
+                                <th>Duration</th>
+                                <th>Details</th>
+                            </tr>
+                        </thead>
+                        <tbody id="hook-log-body">
+                            <tr><td colspan="6" class="text-center text-muted">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-4">
+        <!-- Template Variables Reference -->
+        <div class="card mb-3">
+            <div class="card-header py-2">
+                <i class="bi bi-braces"></i> Template Variables
+            </div>
+            <div class="card-body py-2" style="font-size: 0.8rem;">
+                <p class="mb-2 text-muted">Use <code>{{"{{"}}{{"}}"}}</code> in commands/URLs:</p>
+                <div class="row">
+                    <div class="col-6">
+                        <code>{{"{{"}}new_path{{"}}"}}</code><br>
+                        <code>{{"{{"}}old_path{{"}}"}}</code><br>
+                        <code>{{"{{"}}author{{"}}"}}</code><br>
+                        <code>{{"{{"}}title{{"}}"}}</code><br>
+                        <code>{{"{{"}}narrator{{"}}"}}</code><br>
+                        <code>{{"{{"}}series{{"}}"}}</code><br>
+                        <code>{{"{{"}}series_num{{"}}"}}</code>
+                    </div>
+                    <div class="col-6">
+                        <code>{{"{{"}}year{{"}}"}}</code><br>
+                        <code>{{"{{"}}media_type{{"}}"}}</code><br>
+                        <code>{{"{{"}}book_id{{"}}"}}</code><br>
+                        <code>{{"{{"}}history_id{{"}}"}}</code><br>
+                        <code>{{"{{"}}event{{"}}"}}</code><br>
+                        <code>{{"{{"}}timestamp{{"}}"}}</code><br>
+                        <code>{{"{{"}}old_author{{"}}"}}</code>
+                    </div>
+                </div>
+                <hr class="my-2">
+                <small class="text-muted">
+                    <i class="bi bi-shield-check"></i> Command variables are automatically shell-escaped to prevent injection.
+                </small>
+            </div>
+        </div>
+
+        <!-- Examples -->
+        <div class="card mb-3">
+            <div class="card-header py-2">
+                <i class="bi bi-lightbulb"></i> Examples
+            </div>
+            <div class="card-body py-2" style="font-size: 0.8rem;">
+                <strong>M4B Converter:</strong>
+                <pre class="bg-dark p-2 rounded mt-1 mb-2" style="font-size: 0.7rem; white-space: pre-wrap;">python3 /hooks/m4binder.py --input-folder {{"{{"}}new_path{{"}}"}}</pre>
+
+                <strong>ABS Library Scan:</strong>
+                <pre class="bg-dark p-2 rounded mt-1 mb-2" style="font-size: 0.7rem; white-space: pre-wrap;">curl -s -X POST http://abs:13378/api/libraries/LIB_ID/scan -H "Authorization: Bearer TOKEN"</pre>
+
+                <strong>Log to file:</strong>
+                <pre class="bg-dark p-2 rounded mt-1 mb-2" style="font-size: 0.7rem; white-space: pre-wrap;">echo {{"{{"}}author{{"}}"}} - {{"{{"}}title{{"}}"}} >> /data/hook-log.txt</pre>
+
+                <strong>Discord Webhook:</strong><br>
+                <small class="text-muted">Use webhook type with your Discord webhook URL</small>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Hook Edit Modal -->
+<div class="modal fade" id="hookEditModal" tabindex="-1" data-bs-backdrop="static">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title" id="hookEditModalTitle"><i class="bi bi-terminal"></i> Add Hook</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="hook-edit-index" value="-1">
+
+                <div class="mb-3">
+                    <label class="form-label">Name</label>
+                    <input type="text" class="form-control bg-dark text-light" id="hook-name" placeholder="e.g. M4B Converter">
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Type</label>
+                    <select class="form-select bg-dark text-light" id="hook-type" onchange="toggleHookTypeFields()">
+                        <option value="command">Command</option>
+                        <option value="webhook">Webhook</option>
+                    </select>
+                </div>
+
+                <!-- Command fields -->
+                <div id="hook-command-fields">
+                    <div class="mb-3">
+                        <label class="form-label">Command</label>
+                        <input type="text" class="form-control bg-dark text-light font-monospace" id="hook-command"
+                               placeholder="python3 /hooks/script.py --input {{new_path}}">
+                        <small class="text-muted">Use template variables like <code>{{"{{"}}new_path{{"}}"}}</code>. Values are shell-escaped automatically.</small>
+                    </div>
+                </div>
+
+                <!-- Webhook fields -->
+                <div id="hook-webhook-fields" style="display: none;">
+                    <div class="mb-3">
+                        <label class="form-label">URL</label>
+                        <input type="text" class="form-control bg-dark text-light" id="hook-url"
+                               placeholder="https://discord.com/api/webhooks/...">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Method</label>
+                        <select class="form-select bg-dark text-light" id="hook-method">
+                            <option value="POST">POST</option>
+                            <option value="GET">GET</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Headers <small class="text-muted">(JSON, optional)</small></label>
+                        <input type="text" class="form-control bg-dark text-light font-monospace" id="hook-headers"
+                               placeholder='{"Authorization": "Bearer {{webhook_secret}}"}'>
+                    </div>
+                </div>
+
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="mb-3">
+                            <label class="form-label">Timeout (seconds)</label>
+                            <input type="number" class="form-control bg-dark text-light" id="hook-timeout" value="300" min="1" max="3600">
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="mb-3">
+                            <label class="form-label">Mode</label>
+                            <select class="form-select bg-dark text-light" id="hook-mode">
+                                <option value="sync">Sync (wait for result)</option>
+                                <option value="async">Async (fire &amp; forget)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="mb-3">
+                            <label class="form-label">On Error</label>
+                            <select class="form-select bg-dark text-light" id="hook-on-error">
+                                <option value="log">Log Only</option>
+                                <option value="stop">Stop Chain</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Test Result -->
+                <div id="hook-test-result" class="mt-2" style="display: none;">
+                    <div class="card bg-dark border-secondary">
+                        <div class="card-body py-2">
+                            <pre id="hook-test-output" class="mb-0 text-light" style="font-size: 0.75rem; white-space: pre-wrap;"></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-info btn-sm" onclick="testCurrentHook()">
+                    <i class="bi bi-play-circle"></i> Test
+                </button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveHookFromModal()">
+                    <i class="bi bi-check-lg"></i> Save Hook
+                </button>
+            </div>
+        </div>
+    </div>
+</div>

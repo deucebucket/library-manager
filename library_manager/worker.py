@@ -145,7 +145,10 @@ def process_all_queue(
 
     Args:
         config: Configuration dict
-        get_db: Function to get database connection
+        get_db: Function to get database connection. Returns a new
+            sqlite3 connection each call (standard Flask-SQLite pattern).
+            Safe to call multiple times in the same scope - each call
+            gets its own connection, no shared state.
         load_config: Function to reload config
         is_circuit_open: Function to check circuit breaker status
         get_circuit_breaker: Function to get circuit breaker state
@@ -388,7 +391,33 @@ def process_all_queue(
         # At this point, we're trusting folder names as a last resort
         processed, fixed = process_queue(config, verification_layer=4)
 
+        # Issue #160: processed == -1 means rate-limited, NOT "nothing to process"
+        # Don't count rate-limited batches toward the 3-strike exhaustion rule
+        if processed == -1:
+            logger.info("Batch skipped due to rate limiting - not counting toward exhaustion")
+            _processing_status["current"] = "Rate limited, waiting for cooldown..."
+            _processing_status["last_activity"] = "Waiting for rate limit cooldown"
+            _processing_status["last_activity_time"] = time.time()
+            time.sleep(30)
+            continue
+
         if processed == 0:
+            # Check if AI providers are circuit-broken before counting as empty
+            # If providers are unavailable, this isn't a real "empty" result
+            ai_provider = config.get('ai_provider', 'gemini')
+            providers_to_check = [ai_provider]
+            if ai_provider != 'bookdb':
+                providers_to_check.append('bookdb')
+            any_circuit_open = any(is_circuit_open(p) for p in providers_to_check)
+
+            if any_circuit_open:
+                logger.info(f"AI providers circuit-broken ({', '.join(p for p in providers_to_check if is_circuit_open(p))}) - waiting for recovery, not counting toward exhaustion")
+                _processing_status["current"] = "AI provider cooling down, waiting..."
+                _processing_status["last_activity"] = "Waiting for circuit breaker recovery"
+                _processing_status["last_activity_time"] = time.time()
+                time.sleep(30)
+                continue
+
             conn = get_db()
             c = conn.cursor()
             c.execute('SELECT COUNT(*) as count FROM queue')
@@ -402,7 +431,33 @@ def process_all_queue(
                 empty_batch_count += 1
                 logger.warning(f"No items processed but {remaining} remain (attempt {empty_batch_count}/3)")
                 if empty_batch_count >= 3:
-                    logger.info(f"Layer 4 cannot process remaining {remaining} items")
+                    logger.info(f"Layer 4 cannot process remaining {remaining} items - marking as needs_attention")
+                    # Issue #131: Mark orphaned queue items as needs_attention
+                    # so they're visible to the user instead of stuck in limbo
+                    conn2 = get_db()
+                    try:
+                        c2 = conn2.cursor()
+                        # Issue #168: Increment attempt_count and record last_attempted
+                        c2.execute('''UPDATE books SET status = 'needs_attention',
+                                        error_message = 'All processing layers exhausted - could not identify this book automatically',
+                                        attempt_count = COALESCE(attempt_count, 0) + 1,
+                                        last_attempted = CURRENT_TIMESTAMP,
+                                        max_layer_reached = MAX(COALESCE(max_layer_reached, 0), COALESCE(verification_layer, 0))
+                                     WHERE id IN (
+                                         SELECT q.book_id FROM queue q
+                                         JOIN books b ON q.book_id = b.id
+                                         WHERE b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                                           AND (b.user_locked IS NULL OR b.user_locked = 0)
+                                     )''')
+                        orphaned = c2.rowcount
+                        c2.execute('''DELETE FROM queue WHERE book_id IN (
+                                         SELECT id FROM books WHERE status = 'needs_attention'
+                                     )''')
+                        conn2.commit()
+                        if orphaned:
+                            logger.info(f"Marked {orphaned} orphaned queue items as needs_attention")
+                    finally:
+                        conn2.close()
                     break
                 time.sleep(10)
                 continue

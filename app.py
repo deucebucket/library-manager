@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.115"
+APP_VERSION = "0.9.0-beta.133"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -51,7 +51,8 @@ from library_manager.config import (
 )
 from library_manager.database import (
     init_db, get_db, set_db_path, cleanup_garbage_entries,
-    cleanup_duplicate_history_entries, insert_history_entry
+    cleanup_duplicate_history_entries, insert_history_entry,
+    should_requeue_book
 )
 from library_manager.models.book_profile import (
     SOURCE_WEIGHTS, FIELD_WEIGHTS, FieldValue, BookProfile,
@@ -73,9 +74,10 @@ from library_manager.utils import (
 )
 from library_manager.providers import (
     rate_limit_wait, is_circuit_open, record_api_failure, record_api_success,
+    handle_rate_limit_response,
     API_RATE_LIMITS, API_CIRCUIT_BREAKER,
     search_audnexus, search_openlibrary, search_google_books, search_hardcover,
-    BOOKDB_API_URL, BOOKDB_PUBLIC_KEY,
+    BOOKDB_API_URL, BOOKDB_PUBLIC_KEY, get_signed_headers,
     search_bookdb as _search_bookdb_raw, identify_audio_with_bookdb,
     call_ollama as _call_ollama_raw, call_ollama_simple as _call_ollama_simple_raw,
     get_ollama_models, test_ollama_connection,
@@ -111,6 +113,13 @@ from library_manager.instance import (
     get_instance_data,
     save_instance_data,
 )
+from library_manager.feedback import (
+    log_action, get_session_log, log_error as feedback_log_error,
+    get_system_info, store_feedback, sanitize_string as feedback_sanitize,
+)
+from library_manager.folder_triage import triage_folder, triage_book_path, should_use_path_hints, confidence_modifier
+from library_manager.hints import get_all_hints
+from library_manager.hooks import hooks_bp, run_hooks, build_hook_context
 
 # Try to import P2P cache (optional - gracefully degrades if not available)
 try:
@@ -550,6 +559,7 @@ logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 app = Flask(__name__)
 app.secret_key = 'library-manager-secret-key-2024'
+app.register_blueprint(hooks_bp)
 
 # ============== INTERNATIONALIZATION (i18n) ==============
 # Flask-Babel for UI translations - book metadata (author/title) is NOT translated
@@ -607,6 +617,31 @@ _startup_logger.info(f"Data directory: {DATA_DIR} (config persistence location)"
 # ============== LEGACY CONFIGURATION REMOVED ==============
 # Configuration code has been moved to library_manager/config.py
 # Database code has been moved to library_manager/database.py
+
+# ============== ERROR HANDLERS ==============
+
+@app.errorhandler(500)
+def handle_500(error):
+    feedback_log_error(error, context="500_error")
+    logger.error(f"Internal server error: {error}")
+    if request.path.startswith('/api/'):
+        return jsonify({
+            'success': False,
+            'error': 'Internal server error',
+            'suggest_feedback': True,
+        }), 500
+    return render_template('base.html',
+        config=load_config(),
+        worker_running=is_worker_running(),
+    ), 500
+
+
+@app.errorhandler(404)
+def handle_404(error):
+    if request.path.startswith('/api/'):
+        return jsonify({'success': False, 'error': 'Not found'}), 404
+    return redirect('/')
+
 
 # ============== ANONYMOUS ERROR REPORTING ==============
 
@@ -3019,7 +3054,7 @@ def group_loose_files(files):
 
 def search_bookdb_api(title, author=None, retry_count=0):
     """
-    Search the BookBucket API for a book (public endpoint, no auth needed).
+    Search the Skaldleita API for a book.
     Uses Qdrant vector search - fast even with 50M books.
     Returns dict with author, title, series if found.
     Filters garbage matches using title similarity.
@@ -3037,6 +3072,12 @@ def search_bookdb_api(title, author=None, retry_count=0):
 
     rate_limit_wait('bookdb')  # 3.6s delay = max 1000/hr, never skips
 
+    # Build headers with auth (Skaldleita requires auth on all endpoints)
+    secrets = load_secrets()
+    api_key = secrets.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
+    headers = get_signed_headers() or {}
+    headers['X-API-Key'] = api_key
+
     try:
         # Use longer timeout for cold start (embedding model can take 45-60s to load)
         # Retry once on timeout
@@ -3045,6 +3086,7 @@ def search_bookdb_api(title, author=None, retry_count=0):
                 response = requests.get(
                     f"{BOOKDB_API_URL}/search",
                     params={"q": search_title, "limit": 5},
+                    headers=headers,
                     timeout=60 if attempt == 0 else 30
                 )
                 break
@@ -3054,16 +3096,13 @@ def search_bookdb_api(title, author=None, retry_count=0):
                     continue
                 raise
 
-        # Handle rate limiting - respect Retry-After header from server
-        if response.status_code == 429 and retry_count < 3:
-            retry_after = response.headers.get('Retry-After', '60')
-            try:
-                wait_time = min(int(retry_after), 300)  # Cap at 5 minutes
-            except ValueError:
-                wait_time = 60 * (retry_count + 1)  # Fallback: 60s, 120s, 180s
-            logger.info(f"BookDB API rate limited, waiting {wait_time}s (Retry-After: {retry_after})...")
-            time.sleep(wait_time)
-            return search_bookdb_api(title, retry_count + 1)
+        # Handle rate limiting with exponential backoff
+        if response.status_code == 429:
+            rl = handle_rate_limit_response(response, 'bookdb', retry_count)
+            if rl['should_retry']:
+                time.sleep(rl['wait_seconds'])
+                return search_bookdb_api(title, author, retry_count + 1)
+            return None
 
         if response.status_code == 200:
             results = response.json()
@@ -3196,31 +3235,39 @@ def search_book_searxng(query, duration_hours=None):
     return []
 
 
-def calculate_input_quality(folder_name, filenames, info):
+def calculate_input_quality(folder_name, filenames, info, folder_triage='clean'):
     """
     Score the quality of input data for AI identification.
     Returns a score 0-100 and list of usable clues found.
 
     Low quality inputs (random numbers, 'unknown', no words) should not be
     trusted to AI as it will hallucinate famous books.
+
+    Issue #110: folder_triage controls whether folder name is trusted as input.
     """
     score = 0
     clues = []
 
-    # Check folder name for useful info
-    folder_clean = re.sub(r'[_\-\d\.\[\]\(\)]', ' ', folder_name or '').strip()
-    words = [w for w in folder_clean.split() if len(w) > 2 and w.lower() not in ('unknown', 'audiobook', 'audio', 'book', 'mp3', 'the', 'and', 'part')]
+    # Issue #110: Only trust folder name for clean folders
+    use_folder = should_use_path_hints(folder_triage)
 
-    if words:
-        score += min(40, len(words) * 10)  # Up to 40 points for meaningful words
-        clues.append(f"folder_words: {words[:5]}")
+    if use_folder:
+        # Check folder name for useful info
+        folder_clean = re.sub(r'[_\-\d\.\[\]\(\)]', ' ', folder_name or '').strip()
+        words = [w for w in folder_clean.split() if len(w) > 2 and w.lower() not in ('unknown', 'audiobook', 'audio', 'book', 'mp3', 'the', 'and', 'part')]
 
-    # Check for author-title pattern (e.g., "Author - Title")
-    if ' - ' in (folder_name or ''):
-        score += 20
-        clues.append("has_author_title_separator")
+        if words:
+            score += min(40, len(words) * 10)  # Up to 40 points for meaningful words
+            clues.append(f"folder_words: {words[:5]}")
 
-    # Check metadata tags
+        # Check for author-title pattern (e.g., "Author - Title")
+        if ' - ' in (folder_name or ''):
+            score += 20
+            clues.append("has_author_title_separator")
+    else:
+        clues.append(f"folder_skipped: triage={folder_triage}")
+
+    # Check metadata tags (always trusted regardless of folder triage)
     if info.get('title') and info.get('title') not in ('none', 'Unknown', ''):
         score += 25
         clues.append(f"has_title_tag: {info.get('title')[:30]}")
@@ -3238,6 +3285,12 @@ def calculate_input_quality(folder_name, filenames, info):
     if re.match(r'^(unknown|audiobook|audio|book)?[\s_\-]*\d+$', folder_name or '', re.IGNORECASE):
         score = max(0, score - 50)  # Heavy penalty for "unknown_123" type names
         clues.append("PENALTY: numeric_garbage_name")
+
+    # Issue #110: Apply confidence modifier for garbage folders
+    modifier = confidence_modifier(folder_triage)
+    if modifier:
+        score = max(0, score + modifier)
+        clues.append(f"triage_modifier: {modifier}")
 
     return min(100, score), clues
 
@@ -3348,11 +3401,14 @@ def identify_book_with_ai(file_group, config):
     info = file_group.get('detected_info', {})
     folder_name = file_group.get('folder_name', '')
 
+    # Issue #110: Determine folder triage for this book
+    ft = file_group.get('folder_triage') or triage_folder(folder_name)
+
     # Build context for AI
     filenames = [Path(f).name if isinstance(f, str) else f.name for f in files[:20]]
 
     # === HALLUCINATION PREVENTION: Input quality check ===
-    input_quality, clues = calculate_input_quality(folder_name, filenames, info)
+    input_quality, clues = calculate_input_quality(folder_name, filenames, info, folder_triage=ft)
 
     if input_quality < 25:
         # Input is garbage - don't even try AI, it will hallucinate
@@ -3386,7 +3442,7 @@ You MUST explain WHY you think this is the correct book. What evidence supports 
 - Or are you GUESSING based on a generic title? (If guessing, return null!)
 
 Input information:
-- Folder name: {folder_name}
+- Folder name: {folder_name if should_use_path_hints(ft) else '[UNRELIABLE - ignore folder name]'}
 - Files ({len(files)} total): {', '.join(filenames[:10])}{'...' if len(filenames) > 10 else ''}
 - Duration: {info.get('duration_hours', 'unknown')} hours
 - Album tag: {info.get('title', 'none')}
@@ -4815,6 +4871,7 @@ def deep_scan_library(config):
     scanned = 0  # New books added to tracking
     queued = 0   # Books added to fix queue
     issues_found = {}  # path -> list of issues
+    triage_counts = {'clean': 0, 'messy': 0, 'garbage': 0}  # Issue #110: Folder triage stats
 
     # Track files for duplicate detection
     file_signatures = {}  # signature -> list of paths
@@ -4859,15 +4916,20 @@ def deep_scan_library(config):
                 # Parse filename to extract searchable title
                 filename = loose_file.stem  # filename without extension
                 cleaned_filename = clean_search_title(filename)
-                path_str = str(loose_file)
+                # Issue #132: Resolve path to prevent duplicates from symlinks/mount differences
+                path_str = str(loose_file.resolve())
 
                 # Check if already in books table
-                c.execute('SELECT id, user_locked FROM books WHERE path = ?', (path_str,))
+                c.execute('''SELECT id, user_locked, status, profile, attempt_count,
+                                    last_attempted, max_layer_reached, verification_layer
+                             FROM books WHERE path = ?''', (path_str,))
                 existing = c.fetchone()
 
                 if existing:
-                    # Skip user-locked books
-                    if existing['user_locked']:
+                    # Issue #168: Check if this book should be re-queued
+                    max_retries = config.get('max_book_retries', 3)
+                    should_queue, reset_layer = should_requeue_book(existing, max_retries)
+                    if not should_queue:
                         continue
                     book_id = existing['id']
                 else:
@@ -4876,6 +4938,7 @@ def deep_scan_library(config):
                                 VALUES (?, ?, ?, ?)''',
                              (path_str, 'Unknown', cleaned_filename, 'loose_file'))
                     book_id = c.lastrowid
+                    reset_layer = 1  # New books always start at layer 1
 
                 # Add to queue with special "loose_file" reason
                 c.execute('''INSERT OR REPLACE INTO queue
@@ -4883,8 +4946,8 @@ def deep_scan_library(config):
                             VALUES (?, ?, ?, ?)''',
                          (book_id, f'loose_file_needs_folder:{filename}',
                           datetime.now().isoformat(), 1))  # High priority
-                # Set verification_layer=1 to start at Layer 1 (API lookup)
-                c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
+                # Issue #168: Only reset layer if should_requeue_book says so
+                c.execute('UPDATE books SET verification_layer = ? WHERE id = ?', (reset_layer, book_id))
                 queued += 1
                 issues_found[path_str] = ['loose_file_no_folder']
                 logger.info(f"Queued loose file: {filename} -> search for: {cleaned_filename}")
@@ -4903,12 +4966,16 @@ def deep_scan_library(config):
                     cleaned_filename = clean_search_title(filename)
                     path_str = str(loose_ebook)
 
-                    c.execute('SELECT id, user_locked FROM books WHERE path = ?', (path_str,))
+                    c.execute('''SELECT id, user_locked, status, profile, attempt_count,
+                                        last_attempted, max_layer_reached, verification_layer
+                                 FROM books WHERE path = ?''', (path_str,))
                     existing = c.fetchone()
 
                     if existing:
-                        # Skip user-locked books
-                        if existing['user_locked']:
+                        # Issue #168: Check if this book should be re-queued
+                        max_retries = config.get('max_book_retries', 3)
+                        should_queue, reset_layer = should_requeue_book(existing, max_retries)
+                        if not should_queue:
                             continue
                         book_id = existing['id']
                     else:
@@ -4916,14 +4983,15 @@ def deep_scan_library(config):
                                     VALUES (?, ?, ?, ?)''',
                                  (path_str, 'Unknown', cleaned_filename, 'ebook_loose'))
                         book_id = c.lastrowid
+                        reset_layer = 1
 
                     c.execute('''INSERT OR REPLACE INTO queue
                                 (book_id, reason, added_at, priority)
                                 VALUES (?, ?, ?, ?)''',
                              (book_id, f'ebook_loose:{filename}',
                               datetime.now().isoformat(), 2))
-                    # Set verification_layer=1 to start at Layer 1 (API lookup)
-                    c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
+                    # Issue #168: Only reset layer if should_requeue_book says so
+                    c.execute('UPDATE books SET verification_layer = ? WHERE id = ?', (reset_layer, book_id))
                     queued += 1
                     issues_found[path_str] = ['ebook_loose_file']
                     logger.info(f"Queued loose ebook: {filename}")
@@ -4969,29 +5037,36 @@ def deep_scan_library(config):
 
                 # Extract author/title from folder name
                 flat_author, flat_title = extract_author_title(author)
-                flat_path = str(author_dir)
+                # Issue #132: Resolve path to prevent duplicates
+                flat_path = str(author_dir.resolve())
+                # Issue #110: Triage folder name quality
+                flat_triage = triage_folder(author)
 
                 checked += 1
 
                 # Check if already tracked
-                c.execute('SELECT id, status, profile, user_locked FROM books WHERE path = ?', (flat_path,))
+                c.execute('''SELECT id, status, profile, user_locked, attempt_count,
+                                    last_attempted, max_layer_reached, verification_layer
+                             FROM books WHERE path = ?''', (flat_path,))
                 existing_flat = c.fetchone()
 
                 if existing_flat:
-                    if existing_flat['user_locked']:
+                    # Issue #168: Use should_requeue_book for unified skip logic
+                    max_retries = config.get('max_book_retries', 3)
+                    should_queue, reset_layer = should_requeue_book(existing_flat, max_retries)
+                    if not should_queue:
                         continue
-                    if existing_flat['status'] in ['verified', 'fixed']:
-                        has_profile = existing_flat['profile'] and len(existing_flat['profile']) > 2
-                        if has_profile:
-                            continue
                     flat_book_id = existing_flat['id']
+                    c.execute('UPDATE books SET folder_triage = ? WHERE id = ?',
+                             (flat_triage, flat_book_id))
                 else:
-                    c.execute('''INSERT INTO books (path, current_author, current_title, status)
-                                 VALUES (?, ?, ?, 'pending')''', (flat_path, flat_author, flat_title))
+                    c.execute('''INSERT INTO books (path, current_author, current_title, status, folder_triage)
+                                 VALUES (?, ?, ?, 'pending', ?)''', (flat_path, flat_author, flat_title, flat_triage))
                     conn.commit()
                     flat_book_id = c.lastrowid
                     scanned += 1
-                    logger.info(f"Added flat book: {flat_author} - {flat_title}")
+                    reset_layer = 1
+                    logger.info(f"Added flat book: {flat_author} - {flat_title} (triage: {flat_triage})")
 
                 # Queue for processing
                 c.execute('SELECT id FROM queue WHERE book_id = ?', (flat_book_id,))
@@ -4999,7 +5074,8 @@ def deep_scan_library(config):
                     c.execute('''INSERT INTO queue (book_id, reason, priority)
                                 VALUES (?, ?, ?)''',
                              (flat_book_id, 'flat_book_folder', 3))
-                    c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (flat_book_id,))
+                    # Issue #168: Don't reset layer unconditionally
+                    c.execute('UPDATE books SET verification_layer = ? WHERE id = ?', (reset_layer, flat_book_id))
                     conn.commit()
                     queued += 1
 
@@ -5017,7 +5093,8 @@ def deep_scan_library(config):
                     continue
 
                 title = title_dir.name
-                path = str(title_dir)
+                # Issue #132: Resolve path to prevent duplicates from symlinks/mount differences
+                path = str(title_dir.resolve())
 
                 # Issue #53: Strip author prefix from book folder name
                 # If folder is "David Baldacci - Dream Town" and parent is "David Baldacci",
@@ -5133,25 +5210,31 @@ def deep_scan_library(config):
                                 continue  # No audio files, skip
 
                             checked += 1
+                            # Issue #110: Triage folder name quality
+                            series_book_triage = triage_folder(book_title)
 
                             # Check if already tracked
-                            c.execute('SELECT id, status, profile, user_locked FROM books WHERE path = ?', (book_path,))
+                            c.execute('''SELECT id, status, profile, user_locked, attempt_count,
+                                                last_attempted, max_layer_reached, verification_layer
+                                         FROM books WHERE path = ?''', (book_path,))
                             existing_book = c.fetchone()
 
                             if existing_book:
-                                if existing_book['user_locked']:
+                                # Issue #168: Use should_requeue_book for unified skip logic
+                                max_retries = config.get('max_book_retries', 3)
+                                should_queue, reset_layer = should_requeue_book(existing_book, max_retries)
+                                if not should_queue:
                                     continue
-                                if existing_book['status'] in ['verified', 'fixed']:
-                                    has_profile = existing_book['profile'] and len(existing_book['profile']) > 2
-                                    if has_profile:
-                                        continue
                                 book_id = existing_book['id']
+                                c.execute('UPDATE books SET folder_triage = ? WHERE id = ?',
+                                         (series_book_triage, book_id))
                             else:
-                                c.execute('''INSERT INTO books (path, current_author, current_title, status)
-                                             VALUES (?, ?, ?, 'pending')''', (book_path, author, book_title))
+                                c.execute('''INSERT INTO books (path, current_author, current_title, status, folder_triage)
+                                             VALUES (?, ?, ?, 'pending', ?)''', (book_path, author, book_title, series_book_triage))
                                 conn.commit()
                                 book_id = c.lastrowid
                                 scanned += 1
+                                reset_layer = 1
 
                             # Queue for processing
                             c.execute('SELECT id FROM queue WHERE book_id = ?', (book_id,))
@@ -5159,7 +5242,8 @@ def deep_scan_library(config):
                                 c.execute('''INSERT INTO queue (book_id, reason, priority)
                                             VALUES (?, ?, ?)''',
                                          (book_id, f'series_book:{series_name}', 3))
-                                c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
+                                # Issue #168: Don't reset layer unconditionally
+                                c.execute('UPDATE books SET verification_layer = ? WHERE id = ?', (reset_layer, book_id))
                                 conn.commit()
                                 queued += 1
 
@@ -5191,6 +5275,12 @@ def deep_scan_library(config):
 
                 # This is a valid book folder - count it
                 checked += 1
+
+                # Issue #110: Triage folder name quality
+                folder_triage_result = triage_folder(title)
+                triage_counts[folder_triage_result] = triage_counts.get(folder_triage_result, 0) + 1
+                if folder_triage_result != 'clean':
+                    logger.info(f"Folder triage: {folder_triage_result} - {title[:60]}")
 
                 # Analyze title
                 title_issues = analyze_title(title, author)
@@ -5229,37 +5319,42 @@ def deep_scan_library(config):
                     issues_found[path] = all_issues
 
                 # Add to database
-                c.execute('SELECT id, status, profile, user_locked FROM books WHERE path = ?', (path,))
+                c.execute('''SELECT id, status, profile, user_locked, attempt_count,
+                                    last_attempted, max_layer_reached, verification_layer
+                             FROM books WHERE path = ?''', (path,))
                 existing = c.fetchone()
 
                 if existing:
-                    # Skip user-locked books - user has manually set metadata, never change it
-                    if existing['user_locked']:
+                    # Issue #168: Use should_requeue_book for unified skip logic
+                    max_retries = config.get('max_book_retries', 3)
+                    should_queue, reset_layer = should_requeue_book(existing, max_retries)
+                    if not should_queue:
                         continue
 
-                    # Skip books that are properly verified (have profile data)
-                    # Re-queue "legacy" verified books that have no profile
+                    # Special case: legacy verified without profile still gets re-queued
                     if existing['status'] in ['verified', 'fixed']:
-                        has_profile = existing['profile'] and len(existing['profile']) > 2
-                        if has_profile:
-                            continue  # Properly verified, skip
-                        else:
-                            # Legacy verified without profile - re-queue for proper verification
+                        has_profile = existing['profile'] and len(str(existing['profile'])) > 2
+                        if not has_profile:
                             logger.info(f"Re-queuing legacy verified book (no profile): {author}/{title}")
-                            c.execute('UPDATE books SET status = ?, verification_layer = 1 WHERE id = ?',
-                                     ('pending', existing['id']))
+                            c.execute('UPDATE books SET status = ?, verification_layer = ? WHERE id = ?',
+                                     ('pending', reset_layer, existing['id']))
                             c.execute('''INSERT OR IGNORE INTO queue (book_id, reason, priority)
                                         VALUES (?, ?, ?)''',
                                      (existing['id'], 'legacy_needs_profile', 3))
                             queued += 1
                             continue
+
                     book_id = existing['id']
+                    # Update triage for existing books (backfill)
+                    c.execute('UPDATE books SET folder_triage = ? WHERE id = ?',
+                             (folder_triage_result, book_id))
                 else:
-                    c.execute('''INSERT INTO books (path, current_author, current_title, status)
-                                 VALUES (?, ?, ?, 'pending')''', (path, author, title))
+                    c.execute('''INSERT INTO books (path, current_author, current_title, status, folder_triage)
+                                 VALUES (?, ?, ?, 'pending', ?)''', (path, author, title, folder_triage_result))
                     conn.commit()
                     book_id = c.lastrowid
                     scanned += 1
+                    reset_layer = 1
 
                 # Add to queue if has issues
                 if all_issues:
@@ -5280,8 +5375,8 @@ def deep_scan_library(config):
                         c.execute('''INSERT INTO queue (book_id, reason, priority)
                                     VALUES (?, ?, ?)''',
                                  (book_id, reason, min(len(all_issues), 10)))
-                        # Set verification_layer=1 to start at Layer 1 (API lookup)
-                        c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
+                        # Issue #168: Don't reset layer unconditionally
+                        c.execute('UPDATE books SET verification_layer = ? WHERE id = ?', (reset_layer, book_id))
                         conn.commit()
                         queued += 1
 
@@ -5316,6 +5411,7 @@ def deep_scan_library(config):
     logger.info(f"Scanned: {scanned} new books added to tracking")
     logger.info(f"Queued: {queued} books need fixing")
     logger.info(f"Already correct: {checked - queued} books")
+    logger.info(f"Folder triage: {triage_counts['clean']} clean, {triage_counts['messy']} messy, {triage_counts['garbage']} garbage")
 
     return checked, scanned, queued
 
@@ -5509,19 +5605,26 @@ def transcribe_audio_intro(file_path, duration_seconds=45):
                 initial_prompt = "This is an audiobook introduction. The narrator typically announces the book title, author name, and narrator."
 
                 # Add folder hints to the prompt if available
+                # Issue #110: Only use folder hints for clean triage folders
                 folder_path = Path(file_path).parent
                 folder_name = folder_path.name
                 parent_name = folder_path.parent.name if folder_path.parent else ""
 
-                # Extract potential author/title from folder structure for spelling hints
-                hints = []
-                if parent_name and parent_name not in ['audiobooks', 'Unknown', '']:
-                    hints.append(parent_name)
-                if folder_name and folder_name not in ['audiobooks', 'Unknown', '']:
-                    hints.append(folder_name)
+                # Check folder triage before trusting folder names as hints
+                folder_triage_result = triage_folder(folder_name)
 
-                if hints:
-                    initial_prompt += f" Possible names: {', '.join(hints)}."
+                if should_use_path_hints(folder_triage_result):
+                    # Extract potential author/title from folder structure for spelling hints
+                    hints = []
+                    if parent_name and parent_name not in ['audiobooks', 'Unknown', '']:
+                        hints.append(parent_name)
+                    if folder_name and folder_name not in ['audiobooks', 'Unknown', '']:
+                        hints.append(folder_name)
+
+                    if hints:
+                        initial_prompt += f" Possible names: {', '.join(hints)}."
+                else:
+                    logger.info(f"[LAYER 1/AUDIO] Skipping folder hints (triage: {folder_triage_result}): {folder_name[:40]}")
 
                 # Transcribe with better settings for accuracy
                 segments, info = whisper_model.transcribe(
@@ -5985,7 +6088,7 @@ def apply_fix(history_id):
         except ValueError:
             pass
 
-    # Check new_path is in a library (always required - this is where the book goes)
+    # Check new_path is in a library or output folder (this is where the book goes)
     new_in_library = False
     for lib in library_paths:
         try:
@@ -5994,6 +6097,16 @@ def apply_fix(history_id):
             break
         except ValueError:
             continue
+
+    # Issue #135: Also accept output folder as valid destination
+    if not new_in_library:
+        watch_output_folder = config.get('watch_output_folder', '').strip()
+        if watch_output_folder:
+            try:
+                new_path.resolve().relative_to(Path(watch_output_folder).resolve())
+                new_in_library = True
+            except ValueError:
+                pass
 
     # Issue #49: Allow watch folder items to have old_path in watch folder
     old_path_valid = old_in_library or (is_watch_folder_item and old_in_watch_folder)
@@ -6155,6 +6268,25 @@ def apply_fix(history_id):
 
         conn.commit()
         conn.close()
+
+        # Post-processing hooks (Issue #166)
+        try:
+            hook_context = build_hook_context(
+                book_id=book_id, history_id=history_id,
+                old_path=str(old_path), new_path=str(new_path),
+                old_author=fix['old_author'], old_title=fix['old_title'],
+                new_author=fix['new_author'], new_title=fix['new_title'],
+                new_narrator=fix['new_narrator'] if fix['new_narrator'] else '',
+                new_series=fix['new_series'] if fix['new_series'] else '',
+                new_series_num=fix['new_series_num'] if fix['new_series_num'] else '',
+                new_year=fix['new_year'] if fix['new_year'] else '',
+                media_type=source_type or 'audiobook',
+                event='fixed'
+            )
+            run_hooks(hook_context, config, get_db, load_secrets())
+        except Exception as hook_e:
+            logger.error(f"[POST-PROCESS] Hook orchestration error: {hook_e}")
+
         return True, "Fix applied successfully"
     except Exception as e:
         error_msg = str(e)
@@ -6679,6 +6811,13 @@ def process_watch_folder(config: dict) -> int:
                                      (path, current_author, current_title, status, source_type, added_at, updated_at)
                                      VALUES (?, ?, ?, 'pending', 'watch_folder', datetime('now'), datetime('now'))''',
                                   (new_path, author, title))
+                        # Issue #126: Auto-enqueue for full pipeline processing
+                        book_id = c.lastrowid
+                        c.execute('''INSERT OR IGNORE INTO queue (book_id, reason, priority)
+                                    VALUES (?, ?, ?)''',
+                                 (book_id, 'watch_folder_new', 3))
+                        c.execute('UPDATE books SET verification_layer = 1 WHERE id = ?', (book_id,))
+                        logger.info(f"Watch folder: Auto-enqueued for processing: {author}/{title}")
                     conn.commit()
                 except Exception as e:
                     logger.debug(f"Watch folder: Could not add to books table: {e}")
@@ -6741,6 +6880,12 @@ def inject_worker_status():
     """Inject worker_running into all templates automatically."""
     return {'worker_running': is_worker_running()}
 
+
+@app.context_processor
+def inject_hints():
+    """Inject hints dictionary into all templates for tooltips."""
+    return {'hints': get_all_hints()}
+
 # ============== ROUTES ==============
 
 @app.route('/')
@@ -6758,16 +6903,24 @@ def dashboard():
     c.execute("SELECT COUNT(*) as count FROM books WHERE status NOT IN ('series_folder', 'multi_book_files')")
     total_books = c.fetchone()['count']
 
-    c.execute('SELECT COUNT(*) as count FROM queue')
+    # Issue #131: Count only processable queue items (matching process_queue filters)
+    c.execute('''SELECT COUNT(*) as count FROM queue q
+                 JOIN books b ON q.book_id = b.id
+                 WHERE b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                   AND (b.user_locked IS NULL OR b.user_locked = 0)''')
     queue_size = c.fetchone()['count']
 
-    c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'fixed'")
+    c.execute('''SELECT COUNT(*) as count FROM history h
+                 JOIN books b ON h.book_id = b.id
+                 WHERE h.status = 'fixed' ''')
     fixed_count = c.fetchone()['count']
 
     c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'verified'")
     verified_count = c.fetchone()['count']
 
-    c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'pending_fix'")
+    c.execute('''SELECT COUNT(*) as count FROM history h
+                 JOIN books b ON h.book_id = b.id
+                 WHERE h.status = 'pending_fix' ''')
     pending_fixes = c.fetchone()['count']
 
     # Get recent history (use LEFT JOIN in case book was deleted)
@@ -6984,6 +7137,9 @@ def settings_page():
         # Clamp rate limit to safe range (10-500) to prevent API bans
         user_rate = int(request.form.get('max_requests_per_hour', 30))
         config['max_requests_per_hour'] = max(10, min(user_rate, 500))
+        # Issue #168: Max book retries (0=unlimited, capped at 10)
+        user_retries = int(request.form.get('max_book_retries', 3))
+        config['max_book_retries'] = max(0, min(user_retries, 10))
         config['auto_fix'] = 'auto_fix' in request.form
         config['trust_the_process'] = 'trust_the_process' in request.form
         config['protect_author_changes'] = 'protect_author_changes' in request.form
@@ -7188,6 +7344,7 @@ def api_scan():
 
     config = load_config()
     checked, scanned, queued = scan_library(config)
+    log_action("scan", detail=f"checked={checked} scanned={scanned} queued={queued}", result="success")
     return jsonify({
         'success': True,
         'checked': checked,      # Total book folders examined
@@ -7669,7 +7826,8 @@ def api_process():
         # Layer 2: AI verification for items that passed through Layer 1
         if config.get('enable_ai_verification', True):
             l2_processed, l2_fixed = process_queue(config, limit)
-            total_processed += l2_processed
+            # Issue #160: process_queue returns -1 when rate-limited
+            total_processed += max(0, l2_processed)
             total_fixed += l2_fixed
 
         # Layer 3: Audio analysis (if enabled)
@@ -7693,6 +7851,8 @@ def api_process():
     # Clear active status when done
     update_processing_status('active', False)
     clear_current_book()
+
+    log_action("process", detail=f"processed={processed} fixed={fixed} remaining={remaining}", result="success")
 
     # Build helpful status message
     if remaining == 0:
@@ -7738,55 +7898,17 @@ def api_process_background():
         _bg_processing_active = True
         try:
             config = load_config()
-            update_processing_status('active', True)
-
-            # Get queue count for progress tracking
-            conn = get_db()
-            c = conn.cursor()
-            c.execute('SELECT COUNT(*) FROM queue')
-            total_queue = c.fetchone()[0]
-            conn.close()
-
-            update_processing_status('total', total_queue)
-            processed_count = 0
-
-            # Process in batches until queue is empty or we hit a limit
-            max_batches = 100  # Safety limit
-            for batch in range(max_batches):
-                # Check remaining
-                conn = get_db()
-                c = conn.cursor()
-                c.execute('SELECT COUNT(*) FROM queue')
-                remaining = c.fetchone()[0]
-                conn.close()
-
-                if remaining == 0:
-                    break
-
-                update_processing_status('queue_remaining', remaining)
-
-                # Process one batch (Layer 1 + Layer 2)
-                if config.get('enable_api_lookups', True):
-                    update_processing_status('layer', 3)  # API Lookup
-                    l1_processed, l1_resolved = process_layer_1_api(config, limit=3)
-                    processed_count += l1_processed
-
-                if config.get('enable_ai_verification', True):
-                    update_processing_status('layer', 4)  # AI Verify
-                    l2_processed, l2_fixed = process_queue(config, limit=3)
-                    processed_count += l2_processed
-
-                update_processing_status('processed', processed_count)
-
-                # Brief pause to allow status polling
-                import time
-                time.sleep(0.1)
-
+            # Issue #137: Use full pipeline (process_all_queue) instead of just Layers 1+2
+            # This runs audio analysis, Skaldleita identification, AI verification, etc.
+            # Status bar updates happen inside process_all_queue via update_processing_status
+            processed, fixed = process_all_queue(config)
+            logger.info(f"Background processing complete: {processed} processed, {fixed} fixed")
         except Exception as e:
-            logger.error(f"Background processing error: {e}")
+            logger.error(f"Background processing error: {e}", exc_info=True)
         finally:
             update_processing_status('active', False)
             update_processing_status('layer', 0)
+            update_processing_status('layer_name', 'Idle')
             clear_current_book()
             _bg_processing_active = False
 
@@ -7895,6 +8017,7 @@ def api_live_status():
 def api_apply_fix(history_id):
     """Apply a specific fix."""
     success, message = apply_fix(history_id)
+    log_action("apply_fix", detail=f"history_id={history_id}", result="success" if success else "error")
     return jsonify({'success': success, 'message': message})
 
 @app.route('/api/reject_fix/<int:history_id>', methods=['POST'])
@@ -7922,6 +8045,7 @@ def api_reject_fix(history_id):
     conn.close()
 
     logger.info(f"Rejected fix {history_id}, book {book_id} marked as verified")
+    log_action("reject_fix", detail=f"history_id={history_id}", result="success")
     return jsonify({'success': True})
 
 @app.route('/api/dismiss_error/<int:history_id>', methods=['POST'])
@@ -7968,6 +8092,7 @@ def api_apply_all_pending():
         else:
             errors += 1
 
+    log_action("apply_all", detail=f"applied={applied} errors={errors}", result="success")
     return jsonify({
         'success': True,
         'applied': applied,
@@ -8574,16 +8699,24 @@ def api_stats():
     conn = get_db()
     c = conn.cursor()
 
-    c.execute('SELECT COUNT(*) as count FROM books')
+    c.execute("SELECT COUNT(*) as count FROM books WHERE status NOT IN ('series_folder', 'multi_book_files')")
     total = c.fetchone()['count']
 
-    c.execute('SELECT COUNT(*) as count FROM queue')
+    # Issue #131: Count only processable queue items (matching process_queue filters)
+    c.execute('''SELECT COUNT(*) as count FROM queue q
+                 JOIN books b ON q.book_id = b.id
+                 WHERE b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                   AND (b.user_locked IS NULL OR b.user_locked = 0)''')
     queue = c.fetchone()['count']
 
-    c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'fixed'")
+    c.execute('''SELECT COUNT(*) as count FROM history h
+                 JOIN books b ON h.book_id = b.id
+                 WHERE h.status = 'fixed' ''')
     fixed = c.fetchone()['count']
 
-    c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'pending_fix'")
+    c.execute('''SELECT COUNT(*) as count FROM history h
+                 JOIN books b ON h.book_id = b.id
+                 WHERE h.status = 'pending_fix' ''')
     pending = c.fetchone()['count']
 
     c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'verified'")
@@ -8655,6 +8788,37 @@ def api_send_error_reports():
     return jsonify(result)
 
 
+@app.route('/api/feedback', methods=['POST'])
+def api_feedback():
+    data = request.get_json()
+    if not data:
+        return jsonify({'success': False, 'error': 'No data provided'}), 400
+    category = data.get('category', '').strip()
+    description = data.get('description', '').strip()
+    if not description:
+        return jsonify({'success': False, 'error': 'Description is required'}), 400
+    valid_categories = ['bug', 'correction', 'feature', 'other']
+    if category not in valid_categories:
+        category = 'other'
+    feedback_id = f"fb-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{get_instance_id()[-4:]}"
+    entry = {
+        "feedback_id": feedback_id,
+        "timestamp": datetime.now().isoformat(),
+        "instance_id": get_instance_id(),
+        "app_version": APP_VERSION,
+        "category": category,
+        "description": feedback_sanitize(description[:2000]),
+    }
+    if data.get('include_session_log', True):
+        entry["session_log"] = get_session_log()
+    if data.get('include_system_info', True):
+        entry["system_info"] = get_system_info(APP_VERSION)
+    result = store_feedback(entry)
+    if result.get('success'):
+        log_action('feedback_submit', detail=category, result='success')
+    return jsonify(result)
+
+
 @app.route('/api/analyze_path', methods=['POST'])
 def api_analyze_path():
     """
@@ -8707,12 +8871,14 @@ def api_analyze_path():
 def api_start_worker():
     """Start background worker."""
     start_worker()
+    log_action("worker_start", result="success")
     return jsonify({'success': True})
 
 @app.route('/api/worker/stop', methods=['POST'])
 def api_stop_worker():
     """Stop background worker."""
     stop_worker()
+    log_action("worker_stop", result="success")
     return jsonify({'success': True})
 
 
@@ -8968,6 +9134,24 @@ def api_library():
     per_page = request.args.get('per_page', 50, type=int)
     offset = (page - 1) * per_page
 
+    # Issue #111: Sortable columns
+    sort_by = request.args.get('sort', '')[:20]
+    sort_dir = request.args.get('sort_dir', 'asc')
+    if sort_dir not in ('asc', 'desc'):
+        sort_dir = 'asc'
+    sort_direction = 'ASC' if sort_dir == 'asc' else 'DESC'
+
+    # Whitelist of sortable columns per table context
+    BOOK_SORT_COLS = {'author': 'current_author', 'title': 'current_title', 'status': 'status'}
+    HISTORY_SORT_COLS = {'author': 'h.old_author', 'title': 'h.old_title', 'status': 'h.status', 'date': 'h.fixed_at'}
+    QUEUE_SORT_COLS = {'author': 'b.current_author', 'title': 'b.current_title', 'priority': 'q.priority'}
+
+    def build_order_by(sort_cols, default_order):
+        """Build ORDER BY clause from whitelisted sort columns or default."""
+        if sort_by and sort_by in sort_cols:
+            return 'ORDER BY ' + sort_cols[sort_by] + ' ' + sort_direction
+        return 'ORDER BY ' + default_order
+
     items = []
 
     # Get search parameter
@@ -9011,10 +9195,11 @@ def api_library():
                  WHERE h.status = 'pending_fix' ''')
     counts['pending'] = c.fetchone()[0]
 
-    # Issue #36: Queue count should exclude series_folder and multi_book_files
+    # Issue #131: Count only processable queue items (matching process_queue filters)
     c.execute('''SELECT COUNT(*) FROM queue q
                  JOIN books b ON q.book_id = b.id
-                 WHERE b.status NOT IN ('series_folder', 'multi_book_files', 'verified', 'fixed')''')
+                 WHERE b.status NOT IN ('verified', 'fixed', 'series_folder', 'multi_book_files', 'needs_attention')
+                   AND (b.user_locked IS NULL OR b.user_locked = 0)''')
     counts['queue'] = c.fetchone()[0]
 
     # Issue #79: Use JOIN to match the fetch query - only count items with existing books
@@ -9056,6 +9241,11 @@ def api_library():
 
     # === FETCH ITEMS based on filter ===
     if status_filter == 'orphan':
+        # Issue #111: Sort orphans if requested
+        if sort_by == 'author':
+            orphan_list.sort(key=lambda o: (o.get('author') or '').lower(), reverse=(sort_dir == 'desc'))
+        elif sort_by == 'title':
+            orphan_list.sort(key=lambda o: (o.get('detected_title') or '').lower(), reverse=(sort_dir == 'desc'))
         # Return orphans as items
         for idx, orphan in enumerate(orphan_list[offset:offset + per_page]):
             items.append({
@@ -9072,13 +9262,14 @@ def api_library():
 
     elif status_filter == 'pending':
         # Items with pending fixes
+        order = build_order_by(HISTORY_SORT_COLS, 'h.fixed_at DESC')
         c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
                             h.old_path, h.new_path, h.status, h.fixed_at, h.error_message,
                             b.path, b.current_author, b.current_title
                      FROM history h
                      JOIN books b ON h.book_id = b.id
                      WHERE h.status = 'pending_fix'
-                     ORDER BY h.fixed_at DESC
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9099,12 +9290,14 @@ def api_library():
     elif status_filter == 'queue':
         # Items in the processing queue
         # Issue #36: Filter out series_folder and multi_book_files - they should never appear in queue
+        order = build_order_by(QUEUE_SORT_COLS, 'q.priority, q.added_at')
         c.execute('''SELECT q.id as queue_id, q.reason, q.added_at, q.priority,
-                            b.id as book_id, b.path, b.current_author, b.current_title, b.status
+                            b.id as book_id, b.path, b.current_author, b.current_title, b.status,
+                            b.folder_triage
                      FROM queue q
                      JOIN books b ON q.book_id = b.id
                      WHERE b.status NOT IN ('series_folder', 'multi_book_files', 'verified', 'fixed')
-                     ORDER BY q.priority, q.added_at
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9117,18 +9310,20 @@ def api_library():
                 'status': 'in_queue',
                 'reason': row['reason'],
                 'priority': row['priority'],
-                'added_at': row['added_at']
+                'added_at': row['added_at'],
+                'folder_triage': row['folder_triage']
             })
 
     elif status_filter == 'fixed':
         # Successfully fixed items
+        order = build_order_by(HISTORY_SORT_COLS, 'h.fixed_at DESC')
         c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
                             h.old_path, h.new_path, h.status, h.fixed_at,
                             b.path
                      FROM history h
                      JOIN books b ON h.book_id = b.id
                      WHERE h.status = 'fixed'
-                     ORDER BY h.fixed_at DESC
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9148,10 +9343,11 @@ def api_library():
 
     elif status_filter == 'verified':
         # Verified/OK books - include profile for source display
+        order = build_order_by(BOOK_SORT_COLS, 'updated_at DESC')
         c.execute('''SELECT id, path, current_author, current_title, status, updated_at, profile, confidence, user_locked
                      FROM books
                      WHERE status = 'verified'
-                     ORDER BY updated_at DESC
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             item = {
@@ -9182,13 +9378,14 @@ def api_library():
 
     elif status_filter == 'error':
         # Error items from history
+        order = build_order_by(HISTORY_SORT_COLS, 'h.fixed_at DESC')
         c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
                             h.old_path, h.new_path, h.status, h.fixed_at, h.error_message,
                             b.path
                      FROM history h
                      JOIN books b ON h.book_id = b.id
                      WHERE h.status IN ('error', 'duplicate', 'corrupt_dest')
-                     ORDER BY h.fixed_at DESC
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9209,13 +9406,14 @@ def api_library():
 
     elif status_filter == 'attention':
         # Items needing attention
+        order = build_order_by(HISTORY_SORT_COLS, 'h.fixed_at DESC')
         c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
                             h.old_path, h.new_path, h.status, h.fixed_at, h.error_message,
                             b.path
                      FROM history h
                      JOIN books b ON h.book_id = b.id
                      WHERE h.status = 'needs_attention'
-                     ORDER BY h.fixed_at DESC
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9231,9 +9429,11 @@ def api_library():
                 'error_message': row['error_message']
             })
         # Also get books with structure issues or watch folder errors
+        order2 = build_order_by(BOOK_SORT_COLS, 'current_author, current_title')
         c.execute('''SELECT id, path, current_author, current_title, status, error_message, source_type
                      FROM books
                      WHERE status IN ('needs_attention', 'structure_reversed', 'watch_folder_error')
+                     ''' + order2 + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9250,10 +9450,11 @@ def api_library():
 
     elif status_filter == 'locked':
         # User-locked books - books where user has manually set metadata
+        order = build_order_by(BOOK_SORT_COLS, 'updated_at DESC')
         c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked
                      FROM books
                      WHERE user_locked = 1
-                     ORDER BY updated_at DESC
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9269,10 +9470,11 @@ def api_library():
 
     # Issue #53: Media type filters
     elif status_filter == 'audiobook_only':
+        order = build_order_by(BOOK_SORT_COLS, 'current_author, current_title')
         c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
                      FROM books
                      WHERE media_type = 'audiobook' OR media_type IS NULL
-                     ORDER BY current_author, current_title
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9288,10 +9490,11 @@ def api_library():
             })
 
     elif status_filter == 'ebook_only':
+        order = build_order_by(BOOK_SORT_COLS, 'current_author, current_title')
         c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
                      FROM books
                      WHERE media_type = 'ebook'
-                     ORDER BY current_author, current_title
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9307,10 +9510,11 @@ def api_library():
             })
 
     elif status_filter == 'both_formats':
+        order = build_order_by(BOOK_SORT_COLS, 'current_author, current_title')
         c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
                      FROM books
                      WHERE media_type = 'both'
-                     ORDER BY current_author, current_title
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9328,10 +9532,11 @@ def api_library():
     elif status_filter == 'search' and search_query:
         # Search across all books by author or title
         search_pattern = f'%{search_query}%'
+        order = build_order_by(BOOK_SORT_COLS, 'current_author, current_title')
         c.execute('''SELECT id, path, current_author, current_title, status, updated_at, user_locked, media_type
                      FROM books
                      WHERE current_author LIKE ? OR current_title LIKE ?
-                     ORDER BY current_author, current_title
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (search_pattern, search_pattern, per_page, offset))
         for row in c.fetchall():
             items.append({
@@ -9351,37 +9556,65 @@ def api_library():
                   (search_pattern, search_pattern))
         counts['search'] = c.fetchone()[0]
 
-    else:  # 'all' - show everything mixed
-        # Get recent history items (includes pending, fixed, errors)
-        c.execute('''SELECT h.id, h.book_id, h.old_author, h.old_title, h.new_author, h.new_title,
-                            h.old_path, h.new_path, h.status, h.fixed_at, h.error_message,
-                            b.path, b.current_author, b.current_title, b.user_locked
-                     FROM history h
-                     JOIN books b ON h.book_id = b.id
-                     ORDER BY h.fixed_at DESC
+    else:  # 'all' - show everything from books table
+        order = build_order_by(BOOK_SORT_COLS, 'current_author ASC, current_title ASC')
+        c.execute('''SELECT b.id, b.path, b.current_author, b.current_title, b.status,
+                            b.user_locked, b.confidence, b.media_type,
+                            h.old_author, h.old_title, h.new_author, h.new_title,
+                            h.old_path, h.new_path, h.status as history_status,
+                            h.fixed_at, h.error_message
+                     FROM books b
+                     LEFT JOIN history h ON h.book_id = b.id
+                     WHERE b.status NOT IN ('series_folder', 'multi_book_files')
+                     ''' + order + '''
                      LIMIT ? OFFSET ?''', (per_page, offset))
         for row in c.fetchall():
-            item_type = 'pending_fix' if row['status'] == 'pending_fix' else \
-                        'fixed' if row['status'] == 'fixed' else \
-                        'error' if row['status'] in ('error', 'duplicate', 'corrupt_dest') else 'history'
-            items.append({
+            # Map book status to display type
+            book_status = row['status']
+            history_status = row['history_status']
+            if history_status == 'pending_fix':
+                item_type = 'pending_fix'
+            elif book_status == 'verified':
+                item_type = 'book'
+            elif book_status == 'fixed':
+                item_type = 'fixed'
+            elif book_status in ('needs_attention', 'structure_reversed', 'watch_folder_error'):
+                item_type = 'needs_attention'
+            elif book_status == 'in_queue':
+                item_type = 'in_queue'
+            elif book_status == 'orphan':
+                item_type = 'orphan'
+            elif history_status in ('error', 'duplicate', 'corrupt_dest'):
+                item_type = 'error'
+            else:
+                item_type = 'book'
+            item = {
                 'id': row['id'],
                 'type': item_type,
-                'book_id': row['book_id'],
-                'author': row['old_author'] if row['status'] == 'pending_fix' else row['new_author'],
-                'title': row['old_title'] if row['status'] == 'pending_fix' else row['new_title'],
-                'old_author': row['old_author'],
-                'old_title': row['old_title'],
-                'new_author': row['new_author'],
-                'new_title': row['new_title'],
-                'old_path': row['old_path'],
-                'new_path': row['new_path'],
+                'book_id': row['id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
                 'path': row['path'],
-                'status': row['status'],
-                'error_message': row['error_message'],
-                'fixed_at': row['fixed_at'],
-                'user_locked': row['user_locked'] == 1
-            })
+                'status': history_status or book_status,
+                'confidence': row['confidence'] or 0,
+                'user_locked': row['user_locked'] == 1,
+                'media_type': row['media_type'] or 'audiobook'
+            }
+            # Overlay history data when present
+            if history_status:
+                item['old_author'] = row['old_author']
+                item['old_title'] = row['old_title']
+                item['new_author'] = row['new_author']
+                item['new_title'] = row['new_title']
+                item['old_path'] = row['old_path']
+                item['new_path'] = row['new_path']
+                item['fixed_at'] = row['fixed_at']
+                item['error_message'] = row['error_message']
+                # For pending_fix, show old (current) author/title
+                if history_status == 'pending_fix':
+                    item['author'] = row['old_author']
+                    item['title'] = row['old_title']
+            items.append(item)
 
     conn.close()
 
@@ -9426,6 +9659,8 @@ def api_library():
         'per_page': per_page,
         'total': total,
         'total_pages': total_pages,
+        'sort': sort_by,
+        'sort_dir': sort_dir,
         'skip_confirmations': config.get('skip_confirmations', False)
     })
 
@@ -10811,13 +11046,9 @@ def api_abs_remove_exclude():
 
 # ============== MANUAL BOOK MATCHING ==============
 
-# Use the public BookBucket API - same as metadata pipeline
-# No API key required - the search endpoints are public
-
 @app.route('/api/search_bookdb')
 def api_search_bookdb():
-    """Search BookBucket for books/series to manually match.
-    Uses the public /search endpoint - no API key required.
+    """Search Skaldleita for books/series to manually match.
     Falls back to Google Books if BookDB is unavailable or returns no results.
     """
     query = request.args.get('q', '').strip()
@@ -10867,14 +11098,32 @@ def api_search_bookdb():
         if author:
             params['author'] = author
 
-        # Use public /search endpoint (no auth required)
+        # Build headers with auth (Skaldleita requires auth on all endpoints)
+        secrets = load_secrets()
+        api_key = secrets.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
+        headers = get_signed_headers() or {}
+        headers['X-API-Key'] = api_key
+
         if search_type == 'all':
             endpoint = f"{BOOKDB_API_URL}/search"
         else:
             endpoint = f"{BOOKDB_API_URL}/search/{search_type}"
 
         # Longer timeout for cold start (embedding model can take 45-60s to load)
-        resp = requests.get(endpoint, params=params, timeout=60)
+        resp = requests.get(endpoint, params=params, headers=headers, timeout=60)
+
+        if resp.status_code == 429:
+            retry_after = resp.headers.get('Retry-After', '60')
+            try:
+                wait_seconds = int(retry_after)
+            except ValueError:
+                wait_seconds = 60
+            return jsonify({
+                'error': f'Skaldleita rate limited. Try again in {wait_seconds}s.',
+                'rate_limited': True,
+                'retry_after': wait_seconds,
+                'results': []
+            }), 429
 
         if resp.status_code == 200:
             results = resp.json()
