@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.136"
+APP_VERSION = "0.9.0-beta.137"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -8062,6 +8062,95 @@ def api_process_background():
 def api_process_status():
     """Get current processing status."""
     return jsonify(get_processing_status())
+
+
+@app.route('/api/pipeline/run-layer/<layer_id>', methods=['POST'])
+def api_run_single_layer(layer_id):
+    """Run a single pipeline layer on demand.
+
+    Executes one batch of the specified layer synchronously.
+    The request blocks until the layer finishes processing its batch.
+    """
+    global _bg_processing_active
+
+    # Validate layer_id exists in registry
+    from library_manager.pipeline.registry import default_registry
+    layer_info = default_registry.get_layer(layer_id)
+    if layer_info is None:
+        return jsonify({
+            'success': False,
+            'message': f'Unknown layer: {layer_id}'
+        }), 404
+
+    # Check that background processing is not currently running
+    if _bg_processing_active:
+        return jsonify({
+            'success': False,
+            'message': 'Background processing is already running. Wait for it to finish.'
+        }), 409
+
+    config = load_config()
+
+    # Check that the layer is enabled in config
+    if not config.get(layer_info.config_enable_key, True):
+        return jsonify({
+            'success': False,
+            'message': f'Layer "{layer_info.layer_name}" is disabled. Enable it in settings first.'
+        }), 400
+
+    # Map layer_id to the corresponding processing function
+    layer_functions = {
+        'audio_id': lambda: process_layer_1_audio(config),
+        'audio_credits': lambda: process_layer_3_audio(config, verification_layer=2),
+        'sl_requeue': lambda: process_sl_requeue_verification(config),
+        'api_lookup': lambda: process_layer_1_api(config),
+        'ai_verify': lambda: process_queue(config, verification_layer=4),
+    }
+
+    layer_func = layer_functions.get(layer_id)
+    if layer_func is None:
+        return jsonify({
+            'success': False,
+            'message': f'Layer "{layer_id}" does not have a processing function mapped.'
+        }), 501
+
+    # Update status to show this layer is running
+    update_processing_status('active', True)
+    update_processing_status('layer_name', layer_info.layer_name)
+    update_processing_status('current', f'Running {layer_info.layer_name} (manual)...')
+
+    try:
+        processed, resolved = layer_func()
+        # process_queue returns -1 when rate-limited
+        if processed == -1:
+            processed = 0
+            message = f'{layer_info.layer_name}: Rate limited, try again later.'
+        elif processed == 0:
+            message = f'{layer_info.layer_name}: No items to process at this layer.'
+        else:
+            message = f'{layer_info.layer_name}: {processed} processed, {resolved} resolved.'
+
+        log_action("run_layer", detail=f"layer={layer_id} processed={processed} resolved={resolved}", result="success")
+
+        return jsonify({
+            'success': True,
+            'layer_id': layer_id,
+            'layer_name': layer_info.layer_name,
+            'processed': max(0, processed),
+            'resolved': resolved,
+            'message': message
+        })
+    except Exception as e:
+        logger.error(f"Error running layer {layer_id}: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'message': f'Error running {layer_info.layer_name}: {str(e)}'
+        }), 500
+    finally:
+        update_processing_status('active', False)
+        update_processing_status('layer_name', 'Idle')
+        update_processing_status('current', 'Idle')
+        clear_current_book()
 
 
 @app.route('/api/live_status')

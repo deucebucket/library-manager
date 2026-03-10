@@ -3,6 +3,12 @@
 
 {% block content %}
 <style>
+    .spin-icon {
+        animation: spin-anim 1s linear infinite;
+    }
+    @keyframes spin-anim {
+        100% { transform: rotate(360deg); }
+    }
     .hint-icon {
         display: inline-flex;
         align-items: center;
@@ -720,6 +726,12 @@
                                         </button>
                                         <button type="button" class="btn btn-sm btn-outline-secondary pipeline-move-down" title="Move down" onclick="movePipelineLayer(this, 1)">
                                             <i class="bi bi-arrow-down"></i>
+                                        </button>
+                                        <button type="button" class="btn btn-sm btn-outline-primary pipeline-run-btn ms-1"
+                                                title="Run this layer now"
+                                                data-layer-id="{{ layer.layer_id }}"
+                                                onclick="runPipelineLayer(this)">
+                                            <i class="bi bi-play-fill"></i>
                                         </button>
                                     </div>
                                 </div>
@@ -2643,6 +2655,55 @@ function resetPipelineOrder() {
     });
     items.forEach(function(item) { list.appendChild(item); });
     updatePipelineOrderInput();
+}
+
+function runPipelineLayer(btn) {
+    var layerId = btn.getAttribute('data-layer-id');
+    var icon = btn.querySelector('i');
+    var origClass = icon.className;
+
+    // Show spinner
+    icon.className = 'bi bi-arrow-repeat spin-icon';
+    btn.disabled = true;
+
+    // Remove any previous result badge on this layer
+    var layerDiv = btn.closest('.pipeline-layer');
+    var oldBadge = layerDiv.querySelector('.pipeline-run-result');
+    if (oldBadge) oldBadge.remove();
+
+    fetch('/api/pipeline/run-layer/' + layerId, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'}
+    })
+    .then(function(resp) { return resp.json(); })
+    .then(function(data) {
+        icon.className = origClass;
+        btn.disabled = false;
+
+        var badge = document.createElement('span');
+        badge.className = 'pipeline-run-result badge ms-2 small';
+        if (data.success) {
+            badge.classList.add('bg-success');
+            badge.textContent = data.processed + ' processed, ' + data.resolved + ' resolved';
+        } else {
+            badge.classList.add('bg-danger');
+            badge.textContent = data.message || 'Error';
+        }
+        layerDiv.querySelector('.flex-grow-1').appendChild(badge);
+
+        // Auto-remove after 10 seconds
+        setTimeout(function() { badge.remove(); }, 10000);
+    })
+    .catch(function(err) {
+        icon.className = origClass;
+        btn.disabled = false;
+
+        var badge = document.createElement('span');
+        badge.className = 'pipeline-run-result badge bg-danger ms-2 small';
+        badge.textContent = 'Network error';
+        layerDiv.querySelector('.flex-grow-1').appendChild(badge);
+        setTimeout(function() { badge.remove(); }, 10000);
+    });
 }
 
 // Drag and drop for pipeline layers

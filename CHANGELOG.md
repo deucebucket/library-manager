@@ -2,6 +2,16 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.137] - 2026-03-10
+
+### Added
+
+- **Issue #66: Standalone layer execution** - Play button next to each layer in the pipeline
+  settings section. Runs a single pipeline layer on demand via `POST /api/pipeline/run-layer/<id>`.
+  Shows spinner during execution and result badge with processed/resolved counts.
+
+---
+
 ## [0.9.0-beta.136] - 2026-03-10
 
 ### Added
