@@ -5,6 +5,8 @@ multi-layer book identification pipeline.
 """
 
 from library_manager.pipeline.base_layer import ProcessingLayer, LayerResult, LayerAction
+from library_manager.pipeline.layer_info import LayerInfo
+from library_manager.pipeline.registry import LayerRegistry, default_registry, build_default_registry
 from library_manager.pipeline.layer_content import process_layer_4_content
 from library_manager.pipeline.layer_audio_credits import process_layer_3_audio
 from library_manager.pipeline.layer_api import process_layer_1_api, process_sl_requeue_verification
@@ -15,6 +17,10 @@ __all__ = [
     'ProcessingLayer',
     'LayerResult',
     'LayerAction',
+    'LayerInfo',
+    'LayerRegistry',
+    'default_registry',
+    'build_default_registry',
     'process_layer_4_content',
     'process_layer_3_audio',
     'process_layer_1_api',
