@@ -7323,8 +7323,7 @@ def settings_page():
         pipeline_order_json = request.form.get('pipeline_order', '').strip()
         if pipeline_order_json:
             try:
-                import json as _json
-                proposed_order = _json.loads(pipeline_order_json)
+                proposed_order = json.loads(pipeline_order_json)
                 if isinstance(proposed_order, list):
                     from library_manager.pipeline.registry import default_registry
                     is_valid, errors = default_registry.validate_order(proposed_order)
