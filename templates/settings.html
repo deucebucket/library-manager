@@ -668,6 +668,75 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Processing Pipeline Order -->
+            <div class="row mt-3">
+                <div class="col-12">
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-sort-numeric-down"></i> Processing Pipeline Order
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-3">
+                                Drag layers to reorder, or use the arrow buttons. The pipeline processes books through each enabled layer in this order.
+                            </p>
+
+                            <!-- Feature flag -->
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" name="use_modular_pipeline" id="use_modular_pipeline"
+                                       {% if config.use_modular_pipeline %}checked{% endif %}>
+                                <label class="form-check-label" for="use_modular_pipeline">
+                                    <strong>Enable Modular Pipeline</strong>
+                                    <span class="badge bg-warning text-dark ms-1">Experimental</span>
+                                    <br><small class="text-muted">Use the new PipelineOrchestrator instead of the built-in processing logic. Layer order below only applies when this is enabled.</small>
+                                </label>
+                            </div>
+
+                            <!-- Pipeline layer list -->
+                            <div id="pipeline-layer-list">
+                                {% for layer in pipeline_layers %}
+                                <div class="pipeline-layer d-flex align-items-center p-2 mb-2 rounded border"
+                                     draggable="true"
+                                     data-layer-id="{{ layer.layer_id }}"
+                                     data-enable-key="{{ layer.config_enable_key }}"
+                                     style="background: rgba(255,255,255,0.03); cursor: grab;">
+                                    <span class="pipeline-drag-handle me-2 text-muted" style="cursor: grab; font-size: 1.2rem; user-select: none;">&#x2261;</span>
+                                    <span class="pipeline-position badge bg-secondary me-2" style="min-width: 28px;">{{ loop.index }}</span>
+                                    <div class="flex-grow-1">
+                                        <strong>{{ layer.layer_name }}</strong>
+                                        <br><small class="text-muted">{{ layer.description }}</small>
+                                    </div>
+                                    <div class="d-flex align-items-center ms-2 gap-1">
+                                        <div class="form-check form-switch mb-0 me-2">
+                                            <input class="form-check-input pipeline-layer-toggle" type="checkbox"
+                                                   id="pipeline-toggle-{{ layer.layer_id }}"
+                                                   {% if config.get(layer.config_enable_key, True) %}checked{% endif %}
+                                                   data-layer-id="{{ layer.layer_id }}"
+                                                   title="Enable/disable this layer">
+                                        </div>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary pipeline-move-up" title="Move up" onclick="movePipelineLayer(this, -1)">
+                                            <i class="bi bi-arrow-up"></i>
+                                        </button>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary pipeline-move-down" title="Move down" onclick="movePipelineLayer(this, 1)">
+                                            <i class="bi bi-arrow-down"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
+
+                            <!-- Hidden input for form submission -->
+                            <input type="hidden" name="pipeline_order" id="pipeline_order_input" value="{{ pipeline_order | tojson }}">
+
+                            <div class="mt-2">
+                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetPipelineOrder()">
+                                    <i class="bi bi-arrow-counterclockwise"></i> Reset to Default Order
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- ==================== AI SETUP TAB ==================== -->
@@ -2531,5 +2600,94 @@ document.querySelector('[data-bs-target="#tab-hooks"]')?.addEventListener('shown
 // Initial render if hooks exist
 if (hooksData.length) renderHooksList();
 else document.getElementById('hooks-empty') && (document.getElementById('hooks-empty').style.display = 'block');
+
+// ==================== PIPELINE ORDER ====================
+var pipelineDefaultOrder = {{ pipeline_default_order | tojson }};
+
+function updatePipelineOrderInput() {
+    var list = document.getElementById('pipeline-layer-list');
+    if (!list) return;
+    var items = list.querySelectorAll('.pipeline-layer');
+    var order = [];
+    items.forEach(function(item, idx) {
+        order.push(item.getAttribute('data-layer-id'));
+        var badge = item.querySelector('.pipeline-position');
+        if (badge) badge.textContent = idx + 1;
+    });
+    document.getElementById('pipeline_order_input').value = JSON.stringify(order);
+}
+
+function movePipelineLayer(btn, direction) {
+    var item = btn.closest('.pipeline-layer');
+    var list = item.parentNode;
+    var items = Array.from(list.querySelectorAll('.pipeline-layer'));
+    var idx = items.indexOf(item);
+    var newIdx = idx + direction;
+    if (newIdx < 0 || newIdx >= items.length) return;
+    if (direction === -1) {
+        list.insertBefore(item, items[newIdx]);
+    } else {
+        list.insertBefore(items[newIdx], item);
+    }
+    updatePipelineOrderInput();
+}
+
+function resetPipelineOrder() {
+    var list = document.getElementById('pipeline-layer-list');
+    if (!list) return;
+    var items = Array.from(list.querySelectorAll('.pipeline-layer'));
+    // Sort by default order
+    items.sort(function(a, b) {
+        return pipelineDefaultOrder.indexOf(a.getAttribute('data-layer-id')) - pipelineDefaultOrder.indexOf(b.getAttribute('data-layer-id'));
+    });
+    items.forEach(function(item) { list.appendChild(item); });
+    updatePipelineOrderInput();
+}
+
+// Drag and drop for pipeline layers
+(function() {
+    var dragItem = null;
+    var list = document.getElementById('pipeline-layer-list');
+    if (!list) return;
+
+    list.addEventListener('dragstart', function(e) {
+        dragItem = e.target.closest('.pipeline-layer');
+        if (dragItem) {
+            dragItem.style.opacity = '0.5';
+            e.dataTransfer.effectAllowed = 'move';
+        }
+    });
+
+    list.addEventListener('dragend', function(e) {
+        if (dragItem) {
+            dragItem.style.opacity = '1';
+            dragItem = null;
+        }
+        list.querySelectorAll('.pipeline-layer').forEach(function(el) {
+            el.style.borderTop = '';
+        });
+    });
+
+    list.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        var target = e.target.closest('.pipeline-layer');
+        list.querySelectorAll('.pipeline-layer').forEach(function(el) {
+            el.style.borderTop = '';
+        });
+        if (target && target !== dragItem) {
+            target.style.borderTop = '2px solid #00d9ff';
+        }
+    });
+
+    list.addEventListener('drop', function(e) {
+        e.preventDefault();
+        var target = e.target.closest('.pipeline-layer');
+        if (target && dragItem && target !== dragItem) {
+            list.insertBefore(dragItem, target);
+            updatePipelineOrderInput();
+        }
+    });
+})();
 </script>
 {% endblock %}

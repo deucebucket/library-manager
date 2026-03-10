@@ -7318,6 +7318,23 @@ def settings_page():
         text_chain_str = request.form.get('text_provider_chain', 'gemini,openrouter').strip()
         config['text_provider_chain'] = [p.strip() for p in text_chain_str.split(',') if p.strip()]
 
+        # Pipeline order and modular pipeline feature flag
+        config['use_modular_pipeline'] = 'use_modular_pipeline' in request.form
+        pipeline_order_json = request.form.get('pipeline_order', '').strip()
+        if pipeline_order_json:
+            try:
+                import json as _json
+                proposed_order = _json.loads(pipeline_order_json)
+                if isinstance(proposed_order, list):
+                    from library_manager.pipeline.registry import default_registry
+                    is_valid, errors = default_registry.validate_order(proposed_order)
+                    if is_valid:
+                        config['pipeline_order'] = proposed_order
+                    else:
+                        logger.warning(f"Invalid pipeline_order from settings form: {errors}")
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Failed to parse pipeline_order from settings form: {e}")
+
         # Save config (without secrets)
         save_config(config)
 
@@ -7350,7 +7367,15 @@ def settings_page():
     config['openrouter_api_key'] = secrets.get('openrouter_api_key', '')
     config['google_books_api_key'] = secrets.get('google_books_api_key', '')
     config['bookdb_api_key'] = secrets.get('bookdb_api_key', '')
-    return render_template('settings.html', config=config, version=APP_VERSION)
+    # Pipeline layer info for settings UI
+    from library_manager.pipeline.registry import default_registry
+    pipeline_layers = default_registry.get_ordered_layers(config)
+    pipeline_order = [layer.layer_id for layer in pipeline_layers]
+    pipeline_default_order = default_registry.get_all_layer_ids()
+    return render_template('settings.html', config=config, version=APP_VERSION,
+                           pipeline_layers=pipeline_layers,
+                           pipeline_order=pipeline_order,
+                           pipeline_default_order=pipeline_default_order)
 
 
 # ============== PATH DIAGNOSTIC ==============
