@@ -2,6 +2,19 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.135] - 2026-03-10
+
+### Added
+
+- **Issue #110: File validation in scan pipeline** - The existing `file_validation.py` module is now
+  integrated into the scan pipeline. Audio files are validated with ffprobe before queuing — corrupt,
+  truncated, or too-short files are marked `validation_failed` and skipped. Enabled by default,
+  requires ffprobe (gracefully skips if unavailable). Configurable thresholds in Settings: minimum
+  duration (default 10 min) and minimum file size (default 1 MB). Dashboard shows a warning when
+  validation failures exist. Books with `validation_failed` status are excluded from re-queuing.
+
+---
+
 ## [0.9.0-beta.134] - 2026-02-28
 
 ### Fixed
