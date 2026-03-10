@@ -118,6 +118,7 @@ DEFAULT_CONFIG = {
     "text_provider_chain": ["gemini", "openrouter"],  # Order to try text-based AI
     # Pipeline layer ordering - controls the sequence layers execute in
     "pipeline_order": ["audio_id", "audio_credits", "sl_requeue", "api_lookup", "ai_verify"],
+    "use_modular_pipeline": False,        # Feature flag: use PipelineOrchestrator instead of hardcoded process_all_queue
     "deep_scan_mode": False,              # Always use all enabled layers regardless of confidence
     "profile_confidence_threshold": 85,   # Minimum confidence to skip remaining layers (0-100)
     "multibook_ai_fallback": True,         # Use AI for ambiguous chapter/multibook detection
