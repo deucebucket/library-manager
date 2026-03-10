@@ -113,7 +113,7 @@ def clean_search_title(messy_name):
     # Remove file extensions
     clean = re.sub(r'\.(mp3|m4b|m4a|epub|pdf|mobi|webm|opus)$', '', clean, flags=re.IGNORECASE)
     # Remove "by Author" at the end temporarily for searching
-    clean = re.sub(r'\s+by\s+[\w\s]+$', '', clean, flags=re.IGNORECASE)
+    clean = re.sub(r'\s+by\s+[\w\s.\'\-]+(?:\s*\([^)]*\))*$', '', clean, flags=re.IGNORECASE)
     # Remove audiobook-related junk (YouTube rip artifacts)
     clean = re.sub(r'\b(full\s+)?audiobook\b', '', clean, flags=re.IGNORECASE)
     clean = re.sub(r'\b(complete|unabridged|abridged)\b', '', clean, flags=re.IGNORECASE)
