@@ -709,6 +709,7 @@
                                     <div class="d-flex align-items-center ms-2 gap-1">
                                         <div class="form-check form-switch mb-0 me-2">
                                             <input class="form-check-input pipeline-layer-toggle" type="checkbox"
+                                                   name="{{ layer.config_enable_key }}"
                                                    id="pipeline-toggle-{{ layer.layer_id }}"
                                                    {% if config.get(layer.config_enable_key, True) %}checked{% endif %}
                                                    data-layer-id="{{ layer.layer_id }}"

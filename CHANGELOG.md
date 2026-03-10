@@ -2,6 +2,17 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.136] - 2026-03-10
+
+### Added
+
+- **Issue #66: Pipeline configuration UI in settings** - New "Processing Pipeline Order" section
+  in Settings > Processing with drag-and-drop and arrow button reordering of processing layers.
+  Each layer shows enable/disable toggle that saves to config. Experimental `use_modular_pipeline`
+  feature flag toggle. "Reset to Default Order" button. Pipeline order saved as JSON to config.
+
+---
+
 ## [0.9.0-beta.135] - 2026-03-10
 
 ### Added
