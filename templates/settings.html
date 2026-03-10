@@ -541,6 +541,33 @@
 
                             <hr class="my-2">
 
+                            <!-- Issue #110: File Validation -->
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="enable_file_validation"
+                                       id="enable_file_validation" {% if config.enable_file_validation is not defined or config.enable_file_validation %}checked{% endif %}>
+                                <label class="form-check-label" for="enable_file_validation">
+                                    <i class="bi bi-shield-check text-success"></i> <strong>{{ _('File Validation') }}</strong>
+                                    <span class="badge bg-success">{{ _('Local') }}</span>
+                                    <br><small class="text-muted">{{ _('Check audio files with ffprobe before processing (catches corrupt, truncated, or non-audiobook files)') }}</small>
+                                </label>
+                            </div>
+                            <div class="row mb-3 ms-4" id="validation-options">
+                                <div class="col-md-6">
+                                    <label for="min_audio_duration_seconds" class="form-label small">{{ _('Min Duration (seconds)') }}</label>
+                                    <input type="number" class="form-control form-control-sm" name="min_audio_duration_seconds"
+                                           id="min_audio_duration_seconds" value="{{ config.min_audio_duration_seconds|default(600) }}" min="0" max="7200">
+                                    <small class="text-muted">{{ _('Default: 600 (10 minutes)') }}</small>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="min_audio_file_size_mb" class="form-label small">{{ _('Min File Size (MB)') }}</label>
+                                    <input type="number" class="form-control form-control-sm" name="min_audio_file_size_mb"
+                                           id="min_audio_file_size_mb" value="{{ config.min_audio_file_size_mb|default(1) }}" min="0" max="100">
+                                    <small class="text-muted">{{ _('Default: 1 MB') }}</small>
+                                </div>
+                            </div>
+
+                            <hr class="my-2">
+
                             <div class="form-check form-switch mb-3">
                                 <input class="form-check-input" type="checkbox" name="enable_api_lookups"
                                        id="enable_api_lookups" {% if config.enable_api_lookups != false %}checked{% endif %}>

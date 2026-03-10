@@ -153,6 +153,17 @@ def init_db(db_path=None):
     except:
         pass
 
+    # Issue #110: File validation columns - track whether audio files are valid
+    validation_columns = [
+        ('validation_status', "TEXT"),           # NULL=not validated, 'valid', 'invalid', 'skipped'
+        ('validation_reason', "TEXT"),           # Why it failed (e.g., 'too_short', 'corrupt', 'no_audio_stream')
+    ]
+    for col_name, col_type in validation_columns:
+        try:
+            c.execute(f'ALTER TABLE books ADD COLUMN {col_name} {col_type}')
+        except:
+            pass  # Column already exists
+
     # Stats table - daily stats
     c.execute('''CREATE TABLE IF NOT EXISTS stats (
         id INTEGER PRIMARY KEY,
@@ -379,7 +390,7 @@ def should_requeue_book(book_row, max_retries=3):
     max_layer = max_layer or 0
 
     # Never requeue these statuses
-    skip_statuses = {'user_locked', 'needs_attention', 'needs_split', 'series_folder', 'multi_book_files'}
+    skip_statuses = {'user_locked', 'needs_attention', 'needs_split', 'series_folder', 'multi_book_files', 'validation_failed'}
     if status in skip_statuses:
         return (False, None)
 

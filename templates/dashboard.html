@@ -51,6 +51,21 @@
     </div>
 </div>
 
+{% if validation_failed_count is defined and validation_failed_count > 0 %}
+<div class="row mb-3">
+    <div class="col-12">
+        <div class="alert alert-warning py-2 mb-0 d-flex align-items-center" role="alert">
+            <i class="bi bi-exclamation-triangle me-2"></i>
+            <small>
+                <strong>{{ validation_failed_count }}</strong> {{ _('file(s) failed validation') }}
+                {{ _('(corrupt, truncated, or too short). These are excluded from processing.') }}
+                <a href="/library?status=validation_failed" class="alert-link">{{ _('View') }}</a>
+            </small>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <!-- Toast container for action feedback -->
 <div class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 1080;">
     <div id="action-toast" class="toast align-items-center border-0" role="alert" aria-live="assertive" aria-atomic="true">
