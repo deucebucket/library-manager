@@ -116,6 +116,8 @@ DEFAULT_CONFIG = {
     # Text providers: "gemini", "openrouter", "ollama"
     "audio_provider_chain": ["bookdb", "gemini"],  # Order to try audio identification (bookdb = Skaldleita)
     "text_provider_chain": ["gemini", "openrouter"],  # Order to try text-based AI
+    # Pipeline layer ordering - controls the sequence layers execute in
+    "pipeline_order": ["audio_id", "audio_credits", "sl_requeue", "api_lookup", "ai_verify"],
     "deep_scan_mode": False,              # Always use all enabled layers regardless of confidence
     "profile_confidence_threshold": 85,   # Minimum confidence to skip remaining layers (0-100)
     "multibook_ai_fallback": True,         # Use AI for ambiguous chapter/multibook detection
