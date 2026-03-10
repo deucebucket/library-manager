@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.134"
+APP_VERSION = "0.9.0-beta.135"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -118,6 +118,7 @@ from library_manager.feedback import (
     get_system_info, store_feedback, sanitize_string as feedback_sanitize,
 )
 from library_manager.folder_triage import triage_folder, triage_book_path, should_use_path_hints, confidence_modifier
+from library_manager.file_validation import validate_audio_file, check_ffmpeg_available
 from library_manager.hints import get_all_hints
 from library_manager.hooks import hooks_bp, run_hooks, build_hook_context
 
@@ -4859,6 +4860,53 @@ def compare_book_folders(source_path, dest_path, deep_analysis=True):
     return result
 
 
+def _validate_book_audio(book_path, config, ffmpeg_available):
+    """Issue #110: Validate a book's audio file before queueing.
+
+    Finds the first audio file in the book folder and validates it.
+
+    Args:
+        book_path: Path to the book folder (or file for loose files)
+        config: Configuration dictionary
+        ffmpeg_available: Whether ffprobe/ffmpeg are available
+
+    Returns:
+        (status, reason) where:
+        - ('valid', 'valid') - file passed validation
+        - ('invalid', reason) - file failed validation
+        - ('skipped', reason) - validation was skipped (disabled or ffmpeg unavailable)
+    """
+    if not config.get('enable_file_validation', True):
+        return 'skipped', 'validation_disabled'
+
+    if not ffmpeg_available:
+        return 'skipped', 'ffprobe_not_available'
+
+    # Determine audio file to validate
+    path = Path(book_path)
+    if path.is_file():
+        audio_file = str(path)
+    else:
+        audio_file = get_first_audio_file(str(path))
+
+    if not audio_file:
+        return 'skipped', 'no_audio_file_found'
+
+    # Get config thresholds
+    min_duration = config.get('min_audio_duration_seconds', 600)
+    min_size_mb = config.get('min_audio_file_size_mb', 1)
+    min_size_bytes = min_size_mb * 1_000_000
+
+    is_valid, reason, metadata = validate_audio_file(
+        audio_file, min_duration=min_duration, min_size=min_size_bytes
+    )
+
+    if is_valid:
+        return 'valid', 'valid'
+    else:
+        return 'invalid', reason
+
+
 def deep_scan_library(config):
     """
     Deep scan library - the AUTISTIC LIBRARIAN approach.
@@ -4870,8 +4918,17 @@ def deep_scan_library(config):
     checked = 0  # Total book folders examined
     scanned = 0  # New books added to tracking
     queued = 0   # Books added to fix queue
+    validation_counts = {'valid': 0, 'invalid': 0, 'skipped': 0}  # Issue #110: File validation stats
     issues_found = {}  # path -> list of issues
     triage_counts = {'clean': 0, 'messy': 0, 'garbage': 0}  # Issue #110: Folder triage stats
+
+    # Issue #110: Check ffmpeg availability once at scan start
+    ffmpeg_available, ffmpeg_msg = check_ffmpeg_available()
+    if config.get('enable_file_validation', True):
+        if ffmpeg_available:
+            logger.info("[VALIDATION] ffprobe available - file validation enabled")
+        else:
+            logger.warning(f"[VALIDATION] {ffmpeg_msg} - file validation will be skipped")
 
     # Track files for duplicate detection
     file_signatures = {}  # signature -> list of paths
@@ -4939,6 +4996,17 @@ def deep_scan_library(config):
                              (path_str, 'Unknown', cleaned_filename, 'loose_file'))
                     book_id = c.lastrowid
                     reset_layer = 1  # New books always start at layer 1
+
+                # Issue #110: Validate audio file before queueing
+                v_status, v_reason = _validate_book_audio(path_str, config, ffmpeg_available)
+                validation_counts[v_status] = validation_counts.get(v_status, 0) + 1
+                c.execute('UPDATE books SET validation_status = ?, validation_reason = ? WHERE id = ?',
+                         (v_status, v_reason, book_id))
+                if v_status == 'invalid':
+                    c.execute('UPDATE books SET status = ? WHERE id = ?', ('validation_failed', book_id))
+                    conn.commit()
+                    logger.info(f"[VALIDATION] Skipping invalid loose file ({v_reason}): {filename}")
+                    continue
 
                 # Add to queue with special "loose_file" reason
                 c.execute('''INSERT OR REPLACE INTO queue
@@ -5067,6 +5135,17 @@ def deep_scan_library(config):
                     scanned += 1
                     reset_layer = 1
                     logger.info(f"Added flat book: {flat_author} - {flat_title} (triage: {flat_triage})")
+
+                # Issue #110: Validate audio file before queueing
+                v_status, v_reason = _validate_book_audio(flat_path, config, ffmpeg_available)
+                validation_counts[v_status] = validation_counts.get(v_status, 0) + 1
+                c.execute('UPDATE books SET validation_status = ?, validation_reason = ? WHERE id = ?',
+                         (v_status, v_reason, flat_book_id))
+                if v_status == 'invalid':
+                    c.execute('UPDATE books SET status = ? WHERE id = ?', ('validation_failed', flat_book_id))
+                    conn.commit()
+                    logger.info(f"[VALIDATION] Skipping invalid flat book ({v_reason}): {flat_author} - {flat_title}")
+                    continue
 
                 # Queue for processing
                 c.execute('SELECT id FROM queue WHERE book_id = ?', (flat_book_id,))
@@ -5236,6 +5315,17 @@ def deep_scan_library(config):
                                 scanned += 1
                                 reset_layer = 1
 
+                            # Issue #110: Validate audio file before queueing
+                            v_status, v_reason = _validate_book_audio(book_path, config, ffmpeg_available)
+                            validation_counts[v_status] = validation_counts.get(v_status, 0) + 1
+                            c.execute('UPDATE books SET validation_status = ?, validation_reason = ? WHERE id = ?',
+                                     (v_status, v_reason, book_id))
+                            if v_status == 'invalid':
+                                c.execute('UPDATE books SET status = ? WHERE id = ?', ('validation_failed', book_id))
+                                conn.commit()
+                                logger.info(f"[VALIDATION] Skipping invalid series book ({v_reason}): {author}/{book_title}")
+                                continue
+
                             # Queue for processing
                             c.execute('SELECT id FROM queue WHERE book_id = ?', (book_id,))
                             if not c.fetchone():
@@ -5356,6 +5446,17 @@ def deep_scan_library(config):
                     scanned += 1
                     reset_layer = 1
 
+                # Issue #110: Validate audio file before queueing
+                v_status, v_reason = _validate_book_audio(path, config, ffmpeg_available)
+                validation_counts[v_status] = validation_counts.get(v_status, 0) + 1
+                c.execute('UPDATE books SET validation_status = ?, validation_reason = ? WHERE id = ?',
+                         (v_status, v_reason, book_id))
+                if v_status == 'invalid':
+                    c.execute('UPDATE books SET status = ? WHERE id = ?', ('validation_failed', book_id))
+                    conn.commit()
+                    logger.info(f"[VALIDATION] Skipping invalid book ({v_reason}): {author}/{title}")
+                    continue
+
                 # Add to queue if has issues
                 if all_issues:
                     # Skip multi-book collections - they need manual splitting, not renaming
@@ -5412,6 +5513,7 @@ def deep_scan_library(config):
     logger.info(f"Queued: {queued} books need fixing")
     logger.info(f"Already correct: {checked - queued} books")
     logger.info(f"Folder triage: {triage_counts['clean']} clean, {triage_counts['messy']} messy, {triage_counts['garbage']} garbage")
+    logger.info(f"File validation: {validation_counts['valid']} valid, {validation_counts['invalid']} invalid, {validation_counts['skipped']} skipped")
 
     return checked, scanned, queued
 
@@ -6923,6 +7025,10 @@ def dashboard():
                  WHERE h.status = 'pending_fix' ''')
     pending_fixes = c.fetchone()['count']
 
+    # Issue #110: Count validation failures
+    c.execute("SELECT COUNT(*) as count FROM books WHERE validation_status = 'invalid'")
+    validation_failed_count = c.fetchone()['count']
+
     # Get recent history (use LEFT JOIN in case book was deleted)
     c.execute('''SELECT h.*, b.path FROM history h
                  LEFT JOIN books b ON h.book_id = b.id
@@ -6944,6 +7050,7 @@ def dashboard():
                           fixed_count=fixed_count,
                           verified_count=verified_count,
                           pending_fixes=pending_fixes,
+                          validation_failed_count=validation_failed_count,
                           recent_history=recent_history,
                           daily_stats=daily_stats,
                           config=config,
@@ -7199,6 +7306,11 @@ def settings_page():
         config['contribute_to_community'] = 'contribute_to_community' in request.form
         # P2P cache setting (Issue #62)
         config['enable_p2p_cache'] = 'enable_p2p_cache' in request.form
+
+        # Issue #110: File validation settings
+        config['enable_file_validation'] = 'enable_file_validation' in request.form
+        config['min_audio_duration_seconds'] = int(request.form.get('min_audio_duration_seconds', 600))
+        config['min_audio_file_size_mb'] = int(request.form.get('min_audio_file_size_mb', 1))
 
         # Provider chain settings - parse comma-separated values into lists
         audio_chain_str = request.form.get('audio_provider_chain', 'bookdb,gemini').strip()
@@ -8722,6 +8834,10 @@ def api_stats():
     c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'verified'")
     verified = c.fetchone()['count']
 
+    # Issue #110: Validation failure count
+    c.execute("SELECT COUNT(*) as count FROM books WHERE validation_status = 'invalid'")
+    validation_failed = c.fetchone()['count']
+
     conn.close()
 
     return jsonify({
@@ -8730,6 +8846,7 @@ def api_stats():
         'fixed': fixed,
         'pending_fixes': pending,
         'verified': verified,
+        'validation_failed': validation_failed,
         'worker_running': is_worker_running(),
         'processing': get_processing_status()
     })
@@ -9230,6 +9347,10 @@ def api_library():
     c.execute("SELECT COUNT(*) FROM books WHERE user_locked = 1")
     counts['locked'] = c.fetchone()[0]
 
+    # Issue #110: Count validation failures
+    c.execute("SELECT COUNT(*) FROM books WHERE validation_status = 'invalid'")
+    counts['validation_failed'] = c.fetchone()[0]
+
     # Count orphans (detected on-the-fly)
     orphan_list = []
     for lib_path in config.get('library_paths', []):
@@ -9468,6 +9589,27 @@ def api_library():
                 'user_locked': True
             })
 
+    # Issue #110: Validation failed filter
+    elif status_filter == 'validation_failed':
+        order = build_order_by(BOOK_SORT_COLS, 'current_author, current_title')
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at,
+                            validation_status, validation_reason
+                     FROM books
+                     WHERE validation_status = 'invalid'
+                     ''' + order + '''
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'book',
+                'book_id': row['id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
+                'path': row['path'],
+                'status': 'validation_failed',
+                'validation_reason': row['validation_reason']
+            })
+
     # Issue #53: Media type filters
     elif status_filter == 'audiobook_only':
         order = build_order_by(BOOK_SORT_COLS, 'current_author, current_title')
@@ -9635,6 +9777,8 @@ def api_library():
         total = counts['attention']
     elif status_filter == 'locked':
         total = counts['locked']
+    elif status_filter == 'validation_failed':
+        total = counts['validation_failed']
     elif status_filter == 'search':
         total = counts.get('search', 0)
     # Issue #53: Media type filters
