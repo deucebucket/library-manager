@@ -7,14 +7,15 @@ All notable changes to Library Manager will be documented in this file.
 ### Added
 
 - **Issue #187: Expanded hook events with filtering and custom payloads** - Hooks now fire on 8
-  event types (`fixed`, `skipped`, `error`, `needs_attention`, `scan_complete`, `queue_empty`,
-  `layer_escalation`, `manual_review`) instead of just `fixed`. Each hook supports a `run_on`
-  list for per-hook event filtering, so a single hook can subscribe to only the events it cares
-  about. New `body_template` field enables custom webhook payloads with full template variable
-  support. All events use a standardized envelope format with `event`, `timestamp`, and
-  event-specific `data`. New `emit_event()` helper centralizes event dispatching across the
-  codebase. Fully backward compatible — existing hooks default to `run_on: ["fixed"]` and
-  behave exactly as before.
+  event types (`scan_started`, `scan_completed`, `book_discovered`, `rename_proposed`,
+  `rename_applied`, `rename_rejected`, `processing_failed`, `queue_empty`) instead of just
+  `fixed`. Each hook supports a `run_on` list for per-hook event filtering, so a single hook
+  can subscribe to only the events it cares about. New `body_template` field enables custom
+  webhook payloads with full template variable support (enables Discord/Slack/Home Assistant
+  without code). All events use a standardized envelope format with `event`, `timestamp`,
+  `app_version`, and event-specific `payload`. New `emit_event()` helper centralizes event
+  dispatching across the codebase. Fully backward compatible — existing hooks default to
+  `run_on: ["rename_applied"]` and the legacy `"fixed"` event name is aliased automatically.
 
 ---
 
