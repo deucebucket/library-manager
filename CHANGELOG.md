@@ -2,6 +2,22 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.140] - 2026-03-21
+
+### Added
+
+- **Issue #186: Custom Layer Builder wizard UI** - New "Plugins" tab in settings with a 4-step
+  wizard for creating custom HTTP API metadata sources without writing code. Step 1 collects name
+  and description, step 2 configures URL template with variable placeholders, HTTP method, timeout,
+  and authentication (none/bearer/API key header/basic auth), step 3 maps API response fields to
+  book profile fields via JSONPath expressions with a configurable confidence weight slider, and
+  step 4 provides live API testing with sample book data showing HTTP status, response time, mapped
+  field values, and raw response. Full CRUD via `/api/plugins/` endpoints: list, save, delete, and
+  toggle layers. Each custom layer is stored in `config.json` under `custom_layers` and feeds into
+  the existing `CustomApiLayer` processing pipeline.
+
+---
+
 ## [0.9.0-beta.139] - 2026-03-21
 
 ### Added

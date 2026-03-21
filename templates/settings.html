@@ -128,6 +128,11 @@
                 <i class="bi bi-terminal"></i> Post-Processing
             </button>
         </li>
+        <li class="nav-item">
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-plugins" type="button">
+                <i class="bi bi-plug"></i> Plugins
+            </button>
+        </li>
     </ul>
 
     <!-- Tab Content -->
@@ -1596,6 +1601,11 @@
             {% include 'hooks_settings.html' %}
         </div>
 
+        <!-- ==================== PLUGINS TAB ==================== -->
+        <div class="tab-pane fade" id="tab-plugins">
+            {% include 'plugins_settings.html' %}
+        </div>
+
     </div>
 
     <!-- Save Button (sticky) -->
@@ -2796,5 +2806,355 @@ function runPipelineLayer(btn) {
         }
     });
 })();
+
+// ==================== CUSTOM LAYER PLUGINS (Issue #186) ====================
+
+let pluginsData = {{ config.custom_layers | default([], true) | tojson }};
+let pluginWizardStep = 1;
+
+function renderPluginsList() {
+    const list = document.getElementById('plugins-list');
+    const empty = document.getElementById('plugins-empty');
+    if (!pluginsData.length) {
+        list.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+    }
+    empty.style.display = 'none';
+    list.innerHTML = pluginsData.map((layer, i) => `
+        <div class="d-flex align-items-center border-bottom border-secondary px-3 py-2">
+            <div class="form-check form-switch me-2 mb-0">
+                <input class="form-check-input" type="checkbox" ${layer.enabled !== false ? 'checked' : ''}
+                       onchange="togglePluginEnabled('${escapeHtml(layer.layer_id)}', this.checked)">
+            </div>
+            <div class="flex-grow-1">
+                <strong>${escapeHtml(layer.layer_name)}</strong>
+                <span class="badge bg-info ms-1" style="font-size: 0.65rem;">${escapeHtml(layer.method || 'GET')}</span>
+                <span class="badge bg-secondary ms-1" style="font-size: 0.65rem;">weight: ${layer.source_weight || 55}</span>
+                ${layer.description ? '<br><small class="text-muted">' + escapeHtml(layer.description) + '</small>' : ''}
+                <br><small class="text-muted font-monospace">${escapeHtml((layer.url_template || '').substring(0, 70))}${(layer.url_template || '').length > 70 ? '...' : ''}</small>
+            </div>
+            <div class="btn-group btn-group-sm ms-2">
+                <button class="btn btn-outline-secondary py-0" onclick="editPluginLayer(${i})" title="Edit"><i class="bi bi-pencil"></i></button>
+                <button class="btn btn-outline-danger py-0" onclick="deletePluginLayer('${escapeHtml(layer.layer_id)}', '${escapeHtml(layer.layer_name)}')" title="Remove"><i class="bi bi-trash"></i></button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function togglePluginEnabled(layerId, enabled) {
+    fetch('/api/plugins/toggle-layer', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({layer_id: layerId, enabled: enabled})
+    }).then(r => r.json()).then(data => {
+        if (data.success) {
+            const layer = pluginsData.find(l => l.layer_id === layerId);
+            if (layer) layer.enabled = enabled;
+        } else {
+            console.error('Toggle failed:', data.error);
+        }
+    }).catch(err => console.error('Toggle error:', err));
+}
+
+function deletePluginLayer(layerId, layerName) {
+    if (!confirm('Remove custom layer "' + layerName + '"?')) return;
+    fetch('/api/plugins/layer/' + encodeURIComponent(layerId), {
+        method: 'DELETE'
+    }).then(r => r.json()).then(data => {
+        if (data.success) {
+            pluginsData = pluginsData.filter(l => l.layer_id !== layerId);
+            renderPluginsList();
+        } else {
+            alert('Failed to delete: ' + (data.error || 'Unknown error'));
+        }
+    }).catch(err => alert('Delete error: ' + err));
+}
+
+function openPluginWizard(editLayer) {
+    pluginWizardStep = 1;
+    document.getElementById('plugin-edit-id').value = '';
+    document.getElementById('plugin-name').value = '';
+    document.getElementById('plugin-description').value = '';
+    document.getElementById('plugin-url').value = '';
+    document.getElementById('plugin-method').value = 'GET';
+    document.getElementById('plugin-timeout').value = '10';
+    document.getElementById('plugin-auth-type').value = 'none';
+    document.getElementById('plugin-bearer-secret').value = '';
+    document.getElementById('plugin-apikey-header').value = 'X-API-Key';
+    document.getElementById('plugin-apikey-secret').value = '';
+    document.getElementById('plugin-basic-user').value = '';
+    document.getElementById('plugin-basic-secret').value = '';
+    document.getElementById('plugin-map-title').value = '';
+    document.getElementById('plugin-map-author').value = '';
+    document.getElementById('plugin-map-narrator').value = '';
+    document.getElementById('plugin-map-series').value = '';
+    document.getElementById('plugin-map-series_num').value = '';
+    document.getElementById('plugin-map-year').value = '';
+    document.getElementById('plugin-weight').value = '55';
+    document.getElementById('plugin-weight-display').textContent = '55';
+    document.getElementById('plugin-test-title').value = 'The Final Empire';
+    document.getElementById('plugin-test-author').value = 'Brandon Sanderson';
+    document.getElementById('plugin-test-result').classList.add('d-none');
+    document.getElementById('pluginWizardTitle').innerHTML = '<i class="bi bi-plug"></i> Add Custom API Source';
+
+    if (editLayer) {
+        document.getElementById('plugin-edit-id').value = editLayer.layer_id || '';
+        document.getElementById('plugin-name').value = editLayer.layer_name || '';
+        document.getElementById('plugin-description').value = editLayer.description || '';
+        document.getElementById('plugin-url').value = editLayer.url_template || '';
+        document.getElementById('plugin-method').value = editLayer.method || 'GET';
+        document.getElementById('plugin-timeout').value = editLayer.timeout || 10;
+        document.getElementById('plugin-weight').value = editLayer.source_weight || 55;
+        document.getElementById('plugin-weight-display').textContent = editLayer.source_weight || 55;
+        document.getElementById('pluginWizardTitle').innerHTML = '<i class="bi bi-pencil"></i> Edit Custom API Source';
+
+        // Auth
+        const auth = editLayer.auth || {};
+        const authType = auth.type || 'none';
+        document.getElementById('plugin-auth-type').value = authType;
+        if (authType === 'bearer') {
+            document.getElementById('plugin-bearer-secret').value = auth.token_secret_key || '';
+        } else if (authType === 'api_key_header') {
+            document.getElementById('plugin-apikey-header').value = auth.header_name || 'X-API-Key';
+            document.getElementById('plugin-apikey-secret').value = auth.token_secret_key || '';
+        } else if (authType === 'basic') {
+            document.getElementById('plugin-basic-user').value = auth.username || '';
+            document.getElementById('plugin-basic-secret').value = auth.token_secret_key || '';
+        }
+
+        // Response mapping
+        const mapping = editLayer.response_mapping || {};
+        document.getElementById('plugin-map-title').value = mapping.title || '';
+        document.getElementById('plugin-map-author').value = mapping.author || '';
+        document.getElementById('plugin-map-narrator').value = mapping.narrator || '';
+        document.getElementById('plugin-map-series').value = mapping.series || '';
+        document.getElementById('plugin-map-series_num').value = mapping.series_num || '';
+        document.getElementById('plugin-map-year').value = mapping.year || '';
+    }
+
+    togglePluginAuthFields();
+    updatePluginWizardUI();
+    new bootstrap.Modal(document.getElementById('pluginWizardModal')).show();
+}
+
+function editPluginLayer(index) {
+    openPluginWizard(pluginsData[index]);
+}
+
+function updatePluginWizardUI() {
+    // Show/hide steps
+    for (let i = 1; i <= 4; i++) {
+        const step = document.getElementById('plugin-step-' + i);
+        const badge = document.getElementById('plugin-step-badge-' + i);
+        if (i === pluginWizardStep) {
+            step.classList.remove('d-none');
+            badge.classList.remove('bg-secondary');
+            badge.classList.add('bg-primary');
+        } else {
+            step.classList.add('d-none');
+            if (i < pluginWizardStep) {
+                badge.classList.remove('bg-secondary');
+                badge.classList.add('bg-primary');
+            } else {
+                badge.classList.remove('bg-primary');
+                badge.classList.add('bg-secondary');
+            }
+        }
+    }
+    // Show/hide buttons
+    document.getElementById('plugin-prev-btn').style.display = pluginWizardStep > 1 ? '' : 'none';
+    document.getElementById('plugin-next-btn').style.display = pluginWizardStep < 4 ? '' : 'none';
+    document.getElementById('plugin-save-btn').style.display = pluginWizardStep === 4 ? '' : 'none';
+}
+
+function pluginWizardNext() {
+    // Validate current step
+    if (pluginWizardStep === 1) {
+        const name = document.getElementById('plugin-name').value.trim();
+        if (!name) { alert('Please enter a layer name'); return; }
+    }
+    if (pluginWizardStep === 2) {
+        const url = document.getElementById('plugin-url').value.trim();
+        if (!url) { alert('Please enter a URL template'); return; }
+    }
+    if (pluginWizardStep < 4) {
+        pluginWizardStep++;
+        updatePluginWizardUI();
+    }
+}
+
+function pluginWizardPrev() {
+    if (pluginWizardStep > 1) {
+        pluginWizardStep--;
+        updatePluginWizardUI();
+    }
+}
+
+function togglePluginAuthFields() {
+    const authType = document.getElementById('plugin-auth-type').value;
+    document.getElementById('plugin-auth-bearer').classList.toggle('d-none', authType !== 'bearer');
+    document.getElementById('plugin-auth-apikey').classList.toggle('d-none', authType !== 'api_key_header');
+    document.getElementById('plugin-auth-basic').classList.toggle('d-none', authType !== 'basic');
+}
+
+function buildPluginLayerConfig() {
+    const name = document.getElementById('plugin-name').value.trim();
+    const editId = document.getElementById('plugin-edit-id').value.trim();
+
+    const layer = {
+        layer_id: editId || '',
+        layer_name: name,
+        description: document.getElementById('plugin-description').value.trim(),
+        url_template: document.getElementById('plugin-url').value.trim(),
+        method: document.getElementById('plugin-method').value,
+        timeout: parseInt(document.getElementById('plugin-timeout').value) || 10,
+        source_weight: parseInt(document.getElementById('plugin-weight').value) || 55,
+        enabled: true,
+        order: 35,
+        on_error: 'skip',
+        request_fields: ['title', 'author'],
+        circuit_breaker: {max_failures: 3, cooldown: 300},
+    };
+
+    // Auth
+    const authType = document.getElementById('plugin-auth-type').value;
+    if (authType === 'none') {
+        layer.auth = {type: 'none'};
+    } else if (authType === 'bearer') {
+        layer.auth = {
+            type: 'bearer',
+            token_secret_key: document.getElementById('plugin-bearer-secret').value.trim()
+        };
+    } else if (authType === 'api_key_header') {
+        layer.auth = {
+            type: 'api_key_header',
+            header_name: document.getElementById('plugin-apikey-header').value.trim() || 'X-API-Key',
+            token_secret_key: document.getElementById('plugin-apikey-secret').value.trim()
+        };
+    } else if (authType === 'basic') {
+        layer.auth = {
+            type: 'basic',
+            username: document.getElementById('plugin-basic-user').value.trim(),
+            token_secret_key: document.getElementById('plugin-basic-secret').value.trim()
+        };
+    }
+
+    // Response mapping (only include non-empty fields)
+    const mapping = {};
+    const fields = ['title', 'author', 'narrator', 'series', 'series_num', 'year'];
+    fields.forEach(f => {
+        const val = document.getElementById('plugin-map-' + f).value.trim();
+        if (val) mapping[f] = val;
+    });
+    layer.response_mapping = mapping;
+
+    return layer;
+}
+
+function testPluginLayer() {
+    const layer = buildPluginLayerConfig();
+    const testTitle = document.getElementById('plugin-test-title').value.trim() || 'The Final Empire';
+    const testAuthor = document.getElementById('plugin-test-author').value.trim() || 'Brandon Sanderson';
+
+    const btn = document.getElementById('plugin-test-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Testing...';
+
+    const resultDiv = document.getElementById('plugin-test-result');
+    resultDiv.classList.remove('d-none');
+
+    fetch('/api/plugins/test-layer', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({layer: layer, test_title: testTitle, test_author: testAuthor})
+    }).then(r => r.json()).then(data => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-circle"></i> Test API';
+
+        // Status badge
+        const statusBadge = document.getElementById('plugin-test-status');
+        if (data.success) {
+            statusBadge.textContent = 'SUCCESS';
+            statusBadge.className = 'badge bg-success';
+        } else {
+            statusBadge.textContent = 'FAILED';
+            statusBadge.className = 'badge bg-danger';
+        }
+
+        // HTTP status and time
+        document.getElementById('plugin-test-http-status').textContent = data.status_code || '-';
+        document.getElementById('plugin-test-time').textContent = data.response_time_ms ? data.response_time_ms + 'ms' : '-';
+        document.getElementById('plugin-test-url').textContent = data.url || '-';
+        document.getElementById('plugin-test-url').title = data.url || '';
+
+        // Mapped fields
+        const mappedDiv = document.getElementById('plugin-test-mapped');
+        const mappedBody = document.getElementById('plugin-test-mapped-body');
+        if (data.mapped_fields && Object.keys(data.mapped_fields).length > 0) {
+            mappedDiv.classList.remove('d-none');
+            mappedBody.innerHTML = Object.entries(data.mapped_fields).map(([field, value]) => {
+                const badge = value !== null
+                    ? '<span class="text-success">' + escapeHtml(String(value)) + '</span>'
+                    : '<span class="text-danger">null (path not found)</span>';
+                return `<tr><td>${escapeHtml(field)}</td><td>${badge}</td></tr>`;
+            }).join('');
+        } else {
+            mappedDiv.classList.add('d-none');
+        }
+
+        // Raw response
+        document.getElementById('plugin-test-raw').textContent = data.raw_response || '(no response body)';
+
+        // Error
+        const errorDiv = document.getElementById('plugin-test-error');
+        if (data.error) {
+            errorDiv.classList.remove('d-none');
+            errorDiv.textContent = data.error;
+        } else {
+            errorDiv.classList.add('d-none');
+        }
+
+    }).catch(err => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-circle"></i> Test API';
+        alert('Test error: ' + err);
+    });
+}
+
+function savePluginLayer() {
+    const layer = buildPluginLayerConfig();
+
+    if (!layer.layer_name) { alert('Please enter a layer name'); return; }
+    if (!layer.url_template) { alert('Please enter a URL template'); return; }
+
+    fetch('/api/plugins/save-layer', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({layer: layer})
+    }).then(r => r.json()).then(data => {
+        if (data.success) {
+            // Refresh the list from server
+            fetch('/api/plugins/layers').then(r => r.json()).then(listData => {
+                if (listData.success) {
+                    pluginsData = listData.layers;
+                    renderPluginsList();
+                }
+            });
+            bootstrap.Modal.getInstance(document.getElementById('pluginWizardModal')).hide();
+        } else {
+            alert('Failed to save: ' + (data.error || 'Unknown error'));
+        }
+    }).catch(err => alert('Save error: ' + err));
+}
+
+// Load plugins on tab show
+document.querySelector('[data-bs-target="#tab-plugins"]')?.addEventListener('shown.bs.tab', function() {
+    renderPluginsList();
+});
+
+// Initial render
+if (pluginsData.length) renderPluginsList();
+else document.getElementById('plugins-empty') && (document.getElementById('plugins-empty').style.display = 'block');
 </script>
 {% endblock %}
