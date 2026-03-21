@@ -3151,10 +3151,223 @@ function savePluginLayer() {
 // Load plugins on tab show
 document.querySelector('[data-bs-target="#tab-plugins"]')?.addEventListener('shown.bs.tab', function() {
     renderPluginsList();
+    loadPluginHealth();
 });
 
 // Initial render
 if (pluginsData.length) renderPluginsList();
 else document.getElementById('plugins-empty') && (document.getElementById('plugins-empty').style.display = 'block');
+
+// ==================== PLUGIN HEALTH DASHBOARD (Issue #189) ====================
+
+let pluginHealthData = [];
+
+function loadPluginHealth() {
+    const cards = document.getElementById('plugin-health-cards');
+    const empty = document.getElementById('plugin-health-empty');
+    const loading = document.getElementById('plugin-health-loading');
+    if (!cards) return;
+
+    loading.style.display = 'block';
+    empty.style.display = 'none';
+    cards.innerHTML = '';
+
+    fetch('/api/plugins/health').then(r => r.json()).then(data => {
+        loading.style.display = 'none';
+        if (!data.success) {
+            cards.innerHTML = '<div class="text-danger p-3">Error loading health data: ' + (data.error || 'Unknown') + '</div>';
+            return;
+        }
+
+        pluginHealthData = data.plugins || [];
+        if (!pluginHealthData.length) {
+            empty.style.display = 'block';
+            return;
+        }
+
+        // Check if all plugins have no data
+        const allNoData = pluginHealthData.every(p => p.status === 'no_data');
+        if (allNoData) {
+            empty.style.display = 'block';
+            return;
+        }
+
+        renderPluginHealthCards();
+    }).catch(err => {
+        loading.style.display = 'none';
+        cards.innerHTML = '<div class="text-danger p-3">Failed to load health data: ' + err + '</div>';
+    });
+}
+
+function renderPluginHealthCards() {
+    const cards = document.getElementById('plugin-health-cards');
+    cards.innerHTML = pluginHealthData.map(p => {
+        // Status dot color
+        let dotColor = 'secondary';
+        let statusLabel = 'No Data';
+        if (p.status === 'active') { dotColor = 'success'; statusLabel = 'Active'; }
+        else if (p.status === 'errored') { dotColor = 'warning'; statusLabel = 'Errored'; }
+        else if (p.status === 'auto-disabled') { dotColor = 'danger'; statusLabel = 'Auto-Disabled'; }
+        else if (p.status === 'disabled') { dotColor = 'secondary'; statusLabel = 'Disabled'; }
+        else if (p.status === 'no_data') { dotColor = 'secondary'; statusLabel = 'No Data'; }
+
+        const successRate = p.success_rate !== null ? p.success_rate + '%' : '-';
+        const avgDuration = p.avg_duration_ms !== null ? p.avg_duration_ms + 'ms' : '-';
+        const lastRun = p.last_run ? new Date(p.last_run * 1000).toLocaleString() : 'Never';
+        const errorCount = (p.recent_errors || []).length;
+
+        let reEnableBtn = '';
+        if (p.auto_disabled) {
+            reEnableBtn = `<button class="btn btn-sm btn-outline-success py-0 ms-2" onclick="resetPluginHealth('${escapeHtml(p.plugin_id)}')">
+                <i class="bi bi-arrow-counterclockwise"></i> Re-enable
+            </button>`;
+        }
+
+        // Build error log accordion
+        let errorLog = '';
+        if (errorCount > 0) {
+            const collapseId = 'plugin-errors-' + p.plugin_id.replace(/[^a-zA-Z0-9]/g, '_');
+            errorLog = `
+                <div class="mt-2">
+                    <a class="small text-muted" data-bs-toggle="collapse" href="#${collapseId}" role="button">
+                        <i class="bi bi-exclamation-triangle"></i> ${errorCount} recent error${errorCount > 1 ? 's' : ''}
+                    </a>
+                    <div class="collapse mt-1" id="${collapseId}">
+                        <div style="max-height: 150px; overflow-y: auto; font-size: 0.7rem;">
+                            ${p.recent_errors.map(e => `
+                                <div class="border-bottom border-secondary py-1 px-2">
+                                    <span class="text-muted">${new Date(e.timestamp * 1000).toLocaleString()}</span>
+                                    <br><span class="text-danger">${escapeHtml(e.message)}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        // Logs link
+        const logsLink = p.status !== 'no_data'
+            ? `<a class="small text-muted ms-2" href="#" onclick="showPluginLogs('${escapeHtml(p.plugin_id)}', '${escapeHtml(p.plugin_name)}'); return false;">
+                 <i class="bi bi-list-ul"></i> Logs
+               </a>`
+            : '';
+
+        return `
+            <div class="d-flex align-items-start border-bottom border-secondary px-3 py-2">
+                <div class="me-2 mt-1">
+                    <span class="d-inline-block rounded-circle bg-${dotColor}" style="width: 10px; height: 10px;"></span>
+                </div>
+                <div class="flex-grow-1">
+                    <div class="d-flex align-items-center">
+                        <strong>${escapeHtml(p.plugin_name)}</strong>
+                        <span class="badge bg-${dotColor} ms-2" style="font-size: 0.65rem;">${statusLabel}</span>
+                        ${reEnableBtn}
+                        ${logsLink}
+                    </div>
+                    <div class="row mt-1" style="font-size: 0.75rem;">
+                        <div class="col-3">
+                            <span class="text-muted">Success:</span> <strong>${successRate}</strong>
+                        </div>
+                        <div class="col-3">
+                            <span class="text-muted">Avg Time:</span> <strong>${avgDuration}</strong>
+                        </div>
+                        <div class="col-3">
+                            <span class="text-muted">Processed:</span> <strong>${p.total_processed}</strong>
+                        </div>
+                        <div class="col-3">
+                            <span class="text-muted">Resolved:</span> <strong>${p.total_resolved}</strong>
+                        </div>
+                    </div>
+                    <div style="font-size: 0.7rem;" class="text-muted mt-1">
+                        Last run: ${lastRun}
+                    </div>
+                    ${errorLog}
+                </div>
+            </div>`;
+    }).join('');
+}
+
+function resetPluginHealth(pluginId) {
+    if (!confirm('Re-enable plugin "' + pluginId + '"? This resets the failure counter.')) return;
+    fetch('/api/plugins/health/' + encodeURIComponent(pluginId) + '/reset', {
+        method: 'POST'
+    }).then(r => r.json()).then(data => {
+        if (data.success) {
+            // Refresh both lists
+            fetch('/api/plugins/layers').then(r => r.json()).then(listData => {
+                if (listData.success) {
+                    pluginsData = listData.layers;
+                    renderPluginsList();
+                }
+            });
+            loadPluginHealth();
+        } else {
+            alert('Reset failed: ' + (data.error || 'Unknown error'));
+        }
+    }).catch(err => alert('Reset error: ' + err));
+}
+
+function showPluginLogs(pluginId, pluginName) {
+    fetch('/api/plugins/health/' + encodeURIComponent(pluginId) + '/logs')
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success || !data.entries.length) {
+                alert('No log entries for ' + pluginName);
+                return;
+            }
+
+            // Build a simple modal with log entries
+            let existingModal = document.getElementById('pluginLogsModal');
+            if (existingModal) existingModal.remove();
+
+            const entries = data.entries;
+            const rows = entries.map(e => {
+                const ts = new Date(e.timestamp * 1000).toLocaleString();
+                const badge = e.success
+                    ? '<span class="badge bg-success">OK</span>'
+                    : '<span class="badge bg-danger">FAIL</span>';
+                const dur = e.duration_ms !== null ? e.duration_ms + 'ms' : '-';
+                const err = e.error_message ? '<br><small class="text-danger">' + escapeHtml(e.error_message) + '</small>' : '';
+                return `<tr>
+                    <td style="font-size: 0.75rem;">${ts}</td>
+                    <td>${badge}</td>
+                    <td style="font-size: 0.75rem;">${dur}</td>
+                    <td style="font-size: 0.75rem;">${e.items_processed || 0} / ${e.items_resolved || 0}</td>
+                    <td style="font-size: 0.75rem;">${err || '-'}</td>
+                </tr>`;
+            }).join('');
+
+            const modalHtml = `
+                <div class="modal fade" id="pluginLogsModal" tabindex="-1">
+                    <div class="modal-dialog modal-lg">
+                        <div class="modal-content bg-dark">
+                            <div class="modal-header py-2">
+                                <h6 class="modal-title"><i class="bi bi-list-ul"></i> Logs: ${escapeHtml(pluginName)}</h6>
+                                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body p-0">
+                                <div class="table-responsive">
+                                    <table class="table table-sm table-dark mb-0">
+                                        <thead><tr>
+                                            <th>Time</th><th>Status</th><th>Duration</th><th>Proc/Res</th><th>Error</th>
+                                        </tr></thead>
+                                        <tbody>${rows}</tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+            new bootstrap.Modal(document.getElementById('pluginLogsModal')).show();
+
+            // Clean up on close
+            document.getElementById('pluginLogsModal').addEventListener('hidden.bs.modal', function() {
+                this.remove();
+            });
+        })
+        .catch(err => alert('Error loading logs: ' + err));
+}
 </script>
 {% endblock %}

@@ -2,6 +2,31 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.141] - 2026-03-21
+
+### Added
+
+- **Issue #189: Plugin Health Dashboard** - New health monitoring section in the Plugins tab
+  showing real-time status for each custom API source. Tracks success rate (last 50 runs),
+  average response time, items processed/resolved, and last run timestamp. Health cards use
+  color-coded status indicators (green=active, yellow=errored, red=auto-disabled). Expandable
+  error logs show the 5 most recent failures per plugin with timestamps. Full metric log modal
+  shows the last 20 execution entries with status, duration, and error details.
+
+- **Auto-disable circuit breaker** - Plugins are automatically disabled after 5 consecutive
+  failures to prevent repeated errors from slowing the pipeline. Auto-disabled plugins show
+  a red status badge and a "Re-enable" button that resets the failure counter and re-enables
+  the layer. Toast notification logged when a plugin is auto-disabled.
+
+- **Plugin metrics recording** - New `plugin_metrics` database table tracks every custom
+  layer execution with timestamp, success/failure, duration, error message, and item counts.
+  Metrics are recorded automatically after each `CustomApiLayer.run()` batch with minimal
+  overhead (single INSERT, no aggregation on write path). Three new API endpoints:
+  `GET /api/plugins/health` (aggregated stats), `GET /api/plugins/health/<id>/logs`
+  (last 20 entries), `POST /api/plugins/health/<id>/reset` (re-enable disabled plugin).
+
+---
+
 ## [0.9.0-beta.140] - 2026-03-21
 
 ### Added

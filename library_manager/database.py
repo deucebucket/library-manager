@@ -182,6 +182,10 @@ def init_db(db_path=None):
     from library_manager.hooks import init_hook_tables
     init_hook_tables(path)
 
+    # Initialize plugin metrics table (Issue #189)
+    from library_manager.plugins import init_plugin_metrics_table
+    init_plugin_metrics_table(path)
+
 
 def cleanup_garbage_entries(db_path=None):
     """Remove garbage entries from database on startup.
