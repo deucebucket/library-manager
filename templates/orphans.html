@@ -53,8 +53,8 @@
 <!-- Edit Title Modal -->
 <div class="modal fade" id="editModal" tabindex="-1">
     <div class="modal-dialog">
-        <div class="modal-content" style="background: #16213e; color: #eee;">
-            <div class="modal-header" style="border-color: #0f3460;">
+        <div class="modal-content" style="background: var(--theme-bg-secondary); color: var(--theme-text-primary);">
+            <div class="modal-header" style="border-color: var(--theme-border-primary);">
                 <h5 class="modal-title"><i class="bi bi-pencil"></i> Edit Book Title</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
@@ -74,7 +74,7 @@
                 <input type="hidden" id="edit-author-path">
                 <input type="hidden" id="edit-files-json">
             </div>
-            <div class="modal-footer" style="border-color: #0f3460;">
+            <div class="modal-footer" style="border-color: var(--theme-border-primary);">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-success" onclick="saveOrganize()">
                     <i class="bi bi-folder-plus"></i> Create Folder & Move
@@ -167,11 +167,7 @@ function refreshOrphans() {
         });
 }
 
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
+// escapeHtml provided by common.js
 
 function editOrphan(idx) {
     const orphan = orphanData[idx];

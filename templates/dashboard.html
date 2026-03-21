@@ -6,7 +6,7 @@
     <div class="col-md-3">
         <div class="card stat-card h-100" title="{{ _('All audiobook folders found in your library') }}">
             <div class="card-body text-center">
-                <i class="bi bi-collection text-info" style="font-size: 2rem;"></i>
+                <i class="bi bi-collection text-info" class="fs-icon-lg"></i>
                 <div class="stat-number" id="total-books">{{ total_books }}</div>
                 <div class="text-muted">{{ _('Total Books') }}</div>
                 <small class="text-muted" style="font-size: 0.7rem;">{{ _('in library') }}</small>
@@ -15,9 +15,9 @@
     </div>
     <div class="col-md-3">
         <a href="/queue" class="text-decoration-none">
-            <div class="card stat-card h-100" title="{{ _('Books waiting to be analyzed by AI') }}" style="cursor: pointer;">
+            <div class="card stat-card h-100" title="{{ _('Books waiting to be analyzed by AI') }}" class="cursor-pointer">
                 <div class="card-body text-center">
-                    <i class="bi bi-list-task text-warning" style="font-size: 2rem;"></i>
+                    <i class="bi bi-list-task text-warning" class="fs-icon-lg"></i>
                     <div class="stat-number" id="queue-count">{{ queue_size }}</div>
                     <div class="text-muted">{{ _('In Queue') }}</div>
                     <small class="text-muted" style="font-size: 0.7rem;">{{ _('awaiting AI analysis') }}</small>
@@ -27,9 +27,9 @@
     </div>
     <div class="col-md-3">
         <a href="/history" class="text-decoration-none">
-            <div class="card stat-card h-100" title="{{ _('Books that have been renamed/corrected') }}" style="cursor: pointer;">
+            <div class="card stat-card h-100" title="{{ _('Books that have been renamed/corrected') }}" class="cursor-pointer">
                 <div class="card-body text-center">
-                    <i class="bi bi-check-circle text-success" style="font-size: 2rem;"></i>
+                    <i class="bi bi-check-circle text-success" class="fs-icon-lg"></i>
                     <div class="stat-number" id="fixed-count">{{ fixed_count }}</div>
                     <div class="text-muted">{{ _('Fixed') }}</div>
                     <small class="text-muted" style="font-size: 0.7rem;">{{ _('renamed successfully') }}</small>
@@ -39,9 +39,9 @@
     </div>
     <div class="col-md-3">
         <a href="/history?status=pending" class="text-decoration-none">
-            <div class="card stat-card h-100" title="{{ _('AI suggested fixes waiting to be applied to files') }}" style="cursor: pointer;">
+            <div class="card stat-card h-100" title="{{ _('AI suggested fixes waiting to be applied to files') }}" class="cursor-pointer">
                 <div class="card-body text-center">
-                    <i class="bi bi-hourglass-split text-danger" style="font-size: 2rem;"></i>
+                    <i class="bi bi-hourglass-split text-danger" class="fs-icon-lg"></i>
                     <div class="stat-number" id="pending-fixes">{{ pending_fixes }}</div>
                     <div class="text-muted">{{ _('Pending Fixes') }}</div>
                     <small class="text-muted" style="font-size: 0.7rem;">{{ _('ready to apply') }}</small>
@@ -114,27 +114,6 @@
 </div>
 
 <!-- Processing Activity Log - Shows ALL recent processing, not just fixes -->
-<style>
-    #activity-log-table { table-layout: fixed; width: 100%; }
-    #activity-log-table td, #activity-log-table th {
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        padding: 0.35rem 0.5rem;
-    }
-    /* Marquee scroll on hover for truncated text */
-    #activity-log-table td.scroll-text:hover {
-        overflow: visible;
-    }
-    #activity-log-table td.scroll-text:hover span {
-        display: inline-block;
-        animation: marquee 4s linear infinite;
-    }
-    @keyframes marquee {
-        0% { transform: translateX(0); }
-        100% { transform: translateX(-50%); }
-    }
-</style>
 <div class="row">
     <div class="col-12">
         <div class="card">
@@ -142,8 +121,8 @@
                 <span><i class="bi bi-activity"></i> Processing Activity (Last 15)</span>
                 <small class="text-muted" id="activity-refresh-time">Auto-refreshes</small>
             </div>
-            <div class="card-body p-0" style="max-height: 400px; overflow-y: auto;">
-                <table class="table table-sm mb-0" id="activity-log-table">
+            <div class="card-body p-0 scroll-container" style="max-height: 400px;">
+                <table class="table table-sm table-hover mb-0" id="activity-log-table">
                     <thead style="position: sticky; top: 0; background: rgba(22, 33, 62, 0.95);">
                         <tr>
                             <th style="width: 42px;">Time</th>
@@ -171,9 +150,9 @@
             <div class="card-header">
                 <i class="bi bi-clock-history"></i> Pending Fixes (Last 15)
             </div>
-            <div class="card-body p-0" style="max-height: 300px; overflow-y: auto;">
+            <div class="card-body p-0 scroll-container">
                 {% if recent_history %}
-                <table class="table table-sm mb-0" id="recent-activity-table">
+                <table class="table table-sm table-hover mb-0" id="recent-activity-table">
                     <thead style="position: sticky; top: 0; background: rgba(22, 33, 62, 0.95);">
                         <tr>
                             <th>Date</th>
@@ -512,12 +491,7 @@ function showToast(message, type) {
     new bootstrap.Toast(toast, {delay: 3000}).show();
 }
 
-function escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
+// escapeHtml provided by common.js
 
 // Start auto-refresh immediately and every 5 seconds
 refreshDashboard();

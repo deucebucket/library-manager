@@ -2,70 +2,6 @@
 {% block title %}Settings - Library Manager{% endblock %}
 
 {% block content %}
-<style>
-    .spin-icon {
-        animation: spin-anim 1s linear infinite;
-    }
-    @keyframes spin-anim {
-        100% { transform: rotate(360deg); }
-    }
-    .hint-icon {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 16px;
-        height: 16px;
-        border-radius: 50%;
-        border: 1px solid rgba(0, 217, 255, 0.4);
-        color: rgba(0, 217, 255, 0.6);
-        font-size: 10px;
-        font-weight: bold;
-        font-style: normal;
-        cursor: help;
-        margin-left: 4px;
-        position: relative;
-        vertical-align: middle;
-        line-height: 1;
-        flex-shrink: 0;
-    }
-    .hint-icon:hover {
-        border-color: #00d9ff;
-        color: #00d9ff;
-    }
-    .hint-icon .hint-text {
-        display: none;
-        position: absolute;
-        bottom: calc(100% + 8px);
-        left: 50%;
-        transform: translateX(-50%);
-        background: rgba(15, 52, 96, 0.95);
-        border: 1px solid rgba(0, 217, 255, 0.3);
-        color: #eee;
-        padding: 8px 12px;
-        border-radius: 6px;
-        font-size: 0.8rem;
-        font-weight: normal;
-        font-style: normal;
-        line-height: 1.4;
-        white-space: normal;
-        width: 280px;
-        z-index: 1000;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-        pointer-events: none;
-    }
-    .hint-icon .hint-text::after {
-        content: '';
-        position: absolute;
-        top: 100%;
-        left: 50%;
-        transform: translateX(-50%);
-        border: 6px solid transparent;
-        border-top-color: rgba(0, 217, 255, 0.3);
-    }
-    .hint-icon:hover .hint-text {
-        display: block;
-    }
-</style>
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2><i class="bi bi-gear"></i> Settings</h2>
     <span class="text-muted">v{{ version }}</span>
@@ -104,33 +40,18 @@
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-processing" type="button">
-                <i class="bi bi-cpu"></i> Processing
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-engine" type="button">
+                <i class="bi bi-cpu"></i> Engine
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-ai" type="button">
-                <i class="bi bi-robot"></i> AI Setup
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-pipeline" type="button">
+                <i class="bi bi-layers"></i> Pipeline
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-safety" type="button">
-                <i class="bi bi-shield-check"></i> Safety
-            </button>
-        </li>
-        <li class="nav-item">
-            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-advanced" type="button">
-                <i class="bi bi-gear-wide-connected"></i> Advanced
-            </button>
-        </li>
-        <li class="nav-item">
-            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-hooks" type="button">
-                <i class="bi bi-terminal"></i> Post-Processing
-            </button>
-        </li>
-        <li class="nav-item">
-            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-plugins" type="button">
-                <i class="bi bi-plug"></i> Plugins
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-integrations" type="button">
+                <i class="bi bi-plug"></i> Integrations
             </button>
         </li>
     </ul>
@@ -166,7 +87,7 @@
                     {% else %}
                     <div class="card mb-3 border-info">
                         <div class="card-body text-center py-4">
-                            <i class="bi bi-info-circle text-info" style="font-size: 2rem;"></i>
+                            <i class="bi bi-info-circle text-info" class="fs-icon-lg"></i>
                             <h5 class="mt-2">Demo Mode</h5>
                             <p class="text-muted mb-0">This is a public demo instance. Library paths are locked.</p>
                         </div>
@@ -434,8 +355,9 @@
             </div>
         </div>
 
-        <!-- ==================== PROCESSING TAB ==================== -->
-        <div class="tab-pane fade" id="tab-processing">
+        <!-- ==================== ENGINE TAB (Processing + AI Keys + Safety) ==================== -->
+        <div class="tab-pane fade" id="tab-engine">
+            <h5 class="mb-3"><i class="bi bi-play-circle"></i> Processing</h5>
             <div class="row">
                 <div class="col-lg-6">
                     <!-- Background Processing -->
@@ -755,17 +677,16 @@
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- ==================== AI SETUP TAB ==================== -->
-        <div class="tab-pane fade" id="tab-ai">
+            <hr class="my-4">
+            <h5 class="mb-3"><i class="bi bi-key"></i> AI Providers</h5>
             <div class="row">
                 <!-- API Keys Card - Hidden in demo mode -->
                 <div class="col-lg-6">
                     {% if config.demo_mode %}
                     <div class="card mb-3 border-info">
                         <div class="card-body text-center py-4">
-                            <i class="bi bi-shield-lock text-info" style="font-size: 2rem;"></i>
+                            <i class="bi bi-shield-lock text-info" class="fs-icon-lg"></i>
                             <h5 class="mt-2">API Keys Hidden</h5>
                             <p class="text-muted mb-0">API keys are pre-configured on this demo instance.</p>
                         </div>
@@ -992,7 +913,11 @@
                 </div>
             </div>
 
-            <!-- Continue with rest of AI tab -->
+        </div>{# end engine primary AI provider section #}
+
+        <!-- ==================== PIPELINE TAB (Provider Chains + Advanced) ==================== -->
+        <div class="tab-pane fade" id="tab-pipeline">
+            <h5 class="mb-3"><i class="bi bi-diagram-3"></i> Provider Chains</h5>
             <div class="row">
 
                 <div class="col-lg-6">
@@ -1133,10 +1058,9 @@
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- ==================== SAFETY TAB ==================== -->
-        <div class="tab-pane fade" id="tab-safety">
+            <hr class="my-4">
+            <h5 class="mb-3"><i class="bi bi-shield-check"></i> Safety, Language & Maintenance</h5>
             <div class="row">
                 <div class="col-lg-6">
                     <!-- Auto-Apply Settings -->
@@ -1249,10 +1173,7 @@
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- ==================== ADVANCED TAB ==================== -->
-        <div class="tab-pane fade" id="tab-advanced">
             <div class="row">
                 <div class="col-lg-6">
                     <!-- Language -->
@@ -1594,22 +1515,22 @@
                     </div>
                 </div>
             </div>
-        </div>
+        </div>{# end tab-pipeline #}
 
-        <!-- ==================== POST-PROCESSING TAB ==================== -->
-        <div class="tab-pane fade" id="tab-hooks">
+        <!-- ==================== INTEGRATIONS TAB ==================== -->
+        <div class="tab-pane fade" id="tab-integrations">
+            <h5 class="mb-3"><i class="bi bi-terminal"></i> Post-Processing Hooks</h5>
             {% include 'hooks_settings.html' %}
-        </div>
 
-        <!-- ==================== PLUGINS TAB ==================== -->
-        <div class="tab-pane fade" id="tab-plugins">
+            <hr class="my-4">
+            <h5 class="mb-3"><i class="bi bi-plug"></i> Custom API Sources</h5>
             {% include 'plugins_settings.html' %}
         </div>
 
     </div>
 
     <!-- Save Button (sticky) -->
-    <div class="position-sticky bottom-0 bg-dark py-3 border-top mt-3" style="z-index: 100;">
+    <div class="settings-save-bar">
         <div class="d-flex justify-content-end">
             <button type="submit" class="btn btn-primary">
                 <i class="bi bi-save"></i> Save Settings
@@ -2021,11 +1942,7 @@ function refreshLogs() {
     }).catch(e => { document.getElementById('log-output').textContent = 'Error: ' + e; });
 }
 
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
+// escapeHtml provided by common.js
 
 // API Tests
 function showApiTestResult(msg, success) {
@@ -2238,7 +2155,7 @@ function restoreBackup() {
         .catch(e => alert('Error: ' + e));
 }
 
-document.querySelector('[data-bs-target="#tab-advanced"]')?.addEventListener('shown.bs.tab', loadBackupInfo);
+document.querySelector('[data-bs-target="#tab-pipeline"]')?.addEventListener('shown.bs.tab', loadBackupInfo);
 
 // Library path test
 function testLibraryPaths() {
@@ -2396,11 +2313,7 @@ function renderHooksList() {
     `).join('');
 }
 
-function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str || '';
-    return div.innerHTML;
-}
+// escapeHtml provided by common.js
 
 function toggleHookEnabled(index, enabled) {
     hooksData[index].enabled = enabled;
@@ -2660,7 +2573,7 @@ function clearHookLog() {
 }
 
 // Load hooks on tab show
-document.querySelector('[data-bs-target="#tab-hooks"]')?.addEventListener('shown.bs.tab', function() {
+document.querySelector('[data-bs-target="#tab-integrations"]')?.addEventListener('shown.bs.tab', function() {
     renderHooksList();
     refreshHookLog();
 });
@@ -3149,7 +3062,7 @@ function savePluginLayer() {
 }
 
 // Load plugins on tab show
-document.querySelector('[data-bs-target="#tab-plugins"]')?.addEventListener('shown.bs.tab', function() {
+document.querySelector('[data-bs-target="#tab-integrations"]')?.addEventListener('shown.bs.tab', function() {
     renderPluginsList();
     loadPluginHealth();
 });

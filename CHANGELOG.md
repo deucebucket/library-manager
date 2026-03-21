@@ -2,6 +2,25 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.143] - 2026-03-21
+
+### Changed
+
+- **Issue #198: Comprehensive UI overhaul** - Extracted 728 lines of inline CSS from base.html
+  into `static/css/style.css` with CSS custom properties design system (spacing scale, border
+  radius tokens, transition timing). Consolidated duplicate `escapeHtml()` and `showToast()`
+  helpers from 5 templates into `static/js/common.js`. Reorganized Settings from 7 tabs
+  (Library, Processing, AI Setup, Safety, Advanced, Post-Processing, Plugins) into 4 tabs
+  (Library, Engine, Pipeline, Integrations) with section headers. Added mobile responsive
+  breakpoints for tables, nav-tabs, cards, and stat numbers. Replaced hardcoded hex colors
+  with CSS variables throughout all templates. Changed accent success color from `#00ff00`
+  to `#2ecc71` for professional appearance. Added sticky settings save bar with backdrop blur.
+  Replaced all inline `font-size` styles with utility classes (`fs-icon-lg`, `fs-icon-xl`).
+  Setup wizard styles extracted with `setup-mode` body class for navbar hiding. All modal
+  backgrounds now use theme CSS variables instead of hardcoded `#16213e`.
+
+---
+
 ## [0.9.0-beta.142] - 2026-03-21
 
 ### Added
