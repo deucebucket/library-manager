@@ -2370,6 +2370,7 @@ function renderHooksList() {
                 <strong>${escapeHtml(hook.name)}</strong>
                 <span class="badge ${hook.type === 'webhook' ? 'bg-info' : 'bg-secondary'} ms-1" style="font-size: 0.65rem;">${hook.type}</span>
                 <span class="badge ${hook.mode === 'async' ? 'bg-warning text-dark' : 'bg-dark'} ms-1" style="font-size: 0.65rem;">${hook.mode || 'sync'}</span>
+                ${(hook.run_on || ['rename_applied']).map(e => '<span class="badge bg-dark border border-secondary ms-1" style="font-size: 0.6rem;">' + escapeHtml(e) + '</span>').join('')}
                 <br><small class="text-muted font-monospace">${escapeHtml(hook.type === 'webhook' ? (hook.url || '').substring(0, 60) : (hook.command || '').substring(0, 60))}${(hook.type === 'webhook' ? hook.url : hook.command || '').length > 60 ? '...' : ''}</small>
             </div>
             <div class="btn-group btn-group-sm ms-2">
@@ -2405,10 +2406,13 @@ function addHook() {
     document.getElementById('hook-url').value = '';
     document.getElementById('hook-method').value = 'POST';
     document.getElementById('hook-headers').value = '';
+    document.getElementById('hook-body-template').value = '';
     document.getElementById('hook-timeout').value = '300';
     document.getElementById('hook-mode').value = 'sync';
     document.getElementById('hook-on-error').value = 'log';
     document.getElementById('hook-test-result').style.display = 'none';
+    // Reset event checkboxes - default to rename_applied only
+    setEventCheckboxes(['rename_applied']);
     toggleHookTypeFields();
     new bootstrap.Modal(document.getElementById('hookEditModal')).show();
 }
@@ -2423,10 +2427,13 @@ function editHook(index) {
     document.getElementById('hook-url').value = hook.url || '';
     document.getElementById('hook-method').value = hook.method || 'POST';
     document.getElementById('hook-headers').value = hook.headers ? JSON.stringify(hook.headers) : '';
+    document.getElementById('hook-body-template').value = hook.body_template ? JSON.stringify(hook.body_template, null, 2) : '';
     document.getElementById('hook-timeout').value = hook.timeout || 300;
     document.getElementById('hook-mode').value = hook.mode || 'sync';
     document.getElementById('hook-on-error').value = hook.on_error || 'log';
     document.getElementById('hook-test-result').style.display = 'none';
+    // Load event checkboxes (default to rename_applied for backward compat)
+    setEventCheckboxes(hook.run_on || ['rename_applied']);
     toggleHookTypeFields();
     new bootstrap.Modal(document.getElementById('hookEditModal')).show();
 }
@@ -2446,6 +2453,28 @@ function moveHook(index, direction) {
     hooksData[newIndex] = temp;
     renderHooksList();
     saveHooksToServer();
+}
+
+// Event checkbox helpers (Issue #187)
+const HOOK_EVENT_NAMES = ['scan_started', 'scan_completed', 'book_discovered', 'rename_proposed',
+                          'rename_applied', 'rename_rejected', 'processing_failed', 'queue_empty'];
+
+function setEventCheckboxes(selectedEvents) {
+    // Normalize legacy 'fixed' -> 'rename_applied'
+    const normalized = selectedEvents.map(e => e === 'fixed' ? 'rename_applied' : e);
+    HOOK_EVENT_NAMES.forEach(evt => {
+        const cb = document.getElementById('hook-evt-' + evt);
+        if (cb) cb.checked = normalized.includes(evt);
+    });
+}
+
+function getSelectedEvents() {
+    const selected = [];
+    HOOK_EVENT_NAMES.forEach(evt => {
+        const cb = document.getElementById('hook-evt-' + evt);
+        if (cb && cb.checked) selected.push(evt);
+    });
+    return selected;
 }
 
 function toggleHookTypeFields() {
@@ -2471,6 +2500,21 @@ function saveHookFromModal() {
         catch (e) { alert('Invalid JSON in headers field'); return; }
     }
 
+    // Parse body_template if provided
+    let bodyTemplateObj = undefined;
+    const bodyTemplateStr = document.getElementById('hook-body-template').value.trim();
+    if (bodyTemplateStr && type === 'webhook') {
+        try { bodyTemplateObj = JSON.parse(bodyTemplateStr); }
+        catch (e) { alert('Invalid JSON in body template field'); return; }
+    }
+
+    // Collect selected events
+    const selectedEvents = getSelectedEvents();
+    if (selectedEvents.length === 0) {
+        alert('Please select at least one event to trigger this hook');
+        return;
+    }
+
     const hook = {
         name: name,
         type: type,
@@ -2478,11 +2522,12 @@ function saveHookFromModal() {
         url: type === 'webhook' ? document.getElementById('hook-url').value.trim() : undefined,
         method: type === 'webhook' ? document.getElementById('hook-method').value : undefined,
         headers: type === 'webhook' ? headersObj : undefined,
+        body_template: bodyTemplateObj,
         timeout: parseInt(document.getElementById('hook-timeout').value) || 300,
         mode: document.getElementById('hook-mode').value,
         on_error: document.getElementById('hook-on-error').value,
         enabled: true,
-        run_on: ['fixed']
+        run_on: selectedEvents
     };
 
     // Validate
