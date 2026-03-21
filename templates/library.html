@@ -2,145 +2,6 @@
 {% block title %}Library - Library Manager{% endblock %}
 
 {% block content %}
-<style>
-    .filter-chip {
-        display: inline-flex;
-        align-items: center;
-        padding: 8px 16px;
-        margin: 4px;
-        border-radius: 20px;
-        background: rgba(15, 52, 96, 0.5);
-        border: 1px solid rgba(0, 217, 255, 0.2);
-        color: #eee;
-        cursor: pointer;
-        transition: all 0.2s;
-        text-decoration: none;
-    }
-    .filter-chip:hover {
-        background: rgba(0, 217, 255, 0.2);
-        border-color: rgba(0, 217, 255, 0.5);
-        color: #fff;
-    }
-    .filter-chip.active {
-        background: rgba(0, 217, 255, 0.3);
-        border-color: #00d9ff;
-        color: #00d9ff;
-    }
-    .filter-chip .count {
-        background: rgba(0, 0, 0, 0.3);
-        padding: 2px 8px;
-        border-radius: 10px;
-        margin-left: 8px;
-        font-size: 0.85rem;
-    }
-    .filter-chip.active .count {
-        background: rgba(0, 217, 255, 0.3);
-    }
-    .filter-chip.has-items .count {
-        background: rgba(233, 69, 96, 0.5);
-    }
-    .activity-stream {
-        max-height: 150px;
-        overflow-y: auto;
-        background: rgba(0, 0, 0, 0.2);
-        border-radius: 8px;
-        padding: 10px;
-        font-family: monospace;
-        font-size: 0.85rem;
-        display: none;
-    }
-    .activity-stream.active {
-        display: block;
-    }
-    .activity-stream .entry {
-        padding: 2px 0;
-        border-bottom: 1px solid rgba(255,255,255,0.05);
-    }
-    .activity-stream .entry.success { color: #00d9ff; }
-    .activity-stream .entry.error { color: #e94560; }
-    .activity-stream .entry.info { color: #ffc107; }
-    .item-row {
-        transition: background 0.2s;
-    }
-    .item-row:hover {
-        background: rgba(0, 217, 255, 0.05);
-    }
-    .status-badge {
-        font-size: 0.75rem;
-        padding: 3px 8px;
-    }
-    .action-btn {
-        padding: 2px 8px;
-        font-size: 0.8rem;
-    }
-    /* Issue #111: Sortable column headers */
-    th[onclick]:hover {
-        color: #00d9ff;
-    }
-    .sort-icon {
-        font-size: 0.7rem;
-        opacity: 0.5;
-    }
-    .sort-icon.active {
-        opacity: 1;
-        color: #00d9ff;
-    }
-    .hint-icon {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 14px;
-        height: 14px;
-        border-radius: 50%;
-        border: 1px solid rgba(0, 217, 255, 0.4);
-        color: rgba(0, 217, 255, 0.6);
-        font-size: 9px;
-        font-weight: bold;
-        font-style: normal;
-        cursor: help;
-        margin-left: 3px;
-        position: relative;
-        vertical-align: middle;
-        line-height: 1;
-    }
-    .hint-icon:hover {
-        border-color: #00d9ff;
-        color: #00d9ff;
-    }
-    .hint-icon .hint-text {
-        display: none;
-        position: absolute;
-        bottom: calc(100% + 8px);
-        left: 50%;
-        transform: translateX(-50%);
-        background: rgba(15, 52, 96, 0.95);
-        border: 1px solid rgba(0, 217, 255, 0.3);
-        color: #eee;
-        padding: 8px 12px;
-        border-radius: 6px;
-        font-size: 0.8rem;
-        font-weight: normal;
-        font-style: normal;
-        line-height: 1.4;
-        white-space: normal;
-        width: 260px;
-        z-index: 1000;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-        pointer-events: none;
-    }
-    .hint-icon .hint-text::after {
-        content: '';
-        position: absolute;
-        top: 100%;
-        left: 50%;
-        transform: translateX(-50%);
-        border: 6px solid transparent;
-        border-top-color: rgba(0, 217, 255, 0.3);
-    }
-    .hint-icon:hover .hint-text {
-        display: block;
-    }
-</style>
 
 <!-- Filter Chips -->
 <div class="mb-4">
@@ -306,8 +167,8 @@
 <!-- Orphan Edit Modal -->
 <div class="modal fade" id="orphanModal" tabindex="-1">
     <div class="modal-dialog">
-        <div class="modal-content" style="background: #16213e; color: #eee;">
-            <div class="modal-header" style="border-color: #0f3460;">
+        <div class="modal-content" style="background: var(--theme-bg-secondary); color: var(--theme-text-primary);">
+            <div class="modal-header" style="border-color: var(--theme-border-primary);">
                 <h5 class="modal-title"><i class="bi bi-folder-plus"></i> Organize Orphan Files</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
@@ -327,7 +188,7 @@
                 <input type="hidden" id="orphan-author-path">
                 <input type="hidden" id="orphan-files-json">
             </div>
-            <div class="modal-footer" style="border-color: #0f3460;">
+            <div class="modal-footer" style="border-color: var(--theme-border-primary);">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-success" onclick="saveOrphan()">
                     <i class="bi bi-folder-plus"></i> Create & Move
