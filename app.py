@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.139"
+APP_VERSION = "0.9.0-beta.140"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -121,6 +121,7 @@ from library_manager.folder_triage import triage_folder, triage_book_path, shoul
 from library_manager.file_validation import validate_audio_file, check_ffmpeg_available
 from library_manager.hints import get_all_hints
 from library_manager.hooks import hooks_bp, run_hooks, build_hook_context
+from library_manager.plugins import plugins_bp
 
 # Try to import P2P cache (optional - gracefully degrades if not available)
 try:
@@ -561,6 +562,7 @@ logging.getLogger('werkzeug').setLevel(logging.ERROR)
 app = Flask(__name__)
 app.secret_key = 'library-manager-secret-key-2024'
 app.register_blueprint(hooks_bp)
+app.register_blueprint(plugins_bp)
 
 # ============== INTERNATIONALIZATION (i18n) ==============
 # Flask-Babel for UI translations - book metadata (author/title) is NOT translated

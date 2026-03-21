@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.139-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.140-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,11 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.140** - **Feature: Custom Layer Builder** (Issue #186)
+> - **Plugins tab** - New settings tab with 4-step wizard to add custom HTTP API metadata sources
+> - **No-code API integration** - Configure URL templates, authentication, JSONPath response mapping, and confidence weights
+> - **Live testing** - Test API calls with sample book data before saving, with mapped field preview
 
 > **beta.134** - **Hotfix: Settings Page Crash** (Issue #173)
 > - Jinja2 template recursion bug in hooks_settings.html caused blank settings page for all users on beta.133
