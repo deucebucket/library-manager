@@ -574,14 +574,17 @@ class CustomApiLayer:
 
         try:
             # Update the book with new profile data
-            # Advance to next layer rather than marking resolved outright -
-            # the orchestrator decides final resolution
+            # Advance verification_layer past this layer so _fetch_batch
+            # (which queries WHERE verification_layer = self.order) won't
+            # pick up the same item again next cycle
+            next_layer = self.order + 1
             c.execute('''UPDATE books SET
                         profile = ?,
                         confidence = ?,
+                        verification_layer = ?,
                         max_layer_reached = MAX(COALESCE(max_layer_reached, 0), ?)
                         WHERE id = ?''',
-                     (profile_json, confidence, self.order, item['book_id']))
+                     (profile_json, confidence, next_layer, self.order, item['book_id']))
             conn.commit()
 
             logger.info(
