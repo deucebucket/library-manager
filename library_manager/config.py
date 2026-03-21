@@ -142,6 +142,9 @@ DEFAULT_CONFIG = {
     "post_processing_hooks": [],
     # Custom HTTP API layers - user-defined external API processing layers (Issue #185)
     "custom_layers": [],
+    # Drop-in Python plugins (Issue #188)
+    "plugin_dir": "/data/plugins",             # Directory to scan for drop-in plugins (Docker: /data/plugins)
+    "plugin_configs": {},                      # Per-plugin config overrides: {"plugin-id": {"key": "value"}}
     # Issue #110: File validation - check audio files before processing
     "enable_file_validation": True,            # Validate audio files with ffprobe before queueing
     "min_audio_duration_seconds": 600,         # Minimum duration (seconds) to consider a valid audiobook (default: 10 min)
