@@ -1,0 +1,16 @@
+{
+  "id": "example-logger",
+  "name": "Example Logger Plugin",
+  "version": "1.0.0",
+  "description": "A minimal example plugin that logs book data and returns empty results. Use as a template for building your own plugins.",
+  "type": "layer",
+  "entry_point": "layer.py",
+  "class_name": "ExampleLoggerPlugin",
+  "default_order": 35,
+  "requires_config": [],
+  "requires_secrets": [],
+  "permissions": {
+    "network": [],
+    "database": "read"
+  }
+}

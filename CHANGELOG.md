@@ -2,6 +2,35 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.142] - 2026-03-21
+
+### Added
+
+- **Issue #188: Drop-in Python plugin system** - New plugin loader that discovers and loads
+  Python plugins from a configurable directory (`/data/plugins` for Docker). Plugins extend
+  a simple `BasePlugin` class with `setup()`, `can_process()`, `process()`, and `teardown()`
+  methods. The loader handles manifest validation, dynamic module importing via `importlib`,
+  exception isolation (bad plugins never crash the app), timeout enforcement via
+  `ThreadPoolExecutor`, and deep-copying book data before passing to plugins. Each plugin is
+  wrapped in a `PluginAdapter` that implements the `LayerAdapter` interface, making plugins
+  fully compatible with the modular pipeline orchestrator. Plugins are registered in the
+  `LayerRegistry` and tracked by the existing health dashboard with auto-disable circuit
+  breaker support.
+
+- **Plugin manifest system** - Each plugin requires a `manifest.json` with metadata (id,
+  name, version, description), entry point configuration, ordering, and dependency
+  declarations (required config keys and secrets). Manifests are strictly validated on
+  discovery -- invalid plugins are logged as warnings and skipped.
+
+- **Plugin configuration** - New `plugin_dir` config key (default: `/data/plugins`) and
+  `plugin_configs` dict for per-plugin configuration overrides. Plugin-specific secrets are
+  read from `secrets.json`.
+
+- **Example plugin** - Template plugin at `test-env/example-plugin/` demonstrating the
+  `BasePlugin` interface with manifest.json and a simple logging implementation.
+
+---
+
 ## [0.9.0-beta.141] - 2026-03-21
 
 ### Added

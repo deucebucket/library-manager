@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.141"
+APP_VERSION = "0.9.0-beta.142"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -122,6 +122,7 @@ from library_manager.file_validation import validate_audio_file, check_ffmpeg_av
 from library_manager.hints import get_all_hints
 from library_manager.hooks import hooks_bp, run_hooks, build_hook_context
 from library_manager.plugins import plugins_bp
+from library_manager.plugin_loader import register_plugins, teardown_plugins
 
 # Try to import P2P cache (optional - gracefully degrades if not available)
 try:
@@ -12142,6 +12143,18 @@ if __name__ == '__main__':
     init_db()
     cleanup_garbage_entries()  # Remove @eaDir, #recycle, etc. from database (Issue #88)
     cleanup_duplicate_history_entries()  # Remove duplicate history entries (Issue #79)
+
+    # Issue #188: Load drop-in Python plugins
+    try:
+        from library_manager.pipeline.registry import default_registry
+        _startup_config = load_config()
+        _loaded_plugins = register_plugins(default_registry, _startup_config, get_db)
+        if _loaded_plugins:
+            logger.info(f"[PLUGIN] {len(_loaded_plugins)} plugin(s) loaded and registered")
+    except Exception as e:
+        logger.error(f"[PLUGIN] Failed to load plugins: {e}")
+        _loaded_plugins = []
+
     start_worker()
     port = int(os.environ.get('PORT', 5757))
     app.run(host='0.0.0.0', port=port, debug=False)
