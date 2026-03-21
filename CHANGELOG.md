@@ -2,6 +2,16 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.138] - 2026-03-21
+
+### Fixed
+
+- **Issue #185: Custom layer infinite reprocessing** - `CustomApiLayer._apply_result` now
+  advances `verification_layer` to `self.order + 1` after updating the book profile. Previously
+  the layer never advanced the item, causing `_fetch_batch` to pick up the same books every cycle.
+
+---
+
 ## [0.9.0-beta.137] - 2026-03-10
 
 ### Added
