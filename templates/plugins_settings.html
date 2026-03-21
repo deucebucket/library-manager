@@ -79,6 +79,36 @@
     </div>
 </div>
 
+<!-- Plugin Health Dashboard (Issue #189) -->
+<div class="row mt-3">
+    <div class="col-12">
+        <div class="card mb-3">
+            <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                <span>
+                    <i class="bi bi-heart-pulse"></i> Plugin Health
+                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">Monitor the health and performance of your custom API sources. Plugins are auto-disabled after 5 consecutive failures.</span></span>
+                </span>
+                <button type="button" class="btn btn-sm btn-outline-secondary py-0" onclick="loadPluginHealth()">
+                    <i class="bi bi-arrow-clockwise"></i> Refresh
+                </button>
+            </div>
+            <div class="card-body p-0">
+                <div id="plugin-health-cards">
+                    <!-- Populated by JS -->
+                </div>
+                <div id="plugin-health-empty" class="text-center text-muted py-4" style="display: none;">
+                    <i class="bi bi-heart-pulse" style="font-size: 1.5rem;"></i>
+                    <p class="mt-2 mb-0">No metrics yet</p>
+                    <small>Health data appears after custom layers process books</small>
+                </div>
+                <div id="plugin-health-loading" class="text-center text-muted py-3" style="display: none;">
+                    <i class="bi bi-hourglass-split"></i> Loading health data...
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Plugin Wizard Modal (4-step) -->
 <div class="modal fade" id="pluginWizardModal" tabindex="-1" data-bs-backdrop="static">
     <div class="modal-dialog modal-lg">

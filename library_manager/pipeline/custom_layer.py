@@ -337,6 +337,8 @@ class CustomApiLayer:
         Matches the LayerAdapter interface: accepts config and deps,
         returns (processed_count, resolved_count).
 
+        Records metrics after each batch for the plugin health dashboard.
+
         Args:
             config: App configuration dict
             deps: Optional dependencies dict (unused, for interface compatibility)
@@ -369,6 +371,8 @@ class CustomApiLayer:
 
         processed = 0
         resolved = 0
+        error_message = None
+        start_time = time.monotonic()
 
         for item in batch:
             try:
@@ -381,8 +385,31 @@ class CustomApiLayer:
                 logger.error(f"{self.log_prefix} Exception processing item {item.get('book_id')}: {e}",
                              exc_info=True)
                 processed += 1
+                if not error_message:
+                    error_message = str(e)[:500]
+
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        success = error_message is None and processed > 0
 
         logger.info(f"{self.log_prefix} Processed {processed}, resolved {resolved}")
+
+        # Record metrics for health dashboard (Issue #189)
+        try:
+            from library_manager.plugins import record_plugin_metric
+            was_disabled = record_plugin_metric(
+                self.get_db, self.layer_id,
+                success=success,
+                duration_ms=duration_ms,
+                error_message=error_message,
+                items_processed=processed,
+                items_resolved=resolved
+            )
+            if was_disabled:
+                self.enabled = False
+                logger.warning(f"{self.log_prefix} Auto-disabled due to consecutive failures")
+        except Exception as e:
+            logger.debug(f"{self.log_prefix} Failed to record metric: {e}")
+
         return processed, resolved
 
     def _fetch_batch(self, config: Dict) -> List[Dict]:

@@ -1,11 +1,12 @@
-"""Custom Layer Builder API routes (Issue #186).
+"""Custom Layer Builder API routes (Issue #186) + Plugin Health Dashboard (Issue #189).
 
-Flask Blueprint providing CRUD and test endpoints for custom HTTP API layers.
-These layers let users add their own book metadata sources without writing code.
+Flask Blueprint providing CRUD, test, and health monitoring endpoints for custom HTTP
+API layers. These layers let users add their own book metadata sources without writing code.
 """
 import json
 import logging
 import re
+import sqlite3
 import time
 
 import requests as http_requests
@@ -24,6 +25,9 @@ plugins_bp = Blueprint('plugins', __name__)
 SECRETS_KEYS = ['openrouter_api_key', 'gemini_api_key', 'google_books_api_key',
                 'abs_api_token', 'bookdb_api_key', 'webhook_secret']
 
+# Auto-disable threshold: consecutive failures before a plugin is auto-disabled
+AUTO_DISABLE_THRESHOLD = 5
+
 
 def _slugify(name):
     """Convert a layer name to a safe layer_id slug."""
@@ -39,6 +43,116 @@ def _save_config_safe(config):
     with open(CONFIG_PATH, 'w') as f:
         json.dump(config_only, f, indent=2)
 
+
+# ============== PLUGIN METRICS DATABASE ==============
+
+def init_plugin_metrics_table(db_path):
+    """Create plugin_metrics table. Called from database.py init_db()."""
+    conn = sqlite3.connect(db_path, timeout=30)
+    c = conn.cursor()
+
+    c.execute('''CREATE TABLE IF NOT EXISTS plugin_metrics (
+        id INTEGER PRIMARY KEY,
+        plugin_id TEXT NOT NULL,
+        timestamp REAL NOT NULL,
+        success INTEGER DEFAULT 0,
+        duration_ms INTEGER,
+        error_message TEXT,
+        items_processed INTEGER DEFAULT 0,
+        items_resolved INTEGER DEFAULT 0
+    )''')
+
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_plugin_metrics_plugin
+                 ON plugin_metrics(plugin_id, timestamp)''')
+
+    conn.commit()
+    conn.close()
+
+
+def record_plugin_metric(get_db, plugin_id, success, duration_ms,
+                         error_message=None, items_processed=0, items_resolved=0):
+    """Record a single plugin execution metric.
+
+    Fast INSERT only - no aggregation on write path.
+    Also checks for consecutive failures and triggers auto-disable if needed.
+
+    Args:
+        get_db: Callable that returns a database connection
+        plugin_id: The custom layer's layer_id
+        success: Whether the run succeeded (bool)
+        duration_ms: Execution time in milliseconds
+        error_message: Error text if failed (truncated to 1000 chars)
+        items_processed: Number of items processed this run
+        items_resolved: Number of items resolved this run
+
+    Returns:
+        True if the plugin was auto-disabled due to consecutive failures
+    """
+    auto_disabled = False
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('''INSERT INTO plugin_metrics
+                     (plugin_id, timestamp, success, duration_ms, error_message,
+                      items_processed, items_resolved)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                  (plugin_id, time.time(), 1 if success else 0, duration_ms,
+                   (error_message or '')[:1000] if error_message else None,
+                   items_processed, items_resolved))
+        conn.commit()
+
+        # Check for consecutive failures if this run failed
+        if not success:
+            c.execute('''SELECT success FROM plugin_metrics
+                         WHERE plugin_id = ?
+                         ORDER BY timestamp DESC
+                         LIMIT ?''', (plugin_id, AUTO_DISABLE_THRESHOLD))
+            recent = c.fetchall()
+            if (len(recent) >= AUTO_DISABLE_THRESHOLD and
+                    all(row[0] == 0 for row in recent)):
+                # Auto-disable the plugin
+                auto_disabled = _auto_disable_plugin(plugin_id)
+
+        conn.close()
+    except Exception as e:
+        logger.error(f"[PLUGINS] Failed to record metric for {plugin_id}: {e}")
+
+    return auto_disabled
+
+
+def _auto_disable_plugin(plugin_id):
+    """Auto-disable a plugin after consecutive failures.
+
+    Sets auto_disabled: true in the layer config and saves to config.json.
+
+    Returns:
+        True if the plugin was disabled, False if not found or already disabled
+    """
+    try:
+        config = load_config()
+        custom_layers = config.get('custom_layers', [])
+
+        for layer in custom_layers:
+            if layer.get('layer_id') == plugin_id:
+                if layer.get('auto_disabled'):
+                    return False  # Already disabled
+                layer['auto_disabled'] = True
+                layer['enabled'] = False
+                config['custom_layers'] = custom_layers
+                _save_config_safe(config)
+                logger.warning(
+                    f"[PLUGINS] Auto-disabled plugin '{plugin_id}' after "
+                    f"{AUTO_DISABLE_THRESHOLD} consecutive failures"
+                )
+                return True
+
+        return False
+    except Exception as e:
+        logger.error(f"[PLUGINS] Failed to auto-disable {plugin_id}: {e}")
+        return False
+
+
+# ============== CRUD ROUTES ==============
 
 @plugins_bp.route('/api/plugins/layers')
 def api_plugins_list():
@@ -268,3 +382,185 @@ def api_plugins_test():
         result['error'] = f'Error: {str(e)[:200]}'
 
     return jsonify(result)
+
+
+# ============== HEALTH DASHBOARD API (Issue #189) ==============
+
+@plugins_bp.route('/api/plugins/health')
+def api_plugins_health():
+    """Return aggregated health stats for all custom plugins.
+
+    For each plugin returns:
+    - success_rate (from last 50 runs)
+    - avg_duration_ms
+    - last_run timestamp
+    - total_processed, total_resolved
+    - status: active / errored / auto-disabled
+    - recent_errors (last 5 error messages)
+    """
+    from library_manager.database import get_db
+
+    config = load_config()
+    custom_layers = config.get('custom_layers', [])
+
+    if not custom_layers:
+        return jsonify({'success': True, 'plugins': []})
+
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        plugins_health = []
+
+        for layer in custom_layers:
+            plugin_id = layer.get('layer_id', '')
+            if not plugin_id:
+                continue
+
+            # Get last 50 runs for success rate
+            c.execute('''SELECT success, duration_ms, timestamp, error_message,
+                                items_processed, items_resolved
+                         FROM plugin_metrics
+                         WHERE plugin_id = ?
+                         ORDER BY timestamp DESC
+                         LIMIT 50''', (plugin_id,))
+            recent_rows = c.fetchall()
+
+            if not recent_rows:
+                plugins_health.append({
+                    'plugin_id': plugin_id,
+                    'plugin_name': layer.get('layer_name', plugin_id),
+                    'enabled': layer.get('enabled', True),
+                    'auto_disabled': layer.get('auto_disabled', False),
+                    'status': 'no_data',
+                    'success_rate': None,
+                    'avg_duration_ms': None,
+                    'last_run': None,
+                    'total_processed': 0,
+                    'total_resolved': 0,
+                    'recent_errors': [],
+                })
+                continue
+
+            total_runs = len(recent_rows)
+            successes = sum(1 for r in recent_rows if r[0])
+            success_rate = round(successes / total_runs * 100, 1) if total_runs else 0
+
+            durations = [r[1] for r in recent_rows if r[1] is not None]
+            avg_duration = int(sum(durations) / len(durations)) if durations else 0
+
+            last_run = recent_rows[0][2] if recent_rows else None
+
+            total_processed = sum(r[4] or 0 for r in recent_rows)
+            total_resolved = sum(r[5] or 0 for r in recent_rows)
+
+            # Recent errors (last 5 non-null)
+            recent_errors = []
+            for r in recent_rows:
+                if r[3] and len(recent_errors) < 5:
+                    recent_errors.append({
+                        'message': r[3],
+                        'timestamp': r[2],
+                    })
+
+            # Determine status
+            auto_disabled = layer.get('auto_disabled', False)
+            enabled = layer.get('enabled', True)
+            if auto_disabled:
+                status = 'auto-disabled'
+            elif not enabled:
+                status = 'disabled'
+            elif success_rate < 50:
+                status = 'errored'
+            else:
+                status = 'active'
+
+            plugins_health.append({
+                'plugin_id': plugin_id,
+                'plugin_name': layer.get('layer_name', plugin_id),
+                'enabled': enabled,
+                'auto_disabled': auto_disabled,
+                'status': status,
+                'success_rate': success_rate,
+                'avg_duration_ms': avg_duration,
+                'last_run': last_run,
+                'total_processed': total_processed,
+                'total_resolved': total_resolved,
+                'recent_errors': recent_errors,
+            })
+
+        conn.close()
+        return jsonify({'success': True, 'plugins': plugins_health})
+
+    except Exception as e:
+        logger.error(f"[PLUGINS] Health check error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@plugins_bp.route('/api/plugins/health/<plugin_id>/logs')
+def api_plugins_health_logs(plugin_id):
+    """Return last 20 metric entries for a specific plugin."""
+    from library_manager.database import get_db
+
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('''SELECT id, plugin_id, timestamp, success, duration_ms,
+                            error_message, items_processed, items_resolved
+                     FROM plugin_metrics
+                     WHERE plugin_id = ?
+                     ORDER BY timestamp DESC
+                     LIMIT 20''', (plugin_id,))
+        rows = c.fetchall()
+        conn.close()
+
+        entries = []
+        for r in rows:
+            entries.append({
+                'id': r[0],
+                'plugin_id': r[1],
+                'timestamp': r[2],
+                'success': bool(r[3]),
+                'duration_ms': r[4],
+                'error_message': r[5],
+                'items_processed': r[6],
+                'items_resolved': r[7],
+            })
+
+        return jsonify({'success': True, 'entries': entries})
+
+    except Exception as e:
+        logger.error(f"[PLUGINS] Health logs error for {plugin_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@plugins_bp.route('/api/plugins/health/<plugin_id>/reset', methods=['POST'])
+def api_plugins_health_reset(plugin_id):
+    """Reset failure count and re-enable an auto-disabled plugin.
+
+    Clears the auto_disabled flag in config and removes recent failure
+    metrics so the consecutive failure counter starts fresh.
+    """
+    try:
+        config = load_config()
+        custom_layers = config.get('custom_layers', [])
+
+        found = False
+        for layer in custom_layers:
+            if layer.get('layer_id') == plugin_id:
+                layer['auto_disabled'] = False
+                layer['enabled'] = True
+                found = True
+                break
+
+        if not found:
+            return jsonify({'success': False, 'error': f'Plugin "{plugin_id}" not found'}), 404
+
+        config['custom_layers'] = custom_layers
+        _save_config_safe(config)
+
+        logger.info(f"[PLUGINS] Reset and re-enabled plugin '{plugin_id}'")
+        return jsonify({'success': True, 'enabled': True})
+
+    except Exception as e:
+        logger.error(f"[PLUGINS] Reset error for {plugin_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
