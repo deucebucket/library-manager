@@ -76,6 +76,137 @@
                 </table>
             </div>
         </div>
+
+        <!-- Python Drop-in Plugins -->
+        <div class="card mb-3">
+            <div class="card-header py-2">
+                <i class="bi bi-code-slash"></i> Python Drop-in Plugins
+                <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.python_plugins }}</span></span>
+            </div>
+            <div class="card-body py-2" style="font-size: 0.8rem;">
+                <p class="mb-2">For developers who need more than HTTP lookups. Write Python plugins that can do anything: parse files, call complex APIs, run local models, etc.</p>
+
+                <p class="mb-1"><strong>Quick Start:</strong></p>
+                <ol class="mb-2 ps-3" style="font-size: 0.75rem;">
+                    <li>Create a folder in <code>/data/plugins/my-plugin/</code></li>
+                    <li>Add a <code>manifest.json</code> with plugin metadata</li>
+                    <li>Add a <code>.py</code> file extending <code>BasePlugin</code></li>
+                    <li>Restart Library Manager &mdash; plugin loads automatically</li>
+                </ol>
+
+                <p class="mb-1"><strong>manifest.json:</strong></p>
+                <pre class="bg-dark border border-secondary p-2 rounded mb-2" style="font-size: 0.7rem; white-space: pre-wrap;">{
+  "id": "my-plugin",
+  "name": "My Plugin",
+  "version": "1.0.0",
+  "description": "What it does",
+  "type": "layer",
+  "entry_point": "layer.py",
+  "class_name": "MyPlugin",
+  "default_order": 35,
+  "requires_config": [],
+  "requires_secrets": ["my_api_key"],
+  "permissions": {
+    "network": ["api.example.com"],
+    "database": "read"
+  }
+}</pre>
+
+                <p class="mb-1"><strong>Plugin Interface:</strong></p>
+                <pre class="bg-dark border border-secondary p-2 rounded mb-2" style="font-size: 0.7rem; white-space: pre-wrap;">from library_manager.plugin_loader import BasePlugin
+
+class MyPlugin(BasePlugin):
+    def setup(self, config, secrets):
+        self.api_key = secrets.get('my_api_key')
+
+    def can_process(self, book_data):
+        return True  # filter which books to process
+
+    def process(self, book_data):
+        title = book_data.get('current_title')
+        # ... your logic here ...
+        return {
+            'title': 'Corrected Title',
+            'author': 'Author Name',
+            # narrator, series, series_num, year
+        }
+
+    def teardown(self):
+        pass  # cleanup on shutdown</pre>
+
+                <p class="mb-0 text-muted" style="font-size: 0.7rem;">
+                    <i class="bi bi-info-circle"></i>
+                    Plugins run with a 30s timeout per book. Auto-disabled after 5 consecutive failures.
+                    An example plugin ships in <code>examples/plugins/example-logger/</code>.
+                </p>
+            </div>
+        </div>
+
+        <!-- Secrets Management -->
+        <div class="card mb-3">
+            <div class="card-header py-2">
+                <i class="bi bi-key"></i> Managing API Secrets
+                <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.plugin_secrets }}</span></span>
+            </div>
+            <div class="card-body py-2" style="font-size: 0.8rem;">
+                <p class="mb-2">API keys and passwords go in <code>secrets.json</code>, not config.json. Reference them by name in the wizard or your plugin code.</p>
+
+                <p class="mb-1"><strong>secrets.json example:</strong></p>
+                <pre class="bg-dark border border-secondary p-2 rounded mb-2" style="font-size: 0.7rem; white-space: pre-wrap;">{
+  "gemini_api_key": "AIza...",
+  "my_bookdb_key": "Bearer abc123",
+  "my_api_password": "secret456"
+}</pre>
+                <p class="mb-0 text-muted" style="font-size: 0.7rem;">
+                    <i class="bi bi-shield-check"></i>
+                    <strong>Docker:</strong> <code>/config/secrets.json</code><br>
+                    <i class="bi bi-shield-check"></i>
+                    <strong>Bare metal:</strong> <code>secrets.json</code> in app directory<br>
+                    This file is gitignored and never included in backups or logs.
+                </p>
+            </div>
+        </div>
+
+        <!-- Real-World Examples -->
+        <div class="card mb-3">
+            <div class="card-header py-2">
+                <i class="bi bi-journal-code"></i> Example API Configurations
+            </div>
+            <div class="card-body py-2" style="font-size: 0.8rem;">
+                <p class="mb-2 text-muted">Ready-to-use configs for popular book APIs. Click "Add Custom API Source" and paste these values.</p>
+
+                <div class="mb-3">
+                    <p class="mb-1"><strong><i class="bi bi-google"></i> Google Books</strong></p>
+                    <table class="table table-sm table-dark mb-1" style="font-size: 0.7rem;">
+                        <tbody>
+                            <tr><td style="width:90px;">URL</td><td><code style="word-break:break-all;">https://www.googleapis.com/books/v1/volumes?q=intitle:{{"{{"}}title{{"}}"}}}+inauthor:{{"{{"}}author{{"}}"}}&amp;maxResults=1</code></td></tr>
+                            <tr><td>Method</td><td>GET</td></tr>
+                            <tr><td>Auth</td><td>None (or API Key Header: <code>key</code>)</td></tr>
+                            <tr><td>Title</td><td><code>$.items[0].volumeInfo.title</code></td></tr>
+                            <tr><td>Author</td><td><code>$.items[0].volumeInfo.authors[0]</code></td></tr>
+                            <tr><td>Year</td><td><code>$.items[0].volumeInfo.publishedDate</code></td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="mb-0">
+                    <p class="mb-1"><strong><i class="bi bi-book"></i> Open Library</strong></p>
+                    <table class="table table-sm table-dark mb-1" style="font-size: 0.7rem;">
+                        <tbody>
+                            <tr><td style="width:90px;">URL</td><td><code style="word-break:break-all;">https://openlibrary.org/search.json?title={{"{{"}}title{{"}}"}}&amp;author={{"{{"}}author{{"}}"}}&amp;limit=1</code></td></tr>
+                            <tr><td>Method</td><td>GET</td></tr>
+                            <tr><td>Auth</td><td>None</td></tr>
+                            <tr><td>Title</td><td><code>$.docs[0].title</code></td></tr>
+                            <tr><td>Author</td><td><code>$.docs[0].author_name[0]</code></td></tr>
+                            <tr><td>Year</td><td><code>$.docs[0].first_publish_year</code></td></tr>
+                        </tbody>
+                    </table>
+                    <p class="mb-0 text-muted" style="font-size: 0.7rem;">
+                        <i class="bi bi-info-circle"></i> Open Library is free with no API key required.
+                    </p>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 
