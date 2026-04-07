@@ -2,6 +2,19 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.144] - 2026-04-07
+
+### Fixed
+
+- **Issue #201: SAFETY BLOCK error for files in library root** - Fixed path normalization
+  mismatch where Windows mapped drives (e.g. `R:\`) resolve to UNC paths but config paths
+  were compared without `.resolve()`, causing library matching to fail. Fixed fallback logic
+  that assumed 2-level directory structure (`parent.parent`), which went above the library
+  root for loose files. Applied fix across all 4 path-matching locations in `app.py`,
+  `layer_ai_queue.py`, and `layer_audio_credits.py`.
+
+---
+
 ## [0.9.0-beta.143] - 2026-03-21
 
 ### Changed
