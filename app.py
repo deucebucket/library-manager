@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.143"
+APP_VERSION = "0.9.0-beta.144"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -11725,17 +11725,22 @@ def api_manual_match():
 
         # If not from watch folder, find which library it belongs to
         if lib_path is None:
+            old_path_resolved = Path(old_path).resolve()
             for lp in config.get('library_paths', []):
-                lp_path = Path(lp)
+                lp_path = Path(lp).resolve()
                 try:
-                    Path(old_path).relative_to(lp_path)
+                    old_path_resolved.relative_to(lp_path)
                     lib_path = lp_path
                     break
                 except ValueError:
                     continue
 
         if lib_path is None:
-            lib_path = Path(old_path).parent.parent
+            old_p = Path(old_path)
+            if old_p.is_file():
+                lib_path = old_p.parent
+            else:
+                lib_path = old_p.parent.parent
 
         # Detect language from title for multi-language naming
         lang_code = detect_title_language(new_title) if new_title else None
@@ -11894,17 +11899,22 @@ def api_edit_book():
                 return jsonify({'success': False, 'error': 'No output folder configured for watch folder items'})
         else:
             # Normal library item - find which library it belongs to
+            old_path_resolved = Path(old_path).resolve()
             for lp in config.get('library_paths', []):
-                lp_path = Path(lp)
+                lp_path = Path(lp).resolve()
                 try:
-                    Path(old_path).relative_to(lp_path)
+                    old_path_resolved.relative_to(lp_path)
                     lib_path = lp_path
                     break
                 except ValueError:
                     continue
 
             if lib_path is None:
-                lib_path = Path(old_path).parent.parent
+                old_p = Path(old_path)
+                if old_p.is_file():
+                    lib_path = old_p.parent
+                else:
+                    lib_path = old_p.parent.parent
 
         # Detect language from title for multi-language naming
         lang_code = detect_title_language(new_title) if new_title else None

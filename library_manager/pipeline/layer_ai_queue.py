@@ -450,10 +450,11 @@ def process_queue(
             # (Don't assume 2-level structure - series_grouping uses 3 levels)
             lib_path = None
             is_from_watch_folder = False
+            old_path_resolved = old_path.resolve()
             for lp in config.get('library_paths', []):
-                lp_path = Path(lp)
+                lp_path = Path(lp).resolve()
                 try:
-                    old_path.relative_to(lp_path)
+                    old_path_resolved.relative_to(lp_path)
                     lib_path = lp_path
                     break
                 except ValueError:
@@ -479,7 +480,12 @@ def process_queue(
 
             # Fallback if not found in configured libraries
             if lib_path is None:
-                lib_path = old_path.parent.parent
+                # For loose files in library root, parent is the library itself
+                # Only go up 2 levels for normal Author/Title structure
+                if old_path.is_file():
+                    lib_path = old_path.parent
+                else:
+                    lib_path = old_path.parent.parent
                 logger.warning(f"Book path {old_path} not under any configured library, guessing lib_path={lib_path}")
 
             # Detect language for multi-language naming
