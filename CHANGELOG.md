@@ -2,6 +2,20 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.145] - 2026-04-07
+
+### Added
+
+- **Issue #203: Plugin system documentation and discoverability** - Added Python drop-in
+  plugin guide with manifest.json and BasePlugin interface examples directly in the Plugins
+  settings tab. Added secrets management card explaining secrets.json usage for Docker and
+  bare metal. Added ready-to-use API configurations for Google Books and Open Library.
+  Shipped example-logger plugin to `examples/plugins/` with comprehensive README covering
+  plugin creation, manifest fields, BasePlugin interface, configuration, and behavior.
+  Added new hint entries for plugin-related tooltips.
+
+---
+
 ## [0.9.0-beta.144] - 2026-04-07
 
 ### Fixed
