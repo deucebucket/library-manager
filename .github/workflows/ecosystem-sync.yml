@@ -1,0 +1,94 @@
+name: Ecosystem Cross-Repo Sync
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  create-partner-issue:
+    if: github.event.label.name == 'ecosystem'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract cross-repo references
+        id: extract
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body || '';
+            const title = context.payload.issue.title || '';
+            const issueNumber = context.payload.issue.number;
+            const thisRepo = `${context.repo.owner}/${context.repo.repo}`;
+
+            // Find references to other deucebucket repos: deucebucket/repo-name#123
+            const refPattern = /deucebucket\/([a-zA-Z0-9_-]+)#(\d+)/g;
+            const refs = [];
+            let match;
+            while ((match = refPattern.exec(body)) !== null) {
+              const targetRepo = `deucebucket/${match[1]}`;
+              if (targetRepo !== thisRepo) {
+                refs.push({ repo: match[1], number: parseInt(match[2]) });
+              }
+            }
+
+            // Find partner repos mentioned but without existing issues
+            const repoPattern = /deucebucket\/([a-zA-Z0-9_-]+)/g;
+            const partnerRepos = new Set();
+            while ((match = repoPattern.exec(body)) !== null) {
+              const repo = match[1];
+              if (`deucebucket/${repo}` !== thisRepo) {
+                partnerRepos.add(repo);
+              }
+            }
+
+            core.setOutput('has_refs', refs.length > 0 ? 'true' : 'false');
+            core.setOutput('partner_repos', JSON.stringify([...partnerRepos]));
+            core.setOutput('this_repo', context.repo.repo);
+            core.setOutput('issue_number', issueNumber);
+            core.setOutput('issue_title', title);
+
+      - name: Comment with ecosystem links
+        if: steps.extract.outputs.has_refs == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.ECOSYSTEM_PAT }}
+          script: |
+            const partnerRepos = JSON.parse('${{ steps.extract.outputs.partner_repos }}');
+            const thisRepo = '${{ steps.extract.outputs.this_repo }}';
+            const issueNumber = ${{ steps.extract.outputs.issue_number }};
+            const issueTitle = '${{ steps.extract.outputs.issue_title }}';
+
+            for (const repo of partnerRepos) {
+              // Check if a tracking comment already exists in the partner repo's referenced issue
+              const body = context.payload.issue.body || '';
+              const refMatch = body.match(new RegExp(`deucebucket/${repo}#(\\d+)`));
+
+              if (refMatch) {
+                const partnerIssueNumber = parseInt(refMatch[1]);
+                try {
+                  // Add a cross-reference comment on the partner issue
+                  const comments = await github.rest.issues.listComments({
+                    owner: 'deucebucket',
+                    repo: repo,
+                    issue_number: partnerIssueNumber
+                  });
+
+                  const alreadyLinked = comments.data.some(c =>
+                    c.body.includes(`deucebucket/${thisRepo}#${issueNumber}`)
+                  );
+
+                  if (!alreadyLinked) {
+                    await github.rest.issues.createComment({
+                      owner: 'deucebucket',
+                      repo: repo,
+                      issue_number: partnerIssueNumber,
+                      body: `### Ecosystem Link\n\nThis issue is linked to deucebucket/${thisRepo}#${issueNumber} — **${issueTitle}**\n\nBoth issues are tracked on [The Mead Hall](https://github.com/users/deucebucket/projects/1) project board.`
+                    });
+                    console.log(`Linked ${repo}#${partnerIssueNumber} <-> ${thisRepo}#${issueNumber}`);
+                  } else {
+                    console.log(`Already linked: ${repo}#${partnerIssueNumber}`);
+                  }
+                } catch (err) {
+                  console.log(`Could not comment on ${repo}#${partnerIssueNumber}: ${err.message}`);
+                }
+              }
+            }
