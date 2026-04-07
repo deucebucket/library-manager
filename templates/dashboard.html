@@ -66,6 +66,27 @@
 </div>
 {% endif %}
 
+{% if triage_counts is defined and (triage_counts.get('messy', 0) > 0 or triage_counts.get('garbage', 0) > 0) %}
+<div class="row mb-3">
+    <div class="col-12">
+        <div class="alert alert-info py-2 mb-0 d-flex align-items-center" role="alert">
+            <i class="bi bi-funnel me-2"></i>
+            <small>
+                {{ _('Folder triage:') }}
+                {% if triage_counts.get('messy', 0) > 0 %}
+                    <strong>{{ triage_counts['messy'] }}</strong> {{ _('messy') }}
+                {% endif %}
+                {% if triage_counts.get('garbage', 0) > 0 %}
+                    {% if triage_counts.get('messy', 0) > 0 %}, {% endif %}
+                    <strong>{{ triage_counts['garbage'] }}</strong> {{ _('garbage') }}
+                {% endif %}
+                {{ _('folder(s) detected. Path hints skipped for these &mdash; relying on audio/metadata only.') }}
+            </small>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <!-- Toast container for action feedback -->
 <div class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 1080;">
     <div id="action-toast" class="toast align-items-center border-0" role="alert" aria-live="assertive" aria-atomic="true">

@@ -511,6 +511,14 @@ function getStatusBadge(item) {
     if (item.user_locked) {
         badge = '<span class="badge bg-info status-badge" title="User-locked - protected from automatic changes"><i class="bi bi-lock-fill"></i></span> ' + badge;
     }
+
+    // Add folder triage badge for messy/garbage folders
+    if (item.folder_triage === 'messy') {
+        badge += ' <span class="badge bg-warning text-dark status-badge" title="Messy folder name (scene tags, torrent markers). Path hints skipped - using audio/metadata only."><i class="bi bi-exclamation-triangle"></i> Messy</span>';
+    } else if (item.folder_triage === 'garbage') {
+        badge += ' <span class="badge bg-danger status-badge" title="Garbage folder name (hash, numbers, placeholder). Path hints skipped - using audio/metadata only."><i class="bi bi-trash"></i> Garbage</span>';
+    }
+
     return badge;
 }
 
