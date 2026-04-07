@@ -179,7 +179,7 @@ class MyPlugin(BasePlugin):
                     <p class="mb-1"><strong><i class="bi bi-google"></i> Google Books</strong></p>
                     <table class="table table-sm table-dark mb-1" style="font-size: 0.7rem;">
                         <tbody>
-                            <tr><td style="width:90px;">URL</td><td><code style="word-break:break-all;">https://www.googleapis.com/books/v1/volumes?q=intitle:{{"{{"}}title{{"}}"}}}+inauthor:{{"{{"}}author{{"}}"}}&amp;maxResults=1</code></td></tr>
+                            <tr><td style="width:90px;">URL</td><td><code style="word-break:break-all;">https://www.googleapis.com/books/v1/volumes?q=intitle:{{"{{"}}title{{"}}"}}+inauthor:{{"{{"}}author{{"}}"}}&amp;maxResults=1</code></td></tr>
                             <tr><td>Method</td><td>GET</td></tr>
                             <tr><td>Auth</td><td>None (or API Key Header: <code>key</code>)</td></tr>
                             <tr><td>Title</td><td><code>$.items[0].volumeInfo.title</code></td></tr>
