@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.145"
+APP_VERSION = "0.9.0-beta.146"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -4924,6 +4924,7 @@ def deep_scan_library(config):
     validation_counts = {'valid': 0, 'invalid': 0, 'skipped': 0}  # Issue #110: File validation stats
     issues_found = {}  # path -> list of issues
     triage_counts = {'clean': 0, 'messy': 0, 'garbage': 0}  # Issue #110: Folder triage stats
+    triage_enabled = config.get('enable_folder_triage', True)  # Issue #110: Folder triage toggle
 
     # Issue #110: Check ffmpeg availability once at scan start
     ffmpeg_available, ffmpeg_msg = check_ffmpeg_available()
@@ -5111,7 +5112,7 @@ def deep_scan_library(config):
                 # Issue #132: Resolve path to prevent duplicates
                 flat_path = str(author_dir.resolve())
                 # Issue #110: Triage folder name quality
-                flat_triage = triage_folder(author)
+                flat_triage = triage_folder(author) if triage_enabled else 'clean'
 
                 checked += 1
 
@@ -5293,7 +5294,7 @@ def deep_scan_library(config):
 
                             checked += 1
                             # Issue #110: Triage folder name quality
-                            series_book_triage = triage_folder(book_title)
+                            series_book_triage = triage_folder(book_title) if triage_enabled else 'clean'
 
                             # Check if already tracked
                             c.execute('''SELECT id, status, profile, user_locked, attempt_count,
@@ -5370,7 +5371,7 @@ def deep_scan_library(config):
                 checked += 1
 
                 # Issue #110: Triage folder name quality
-                folder_triage_result = triage_folder(title)
+                folder_triage_result = triage_folder(title) if triage_enabled else 'clean'
                 triage_counts[folder_triage_result] = triage_counts.get(folder_triage_result, 0) + 1
                 if folder_triage_result != 'clean':
                     logger.info(f"Folder triage: {folder_triage_result} - {title[:60]}")
@@ -7032,6 +7033,11 @@ def dashboard():
     c.execute("SELECT COUNT(*) as count FROM books WHERE validation_status = 'invalid'")
     validation_failed_count = c.fetchone()['count']
 
+    # Issue #110: Count folder triage categories
+    c.execute("SELECT folder_triage, COUNT(*) as count FROM books WHERE folder_triage != 'clean' GROUP BY folder_triage")
+    triage_rows = c.fetchall()
+    triage_counts = {row['folder_triage']: row['count'] for row in triage_rows}
+
     # Get recent history (use LEFT JOIN in case book was deleted)
     c.execute('''SELECT h.*, b.path FROM history h
                  LEFT JOIN books b ON h.book_id = b.id
@@ -7054,6 +7060,7 @@ def dashboard():
                           verified_count=verified_count,
                           pending_fixes=pending_fixes,
                           validation_failed_count=validation_failed_count,
+                          triage_counts=triage_counts,
                           recent_history=recent_history,
                           daily_stats=daily_stats,
                           config=config,
@@ -7314,6 +7321,7 @@ def settings_page():
         config['enable_file_validation'] = 'enable_file_validation' in request.form
         config['min_audio_duration_seconds'] = int(request.form.get('min_audio_duration_seconds', 600))
         config['min_audio_file_size_mb'] = int(request.form.get('min_audio_file_size_mb', 1))
+        config['enable_folder_triage'] = 'enable_folder_triage' in request.form
 
         # Provider chain settings - parse comma-separated values into lists
         audio_chain_str = request.form.get('audio_provider_chain', 'bookdb,gemini').strip()
@@ -9817,7 +9825,7 @@ def api_library():
     else:  # 'all' - show everything from books table
         order = build_order_by(BOOK_SORT_COLS, 'current_author ASC, current_title ASC')
         c.execute('''SELECT b.id, b.path, b.current_author, b.current_title, b.status,
-                            b.user_locked, b.confidence, b.media_type,
+                            b.user_locked, b.confidence, b.media_type, b.folder_triage,
                             h.old_author, h.old_title, h.new_author, h.new_title,
                             h.old_path, h.new_path, h.status as history_status,
                             h.fixed_at, h.error_message
@@ -9856,7 +9864,8 @@ def api_library():
                 'status': history_status or book_status,
                 'confidence': row['confidence'] or 0,
                 'user_locked': row['user_locked'] == 1,
-                'media_type': row['media_type'] or 'audiobook'
+                'media_type': row['media_type'] or 'audiobook',
+                'folder_triage': row['folder_triage'] or 'clean'
             }
             # Overlay history data when present
             if history_status:

@@ -2,6 +2,17 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.146] - 2026-04-07
+
+### Added
+
+- **Issue #110: Folder triage UI** - Dashboard now shows messy/garbage folder counts in an
+  info banner. Library view displays triage badges (Messy/Garbage) on affected books. Added
+  Settings toggle to enable/disable folder triage. Triage data now included in "all" library
+  view API responses. Split push corrections feature to #205 (blocked on Skaldleita).
+
+---
+
 ## [0.9.0-beta.145] - 2026-04-07
 
 ### Added
