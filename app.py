@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.146"
+APP_VERSION = "0.9.0-beta.147"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -6520,6 +6520,22 @@ def move_to_output_folder(source_path: str, output_folder: str, author: str, tit
         except Exception as e:
             return False, None, f"Cannot create output folder: {e}"
 
+    # Issue #209: Fail fast if hard links requested across filesystems.
+    # Without this, a later os.link EXDEV would silently fall back to copy+delete,
+    # destroying the user's originals (e.g. breaking torrent seeds, doubling disk).
+    if use_hard_links:
+        try:
+            if source.stat().st_dev != output.stat().st_dev:
+                return False, None, (
+                    "Hard link failed: watch folder and library are on different "
+                    "filesystems. Hard links require both paths on the same volume. "
+                    "Move your library to the same volume as the watch folder, or "
+                    "disable 'Use hard links' in Settings. Source files were not "
+                    "modified."
+                )
+        except OSError as e:
+            return False, None, f"Cannot verify filesystem compatibility: {e}"
+
     # Sanitize author and title for filesystem
     safe_author = sanitize_path_component(author) if author else "Unknown"
     safe_title = sanitize_path_component(title) if title else source.name
@@ -6598,10 +6614,6 @@ def move_to_output_folder(source_path: str, output_folder: str, author: str, tit
         if not atomic_move_done:
             dest_folder.mkdir(parents=True, exist_ok=True)
 
-        # Track if we fell back to copy (need to delete originals afterward)
-        used_copy_fallback = False
-        files_to_delete = []
-
         if atomic_move_done:
             # Atomic move succeeded - nothing more to do for the files
             pass
@@ -6609,17 +6621,9 @@ def move_to_output_folder(source_path: str, output_folder: str, author: str, tit
             # Single file - move/link to destination folder
             dest_file = dest_folder / source.name
             if use_hard_links:
-                try:
-                    os.link(source, dest_file)
-                except OSError as e:
-                    if "Invalid cross-device link" in str(e) or e.errno == 18:
-                        # Cross-filesystem - fall back to copy, then delete original
-                        logger.warning(f"Hard link failed (cross-filesystem), falling back to copy+delete: {source.name}")
-                        shutil.copy2(source, dest_file)
-                        used_copy_fallback = True
-                        files_to_delete.append(source)
-                    else:
-                        raise
+                # Pre-check guarantees same filesystem; other OSErrors (perm, ENOSPC)
+                # propagate to the outer handler with source intact.
+                os.link(source, dest_file)
             else:
                 shutil.move(str(source), str(dest_file))
         else:
@@ -6637,23 +6641,13 @@ def move_to_output_folder(source_path: str, output_folder: str, author: str, tit
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
 
                     if use_hard_links:
-                        try:
-                            os.link(src_file, dest_file)
-                        except OSError as e:
-                            if "Invalid cross-device link" in str(e) or e.errno == 18:
-                                logger.warning(f"Hard link failed, copy+delete: {src_file.name}")
-                                shutil.copy2(src_file, dest_file)
-                                used_copy_fallback = True
-                                files_to_delete.append(src_file)
-                            else:
-                                raise
+                        os.link(src_file, dest_file)
                     else:
                         shutil.move(str(src_file), str(dest_file))
 
-            # Clean up empty source folder if not using hard links OR if we used copy fallback
-            if (not use_hard_links or used_copy_fallback) and delete_empty:
+            # Clean up empty source folder when we moved files out (not for hardlinks — originals stay)
+            if not use_hard_links and delete_empty:
                 try:
-                    # Remove empty directories bottom-up
                     for dirpath, dirnames, filenames in os.walk(str(source), topdown=False):
                         if not filenames and not dirnames:
                             os.rmdir(dirpath)
@@ -6661,16 +6655,6 @@ def move_to_output_folder(source_path: str, output_folder: str, author: str, tit
                         source.rmdir()
                 except Exception as e:
                     logger.debug(f"Could not clean up empty folder {source}: {e}")
-
-        # Delete originals if we used copy fallback (handles both single files and directories)
-        if used_copy_fallback and delete_empty:
-            for f in files_to_delete:
-                try:
-                    if f.exists():
-                        f.unlink()
-                        logger.debug(f"Deleted source after copy fallback: {f}")
-                except Exception as e:
-                    logger.warning(f"Could not delete source {f}: {e}")
 
         return True, str(dest_folder), None
 
