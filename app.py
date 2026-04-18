@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.148"
+APP_VERSION = "0.9.0-beta.149"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -6903,7 +6903,7 @@ def process_watch_folder(config: dict) -> int:
                         # Unknown author - requires user intervention before processing
                         # Issue #57: Include source_type for watch folder tracking
                         c.execute('''INSERT OR REPLACE INTO books
-                                     (path, current_author, current_title, status, error_message, source_type, added_at, updated_at)
+                                     (path, current_author, current_title, status, error_message, source_type, created_at, updated_at)
                                      VALUES (?, ?, ?, 'needs_attention', ?, 'watch_folder', datetime('now'), datetime('now'))''',
                                   (new_path, author, title, 'Watch folder: Could not determine author - please review and correct'))
                         logger.info(f"Watch folder: Flagged for attention (unknown author): {title}")
@@ -6911,7 +6911,7 @@ def process_watch_folder(config: dict) -> int:
                         # Known author - normal processing
                         # Issue #57: Include source_type for watch folder tracking
                         c.execute('''INSERT OR REPLACE INTO books
-                                     (path, current_author, current_title, status, source_type, added_at, updated_at)
+                                     (path, current_author, current_title, status, source_type, created_at, updated_at)
                                      VALUES (?, ?, ?, 'pending', 'watch_folder', datetime('now'), datetime('now'))''',
                                   (new_path, author, title))
                         # Issue #126: Auto-enqueue for full pipeline processing
@@ -6923,7 +6923,8 @@ def process_watch_folder(config: dict) -> int:
                         logger.info(f"Watch folder: Auto-enqueued for processing: {author}/{title}")
                     conn.commit()
                 except Exception as e:
-                    logger.debug(f"Watch folder: Could not add to books table: {e}")
+                    # Issue #211: was logger.debug which hid the real exception.
+                    logger.warning(f"Watch folder: Could not add to books table: {e}", exc_info=True)
             else:
                 logger.error(f"Watch folder: Failed to move {item.name}: {error}")
                 # Issue #49: Track failed items in the database so user can see and fix them
@@ -6941,13 +6942,15 @@ def process_watch_folder(config: dict) -> int:
                     else:
                         # Insert new record for the failed item
                         c.execute('''INSERT INTO books
-                                     (path, current_author, current_title, status, error_message, source_type, added_at, updated_at)
+                                     (path, current_author, current_title, status, error_message, source_type, created_at, updated_at)
                                      VALUES (?, ?, ?, 'watch_folder_error', ?, 'watch_folder', datetime('now'), datetime('now'))''',
                                   (item_path, author, title, f'Watch folder: {error}'))
                     conn.commit()
                     logger.info(f"Watch folder: Tracked failure for user review: {item.name}")
                 except Exception as db_err:
-                    logger.debug(f"Watch folder: Could not track failure in DB: {db_err}")
+                    # Issue #211: was logger.debug which hid the real exception; raise level
+                    # so failures surface in normal operation instead of rotting silently.
+                    logger.warning(f"Watch folder: Could not track failure in DB: {db_err}", exc_info=True)
 
         except Exception as e:
             logger.error(f"Watch folder: Error processing {item_path}: {e}")

@@ -2,6 +2,29 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.149] - 2026-04-17
+
+### Fixed
+
+- **Issue #211: Watch-folder failure tracking silently dropped** — Three
+  `INSERT` statements in `process_watch_folder` (`app.py:6906`, `6914`,
+  `6944`) referenced `added_at` on the `books` table, but the schema column
+  is `created_at`. Every insert raised `sqlite3.OperationalError: table
+  books has no column named added_at`. Two `except` blocks caught it with
+  `logger.debug`, hiding the error at default log levels. Effects:
+  - Successful watch-folder moves never produced a `pending` or
+    `needs_attention` row in the books table.
+  - Failed watch-folder moves never produced a `watch_folder_error` row —
+    users had no UI surface for the failure, only a log line.
+  - Fix: renamed `added_at` to `created_at` in all three INSERTs;
+    raised both swallow-except blocks from `logger.debug` to
+    `logger.warning(..., exc_info=True)` so the same class of silent
+    failure can't rot unnoticed again.
+  - Surfaced during live testing of #209. Bug has existed since the
+    watch-folder feature was introduced.
+
+---
+
 ## [0.9.0-beta.148] - 2026-04-17
 
 ### Fixed
