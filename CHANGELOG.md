@@ -2,6 +2,34 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.148] - 2026-04-17
+
+### Fixed
+
+- **Issue #208: Watch-folder retry loop survives restarts** — The watch-folder
+  worker used an in-memory `set()` to remember which files it had already
+  processed. Every LM restart wiped the set, so whenever a file couldn't be
+  processed (unknown author, ambiguous match, move failure, mtime churn), the
+  worker would re-submit it on every scan forever. Server-side evidence showed
+  one LM instance generating ~48% of all Skaldleita `/match` traffic — 2,840
+  requests in a single day on the same filename. Fix:
+  - New `watch_folder_processed` SQLite table (`path`, `processed_at`,
+    `outcome`, `error_message`) persists dedup across restarts. `outcome`
+    values: `moved`, `move_failed`, `aborted_by_server`.
+  - Added `watch_folder_is_processed()` / `watch_folder_mark_processed()`
+    helpers in `library_manager/database.py`; watch worker switched from
+    `set()` ops to these helpers.
+- **Issue #208: Skaldleita `server_notice` handler** — Skaldleita responses
+  can now carry a `server_notice` block (severity/code/message/action/
+  upgrade_url). `library_manager/providers/bookdb.py` logs every notice
+  (with upgrade URL) and, on `action=abort_task`, stashes it in a
+  `threading.local()` slot. The watch-folder worker reads that slot after
+  each identify attempt and, if an abort was signalled, marks the item as
+  `aborted_by_server` and skips the rest of the pipeline — no 30-second
+  retry loop.
+
+---
+
 ## [0.9.0-beta.147] - 2026-04-17
 
 ### Fixed

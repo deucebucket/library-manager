@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.147"
+APP_VERSION = "0.9.0-beta.148"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -52,7 +52,8 @@ from library_manager.config import (
 from library_manager.database import (
     init_db, get_db, set_db_path, cleanup_garbage_entries,
     cleanup_duplicate_history_entries, insert_history_entry,
-    should_requeue_book
+    should_requeue_book,
+    watch_folder_is_processed, watch_folder_mark_processed
 )
 from library_manager.models.book_profile import (
     SOURCE_WEIGHTS, FIELD_WEIGHTS, FieldValue, BookProfile,
@@ -6432,8 +6433,8 @@ def process_all_queue(config):
 # WATCH FOLDER FUNCTIONALITY
 # ============================================================================
 
-# Track processed watch folder items to avoid reprocessing
-watch_folder_processed = set()
+# Issue #208: watch-folder dedup now lives in the watch_folder_processed
+# SQLite table (see library_manager.database) so restarts don't reset state.
 watch_folder_last_scan = 0
 
 def get_watch_folder_items(watch_folder: str, min_age_seconds: int = 30) -> list:
@@ -6456,8 +6457,8 @@ def get_watch_folder_items(watch_folder: str, min_age_seconds: int = 30) -> list
     for item in watch_path.iterdir():
         item_path = str(item.resolve())
 
-        # Skip if already processed
-        if item_path in watch_folder_processed:
+        # Skip if already processed (persisted in SQLite, Issue #208)
+        if watch_folder_is_processed(item_path):
             continue
 
         # Check if folder contains audio files or is an audio file
@@ -6668,7 +6669,7 @@ def process_watch_folder(config: dict) -> int:
     Process items in the watch folder.
     Returns number of items processed.
     """
-    global watch_folder_processed, watch_folder_last_scan
+    global watch_folder_last_scan
 
     watch_folder = config.get('watch_folder', '').strip()
     output_folder = config.get('watch_output_folder', '').strip()
@@ -6828,6 +6829,18 @@ def process_watch_folder(config: dict) -> int:
             except Exception as e:
                 logger.debug(f"Watch folder: API lookup failed, using path analysis: {e}")
 
+            # Issue #208: Skaldleita may have signalled 'abort_task' during the
+            # lookup above (retry-loop protection). Stop retrying this item and
+            # persist it so future scans skip it until the user upgrades / fixes
+            # the source. The warning + upgrade URL are already in the logs.
+            from library_manager.providers.bookdb import get_and_clear_server_abort
+            server_abort = get_and_clear_server_abort()
+            if server_abort:
+                abort_msg = server_abort.get('message', 'Skaldleita requested task abort')
+                logger.warning(f"Watch folder: Aborting '{item.name}' per Skaldleita server notice")
+                watch_folder_mark_processed(item_path, 'aborted_by_server', abort_msg)
+                continue
+
             # Issue #57: Verify drastic author changes before accepting
             if needs_verification and api_author and api_title:
                 try:
@@ -6880,7 +6893,7 @@ def process_watch_folder(config: dict) -> int:
 
             if success:
                 logger.info(f"Watch folder: Moved to {new_path}")
-                watch_folder_processed.add(item_path)
+                watch_folder_mark_processed(item_path, 'moved')
                 processed += 1
 
                 # Add to books table
@@ -6914,8 +6927,8 @@ def process_watch_folder(config: dict) -> int:
             else:
                 logger.error(f"Watch folder: Failed to move {item.name}: {error}")
                 # Issue #49: Track failed items in the database so user can see and fix them
-                # Add to watch_folder_processed to prevent infinite retry loop
-                watch_folder_processed.add(item_path)
+                # Issue #208: persist dedup so the retry loop dies across restarts too
+                watch_folder_mark_processed(item_path, 'move_failed', error)
                 try:
                     # Check if this item is already tracked
                     c.execute('SELECT id FROM books WHERE path = ?', (item_path,))

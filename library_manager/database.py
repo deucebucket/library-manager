@@ -175,6 +175,17 @@ def init_db(db_path=None):
         api_calls INTEGER DEFAULT 0
     )''')
 
+    # Issue #208: Persistent watch-folder dedup
+    # Was an in-memory set(), wiped on restart, which caused the watch worker
+    # to re-submit the same failing file every cycle (ate ~48% of Skaldleita
+    # traffic from a single LM instance before server-side cache absorbed it).
+    c.execute('''CREATE TABLE IF NOT EXISTS watch_folder_processed (
+        path TEXT PRIMARY KEY,
+        processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        outcome TEXT,
+        error_message TEXT
+    )''')
+
     conn.commit()
     conn.close()
 
@@ -185,6 +196,48 @@ def init_db(db_path=None):
     # Initialize plugin metrics table (Issue #189)
     from library_manager.plugins import init_plugin_metrics_table
     init_plugin_metrics_table(path)
+
+
+def watch_folder_is_processed(path, db_path=None):
+    """Return True if the watch-folder path has already been handled.
+
+    Issue #208: replaces the in-memory set. Survives restarts so the worker
+    doesn't re-submit the same failing file every scan cycle.
+    """
+    p = db_path or _db_path
+    if not p:
+        return False
+    conn = sqlite3.connect(p, timeout=30)
+    try:
+        c = conn.execute(
+            'SELECT 1 FROM watch_folder_processed WHERE path = ? LIMIT 1',
+            (path,)
+        )
+        return c.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def watch_folder_mark_processed(path, outcome, error_message=None, db_path=None):
+    """Record that a watch-folder path has been handled.
+
+    outcome: 'moved' | 'move_failed' | 'unknown_author' | 'aborted_by_server'
+    Issue #208.
+    """
+    p = db_path or _db_path
+    if not p:
+        return
+    conn = sqlite3.connect(p, timeout=30)
+    try:
+        conn.execute(
+            '''INSERT OR REPLACE INTO watch_folder_processed
+               (path, processed_at, outcome, error_message)
+               VALUES (?, CURRENT_TIMESTAMP, ?, ?)''',
+            (path, outcome, error_message)
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def cleanup_garbage_entries(db_path=None):
