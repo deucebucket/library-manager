@@ -2,64 +2,6 @@
 {% block title %}Settings - Library Manager{% endblock %}
 
 {% block content %}
-<style>
-    .hint-icon {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 16px;
-        height: 16px;
-        border-radius: 50%;
-        border: 1px solid rgba(0, 217, 255, 0.4);
-        color: rgba(0, 217, 255, 0.6);
-        font-size: 10px;
-        font-weight: bold;
-        font-style: normal;
-        cursor: help;
-        margin-left: 4px;
-        position: relative;
-        vertical-align: middle;
-        line-height: 1;
-        flex-shrink: 0;
-    }
-    .hint-icon:hover {
-        border-color: #00d9ff;
-        color: #00d9ff;
-    }
-    .hint-icon .hint-text {
-        display: none;
-        position: absolute;
-        bottom: calc(100% + 8px);
-        left: 50%;
-        transform: translateX(-50%);
-        background: rgba(15, 52, 96, 0.95);
-        border: 1px solid rgba(0, 217, 255, 0.3);
-        color: #eee;
-        padding: 8px 12px;
-        border-radius: 6px;
-        font-size: 0.8rem;
-        font-weight: normal;
-        font-style: normal;
-        line-height: 1.4;
-        white-space: normal;
-        width: 280px;
-        z-index: 1000;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-        pointer-events: none;
-    }
-    .hint-icon .hint-text::after {
-        content: '';
-        position: absolute;
-        top: 100%;
-        left: 50%;
-        transform: translateX(-50%);
-        border: 6px solid transparent;
-        border-top-color: rgba(0, 217, 255, 0.3);
-    }
-    .hint-icon:hover .hint-text {
-        display: block;
-    }
-</style>
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2><i class="bi bi-gear"></i> Settings</h2>
     <span class="text-muted">v{{ version }}</span>
@@ -98,28 +40,18 @@
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-processing" type="button">
-                <i class="bi bi-cpu"></i> Processing
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-engine" type="button">
+                <i class="bi bi-cpu"></i> Engine
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-ai" type="button">
-                <i class="bi bi-robot"></i> AI Setup
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-pipeline" type="button">
+                <i class="bi bi-layers"></i> Pipeline
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-safety" type="button">
-                <i class="bi bi-shield-check"></i> Safety
-            </button>
-        </li>
-        <li class="nav-item">
-            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-advanced" type="button">
-                <i class="bi bi-gear-wide-connected"></i> Advanced
-            </button>
-        </li>
-        <li class="nav-item">
-            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-hooks" type="button">
-                <i class="bi bi-terminal"></i> Post-Processing
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-integrations" type="button">
+                <i class="bi bi-plug"></i> Integrations
             </button>
         </li>
     </ul>
@@ -155,7 +87,7 @@
                     {% else %}
                     <div class="card mb-3 border-info">
                         <div class="card-body text-center py-4">
-                            <i class="bi bi-info-circle text-info" style="font-size: 2rem;"></i>
+                            <i class="bi bi-info-circle text-info fs-icon-lg"></i>
                             <h5 class="mt-2">Demo Mode</h5>
                             <p class="text-muted mb-0">This is a public demo instance. Library paths are locked.</p>
                         </div>
@@ -423,8 +355,9 @@
             </div>
         </div>
 
-        <!-- ==================== PROCESSING TAB ==================== -->
-        <div class="tab-pane fade" id="tab-processing">
+        <!-- ==================== ENGINE TAB (Processing + AI Keys + Safety) ==================== -->
+        <div class="tab-pane fade" id="tab-engine">
+            <h5 class="mb-3"><i class="bi bi-play-circle"></i> Processing</h5>
             <div class="row">
                 <div class="col-lg-6">
                     <!-- Background Processing -->
@@ -541,6 +474,44 @@
 
                             <hr class="my-2">
 
+                            <!-- Issue #110: File Validation -->
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="enable_file_validation"
+                                       id="enable_file_validation" {% if config.enable_file_validation is not defined or config.enable_file_validation %}checked{% endif %}>
+                                <label class="form-check-label" for="enable_file_validation">
+                                    <i class="bi bi-shield-check text-success"></i> <strong>{{ _('File Validation') }}</strong>
+                                    <span class="badge bg-success">{{ _('Local') }}</span>
+                                    <br><small class="text-muted">{{ _('Check audio files with ffprobe before processing (catches corrupt, truncated, or non-audiobook files)') }}</small>
+                                </label>
+                            </div>
+                            <div class="row mb-3 ms-4" id="validation-options">
+                                <div class="col-md-6">
+                                    <label for="min_audio_duration_seconds" class="form-label small">{{ _('Min Duration (seconds)') }}</label>
+                                    <input type="number" class="form-control form-control-sm" name="min_audio_duration_seconds"
+                                           id="min_audio_duration_seconds" value="{{ config.min_audio_duration_seconds|default(600) }}" min="0" max="7200">
+                                    <small class="text-muted">{{ _('Default: 600 (10 minutes)') }}</small>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="min_audio_file_size_mb" class="form-label small">{{ _('Min File Size (MB)') }}</label>
+                                    <input type="number" class="form-control form-control-sm" name="min_audio_file_size_mb"
+                                           id="min_audio_file_size_mb" value="{{ config.min_audio_file_size_mb|default(1) }}" min="0" max="100">
+                                    <small class="text-muted">{{ _('Default: 1 MB') }}</small>
+                                </div>
+                            </div>
+
+                            <!-- Issue #110: Folder Triage -->
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="enable_folder_triage"
+                                       id="enable_folder_triage" {% if config.enable_folder_triage is not defined or config.enable_folder_triage %}checked{% endif %}>
+                                <label class="form-check-label" for="enable_folder_triage">
+                                    <i class="bi bi-funnel text-info"></i> <strong>{{ _('Folder Triage') }}</strong>
+                                    <span class="badge bg-success">{{ _('Local') }}</span>
+                                    <br><small class="text-muted">{{ _('Classify folder names as clean/messy/garbage. Messy and garbage folders skip path parsing and rely on audio/metadata only.') }}</small>
+                                </label>
+                            </div>
+
+                            <hr class="my-2">
+
                             <div class="form-check form-switch mb-3">
                                 <input class="form-check-input" type="checkbox" name="enable_api_lookups"
                                        id="enable_api_lookups" {% if config.enable_api_lookups != false %}checked{% endif %}>
@@ -641,17 +612,92 @@
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- ==================== AI SETUP TAB ==================== -->
-        <div class="tab-pane fade" id="tab-ai">
+            <!-- Processing Pipeline Order -->
+            <div class="row mt-3">
+                <div class="col-12">
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-sort-numeric-down"></i> Processing Pipeline Order
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-3">
+                                Drag layers to reorder, or use the arrow buttons. The pipeline processes books through each enabled layer in this order.
+                            </p>
+
+                            <!-- Feature flag -->
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" name="use_modular_pipeline" id="use_modular_pipeline"
+                                       {% if config.use_modular_pipeline %}checked{% endif %}>
+                                <label class="form-check-label" for="use_modular_pipeline">
+                                    <strong>Enable Modular Pipeline</strong>
+                                    <span class="badge bg-warning text-dark ms-1">Experimental</span>
+                                    <br><small class="text-muted">Use the new PipelineOrchestrator instead of the built-in processing logic. Layer order below only applies when this is enabled.</small>
+                                </label>
+                            </div>
+
+                            <!-- Pipeline layer list -->
+                            <div id="pipeline-layer-list">
+                                {% for layer in pipeline_layers %}
+                                <div class="pipeline-layer d-flex align-items-center p-2 mb-2 rounded border"
+                                     draggable="true"
+                                     data-layer-id="{{ layer.layer_id }}"
+                                     data-enable-key="{{ layer.config_enable_key }}"
+                                     style="background: rgba(255,255,255,0.03); cursor: grab;">
+                                    <span class="pipeline-drag-handle me-2 text-muted" style="cursor: grab; font-size: 1.2rem; user-select: none;">&#x2261;</span>
+                                    <span class="pipeline-position badge bg-secondary me-2" style="min-width: 28px;">{{ loop.index }}</span>
+                                    <div class="flex-grow-1">
+                                        <strong>{{ layer.layer_name }}</strong>
+                                        <br><small class="text-muted">{{ layer.description }}</small>
+                                    </div>
+                                    <div class="d-flex align-items-center ms-2 gap-1">
+                                        <div class="form-check form-switch mb-0 me-2">
+                                            <input class="form-check-input pipeline-layer-toggle" type="checkbox"
+                                                   name="{{ layer.config_enable_key }}"
+                                                   id="pipeline-toggle-{{ layer.layer_id }}"
+                                                   {% if config.get(layer.config_enable_key, True) %}checked{% endif %}
+                                                   data-layer-id="{{ layer.layer_id }}"
+                                                   title="Enable/disable this layer">
+                                        </div>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary pipeline-move-up" title="Move up" onclick="movePipelineLayer(this, -1)">
+                                            <i class="bi bi-arrow-up"></i>
+                                        </button>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary pipeline-move-down" title="Move down" onclick="movePipelineLayer(this, 1)">
+                                            <i class="bi bi-arrow-down"></i>
+                                        </button>
+                                        <button type="button" class="btn btn-sm btn-outline-primary pipeline-run-btn ms-1"
+                                                title="Run this layer now"
+                                                data-layer-id="{{ layer.layer_id }}"
+                                                onclick="runPipelineLayer(this)">
+                                            <i class="bi bi-play-fill"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
+
+                            <!-- Hidden input for form submission -->
+                            <input type="hidden" name="pipeline_order" id="pipeline_order_input" value="{{ pipeline_order | tojson }}">
+
+                            <div class="mt-2">
+                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetPipelineOrder()">
+                                    <i class="bi bi-arrow-counterclockwise"></i> Reset to Default Order
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <hr class="my-4">
+            <h5 class="mb-3"><i class="bi bi-key"></i> AI Providers</h5>
             <div class="row">
                 <!-- API Keys Card - Hidden in demo mode -->
                 <div class="col-lg-6">
                     {% if config.demo_mode %}
                     <div class="card mb-3 border-info">
                         <div class="card-body text-center py-4">
-                            <i class="bi bi-shield-lock text-info" style="font-size: 2rem;"></i>
+                            <i class="bi bi-shield-lock text-info fs-icon-lg"></i>
                             <h5 class="mt-2">API Keys Hidden</h5>
                             <p class="text-muted mb-0">API keys are pre-configured on this demo instance.</p>
                         </div>
@@ -878,7 +924,11 @@
                 </div>
             </div>
 
-            <!-- Continue with rest of AI tab -->
+        </div>{# end engine primary AI provider section #}
+
+        <!-- ==================== PIPELINE TAB (Provider Chains + Advanced) ==================== -->
+        <div class="tab-pane fade" id="tab-pipeline">
+            <h5 class="mb-3"><i class="bi bi-diagram-3"></i> Provider Chains</h5>
             <div class="row">
 
                 <div class="col-lg-6">
@@ -1019,10 +1069,9 @@
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- ==================== SAFETY TAB ==================== -->
-        <div class="tab-pane fade" id="tab-safety">
+            <hr class="my-4">
+            <h5 class="mb-3"><i class="bi bi-shield-check"></i> Safety, Language & Maintenance</h5>
             <div class="row">
                 <div class="col-lg-6">
                     <!-- Auto-Apply Settings -->
@@ -1135,10 +1184,7 @@
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- ==================== ADVANCED TAB ==================== -->
-        <div class="tab-pane fade" id="tab-advanced">
             <div class="row">
                 <div class="col-lg-6">
                     <!-- Language -->
@@ -1480,17 +1526,22 @@
                     </div>
                 </div>
             </div>
-        </div>
+        </div>{# end tab-pipeline #}
 
-        <!-- ==================== POST-PROCESSING TAB ==================== -->
-        <div class="tab-pane fade" id="tab-hooks">
+        <!-- ==================== INTEGRATIONS TAB ==================== -->
+        <div class="tab-pane fade" id="tab-integrations">
+            <h5 class="mb-3"><i class="bi bi-terminal"></i> Post-Processing Hooks</h5>
             {% include 'hooks_settings.html' %}
+
+            <hr class="my-4">
+            <h5 class="mb-3"><i class="bi bi-plug"></i> Custom API Sources</h5>
+            {% include 'plugins_settings.html' %}
         </div>
 
     </div>
 
     <!-- Save Button (sticky) -->
-    <div class="position-sticky bottom-0 bg-dark py-3 border-top mt-3" style="z-index: 100;">
+    <div class="settings-save-bar">
         <div class="d-flex justify-content-end">
             <button type="submit" class="btn btn-primary">
                 <i class="bi bi-save"></i> Save Settings
@@ -1902,11 +1953,7 @@ function refreshLogs() {
     }).catch(e => { document.getElementById('log-output').textContent = 'Error: ' + e; });
 }
 
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
+// escapeHtml provided by common.js
 
 // API Tests
 function showApiTestResult(msg, success) {
@@ -2119,7 +2166,7 @@ function restoreBackup() {
         .catch(e => alert('Error: ' + e));
 }
 
-document.querySelector('[data-bs-target="#tab-advanced"]')?.addEventListener('shown.bs.tab', loadBackupInfo);
+document.querySelector('[data-bs-target="#tab-pipeline"]')?.addEventListener('shown.bs.tab', loadBackupInfo);
 
 // Library path test
 function testLibraryPaths() {
@@ -2261,6 +2308,7 @@ function renderHooksList() {
                 <strong>${escapeHtml(hook.name)}</strong>
                 <span class="badge ${hook.type === 'webhook' ? 'bg-info' : 'bg-secondary'} ms-1" style="font-size: 0.65rem;">${hook.type}</span>
                 <span class="badge ${hook.mode === 'async' ? 'bg-warning text-dark' : 'bg-dark'} ms-1" style="font-size: 0.65rem;">${hook.mode || 'sync'}</span>
+                ${(hook.run_on || ['rename_applied']).map(e => '<span class="badge bg-dark border border-secondary ms-1" style="font-size: 0.6rem;">' + escapeHtml(e) + '</span>').join('')}
                 <br><small class="text-muted font-monospace">${escapeHtml(hook.type === 'webhook' ? (hook.url || '').substring(0, 60) : (hook.command || '').substring(0, 60))}${(hook.type === 'webhook' ? hook.url : hook.command || '').length > 60 ? '...' : ''}</small>
             </div>
             <div class="btn-group btn-group-sm ms-2">
@@ -2276,11 +2324,7 @@ function renderHooksList() {
     `).join('');
 }
 
-function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str || '';
-    return div.innerHTML;
-}
+// escapeHtml provided by common.js
 
 function toggleHookEnabled(index, enabled) {
     hooksData[index].enabled = enabled;
@@ -2296,10 +2340,13 @@ function addHook() {
     document.getElementById('hook-url').value = '';
     document.getElementById('hook-method').value = 'POST';
     document.getElementById('hook-headers').value = '';
+    document.getElementById('hook-body-template').value = '';
     document.getElementById('hook-timeout').value = '300';
     document.getElementById('hook-mode').value = 'sync';
     document.getElementById('hook-on-error').value = 'log';
     document.getElementById('hook-test-result').style.display = 'none';
+    // Reset event checkboxes - default to rename_applied only
+    setEventCheckboxes(['rename_applied']);
     toggleHookTypeFields();
     new bootstrap.Modal(document.getElementById('hookEditModal')).show();
 }
@@ -2314,10 +2361,13 @@ function editHook(index) {
     document.getElementById('hook-url').value = hook.url || '';
     document.getElementById('hook-method').value = hook.method || 'POST';
     document.getElementById('hook-headers').value = hook.headers ? JSON.stringify(hook.headers) : '';
+    document.getElementById('hook-body-template').value = hook.body_template ? JSON.stringify(hook.body_template, null, 2) : '';
     document.getElementById('hook-timeout').value = hook.timeout || 300;
     document.getElementById('hook-mode').value = hook.mode || 'sync';
     document.getElementById('hook-on-error').value = hook.on_error || 'log';
     document.getElementById('hook-test-result').style.display = 'none';
+    // Load event checkboxes (default to rename_applied for backward compat)
+    setEventCheckboxes(hook.run_on || ['rename_applied']);
     toggleHookTypeFields();
     new bootstrap.Modal(document.getElementById('hookEditModal')).show();
 }
@@ -2337,6 +2387,28 @@ function moveHook(index, direction) {
     hooksData[newIndex] = temp;
     renderHooksList();
     saveHooksToServer();
+}
+
+// Event checkbox helpers (Issue #187)
+const HOOK_EVENT_NAMES = ['scan_started', 'scan_completed', 'book_discovered', 'rename_proposed',
+                          'rename_applied', 'rename_rejected', 'processing_failed', 'queue_empty'];
+
+function setEventCheckboxes(selectedEvents) {
+    // Normalize legacy 'fixed' -> 'rename_applied'
+    const normalized = selectedEvents.map(e => e === 'fixed' ? 'rename_applied' : e);
+    HOOK_EVENT_NAMES.forEach(evt => {
+        const cb = document.getElementById('hook-evt-' + evt);
+        if (cb) cb.checked = normalized.includes(evt);
+    });
+}
+
+function getSelectedEvents() {
+    const selected = [];
+    HOOK_EVENT_NAMES.forEach(evt => {
+        const cb = document.getElementById('hook-evt-' + evt);
+        if (cb && cb.checked) selected.push(evt);
+    });
+    return selected;
 }
 
 function toggleHookTypeFields() {
@@ -2362,6 +2434,21 @@ function saveHookFromModal() {
         catch (e) { alert('Invalid JSON in headers field'); return; }
     }
 
+    // Parse body_template if provided
+    let bodyTemplateObj = undefined;
+    const bodyTemplateStr = document.getElementById('hook-body-template').value.trim();
+    if (bodyTemplateStr && type === 'webhook') {
+        try { bodyTemplateObj = JSON.parse(bodyTemplateStr); }
+        catch (e) { alert('Invalid JSON in body template field'); return; }
+    }
+
+    // Collect selected events
+    const selectedEvents = getSelectedEvents();
+    if (selectedEvents.length === 0) {
+        alert('Please select at least one event to trigger this hook');
+        return;
+    }
+
     const hook = {
         name: name,
         type: type,
@@ -2369,11 +2456,12 @@ function saveHookFromModal() {
         url: type === 'webhook' ? document.getElementById('hook-url').value.trim() : undefined,
         method: type === 'webhook' ? document.getElementById('hook-method').value : undefined,
         headers: type === 'webhook' ? headersObj : undefined,
+        body_template: bodyTemplateObj,
         timeout: parseInt(document.getElementById('hook-timeout').value) || 300,
         mode: document.getElementById('hook-mode').value,
         on_error: document.getElementById('hook-on-error').value,
         enabled: true,
-        run_on: ['fixed']
+        run_on: selectedEvents
     };
 
     // Validate
@@ -2496,7 +2584,7 @@ function clearHookLog() {
 }
 
 // Load hooks on tab show
-document.querySelector('[data-bs-target="#tab-hooks"]')?.addEventListener('shown.bs.tab', function() {
+document.querySelector('[data-bs-target="#tab-integrations"]')?.addEventListener('shown.bs.tab', function() {
     renderHooksList();
     refreshHookLog();
 });
@@ -2504,5 +2592,706 @@ document.querySelector('[data-bs-target="#tab-hooks"]')?.addEventListener('shown
 // Initial render if hooks exist
 if (hooksData.length) renderHooksList();
 else document.getElementById('hooks-empty') && (document.getElementById('hooks-empty').style.display = 'block');
+
+// ==================== PIPELINE ORDER ====================
+var pipelineDefaultOrder = {{ pipeline_default_order | tojson }};
+
+function updatePipelineOrderInput() {
+    var list = document.getElementById('pipeline-layer-list');
+    if (!list) return;
+    var items = list.querySelectorAll('.pipeline-layer');
+    var order = [];
+    items.forEach(function(item, idx) {
+        order.push(item.getAttribute('data-layer-id'));
+        var badge = item.querySelector('.pipeline-position');
+        if (badge) badge.textContent = idx + 1;
+    });
+    document.getElementById('pipeline_order_input').value = JSON.stringify(order);
+}
+
+function movePipelineLayer(btn, direction) {
+    var item = btn.closest('.pipeline-layer');
+    var list = item.parentNode;
+    var items = Array.from(list.querySelectorAll('.pipeline-layer'));
+    var idx = items.indexOf(item);
+    var newIdx = idx + direction;
+    if (newIdx < 0 || newIdx >= items.length) return;
+    if (direction === -1) {
+        list.insertBefore(item, items[newIdx]);
+    } else {
+        list.insertBefore(items[newIdx], item);
+    }
+    updatePipelineOrderInput();
+}
+
+function resetPipelineOrder() {
+    var list = document.getElementById('pipeline-layer-list');
+    if (!list) return;
+    var items = Array.from(list.querySelectorAll('.pipeline-layer'));
+    // Sort by default order
+    items.sort(function(a, b) {
+        return pipelineDefaultOrder.indexOf(a.getAttribute('data-layer-id')) - pipelineDefaultOrder.indexOf(b.getAttribute('data-layer-id'));
+    });
+    items.forEach(function(item) { list.appendChild(item); });
+    updatePipelineOrderInput();
+}
+
+function runPipelineLayer(btn) {
+    var layerId = btn.getAttribute('data-layer-id');
+    var icon = btn.querySelector('i');
+    var origClass = icon.className;
+
+    // Show spinner
+    icon.className = 'bi bi-arrow-repeat spin-icon';
+    btn.disabled = true;
+
+    // Remove any previous result badge on this layer
+    var layerDiv = btn.closest('.pipeline-layer');
+    var oldBadge = layerDiv.querySelector('.pipeline-run-result');
+    if (oldBadge) oldBadge.remove();
+
+    fetch('/api/pipeline/run-layer/' + layerId, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'}
+    })
+    .then(function(resp) { return resp.json(); })
+    .then(function(data) {
+        icon.className = origClass;
+        btn.disabled = false;
+
+        var badge = document.createElement('span');
+        badge.className = 'pipeline-run-result badge ms-2 small';
+        if (data.success) {
+            badge.classList.add('bg-success');
+            badge.textContent = data.processed + ' processed, ' + data.resolved + ' resolved';
+        } else {
+            badge.classList.add('bg-danger');
+            badge.textContent = data.message || 'Error';
+        }
+        layerDiv.querySelector('.flex-grow-1').appendChild(badge);
+
+        // Auto-remove after 10 seconds
+        setTimeout(function() { badge.remove(); }, 10000);
+    })
+    .catch(function(err) {
+        icon.className = origClass;
+        btn.disabled = false;
+
+        var badge = document.createElement('span');
+        badge.className = 'pipeline-run-result badge bg-danger ms-2 small';
+        badge.textContent = 'Network error';
+        layerDiv.querySelector('.flex-grow-1').appendChild(badge);
+        setTimeout(function() { badge.remove(); }, 10000);
+    });
+}
+
+// Drag and drop for pipeline layers
+(function() {
+    var dragItem = null;
+    var list = document.getElementById('pipeline-layer-list');
+    if (!list) return;
+
+    list.addEventListener('dragstart', function(e) {
+        dragItem = e.target.closest('.pipeline-layer');
+        if (dragItem) {
+            dragItem.style.opacity = '0.5';
+            e.dataTransfer.effectAllowed = 'move';
+        }
+    });
+
+    list.addEventListener('dragend', function(e) {
+        if (dragItem) {
+            dragItem.style.opacity = '1';
+            dragItem = null;
+        }
+        list.querySelectorAll('.pipeline-layer').forEach(function(el) {
+            el.style.borderTop = '';
+        });
+    });
+
+    list.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        var target = e.target.closest('.pipeline-layer');
+        list.querySelectorAll('.pipeline-layer').forEach(function(el) {
+            el.style.borderTop = '';
+        });
+        if (target && target !== dragItem) {
+            target.style.borderTop = '2px solid #00d9ff';
+        }
+    });
+
+    list.addEventListener('drop', function(e) {
+        e.preventDefault();
+        var target = e.target.closest('.pipeline-layer');
+        if (target && dragItem && target !== dragItem) {
+            list.insertBefore(dragItem, target);
+            updatePipelineOrderInput();
+        }
+    });
+})();
+
+// ==================== CUSTOM LAYER PLUGINS (Issue #186) ====================
+
+let pluginsData = {{ config.custom_layers | default([], true) | tojson }};
+let pluginWizardStep = 1;
+
+function renderPluginsList() {
+    const list = document.getElementById('plugins-list');
+    const empty = document.getElementById('plugins-empty');
+    if (!pluginsData.length) {
+        list.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+    }
+    empty.style.display = 'none';
+    list.innerHTML = pluginsData.map((layer, i) => `
+        <div class="d-flex align-items-center border-bottom border-secondary px-3 py-2">
+            <div class="form-check form-switch me-2 mb-0">
+                <input class="form-check-input" type="checkbox" ${layer.enabled !== false ? 'checked' : ''}
+                       onchange="togglePluginEnabled('${escapeHtml(layer.layer_id)}', this.checked)">
+            </div>
+            <div class="flex-grow-1">
+                <strong>${escapeHtml(layer.layer_name)}</strong>
+                <span class="badge bg-info ms-1" style="font-size: 0.65rem;">${escapeHtml(layer.method || 'GET')}</span>
+                <span class="badge bg-secondary ms-1" style="font-size: 0.65rem;">weight: ${layer.source_weight || 55}</span>
+                ${layer.description ? '<br><small class="text-muted">' + escapeHtml(layer.description) + '</small>' : ''}
+                <br><small class="text-muted font-monospace">${escapeHtml((layer.url_template || '').substring(0, 70))}${(layer.url_template || '').length > 70 ? '...' : ''}</small>
+            </div>
+            <div class="btn-group btn-group-sm ms-2">
+                <button class="btn btn-outline-secondary py-0" onclick="editPluginLayer(${i})" title="Edit"><i class="bi bi-pencil"></i></button>
+                <button class="btn btn-outline-danger py-0" onclick="deletePluginLayer('${escapeHtml(layer.layer_id)}', '${escapeHtml(layer.layer_name)}')" title="Remove"><i class="bi bi-trash"></i></button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function togglePluginEnabled(layerId, enabled) {
+    fetch('/api/plugins/toggle-layer', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({layer_id: layerId, enabled: enabled})
+    }).then(r => r.json()).then(data => {
+        if (data.success) {
+            const layer = pluginsData.find(l => l.layer_id === layerId);
+            if (layer) layer.enabled = enabled;
+        } else {
+            console.error('Toggle failed:', data.error);
+        }
+    }).catch(err => console.error('Toggle error:', err));
+}
+
+function deletePluginLayer(layerId, layerName) {
+    if (!confirm('Remove custom layer "' + layerName + '"?')) return;
+    fetch('/api/plugins/layer/' + encodeURIComponent(layerId), {
+        method: 'DELETE'
+    }).then(r => r.json()).then(data => {
+        if (data.success) {
+            pluginsData = pluginsData.filter(l => l.layer_id !== layerId);
+            renderPluginsList();
+        } else {
+            alert('Failed to delete: ' + (data.error || 'Unknown error'));
+        }
+    }).catch(err => alert('Delete error: ' + err));
+}
+
+function openPluginWizard(editLayer) {
+    pluginWizardStep = 1;
+    document.getElementById('plugin-edit-id').value = '';
+    document.getElementById('plugin-name').value = '';
+    document.getElementById('plugin-description').value = '';
+    document.getElementById('plugin-url').value = '';
+    document.getElementById('plugin-method').value = 'GET';
+    document.getElementById('plugin-timeout').value = '10';
+    document.getElementById('plugin-auth-type').value = 'none';
+    document.getElementById('plugin-bearer-secret').value = '';
+    document.getElementById('plugin-apikey-header').value = 'X-API-Key';
+    document.getElementById('plugin-apikey-secret').value = '';
+    document.getElementById('plugin-basic-user').value = '';
+    document.getElementById('plugin-basic-secret').value = '';
+    document.getElementById('plugin-map-title').value = '';
+    document.getElementById('plugin-map-author').value = '';
+    document.getElementById('plugin-map-narrator').value = '';
+    document.getElementById('plugin-map-series').value = '';
+    document.getElementById('plugin-map-series_num').value = '';
+    document.getElementById('plugin-map-year').value = '';
+    document.getElementById('plugin-weight').value = '55';
+    document.getElementById('plugin-weight-display').textContent = '55';
+    document.getElementById('plugin-test-title').value = 'The Final Empire';
+    document.getElementById('plugin-test-author').value = 'Brandon Sanderson';
+    document.getElementById('plugin-test-result').classList.add('d-none');
+    document.getElementById('pluginWizardTitle').innerHTML = '<i class="bi bi-plug"></i> Add Custom API Source';
+
+    if (editLayer) {
+        document.getElementById('plugin-edit-id').value = editLayer.layer_id || '';
+        document.getElementById('plugin-name').value = editLayer.layer_name || '';
+        document.getElementById('plugin-description').value = editLayer.description || '';
+        document.getElementById('plugin-url').value = editLayer.url_template || '';
+        document.getElementById('plugin-method').value = editLayer.method || 'GET';
+        document.getElementById('plugin-timeout').value = editLayer.timeout || 10;
+        document.getElementById('plugin-weight').value = editLayer.source_weight || 55;
+        document.getElementById('plugin-weight-display').textContent = editLayer.source_weight || 55;
+        document.getElementById('pluginWizardTitle').innerHTML = '<i class="bi bi-pencil"></i> Edit Custom API Source';
+
+        // Auth
+        const auth = editLayer.auth || {};
+        const authType = auth.type || 'none';
+        document.getElementById('plugin-auth-type').value = authType;
+        if (authType === 'bearer') {
+            document.getElementById('plugin-bearer-secret').value = auth.token_secret_key || '';
+        } else if (authType === 'api_key_header') {
+            document.getElementById('plugin-apikey-header').value = auth.header_name || 'X-API-Key';
+            document.getElementById('plugin-apikey-secret').value = auth.token_secret_key || '';
+        } else if (authType === 'basic') {
+            document.getElementById('plugin-basic-user').value = auth.username || '';
+            document.getElementById('plugin-basic-secret').value = auth.token_secret_key || '';
+        }
+
+        // Response mapping
+        const mapping = editLayer.response_mapping || {};
+        document.getElementById('plugin-map-title').value = mapping.title || '';
+        document.getElementById('plugin-map-author').value = mapping.author || '';
+        document.getElementById('plugin-map-narrator').value = mapping.narrator || '';
+        document.getElementById('plugin-map-series').value = mapping.series || '';
+        document.getElementById('plugin-map-series_num').value = mapping.series_num || '';
+        document.getElementById('plugin-map-year').value = mapping.year || '';
+    }
+
+    togglePluginAuthFields();
+    updatePluginWizardUI();
+    new bootstrap.Modal(document.getElementById('pluginWizardModal')).show();
+}
+
+function editPluginLayer(index) {
+    openPluginWizard(pluginsData[index]);
+}
+
+function updatePluginWizardUI() {
+    // Show/hide steps
+    for (let i = 1; i <= 4; i++) {
+        const step = document.getElementById('plugin-step-' + i);
+        const badge = document.getElementById('plugin-step-badge-' + i);
+        if (i === pluginWizardStep) {
+            step.classList.remove('d-none');
+            badge.classList.remove('bg-secondary');
+            badge.classList.add('bg-primary');
+        } else {
+            step.classList.add('d-none');
+            if (i < pluginWizardStep) {
+                badge.classList.remove('bg-secondary');
+                badge.classList.add('bg-primary');
+            } else {
+                badge.classList.remove('bg-primary');
+                badge.classList.add('bg-secondary');
+            }
+        }
+    }
+    // Show/hide buttons
+    document.getElementById('plugin-prev-btn').style.display = pluginWizardStep > 1 ? '' : 'none';
+    document.getElementById('plugin-next-btn').style.display = pluginWizardStep < 4 ? '' : 'none';
+    document.getElementById('plugin-save-btn').style.display = pluginWizardStep === 4 ? '' : 'none';
+}
+
+function pluginWizardNext() {
+    // Validate current step
+    if (pluginWizardStep === 1) {
+        const name = document.getElementById('plugin-name').value.trim();
+        if (!name) { alert('Please enter a layer name'); return; }
+    }
+    if (pluginWizardStep === 2) {
+        const url = document.getElementById('plugin-url').value.trim();
+        if (!url) { alert('Please enter a URL template'); return; }
+    }
+    if (pluginWizardStep < 4) {
+        pluginWizardStep++;
+        updatePluginWizardUI();
+    }
+}
+
+function pluginWizardPrev() {
+    if (pluginWizardStep > 1) {
+        pluginWizardStep--;
+        updatePluginWizardUI();
+    }
+}
+
+function togglePluginAuthFields() {
+    const authType = document.getElementById('plugin-auth-type').value;
+    document.getElementById('plugin-auth-bearer').classList.toggle('d-none', authType !== 'bearer');
+    document.getElementById('plugin-auth-apikey').classList.toggle('d-none', authType !== 'api_key_header');
+    document.getElementById('plugin-auth-basic').classList.toggle('d-none', authType !== 'basic');
+}
+
+function buildPluginLayerConfig() {
+    const name = document.getElementById('plugin-name').value.trim();
+    const editId = document.getElementById('plugin-edit-id').value.trim();
+
+    const layer = {
+        layer_id: editId || '',
+        layer_name: name,
+        description: document.getElementById('plugin-description').value.trim(),
+        url_template: document.getElementById('plugin-url').value.trim(),
+        method: document.getElementById('plugin-method').value,
+        timeout: parseInt(document.getElementById('plugin-timeout').value) || 10,
+        source_weight: parseInt(document.getElementById('plugin-weight').value) || 55,
+        enabled: true,
+        order: 35,
+        on_error: 'skip',
+        request_fields: ['title', 'author'],
+        circuit_breaker: {max_failures: 3, cooldown: 300},
+    };
+
+    // Auth
+    const authType = document.getElementById('plugin-auth-type').value;
+    if (authType === 'none') {
+        layer.auth = {type: 'none'};
+    } else if (authType === 'bearer') {
+        layer.auth = {
+            type: 'bearer',
+            token_secret_key: document.getElementById('plugin-bearer-secret').value.trim()
+        };
+    } else if (authType === 'api_key_header') {
+        layer.auth = {
+            type: 'api_key_header',
+            header_name: document.getElementById('plugin-apikey-header').value.trim() || 'X-API-Key',
+            token_secret_key: document.getElementById('plugin-apikey-secret').value.trim()
+        };
+    } else if (authType === 'basic') {
+        layer.auth = {
+            type: 'basic',
+            username: document.getElementById('plugin-basic-user').value.trim(),
+            token_secret_key: document.getElementById('plugin-basic-secret').value.trim()
+        };
+    }
+
+    // Response mapping (only include non-empty fields)
+    const mapping = {};
+    const fields = ['title', 'author', 'narrator', 'series', 'series_num', 'year'];
+    fields.forEach(f => {
+        const val = document.getElementById('plugin-map-' + f).value.trim();
+        if (val) mapping[f] = val;
+    });
+    layer.response_mapping = mapping;
+
+    return layer;
+}
+
+function testPluginLayer() {
+    const layer = buildPluginLayerConfig();
+    const testTitle = document.getElementById('plugin-test-title').value.trim() || 'The Final Empire';
+    const testAuthor = document.getElementById('plugin-test-author').value.trim() || 'Brandon Sanderson';
+
+    const btn = document.getElementById('plugin-test-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Testing...';
+
+    const resultDiv = document.getElementById('plugin-test-result');
+    resultDiv.classList.remove('d-none');
+
+    fetch('/api/plugins/test-layer', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({layer: layer, test_title: testTitle, test_author: testAuthor})
+    }).then(r => r.json()).then(data => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-circle"></i> Test API';
+
+        // Status badge
+        const statusBadge = document.getElementById('plugin-test-status');
+        if (data.success) {
+            statusBadge.textContent = 'SUCCESS';
+            statusBadge.className = 'badge bg-success';
+        } else {
+            statusBadge.textContent = 'FAILED';
+            statusBadge.className = 'badge bg-danger';
+        }
+
+        // HTTP status and time
+        document.getElementById('plugin-test-http-status').textContent = data.status_code || '-';
+        document.getElementById('plugin-test-time').textContent = data.response_time_ms ? data.response_time_ms + 'ms' : '-';
+        document.getElementById('plugin-test-url').textContent = data.url || '-';
+        document.getElementById('plugin-test-url').title = data.url || '';
+
+        // Mapped fields
+        const mappedDiv = document.getElementById('plugin-test-mapped');
+        const mappedBody = document.getElementById('plugin-test-mapped-body');
+        if (data.mapped_fields && Object.keys(data.mapped_fields).length > 0) {
+            mappedDiv.classList.remove('d-none');
+            mappedBody.innerHTML = Object.entries(data.mapped_fields).map(([field, value]) => {
+                const badge = value !== null
+                    ? '<span class="text-success">' + escapeHtml(String(value)) + '</span>'
+                    : '<span class="text-danger">null (path not found)</span>';
+                return `<tr><td>${escapeHtml(field)}</td><td>${badge}</td></tr>`;
+            }).join('');
+        } else {
+            mappedDiv.classList.add('d-none');
+        }
+
+        // Raw response
+        document.getElementById('plugin-test-raw').textContent = data.raw_response || '(no response body)';
+
+        // Error
+        const errorDiv = document.getElementById('plugin-test-error');
+        if (data.error) {
+            errorDiv.classList.remove('d-none');
+            errorDiv.textContent = data.error;
+        } else {
+            errorDiv.classList.add('d-none');
+        }
+
+    }).catch(err => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-circle"></i> Test API';
+        alert('Test error: ' + err);
+    });
+}
+
+function savePluginLayer() {
+    const layer = buildPluginLayerConfig();
+
+    if (!layer.layer_name) { alert('Please enter a layer name'); return; }
+    if (!layer.url_template) { alert('Please enter a URL template'); return; }
+
+    fetch('/api/plugins/save-layer', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({layer: layer})
+    }).then(r => r.json()).then(data => {
+        if (data.success) {
+            // Refresh the list from server
+            fetch('/api/plugins/layers').then(r => r.json()).then(listData => {
+                if (listData.success) {
+                    pluginsData = listData.layers;
+                    renderPluginsList();
+                }
+            });
+            bootstrap.Modal.getInstance(document.getElementById('pluginWizardModal')).hide();
+        } else {
+            alert('Failed to save: ' + (data.error || 'Unknown error'));
+        }
+    }).catch(err => alert('Save error: ' + err));
+}
+
+// Load plugins on tab show
+document.querySelector('[data-bs-target="#tab-integrations"]')?.addEventListener('shown.bs.tab', function() {
+    renderPluginsList();
+    loadPluginHealth();
+});
+
+// Initial render
+if (pluginsData.length) renderPluginsList();
+else document.getElementById('plugins-empty') && (document.getElementById('plugins-empty').style.display = 'block');
+
+// ==================== PLUGIN HEALTH DASHBOARD (Issue #189) ====================
+
+let pluginHealthData = [];
+
+function loadPluginHealth() {
+    const cards = document.getElementById('plugin-health-cards');
+    const empty = document.getElementById('plugin-health-empty');
+    const loading = document.getElementById('plugin-health-loading');
+    if (!cards) return;
+
+    loading.style.display = 'block';
+    empty.style.display = 'none';
+    cards.innerHTML = '';
+
+    fetch('/api/plugins/health').then(r => r.json()).then(data => {
+        loading.style.display = 'none';
+        if (!data.success) {
+            cards.innerHTML = '<div class="text-danger p-3">Error loading health data: ' + (data.error || 'Unknown') + '</div>';
+            return;
+        }
+
+        pluginHealthData = data.plugins || [];
+        if (!pluginHealthData.length) {
+            empty.style.display = 'block';
+            return;
+        }
+
+        // Check if all plugins have no data
+        const allNoData = pluginHealthData.every(p => p.status === 'no_data');
+        if (allNoData) {
+            empty.style.display = 'block';
+            return;
+        }
+
+        renderPluginHealthCards();
+    }).catch(err => {
+        loading.style.display = 'none';
+        cards.innerHTML = '<div class="text-danger p-3">Failed to load health data: ' + err + '</div>';
+    });
+}
+
+function renderPluginHealthCards() {
+    const cards = document.getElementById('plugin-health-cards');
+    cards.innerHTML = pluginHealthData.map(p => {
+        // Status dot color
+        let dotColor = 'secondary';
+        let statusLabel = 'No Data';
+        if (p.status === 'active') { dotColor = 'success'; statusLabel = 'Active'; }
+        else if (p.status === 'errored') { dotColor = 'warning'; statusLabel = 'Errored'; }
+        else if (p.status === 'auto-disabled') { dotColor = 'danger'; statusLabel = 'Auto-Disabled'; }
+        else if (p.status === 'disabled') { dotColor = 'secondary'; statusLabel = 'Disabled'; }
+        else if (p.status === 'no_data') { dotColor = 'secondary'; statusLabel = 'No Data'; }
+
+        const successRate = p.success_rate !== null ? p.success_rate + '%' : '-';
+        const avgDuration = p.avg_duration_ms !== null ? p.avg_duration_ms + 'ms' : '-';
+        const lastRun = p.last_run ? new Date(p.last_run * 1000).toLocaleString() : 'Never';
+        const errorCount = (p.recent_errors || []).length;
+
+        let reEnableBtn = '';
+        if (p.auto_disabled) {
+            reEnableBtn = `<button class="btn btn-sm btn-outline-success py-0 ms-2" onclick="resetPluginHealth('${escapeHtml(p.plugin_id)}')">
+                <i class="bi bi-arrow-counterclockwise"></i> Re-enable
+            </button>`;
+        }
+
+        // Build error log accordion
+        let errorLog = '';
+        if (errorCount > 0) {
+            const collapseId = 'plugin-errors-' + p.plugin_id.replace(/[^a-zA-Z0-9]/g, '_');
+            errorLog = `
+                <div class="mt-2">
+                    <a class="small text-muted" data-bs-toggle="collapse" href="#${collapseId}" role="button">
+                        <i class="bi bi-exclamation-triangle"></i> ${errorCount} recent error${errorCount > 1 ? 's' : ''}
+                    </a>
+                    <div class="collapse mt-1" id="${collapseId}">
+                        <div style="max-height: 150px; overflow-y: auto; font-size: 0.7rem;">
+                            ${p.recent_errors.map(e => `
+                                <div class="border-bottom border-secondary py-1 px-2">
+                                    <span class="text-muted">${new Date(e.timestamp * 1000).toLocaleString()}</span>
+                                    <br><span class="text-danger">${escapeHtml(e.message)}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        // Logs link
+        const logsLink = p.status !== 'no_data'
+            ? `<a class="small text-muted ms-2" href="#" onclick="showPluginLogs('${escapeHtml(p.plugin_id)}', '${escapeHtml(p.plugin_name)}'); return false;">
+                 <i class="bi bi-list-ul"></i> Logs
+               </a>`
+            : '';
+
+        return `
+            <div class="d-flex align-items-start border-bottom border-secondary px-3 py-2">
+                <div class="me-2 mt-1">
+                    <span class="d-inline-block rounded-circle bg-${dotColor}" style="width: 10px; height: 10px;"></span>
+                </div>
+                <div class="flex-grow-1">
+                    <div class="d-flex align-items-center">
+                        <strong>${escapeHtml(p.plugin_name)}</strong>
+                        <span class="badge bg-${dotColor} ms-2" style="font-size: 0.65rem;">${statusLabel}</span>
+                        ${reEnableBtn}
+                        ${logsLink}
+                    </div>
+                    <div class="row mt-1" style="font-size: 0.75rem;">
+                        <div class="col-3">
+                            <span class="text-muted">Success:</span> <strong>${successRate}</strong>
+                        </div>
+                        <div class="col-3">
+                            <span class="text-muted">Avg Time:</span> <strong>${avgDuration}</strong>
+                        </div>
+                        <div class="col-3">
+                            <span class="text-muted">Processed:</span> <strong>${p.total_processed}</strong>
+                        </div>
+                        <div class="col-3">
+                            <span class="text-muted">Resolved:</span> <strong>${p.total_resolved}</strong>
+                        </div>
+                    </div>
+                    <div style="font-size: 0.7rem;" class="text-muted mt-1">
+                        Last run: ${lastRun}
+                    </div>
+                    ${errorLog}
+                </div>
+            </div>`;
+    }).join('');
+}
+
+function resetPluginHealth(pluginId) {
+    if (!confirm('Re-enable plugin "' + pluginId + '"? This resets the failure counter.')) return;
+    fetch('/api/plugins/health/' + encodeURIComponent(pluginId) + '/reset', {
+        method: 'POST'
+    }).then(r => r.json()).then(data => {
+        if (data.success) {
+            // Refresh both lists
+            fetch('/api/plugins/layers').then(r => r.json()).then(listData => {
+                if (listData.success) {
+                    pluginsData = listData.layers;
+                    renderPluginsList();
+                }
+            });
+            loadPluginHealth();
+        } else {
+            alert('Reset failed: ' + (data.error || 'Unknown error'));
+        }
+    }).catch(err => alert('Reset error: ' + err));
+}
+
+function showPluginLogs(pluginId, pluginName) {
+    fetch('/api/plugins/health/' + encodeURIComponent(pluginId) + '/logs')
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success || !data.entries.length) {
+                alert('No log entries for ' + pluginName);
+                return;
+            }
+
+            // Build a simple modal with log entries
+            let existingModal = document.getElementById('pluginLogsModal');
+            if (existingModal) existingModal.remove();
+
+            const entries = data.entries;
+            const rows = entries.map(e => {
+                const ts = new Date(e.timestamp * 1000).toLocaleString();
+                const badge = e.success
+                    ? '<span class="badge bg-success">OK</span>'
+                    : '<span class="badge bg-danger">FAIL</span>';
+                const dur = e.duration_ms !== null ? e.duration_ms + 'ms' : '-';
+                const err = e.error_message ? '<br><small class="text-danger">' + escapeHtml(e.error_message) + '</small>' : '';
+                return `<tr>
+                    <td style="font-size: 0.75rem;">${ts}</td>
+                    <td>${badge}</td>
+                    <td style="font-size: 0.75rem;">${dur}</td>
+                    <td style="font-size: 0.75rem;">${e.items_processed || 0} / ${e.items_resolved || 0}</td>
+                    <td style="font-size: 0.75rem;">${err || '-'}</td>
+                </tr>`;
+            }).join('');
+
+            const modalHtml = `
+                <div class="modal fade" id="pluginLogsModal" tabindex="-1">
+                    <div class="modal-dialog modal-lg">
+                        <div class="modal-content bg-dark">
+                            <div class="modal-header py-2">
+                                <h6 class="modal-title"><i class="bi bi-list-ul"></i> Logs: ${escapeHtml(pluginName)}</h6>
+                                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body p-0">
+                                <div class="table-responsive">
+                                    <table class="table table-sm table-dark mb-0">
+                                        <thead><tr>
+                                            <th>Time</th><th>Status</th><th>Duration</th><th>Proc/Res</th><th>Error</th>
+                                        </tr></thead>
+                                        <tbody>${rows}</tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+            new bootstrap.Modal(document.getElementById('pluginLogsModal')).show();
+
+            // Clean up on close
+            document.getElementById('pluginLogsModal').addEventListener('hidden.bs.modal', function() {
+                this.remove();
+            });
+        })
+        .catch(err => alert('Error loading logs: ' + err));
+}
 </script>
 {% endblock %}

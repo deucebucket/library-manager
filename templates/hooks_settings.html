@@ -19,7 +19,7 @@
                     <!-- Populated by JS -->
                 </div>
                 <div id="hooks-empty" class="text-center text-muted py-4" style="display: none;">
-                    <i class="bi bi-terminal" style="font-size: 2rem;"></i>
+                    <i class="bi bi-terminal fs-icon-lg"></i>
                     <p class="mt-2 mb-0">No hooks configured</p>
                     <small>Add a hook to run commands or webhooks after books are renamed</small>
                 </div>
@@ -170,6 +170,71 @@
                         <label class="form-label">Headers <small class="text-muted">(JSON, optional)</small></label>
                         <input type="text" class="form-control bg-dark text-light font-monospace" id="hook-headers"
                                placeholder='{"Authorization": "Bearer {{webhook_secret}}"}'>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Body Template <small class="text-muted">(JSON, optional - overrides default payload)</small></label>
+                        <textarea class="form-control bg-dark text-light font-monospace" id="hook-body-template" rows="4"
+                                  placeholder='{"embeds": [{"title": "Book: {{title}}", "description": "Author: {{author}}"}]}'></textarea>
+                        <small class="text-muted">Custom JSON payload with <code>{{"{{"}}variable{{"}}"}}</code> placeholders. Leave empty for the default event envelope.</small>
+                    </div>
+                </div>
+
+                <!-- Event Triggers (Issue #187) -->
+                <div class="mb-3">
+                    <label class="form-label">Trigger on Events</label>
+                    <div class="row" id="hook-events-checkboxes">
+                        <div class="col-md-6">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" value="rename_applied" id="hook-evt-rename_applied" checked>
+                                <label class="form-check-label" for="hook-evt-rename_applied">
+                                    <strong>rename_applied</strong> <small class="text-muted">- Rename was applied</small>
+                                </label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" value="rename_proposed" id="hook-evt-rename_proposed">
+                                <label class="form-check-label" for="hook-evt-rename_proposed">
+                                    <strong>rename_proposed</strong> <small class="text-muted">- Rename proposed for review</small>
+                                </label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" value="rename_rejected" id="hook-evt-rename_rejected">
+                                <label class="form-check-label" for="hook-evt-rename_rejected">
+                                    <strong>rename_rejected</strong> <small class="text-muted">- Rename rejected by user</small>
+                                </label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" value="book_discovered" id="hook-evt-book_discovered">
+                                <label class="form-check-label" for="hook-evt-book_discovered">
+                                    <strong>book_discovered</strong> <small class="text-muted">- New book found during scan</small>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" value="scan_started" id="hook-evt-scan_started">
+                                <label class="form-check-label" for="hook-evt-scan_started">
+                                    <strong>scan_started</strong> <small class="text-muted">- Library scan started</small>
+                                </label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" value="scan_completed" id="hook-evt-scan_completed">
+                                <label class="form-check-label" for="hook-evt-scan_completed">
+                                    <strong>scan_completed</strong> <small class="text-muted">- Library scan finished</small>
+                                </label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" value="processing_failed" id="hook-evt-processing_failed">
+                                <label class="form-check-label" for="hook-evt-processing_failed">
+                                    <strong>processing_failed</strong> <small class="text-muted">- Processing error</small>
+                                </label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" value="queue_empty" id="hook-evt-queue_empty">
+                                <label class="form-check-label" for="hook-evt-queue_empty">
+                                    <strong>queue_empty</strong> <small class="text-muted">- Processing queue is empty</small>
+                                </label>
+                            </div>
+                        </div>
                     </div>
                 </div>
 

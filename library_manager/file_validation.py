@@ -32,9 +32,15 @@ def check_ffmpeg_available() -> Tuple[bool, str]:
     return True, "ok"
 
 
-def validate_audio_file(path: str) -> Tuple[bool, str, Dict[str, Any]]:
+def validate_audio_file(path: str, min_duration: Optional[float] = None,
+                        min_size: Optional[int] = None) -> Tuple[bool, str, Dict[str, Any]]:
     """
     Validate an audio file using ffprobe.
+
+    Args:
+        path: Path to the audio file
+        min_duration: Minimum duration in seconds (default: MIN_DURATION_SECONDS)
+        min_size: Minimum file size in bytes (default: MIN_FILE_SIZE_BYTES)
 
     Returns:
         (is_valid, reason, metadata)
@@ -42,6 +48,11 @@ def validate_audio_file(path: str) -> Tuple[bool, str, Dict[str, Any]]:
         - reason: "valid" or error description
         - metadata: Dict with duration, size, format info (empty if invalid)
     """
+    if min_duration is None:
+        min_duration = MIN_DURATION_SECONDS
+    if min_size is None:
+        min_size = MIN_FILE_SIZE_BYTES
+
     file_path = Path(path)
 
     # Basic checks with TOCTOU protection
@@ -57,7 +68,7 @@ def validate_audio_file(path: str) -> Tuple[bool, str, Dict[str, Any]]:
         logger.warning(f"File disappeared during validation {path}: {e}")
         return False, "file_disappeared", {}
 
-    if file_size < MIN_FILE_SIZE_BYTES:
+    if file_size < min_size:
         return False, "too_small", {"size": file_size}
 
     # Run ffprobe
@@ -137,7 +148,7 @@ def validate_audio_file(path: str) -> Tuple[bool, str, Dict[str, Any]]:
     if duration == 0:
         return False, "no_duration_truncated", metadata
 
-    if duration < MIN_DURATION_SECONDS:
+    if duration < min_duration:
         return False, "too_short", metadata
 
     # Try to seek to end (catches truncated files)

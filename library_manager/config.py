@@ -116,6 +116,9 @@ DEFAULT_CONFIG = {
     # Text providers: "gemini", "openrouter", "ollama"
     "audio_provider_chain": ["bookdb", "gemini"],  # Order to try audio identification (bookdb = Skaldleita)
     "text_provider_chain": ["gemini", "openrouter"],  # Order to try text-based AI
+    # Pipeline layer ordering - controls the sequence layers execute in
+    "pipeline_order": ["audio_id", "audio_credits", "sl_requeue", "api_lookup", "ai_verify"],
+    "use_modular_pipeline": False,        # Feature flag: use PipelineOrchestrator instead of hardcoded process_all_queue
     "deep_scan_mode": False,              # Always use all enabled layers regardless of confidence
     "profile_confidence_threshold": 85,   # Minimum confidence to skip remaining layers (0-100)
     "multibook_ai_fallback": True,         # Use AI for ambiguous chapter/multibook detection
@@ -136,7 +139,16 @@ DEFAULT_CONFIG = {
     "watch_delete_empty_folders": True,    # Remove empty source folders after moving
     "watch_min_file_age_seconds": 30,      # Minimum file age before processing (wait for downloads to complete)
     # Post-processing hooks - run commands/webhooks after a book is renamed (Issue #166)
-    "post_processing_hooks": []
+    "post_processing_hooks": [],
+    # Custom HTTP API layers - user-defined external API processing layers (Issue #185)
+    "custom_layers": [],
+    # Drop-in Python plugins (Issue #188)
+    "plugin_dir": "/data/plugins",             # Directory to scan for drop-in plugins (Docker: /data/plugins)
+    "plugin_configs": {},                      # Per-plugin config overrides: {"plugin-id": {"key": "value"}}
+    # Issue #110: File validation - check audio files before processing
+    "enable_file_validation": True,            # Validate audio files with ffprobe before queueing
+    "min_audio_duration_seconds": 600,         # Minimum duration (seconds) to consider a valid audiobook (default: 10 min)
+    "min_audio_file_size_mb": 1,               # Minimum file size (MB) to consider a valid audiobook
 }
 
 DEFAULT_SECRETS = {

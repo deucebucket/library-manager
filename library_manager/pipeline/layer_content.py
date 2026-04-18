@@ -113,16 +113,21 @@ def process_layer_4_content(
 
             # Build new path
             lib_path = None
+            book_path_resolved = book_path.resolve()
             for lp in config.get('library_paths', []):
+                lp_path = Path(lp).resolve()
                 try:
-                    book_path.relative_to(Path(lp))
-                    lib_path = Path(lp)
+                    book_path_resolved.relative_to(lp_path)
+                    lib_path = lp_path
                     break
                 except ValueError:
                     continue
 
             if not lib_path:
-                lib_path = book_path.parent.parent
+                if book_path.is_file():
+                    lib_path = book_path.parent
+                else:
+                    lib_path = book_path.parent.parent
 
             # Build target path with series grouping if applicable
             if new_series and config.get('series_grouping', True):

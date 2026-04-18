@@ -2,6 +2,271 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.149] - 2026-04-17
+
+### Fixed
+
+- **Issue #211: Watch-folder failure tracking silently dropped** — Three
+  `INSERT` statements in `process_watch_folder` (`app.py:6906`, `6914`,
+  `6944`) referenced `added_at` on the `books` table, but the schema column
+  is `created_at`. Every insert raised `sqlite3.OperationalError: table
+  books has no column named added_at`. Two `except` blocks caught it with
+  `logger.debug`, hiding the error at default log levels. Effects:
+  - Successful watch-folder moves never produced a `pending` or
+    `needs_attention` row in the books table.
+  - Failed watch-folder moves never produced a `watch_folder_error` row —
+    users had no UI surface for the failure, only a log line.
+  - Fix: renamed `added_at` to `created_at` in all three INSERTs;
+    raised both swallow-except blocks from `logger.debug` to
+    `logger.warning(..., exc_info=True)` so the same class of silent
+    failure can't rot unnoticed again.
+  - Surfaced during live testing of #209. Bug has existed since the
+    watch-folder feature was introduced.
+
+---
+
+## [0.9.0-beta.148] - 2026-04-17
+
+### Fixed
+
+- **Issue #208: Watch-folder retry loop survives restarts** — The watch-folder
+  worker used an in-memory `set()` to remember which files it had already
+  processed. Every LM restart wiped the set, so whenever a file couldn't be
+  processed (unknown author, ambiguous match, move failure, mtime churn), the
+  worker would re-submit it on every scan forever. Server-side evidence showed
+  one LM instance generating ~48% of all Skaldleita `/match` traffic — 2,840
+  requests in a single day on the same filename. Fix:
+  - New `watch_folder_processed` SQLite table (`path`, `processed_at`,
+    `outcome`, `error_message`) persists dedup across restarts. `outcome`
+    values: `moved`, `move_failed`, `aborted_by_server`.
+  - Added `watch_folder_is_processed()` / `watch_folder_mark_processed()`
+    helpers in `library_manager/database.py`; watch worker switched from
+    `set()` ops to these helpers.
+- **Issue #208: Skaldleita `server_notice` handler** — Skaldleita responses
+  can now carry a `server_notice` block (severity/code/message/action/
+  upgrade_url). `library_manager/providers/bookdb.py` logs every notice
+  (with upgrade URL) and, on `action=abort_task`, stashes it in a
+  `threading.local()` slot. The watch-folder worker reads that slot after
+  each identify attempt and, if an abort was signalled, marks the item as
+  `aborted_by_server` and skips the rest of the pipeline — no 30-second
+  retry loop.
+
+---
+
+## [0.9.0-beta.147] - 2026-04-17
+
+### Fixed
+
+- **Issue #209: Hard link failure silently copies and deletes originals** — When
+  `Use hard links` was enabled and the watch folder and library lived on different
+  filesystems, `os.link()` raised `EXDEV` and the code silently fell back to
+  `shutil.copy2()` followed by deleting each original file. That destroyed the
+  source data (breaking torrent seeds, doubling disk use, violating the user's
+  explicit "hard link" preference). Fix:
+  - Added a filesystem-compatibility pre-check at the start of
+    `move_to_output_folder`. When hard links are requested but source and library
+    are on different `st_dev`s, the function returns a clear, actionable error
+    ("Move your library to the same volume as the watch folder, or disable 'Use
+    hard links' in Settings") and does not touch source files.
+  - Removed the EXDEV copy+delete fallback from both the single-file and
+    directory-loop branches. Remaining `OSError`s (permission, `ENOSPC`, etc.)
+    propagate to the outer handler with source files intact, and the watch
+    worker records the failure as `watch_folder_error` with the error message
+    visible in the UI.
+  - Reported by `@kyleviloria` — files weren't lost because copies still existed
+    at the library destination, but the deletion of originals broke their
+    download workflow and burned disk.
+
+---
+
+## [0.9.0-beta.146] - 2026-04-07
+
+### Added
+
+- **Issue #110: Folder triage UI** - Dashboard now shows messy/garbage folder counts in an
+  info banner. Library view displays triage badges (Messy/Garbage) on affected books. Added
+  Settings toggle to enable/disable folder triage. Triage data now included in "all" library
+  view API responses. Split push corrections feature to #205 (blocked on Skaldleita).
+
+---
+
+## [0.9.0-beta.145] - 2026-04-07
+
+### Added
+
+- **Issue #203: Plugin system documentation and discoverability** - Added Python drop-in
+  plugin guide with manifest.json and BasePlugin interface examples directly in the Plugins
+  settings tab. Added secrets management card explaining secrets.json usage for Docker and
+  bare metal. Added ready-to-use API configurations for Google Books and Open Library.
+  Shipped example-logger plugin to `examples/plugins/` with comprehensive README covering
+  plugin creation, manifest fields, BasePlugin interface, configuration, and behavior.
+  Added new hint entries for plugin-related tooltips.
+
+---
+
+## [0.9.0-beta.144] - 2026-04-07
+
+### Fixed
+
+- **Issue #201: SAFETY BLOCK error for files in library root** - Fixed path normalization
+  mismatch where Windows mapped drives (e.g. `R:\`) resolve to UNC paths but config paths
+  were compared without `.resolve()`, causing library matching to fail. Fixed fallback logic
+  that assumed 2-level directory structure (`parent.parent`), which went above the library
+  root for loose files. Applied fix across all 4 path-matching locations in `app.py`,
+  `layer_ai_queue.py`, and `layer_audio_credits.py`.
+
+---
+
+## [0.9.0-beta.143] - 2026-03-21
+
+### Changed
+
+- **Issue #198: Comprehensive UI overhaul** - Extracted 728 lines of inline CSS from base.html
+  into `static/css/style.css` with CSS custom properties design system (spacing scale, border
+  radius tokens, transition timing). Consolidated duplicate `escapeHtml()` and `showToast()`
+  helpers from 5 templates into `static/js/common.js`. Reorganized Settings from 7 tabs
+  (Library, Processing, AI Setup, Safety, Advanced, Post-Processing, Plugins) into 4 tabs
+  (Library, Engine, Pipeline, Integrations) with section headers. Added mobile responsive
+  breakpoints for tables, nav-tabs, cards, and stat numbers. Replaced hardcoded hex colors
+  with CSS variables throughout all templates. Changed accent success color from `#00ff00`
+  to `#2ecc71` for professional appearance. Added sticky settings save bar with backdrop blur.
+  Replaced all inline `font-size` styles with utility classes (`fs-icon-lg`, `fs-icon-xl`).
+  Setup wizard styles extracted with `setup-mode` body class for navbar hiding. All modal
+  backgrounds now use theme CSS variables instead of hardcoded `#16213e`.
+
+---
+
+## [0.9.0-beta.142] - 2026-03-21
+
+### Added
+
+- **Issue #188: Drop-in Python plugin system** - New plugin loader that discovers and loads
+  Python plugins from a configurable directory (`/data/plugins` for Docker). Plugins extend
+  a simple `BasePlugin` class with `setup()`, `can_process()`, `process()`, and `teardown()`
+  methods. The loader handles manifest validation, dynamic module importing via `importlib`,
+  exception isolation (bad plugins never crash the app), timeout enforcement via
+  `ThreadPoolExecutor`, and deep-copying book data before passing to plugins. Each plugin is
+  wrapped in a `PluginAdapter` that implements the `LayerAdapter` interface, making plugins
+  fully compatible with the modular pipeline orchestrator. Plugins are registered in the
+  `LayerRegistry` and tracked by the existing health dashboard with auto-disable circuit
+  breaker support.
+
+- **Plugin manifest system** - Each plugin requires a `manifest.json` with metadata (id,
+  name, version, description), entry point configuration, ordering, and dependency
+  declarations (required config keys and secrets). Manifests are strictly validated on
+  discovery -- invalid plugins are logged as warnings and skipped.
+
+- **Plugin configuration** - New `plugin_dir` config key (default: `/data/plugins`) and
+  `plugin_configs` dict for per-plugin configuration overrides. Plugin-specific secrets are
+  read from `secrets.json`.
+
+- **Example plugin** - Template plugin at `test-env/example-plugin/` demonstrating the
+  `BasePlugin` interface with manifest.json and a simple logging implementation.
+
+---
+
+## [0.9.0-beta.141] - 2026-03-21
+
+### Added
+
+- **Issue #189: Plugin Health Dashboard** - New health monitoring section in the Plugins tab
+  showing real-time status for each custom API source. Tracks success rate (last 50 runs),
+  average response time, items processed/resolved, and last run timestamp. Health cards use
+  color-coded status indicators (green=active, yellow=errored, red=auto-disabled). Expandable
+  error logs show the 5 most recent failures per plugin with timestamps. Full metric log modal
+  shows the last 20 execution entries with status, duration, and error details.
+
+- **Auto-disable circuit breaker** - Plugins are automatically disabled after 5 consecutive
+  failures to prevent repeated errors from slowing the pipeline. Auto-disabled plugins show
+  a red status badge and a "Re-enable" button that resets the failure counter and re-enables
+  the layer. Toast notification logged when a plugin is auto-disabled.
+
+- **Plugin metrics recording** - New `plugin_metrics` database table tracks every custom
+  layer execution with timestamp, success/failure, duration, error message, and item counts.
+  Metrics are recorded automatically after each `CustomApiLayer.run()` batch with minimal
+  overhead (single INSERT, no aggregation on write path). Three new API endpoints:
+  `GET /api/plugins/health` (aggregated stats), `GET /api/plugins/health/<id>/logs`
+  (last 20 entries), `POST /api/plugins/health/<id>/reset` (re-enable disabled plugin).
+
+---
+
+## [0.9.0-beta.140] - 2026-03-21
+
+### Added
+
+- **Issue #186: Custom Layer Builder wizard UI** - New "Plugins" tab in settings with a 4-step
+  wizard for creating custom HTTP API metadata sources without writing code. Step 1 collects name
+  and description, step 2 configures URL template with variable placeholders, HTTP method, timeout,
+  and authentication (none/bearer/API key header/basic auth), step 3 maps API response fields to
+  book profile fields via JSONPath expressions with a configurable confidence weight slider, and
+  step 4 provides live API testing with sample book data showing HTTP status, response time, mapped
+  field values, and raw response. Full CRUD via `/api/plugins/` endpoints: list, save, delete, and
+  toggle layers. Each custom layer is stored in `config.json` under `custom_layers` and feeds into
+  the existing `CustomApiLayer` processing pipeline.
+
+---
+
+## [0.9.0-beta.139] - 2026-03-21
+
+### Added
+
+- **Issue #187: Expanded hook events with filtering and custom payloads** - Hooks now fire on 8
+  event types (`scan_started`, `scan_completed`, `book_discovered`, `rename_proposed`,
+  `rename_applied`, `rename_rejected`, `processing_failed`, `queue_empty`) instead of just
+  `fixed`. Each hook supports a `run_on` list for per-hook event filtering, so a single hook
+  can subscribe to only the events it cares about. New `body_template` field enables custom
+  webhook payloads with full template variable support (enables Discord/Slack/Home Assistant
+  without code). All events use a standardized envelope format with `event`, `timestamp`,
+  `app_version`, and event-specific `payload`. New `emit_event()` helper centralizes event
+  dispatching across the codebase. Fully backward compatible — existing hooks default to
+  `run_on: ["rename_applied"]` and the legacy `"fixed"` event name is aliased automatically.
+
+---
+
+## [0.9.0-beta.138] - 2026-03-21
+
+### Fixed
+
+- **Issue #185: Custom layer infinite reprocessing** - `CustomApiLayer._apply_result` now
+  advances `verification_layer` to `self.order + 1` after updating the book profile. Previously
+  the layer never advanced the item, causing `_fetch_batch` to pick up the same books every cycle.
+
+---
+
+## [0.9.0-beta.137] - 2026-03-10
+
+### Added
+
+- **Issue #66: Standalone layer execution** - Play button next to each layer in the pipeline
+  settings section. Runs a single pipeline layer on demand via `POST /api/pipeline/run-layer/<id>`.
+  Shows spinner during execution and result badge with processed/resolved counts.
+
+---
+
+## [0.9.0-beta.136] - 2026-03-10
+
+### Added
+
+- **Issue #66: Pipeline configuration UI in settings** - New "Processing Pipeline Order" section
+  in Settings > Processing with drag-and-drop and arrow button reordering of processing layers.
+  Each layer shows enable/disable toggle that saves to config. Experimental `use_modular_pipeline`
+  feature flag toggle. "Reset to Default Order" button. Pipeline order saved as JSON to config.
+
+---
+
+## [0.9.0-beta.135] - 2026-03-10
+
+### Added
+
+- **Issue #110: File validation in scan pipeline** - The existing `file_validation.py` module is now
+  integrated into the scan pipeline. Audio files are validated with ffprobe before queuing — corrupt,
+  truncated, or too-short files are marked `validation_failed` and skipped. Enabled by default,
+  requires ffprobe (gracefully skips if unavailable). Configurable thresholds in Settings: minimum
+  duration (default 10 min) and minimum file size (default 1 MB). Dashboard shows a warning when
+  validation failures exist. Books with `validation_failed` status are excluded from re-queuing.
+
+---
+
 ## [0.9.0-beta.134] - 2026-02-28
 
 ### Fixed

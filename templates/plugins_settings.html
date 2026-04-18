@@ -1,0 +1,513 @@
+<!-- Custom Layer Builder Tab (Issue #186) -->
+{# Included in settings.html via include 'plugins_settings.html' #}
+
+<div class="row">
+    <div class="col-lg-8">
+        <!-- Layer List -->
+        <div class="card mb-3">
+            <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                <span>
+                    <i class="bi bi-plug"></i> Custom API Sources
+                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">Add your own book metadata APIs as processing layers. Each source queries an HTTP endpoint and maps the response into the book profile system.</span></span>
+                </span>
+                <button type="button" class="btn btn-sm btn-outline-primary py-0" onclick="openPluginWizard()">
+                    <i class="bi bi-plus-lg"></i> Add Custom API Source
+                </button>
+            </div>
+            <div class="card-body p-0">
+                <div id="plugins-list">
+                    <!-- Populated by JS -->
+                </div>
+                <div id="plugins-empty" class="text-center text-muted py-4" style="display: none;">
+                    <i class="bi bi-plug fs-icon-lg"></i>
+                    <p class="mt-2 mb-0">No custom API sources configured</p>
+                    <small>Add a custom layer to query your own book metadata APIs</small>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-4">
+        <!-- How It Works -->
+        <div class="card mb-3">
+            <div class="card-header py-2">
+                <i class="bi bi-lightbulb"></i> How Custom Layers Work
+            </div>
+            <div class="card-body py-2" style="font-size: 0.8rem;">
+                <p class="mb-2">Custom API sources plug into the processing pipeline. When a book needs metadata, your API is queried alongside built-in sources.</p>
+                <ol class="mb-2 ps-3">
+                    <li>Your API receives book title &amp; author</li>
+                    <li>Response fields are extracted via JSONPath</li>
+                    <li>Extracted data feeds into the book profile with your chosen confidence weight</li>
+                </ol>
+                <hr class="my-2">
+                <p class="mb-1"><strong>URL Template Variables:</strong></p>
+                <code>{{"{{"}}title{{"}}"}}</code>,
+                <code>{{"{{"}}author{{"}}"}}</code>,
+                <code>{{"{{"}}narrator{{"}}"}}</code>,
+                <code>{{"{{"}}isbn{{"}}"}}</code>,
+                <code>{{"{{"}}path{{"}}"}}</code>
+                <hr class="my-2">
+                <p class="mb-1"><strong>JSONPath Examples:</strong></p>
+                <code>$.title</code> - top-level field<br>
+                <code>$.results[0].author</code> - first array item<br>
+                <code>$.data.book.name</code> - nested field
+            </div>
+        </div>
+
+        <!-- Source Weight Guide -->
+        <div class="card mb-3">
+            <div class="card-header py-2">
+                <i class="bi bi-speedometer2"></i> Confidence Weights
+            </div>
+            <div class="card-body py-2" style="font-size: 0.8rem;">
+                <p class="mb-2 text-muted">Higher weight = more trusted. Multiple sources agreeing boosts confidence.</p>
+                <table class="table table-sm table-dark mb-0" style="font-size: 0.75rem;">
+                    <thead><tr><th>Source</th><th>Weight</th></tr></thead>
+                    <tbody>
+                        <tr><td>Audio analysis</td><td>85</td></tr>
+                        <tr><td>ID3 tags</td><td>80</td></tr>
+                        <tr><td>JSON metadata</td><td>75</td></tr>
+                        <tr><td>BookDB / Audnexus</td><td>65</td></tr>
+                        <tr><td>AI verification</td><td>60</td></tr>
+                        <tr class="text-info"><td><strong>Custom layers</strong></td><td><strong>55 (default)</strong></td></tr>
+                        <tr><td>Path parsing</td><td>40</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Python Drop-in Plugins -->
+        <div class="card mb-3">
+            <div class="card-header py-2">
+                <i class="bi bi-code-slash"></i> Python Drop-in Plugins
+                <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.python_plugins }}</span></span>
+            </div>
+            <div class="card-body py-2" style="font-size: 0.8rem;">
+                <p class="mb-2">For developers who need more than HTTP lookups. Write Python plugins that can do anything: parse files, call complex APIs, run local models, etc.</p>
+
+                <p class="mb-1"><strong>Quick Start:</strong></p>
+                <ol class="mb-2 ps-3" style="font-size: 0.75rem;">
+                    <li>Create a folder in <code>/data/plugins/my-plugin/</code></li>
+                    <li>Add a <code>manifest.json</code> with plugin metadata</li>
+                    <li>Add a <code>.py</code> file extending <code>BasePlugin</code></li>
+                    <li>Restart Library Manager &mdash; plugin loads automatically</li>
+                </ol>
+
+                <p class="mb-1"><strong>manifest.json:</strong></p>
+                <pre class="bg-dark border border-secondary p-2 rounded mb-2" style="font-size: 0.7rem; white-space: pre-wrap;">{
+  "id": "my-plugin",
+  "name": "My Plugin",
+  "version": "1.0.0",
+  "description": "What it does",
+  "type": "layer",
+  "entry_point": "layer.py",
+  "class_name": "MyPlugin",
+  "default_order": 35,
+  "requires_config": [],
+  "requires_secrets": ["my_api_key"],
+  "permissions": {
+    "network": ["api.example.com"],
+    "database": "read"
+  }
+}</pre>
+
+                <p class="mb-1"><strong>Plugin Interface:</strong></p>
+                <pre class="bg-dark border border-secondary p-2 rounded mb-2" style="font-size: 0.7rem; white-space: pre-wrap;">from library_manager.plugin_loader import BasePlugin
+
+class MyPlugin(BasePlugin):
+    def setup(self, config, secrets):
+        self.api_key = secrets.get('my_api_key')
+
+    def can_process(self, book_data):
+        return True  # filter which books to process
+
+    def process(self, book_data):
+        title = book_data.get('current_title')
+        # ... your logic here ...
+        return {
+            'title': 'Corrected Title',
+            'author': 'Author Name',
+            # narrator, series, series_num, year
+        }
+
+    def teardown(self):
+        pass  # cleanup on shutdown</pre>
+
+                <p class="mb-0 text-muted" style="font-size: 0.7rem;">
+                    <i class="bi bi-info-circle"></i>
+                    Plugins run with a 30s timeout per book. Auto-disabled after 5 consecutive failures.
+                    An example plugin ships in <code>examples/plugins/example-logger/</code>.
+                </p>
+            </div>
+        </div>
+
+        <!-- Secrets Management -->
+        <div class="card mb-3">
+            <div class="card-header py-2">
+                <i class="bi bi-key"></i> Managing API Secrets
+                <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.plugin_secrets }}</span></span>
+            </div>
+            <div class="card-body py-2" style="font-size: 0.8rem;">
+                <p class="mb-2">API keys and passwords go in <code>secrets.json</code>, not config.json. Reference them by name in the wizard or your plugin code.</p>
+
+                <p class="mb-1"><strong>secrets.json example:</strong></p>
+                <pre class="bg-dark border border-secondary p-2 rounded mb-2" style="font-size: 0.7rem; white-space: pre-wrap;">{
+  "gemini_api_key": "AIza...",
+  "my_bookdb_key": "Bearer abc123",
+  "my_api_password": "secret456"
+}</pre>
+                <p class="mb-0 text-muted" style="font-size: 0.7rem;">
+                    <i class="bi bi-shield-check"></i>
+                    <strong>Docker:</strong> <code>/config/secrets.json</code><br>
+                    <i class="bi bi-shield-check"></i>
+                    <strong>Bare metal:</strong> <code>secrets.json</code> in app directory<br>
+                    This file is gitignored and never included in backups or logs.
+                </p>
+            </div>
+        </div>
+
+        <!-- Real-World Examples -->
+        <div class="card mb-3">
+            <div class="card-header py-2">
+                <i class="bi bi-journal-code"></i> Example API Configurations
+            </div>
+            <div class="card-body py-2" style="font-size: 0.8rem;">
+                <p class="mb-2 text-muted">Ready-to-use configs for popular book APIs. Click "Add Custom API Source" and paste these values.</p>
+
+                <div class="mb-3">
+                    <p class="mb-1"><strong><i class="bi bi-google"></i> Google Books</strong></p>
+                    <table class="table table-sm table-dark mb-1" style="font-size: 0.7rem;">
+                        <tbody>
+                            <tr><td style="width:90px;">URL</td><td><code style="word-break:break-all;">https://www.googleapis.com/books/v1/volumes?q=intitle:{{"{{"}}title{{"}}"}}+inauthor:{{"{{"}}author{{"}}"}}&amp;maxResults=1</code></td></tr>
+                            <tr><td>Method</td><td>GET</td></tr>
+                            <tr><td>Auth</td><td>None (or API Key Header: <code>key</code>)</td></tr>
+                            <tr><td>Title</td><td><code>$.items[0].volumeInfo.title</code></td></tr>
+                            <tr><td>Author</td><td><code>$.items[0].volumeInfo.authors[0]</code></td></tr>
+                            <tr><td>Year</td><td><code>$.items[0].volumeInfo.publishedDate</code></td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="mb-0">
+                    <p class="mb-1"><strong><i class="bi bi-book"></i> Open Library</strong></p>
+                    <table class="table table-sm table-dark mb-1" style="font-size: 0.7rem;">
+                        <tbody>
+                            <tr><td style="width:90px;">URL</td><td><code style="word-break:break-all;">https://openlibrary.org/search.json?title={{"{{"}}title{{"}}"}}&amp;author={{"{{"}}author{{"}}"}}&amp;limit=1</code></td></tr>
+                            <tr><td>Method</td><td>GET</td></tr>
+                            <tr><td>Auth</td><td>None</td></tr>
+                            <tr><td>Title</td><td><code>$.docs[0].title</code></td></tr>
+                            <tr><td>Author</td><td><code>$.docs[0].author_name[0]</code></td></tr>
+                            <tr><td>Year</td><td><code>$.docs[0].first_publish_year</code></td></tr>
+                        </tbody>
+                    </table>
+                    <p class="mb-0 text-muted" style="font-size: 0.7rem;">
+                        <i class="bi bi-info-circle"></i> Open Library is free with no API key required.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Plugin Health Dashboard (Issue #189) -->
+<div class="row mt-3">
+    <div class="col-12">
+        <div class="card mb-3">
+            <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                <span>
+                    <i class="bi bi-heart-pulse"></i> Plugin Health
+                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">Monitor the health and performance of your custom API sources. Plugins are auto-disabled after 5 consecutive failures.</span></span>
+                </span>
+                <button type="button" class="btn btn-sm btn-outline-secondary py-0" onclick="loadPluginHealth()">
+                    <i class="bi bi-arrow-clockwise"></i> Refresh
+                </button>
+            </div>
+            <div class="card-body p-0">
+                <div id="plugin-health-cards">
+                    <!-- Populated by JS -->
+                </div>
+                <div id="plugin-health-empty" class="text-center text-muted py-4" style="display: none;">
+                    <i class="bi bi-heart-pulse" style="font-size: 1.5rem;"></i>
+                    <p class="mt-2 mb-0">No metrics yet</p>
+                    <small>Health data appears after custom layers process books</small>
+                </div>
+                <div id="plugin-health-loading" class="text-center text-muted py-3" style="display: none;">
+                    <i class="bi bi-hourglass-split"></i> Loading health data...
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Plugin Wizard Modal (4-step) -->
+<div class="modal fade" id="pluginWizardModal" tabindex="-1" data-bs-backdrop="static">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content bg-dark">
+            <div class="modal-header">
+                <h5 class="modal-title" id="pluginWizardTitle"><i class="bi bi-plug"></i> Add Custom API Source</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <!-- Step indicators -->
+                <div class="d-flex justify-content-center mb-4">
+                    <div class="d-flex align-items-center">
+                        <span class="badge rounded-pill bg-primary plugin-step-badge" id="plugin-step-badge-1">1</span>
+                        <small class="ms-1 me-3 text-muted">Info</small>
+                        <i class="bi bi-chevron-right text-muted me-3"></i>
+                        <span class="badge rounded-pill bg-secondary plugin-step-badge" id="plugin-step-badge-2">2</span>
+                        <small class="ms-1 me-3 text-muted">API</small>
+                        <i class="bi bi-chevron-right text-muted me-3"></i>
+                        <span class="badge rounded-pill bg-secondary plugin-step-badge" id="plugin-step-badge-3">3</span>
+                        <small class="ms-1 me-3 text-muted">Mapping</small>
+                        <i class="bi bi-chevron-right text-muted me-3"></i>
+                        <span class="badge rounded-pill bg-secondary plugin-step-badge" id="plugin-step-badge-4">4</span>
+                        <small class="ms-1 text-muted">Test</small>
+                    </div>
+                </div>
+
+                <input type="hidden" id="plugin-edit-id" value="">
+
+                <!-- Step 1: Basic Info -->
+                <div id="plugin-step-1">
+                    <h6 class="mb-3"><i class="bi bi-info-circle"></i> Basic Information</h6>
+                    <div class="mb-3">
+                        <label class="form-label">Name <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control bg-dark text-light" id="plugin-name"
+                               placeholder="e.g. My Book Database">
+                        <small class="text-muted">A short name for this API source</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Description</label>
+                        <input type="text" class="form-control bg-dark text-light" id="plugin-description"
+                               placeholder="e.g. Custom metadata lookup using my private book API">
+                        <small class="text-muted">Optional description for your reference</small>
+                    </div>
+                </div>
+
+                <!-- Step 2: API Configuration -->
+                <div id="plugin-step-2" class="d-none">
+                    <h6 class="mb-3"><i class="bi bi-globe"></i> API Configuration</h6>
+                    <div class="mb-3">
+                        <label class="form-label">URL Template <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control bg-dark text-light font-monospace" id="plugin-url"
+                               placeholder="https://api.example.com/search?title={{title}}&author={{author}}">
+                        <small class="text-muted">Use <code>{{"{{"}}title{{"}}"}}</code>, <code>{{"{{"}}author{{"}}"}}</code>, <code>{{"{{"}}narrator{{"}}"}}</code>, <code>{{"{{"}}isbn{{"}}"}}</code> as placeholders. Values are URL-encoded automatically.</small>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">HTTP Method</label>
+                                <select class="form-select bg-dark text-light" id="plugin-method">
+                                    <option value="GET">GET</option>
+                                    <option value="POST">POST</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">Timeout (seconds)</label>
+                                <input type="number" class="form-control bg-dark text-light" id="plugin-timeout"
+                                       value="10" min="1" max="60">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Authentication</label>
+                        <select class="form-select bg-dark text-light" id="plugin-auth-type" onchange="togglePluginAuthFields()">
+                            <option value="none">None</option>
+                            <option value="bearer">Bearer Token</option>
+                            <option value="api_key_header">API Key Header</option>
+                            <option value="basic">Basic Auth</option>
+                        </select>
+                    </div>
+
+                    <!-- Bearer fields -->
+                    <div id="plugin-auth-bearer" class="d-none">
+                        <div class="mb-3">
+                            <label class="form-label">Secret Key Name</label>
+                            <input type="text" class="form-control bg-dark text-light" id="plugin-bearer-secret"
+                                   placeholder="e.g. my_bookdb_key">
+                            <small class="text-muted">Key name in <code>secrets.json</code> that holds the token</small>
+                        </div>
+                    </div>
+
+                    <!-- API Key Header fields -->
+                    <div id="plugin-auth-apikey" class="d-none">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Header Name</label>
+                                    <input type="text" class="form-control bg-dark text-light" id="plugin-apikey-header"
+                                           placeholder="X-API-Key" value="X-API-Key">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Secret Key Name</label>
+                                    <input type="text" class="form-control bg-dark text-light" id="plugin-apikey-secret"
+                                           placeholder="e.g. my_api_key">
+                                    <small class="text-muted">Key name in <code>secrets.json</code></small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Basic Auth fields -->
+                    <div id="plugin-auth-basic" class="d-none">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Username</label>
+                                    <input type="text" class="form-control bg-dark text-light" id="plugin-basic-user"
+                                           placeholder="username">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Password Secret Key</label>
+                                    <input type="text" class="form-control bg-dark text-light" id="plugin-basic-secret"
+                                           placeholder="e.g. my_api_password">
+                                    <small class="text-muted">Key name in <code>secrets.json</code></small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 3: Response Mapping -->
+                <div id="plugin-step-3" class="d-none">
+                    <h6 class="mb-3"><i class="bi bi-diagram-3"></i> Response Mapping</h6>
+                    <p class="text-muted small mb-3">Map API response fields to book profile fields using JSONPath expressions.</p>
+
+                    <div class="table-responsive">
+                        <table class="table table-sm table-dark mb-3">
+                            <thead>
+                                <tr>
+                                    <th style="width: 130px;">Field</th>
+                                    <th>JSONPath Expression</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><i class="bi bi-book"></i> Title</td>
+                                    <td><input type="text" class="form-control form-control-sm bg-dark text-light font-monospace" id="plugin-map-title" placeholder="$.results[0].title"></td>
+                                </tr>
+                                <tr>
+                                    <td><i class="bi bi-person"></i> Author</td>
+                                    <td><input type="text" class="form-control form-control-sm bg-dark text-light font-monospace" id="plugin-map-author" placeholder="$.results[0].author"></td>
+                                </tr>
+                                <tr>
+                                    <td><i class="bi bi-mic"></i> Narrator</td>
+                                    <td><input type="text" class="form-control form-control-sm bg-dark text-light font-monospace" id="plugin-map-narrator" placeholder="$.results[0].narrator"></td>
+                                </tr>
+                                <tr>
+                                    <td><i class="bi bi-collection"></i> Series</td>
+                                    <td><input type="text" class="form-control form-control-sm bg-dark text-light font-monospace" id="plugin-map-series" placeholder="$.results[0].series"></td>
+                                </tr>
+                                <tr>
+                                    <td><i class="bi bi-hash"></i> Series #</td>
+                                    <td><input type="text" class="form-control form-control-sm bg-dark text-light font-monospace" id="plugin-map-series_num" placeholder="$.results[0].series_number"></td>
+                                </tr>
+                                <tr>
+                                    <td><i class="bi bi-calendar"></i> Year</td>
+                                    <td><input type="text" class="form-control form-control-sm bg-dark text-light font-monospace" id="plugin-map-year" placeholder="$.results[0].year"></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Confidence Weight: <span id="plugin-weight-display" class="text-info">55</span></label>
+                        <input type="range" class="form-range" id="plugin-weight" min="0" max="100" value="55"
+                               oninput="document.getElementById('plugin-weight-display').textContent = this.value">
+                        <div class="d-flex justify-content-between" style="font-size: 0.7rem;">
+                            <span class="text-muted">Low trust (0)</span>
+                            <span class="text-muted">Path level (40)</span>
+                            <span class="text-info">Default (55)</span>
+                            <span class="text-muted">BookDB level (65)</span>
+                            <span class="text-muted">High trust (100)</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 4: Test & Save -->
+                <div id="plugin-step-4" class="d-none">
+                    <h6 class="mb-3"><i class="bi bi-play-circle"></i> Test & Save</h6>
+                    <p class="text-muted small mb-3">Test your API configuration with sample book data before saving.</p>
+
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Test Title</label>
+                            <input type="text" class="form-control bg-dark text-light" id="plugin-test-title"
+                                   value="The Final Empire">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Test Author</label>
+                            <input type="text" class="form-control bg-dark text-light" id="plugin-test-author"
+                                   value="Brandon Sanderson">
+                        </div>
+                    </div>
+
+                    <button type="button" class="btn btn-outline-info btn-sm mb-3" onclick="testPluginLayer()" id="plugin-test-btn">
+                        <i class="bi bi-play-circle"></i> Test API
+                    </button>
+
+                    <!-- Test Results -->
+                    <div id="plugin-test-result" class="d-none">
+                        <div class="card bg-dark border-secondary">
+                            <div class="card-header py-1 d-flex justify-content-between align-items-center">
+                                <small><strong>Test Results</strong></small>
+                                <span id="plugin-test-status" class="badge bg-secondary">-</span>
+                            </div>
+                            <div class="card-body py-2">
+                                <div class="row mb-2" style="font-size: 0.8rem;">
+                                    <div class="col-4"><strong>Status:</strong> <span id="plugin-test-http-status">-</span></div>
+                                    <div class="col-4"><strong>Time:</strong> <span id="plugin-test-time">-</span></div>
+                                    <div class="col-4"><strong>URL:</strong> <span id="plugin-test-url" class="text-truncate d-inline-block" style="max-width: 200px;">-</span></div>
+                                </div>
+
+                                <!-- Mapped Fields -->
+                                <div id="plugin-test-mapped" class="mb-2 d-none">
+                                    <strong class="small">Mapped Fields:</strong>
+                                    <table class="table table-sm table-dark mb-0 mt-1" style="font-size: 0.75rem;">
+                                        <thead><tr><th>Field</th><th>Value</th></tr></thead>
+                                        <tbody id="plugin-test-mapped-body"></tbody>
+                                    </table>
+                                </div>
+
+                                <!-- Raw Response (collapsible) -->
+                                <div class="mt-2">
+                                    <a class="small text-muted" data-bs-toggle="collapse" href="#plugin-test-raw-collapse" role="button">
+                                        <i class="bi bi-code"></i> Show raw response
+                                    </a>
+                                    <div class="collapse mt-1" id="plugin-test-raw-collapse">
+                                        <pre id="plugin-test-raw" class="bg-dark border border-secondary p-2 rounded mb-0 text-light"
+                                             style="font-size: 0.7rem; max-height: 200px; overflow-y: auto; white-space: pre-wrap;"></pre>
+                                    </div>
+                                </div>
+
+                                <!-- Error -->
+                                <div id="plugin-test-error" class="text-danger small mt-2 d-none"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="plugin-prev-btn" onclick="pluginWizardPrev()" style="display: none;">
+                    <i class="bi bi-chevron-left"></i> Back
+                </button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="plugin-next-btn" onclick="pluginWizardNext()">
+                    Next <i class="bi bi-chevron-right"></i>
+                </button>
+                <button type="button" class="btn btn-success" id="plugin-save-btn" onclick="savePluginLayer()" style="display: none;">
+                    <i class="bi bi-check-lg"></i> Save Layer
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
