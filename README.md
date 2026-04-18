@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.148-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.149-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,10 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.149** - **Fix: Watch-Folder Move Failures Now Appear in the UI** (Issue #211)
+> - Three `INSERT` statements in the watch-folder worker referenced a phantom `added_at` column on the `books` table (the real column is `created_at`). Every insert silently raised `OperationalError`, caught by a `logger.debug` that hid the error. Result: watch-folder move failures never produced a `watch_folder_error` row — the UI never showed the failure, users only saw it in logs.
+> - Fixed the column name and raised the swallow-except log level to `warning` with full traceback so future DB errors don't rot silently.
 
 > **beta.148** - **Fix: Watch-Folder Retry Loop Across Restarts + Skaldleita server_notice** (Issue #208)
 > - **Persistent watch-folder dedup** - `watch_folder_processed` is now a SQLite table instead of an in-memory `set()`. Restarts no longer wipe it, killing the retry loop that had one LM instance hammering Skaldleita's `/match` every 30 seconds on the same file for days.
