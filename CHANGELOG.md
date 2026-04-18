@@ -2,6 +2,32 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.147] - 2026-04-17
+
+### Fixed
+
+- **Issue #209: Hard link failure silently copies and deletes originals** — When
+  `Use hard links` was enabled and the watch folder and library lived on different
+  filesystems, `os.link()` raised `EXDEV` and the code silently fell back to
+  `shutil.copy2()` followed by deleting each original file. That destroyed the
+  source data (breaking torrent seeds, doubling disk use, violating the user's
+  explicit "hard link" preference). Fix:
+  - Added a filesystem-compatibility pre-check at the start of
+    `move_to_output_folder`. When hard links are requested but source and library
+    are on different `st_dev`s, the function returns a clear, actionable error
+    ("Move your library to the same volume as the watch folder, or disable 'Use
+    hard links' in Settings") and does not touch source files.
+  - Removed the EXDEV copy+delete fallback from both the single-file and
+    directory-loop branches. Remaining `OSError`s (permission, `ENOSPC`, etc.)
+    propagate to the outer handler with source files intact, and the watch
+    worker records the failure as `watch_folder_error` with the error message
+    visible in the UI.
+  - Reported by `@kyleviloria` — files weren't lost because copies still existed
+    at the library destination, but the deletion of originals broke their
+    download workflow and burned disk.
+
+---
+
 ## [0.9.0-beta.146] - 2026-04-07
 
 ### Added

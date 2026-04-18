@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.146-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.147-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,10 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.147** - **Critical Fix: Hard Link Safety** (Issue #209)
+> - **Stop silent copy+delete** - When "Use hard links" was enabled and the watch folder / library sat on different filesystems, LM used to copy every file and delete the originals. That broke torrent seeding and doubled disk use. Now LM fails fast with a clear error and leaves source files untouched.
+> - **Pre-check filesystem compatibility** - Verifies `st_dev` match before any file operations when hard links are enabled.
 
 > **beta.140** - **Feature: Custom Layer Builder** (Issue #186)
 > - **Plugins tab** - New settings tab with 4-step wizard to add custom HTTP API metadata sources
