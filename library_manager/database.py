@@ -153,6 +153,17 @@ def init_db(db_path=None):
     except:
         pass
 
+    # Issue #110: File validation columns - track whether audio files are valid
+    validation_columns = [
+        ('validation_status', "TEXT"),           # NULL=not validated, 'valid', 'invalid', 'skipped'
+        ('validation_reason', "TEXT"),           # Why it failed (e.g., 'too_short', 'corrupt', 'no_audio_stream')
+    ]
+    for col_name, col_type in validation_columns:
+        try:
+            c.execute(f'ALTER TABLE books ADD COLUMN {col_name} {col_type}')
+        except:
+            pass  # Column already exists
+
     # Stats table - daily stats
     c.execute('''CREATE TABLE IF NOT EXISTS stats (
         id INTEGER PRIMARY KEY,
@@ -164,12 +175,69 @@ def init_db(db_path=None):
         api_calls INTEGER DEFAULT 0
     )''')
 
+    # Issue #208: Persistent watch-folder dedup
+    # Was an in-memory set(), wiped on restart, which caused the watch worker
+    # to re-submit the same failing file every cycle (ate ~48% of Skaldleita
+    # traffic from a single LM instance before server-side cache absorbed it).
+    c.execute('''CREATE TABLE IF NOT EXISTS watch_folder_processed (
+        path TEXT PRIMARY KEY,
+        processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        outcome TEXT,
+        error_message TEXT
+    )''')
+
     conn.commit()
     conn.close()
 
     # Initialize hook tables (Issue #166)
     from library_manager.hooks import init_hook_tables
     init_hook_tables(path)
+
+    # Initialize plugin metrics table (Issue #189)
+    from library_manager.plugins import init_plugin_metrics_table
+    init_plugin_metrics_table(path)
+
+
+def watch_folder_is_processed(path, db_path=None):
+    """Return True if the watch-folder path has already been handled.
+
+    Issue #208: replaces the in-memory set. Survives restarts so the worker
+    doesn't re-submit the same failing file every scan cycle.
+    """
+    p = db_path or _db_path
+    if not p:
+        return False
+    conn = sqlite3.connect(p, timeout=30)
+    try:
+        c = conn.execute(
+            'SELECT 1 FROM watch_folder_processed WHERE path = ? LIMIT 1',
+            (path,)
+        )
+        return c.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def watch_folder_mark_processed(path, outcome, error_message=None, db_path=None):
+    """Record that a watch-folder path has been handled.
+
+    outcome: 'moved' | 'move_failed' | 'unknown_author' | 'aborted_by_server'
+    Issue #208.
+    """
+    p = db_path or _db_path
+    if not p:
+        return
+    conn = sqlite3.connect(p, timeout=30)
+    try:
+        conn.execute(
+            '''INSERT OR REPLACE INTO watch_folder_processed
+               (path, processed_at, outcome, error_message)
+               VALUES (?, CURRENT_TIMESTAMP, ?, ?)''',
+            (path, outcome, error_message)
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def cleanup_garbage_entries(db_path=None):
@@ -379,7 +447,7 @@ def should_requeue_book(book_row, max_retries=3):
     max_layer = max_layer or 0
 
     # Never requeue these statuses
-    skip_statuses = {'user_locked', 'needs_attention', 'needs_split', 'series_folder', 'multi_book_files'}
+    skip_statuses = {'user_locked', 'needs_attention', 'needs_split', 'series_folder', 'multi_book_files', 'validation_failed'}
     if status in skip_statuses:
         return (False, None)
 

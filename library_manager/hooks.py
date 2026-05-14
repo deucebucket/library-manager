@@ -1,7 +1,10 @@
-"""Post-processing hooks for Library Manager (Issue #166).
+"""Post-processing hooks for Library Manager (Issue #166, #187).
 
 Runs external commands or webhooks after a book is successfully renamed.
 Use cases: m4binder conversion, ABS library scan, Discord notifications, etc.
+
+Issue #187: Extended event system with run_on filtering, body_template support,
+standardized event envelope, and emit_event() helper.
 
 This is a self-contained Flask Blueprint - routes, logic, DB schema all in one file.
 """
@@ -13,7 +16,7 @@ import sqlite3
 import subprocess
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import requests as http_requests
 from flask import Blueprint, request, jsonify
@@ -40,6 +43,23 @@ TEMPLATE_VARIABLES = [
     'new_series_num', 'new_year',
     'old_author', 'old_title',
 ]
+
+# Supported hook events with descriptions (Issue #187)
+HOOK_EVENTS = {
+    'scan_started': 'Library scan has started',
+    'scan_completed': 'Library scan finished',
+    'book_discovered': 'A new book was found during scanning',
+    'rename_proposed': 'A rename fix has been proposed for review',
+    'rename_applied': 'A rename was successfully applied (formerly "fixed")',
+    'rename_rejected': 'A proposed rename was rejected by the user',
+    'processing_failed': 'Book processing encountered an error',
+    'queue_empty': 'The processing queue is empty',
+}
+
+# Backward compat: map old event name to new
+_EVENT_ALIASES = {
+    'fixed': 'rename_applied',
+}
 
 
 # ============== DATABASE ==============
@@ -115,7 +135,14 @@ def build_hook_context(book_id, history_id, old_path, new_path,
                        new_author='', new_title='',
                        new_narrator='', new_series='', new_series_num='',
                        new_year='', media_type='audiobook', event='fixed'):
-    """Build the template variable dict from fix data. All values stringified."""
+    """Build the template variable dict from fix data. All values stringified.
+
+    Note: the ``event`` param still accepts 'fixed' for backward compat; it is
+    normalised to 'rename_applied' internally.
+    """
+    # Normalize legacy event name
+    event = _EVENT_ALIASES.get(event, event)
+
     ctx = {
         'book_id': str(book_id),
         'history_id': str(history_id),
@@ -131,7 +158,7 @@ def build_hook_context(book_id, history_id, old_path, new_path,
         'new_year': str(new_year or ''),
         'media_type': str(media_type or 'audiobook'),
         'event': str(event),
-        'timestamp': datetime.now().isoformat(),
+        'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     }
     # Convenience aliases
     ctx['author'] = ctx['new_author']
@@ -141,6 +168,43 @@ def build_hook_context(book_id, history_id, old_path, new_path,
     ctx['series_num'] = ctx['new_series_num']
     ctx['year'] = ctx['new_year']
     return ctx
+
+
+def build_event_context(event_name, payload=None):
+    """Build a generic event context dict for non-rename events.
+
+    For events like scan_started or queue_empty that don't have book-specific data.
+    All values are stringified for template substitution.
+    """
+    event_name = _EVENT_ALIASES.get(event_name, event_name)
+    ctx = {
+        'event': str(event_name),
+        'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    }
+    # Merge any event-specific payload fields
+    if payload:
+        for key, value in payload.items():
+            ctx[key] = str(value) if value is not None else ''
+    return ctx
+
+
+def _build_webhook_envelope(event_name, payload_dict, app_version=None):
+    """Wrap a payload dict in the standardized event envelope (Issue #187).
+
+    Envelope format:
+        {
+            "event": "rename_applied",
+            "timestamp": "2026-03-21T14:32:00Z",
+            "app_version": "0.9.0-beta.133",
+            "payload": { ... }
+        }
+    """
+    return {
+        'event': event_name,
+        'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'app_version': app_version or '',
+        'payload': payload_dict,
+    }
 
 
 def substitute_template(template, context, shell_escape=False):
@@ -226,8 +290,28 @@ def execute_command_hook(hook, context):
 
 # ============== WEBHOOK EXECUTION ==============
 
-def execute_webhook_hook(hook, context, secrets=None):
+def _resolve_body_template(body_template, context):
+    """Recursively substitute {{variable}} placeholders in a body_template structure.
+
+    body_template can be a dict, list, or string. All string values get substitution.
+    Returns a new structure with substituted values.
+    """
+    if isinstance(body_template, str):
+        return substitute_template(body_template, context)
+    elif isinstance(body_template, dict):
+        return {k: _resolve_body_template(v, context) for k, v in body_template.items()}
+    elif isinstance(body_template, list):
+        return [_resolve_body_template(item, context) for item in body_template]
+    else:
+        return body_template
+
+
+def execute_webhook_hook(hook, context, secrets=None, app_version=None):
     """Send an HTTP webhook with context as JSON payload.
+
+    If ``body_template`` is set on the hook, it is used as the payload with
+    template variables substituted.  Otherwise, the context is wrapped in the
+    standardised event envelope (Issue #187).
 
     Returns dict with: success, exit_code (HTTP status), stdout (response body), error, duration_ms
     """
@@ -247,13 +331,20 @@ def execute_webhook_hook(hook, context, secrets=None):
     # Substitute template variables in URL (no shell escaping needed for URLs)
     resolved_url = substitute_template(url, context)
 
-    # Build payload
-    payload = {k: v for k, v in context.items()}
+    # Build payload - body_template takes priority (Issue #187)
+    body_template = hook.get('body_template')
+    if body_template:
+        payload = _resolve_body_template(body_template, context)
+    else:
+        # Wrap in standardized envelope
+        event_name = context.get('event', 'rename_applied')
+        payload = _build_webhook_envelope(event_name, context, app_version)
 
     start = time.monotonic()
     try:
         if method == 'GET':
-            resp = http_requests.get(resolved_url, params=payload, headers=headers, timeout=timeout)
+            resp = http_requests.get(resolved_url, params=payload if isinstance(payload, dict) else {},
+                                     headers=headers, timeout=timeout)
         else:
             headers.setdefault('Content-Type', 'application/json')
             resp = http_requests.post(resolved_url, json=payload, headers=headers, timeout=timeout)
@@ -283,7 +374,19 @@ def execute_webhook_hook(hook, context, secrets=None):
 
 # ============== ORCHESTRATOR ==============
 
-def run_hooks(context, config, get_db, secrets=None):
+def _normalize_run_on(run_on_list):
+    """Normalize a hook's run_on list, mapping legacy event names.
+
+    Handles backward compat: 'fixed' -> 'rename_applied'.
+    Returns a set for fast membership testing.
+    """
+    normalized = set()
+    for event in run_on_list:
+        normalized.add(_EVENT_ALIASES.get(event, event))
+    return normalized
+
+
+def run_hooks(context, config, get_db, secrets=None, app_version=None):
     """Main orchestrator - called from apply_fix() after a successful rename.
 
     Iterates enabled hooks, routes to correct executor, handles sync/async.
@@ -293,7 +396,9 @@ def run_hooks(context, config, get_db, secrets=None):
     if not hooks:
         return
 
-    event = context.get('event', 'fixed')
+    event = context.get('event', 'rename_applied')
+    # Normalize legacy event name in context
+    event = _EVENT_ALIASES.get(event, event)
     history_id = context.get('history_id')
     book_id = context.get('book_id')
 
@@ -304,8 +409,9 @@ def run_hooks(context, config, get_db, secrets=None):
         if not hook.get('enabled', True):
             continue
 
-        # Check if this hook should run for this event type
-        run_on = hook.get('run_on', ['fixed'])
+        # Check if this hook should run for this event type (Issue #187)
+        # Default to ['rename_applied'] for backward compat (covers old 'fixed' hooks)
+        run_on = _normalize_run_on(hook.get('run_on', ['rename_applied']))
         if event not in run_on:
             continue
 
@@ -313,18 +419,18 @@ def run_hooks(context, config, get_db, secrets=None):
         hook_type = hook.get('type', 'command')
         mode = hook.get('mode', 'sync')
 
-        logger.info(f"[HOOKS] Running {hook_type} hook: {hook_name} (mode={mode})")
+        logger.info(f"[HOOKS] Running {hook_type} hook: {hook_name} (mode={mode}, event={event})")
 
         if mode == 'async':
             # Fire and forget in a background thread
             t = threading.Thread(
                 target=_run_single_hook,
-                args=(hook, hook_name, hook_type, context, secrets, get_db, history_id, book_id),
+                args=(hook, hook_name, hook_type, context, secrets, get_db, history_id, book_id, app_version),
                 daemon=True,
             )
             t.start()
         else:
-            result = _run_single_hook(hook, hook_name, hook_type, context, secrets, get_db, history_id, book_id)
+            result = _run_single_hook(hook, hook_name, hook_type, context, secrets, get_db, history_id, book_id, app_version)
             if result and not result.get('success'):
                 any_error = True
                 if not first_error:
@@ -348,11 +454,11 @@ def run_hooks(context, config, get_db, secrets=None):
             logger.error(f"[HOOKS] Failed to update history hook status: {e}")
 
 
-def _run_single_hook(hook, hook_name, hook_type, context, secrets, get_db, history_id, book_id):
+def _run_single_hook(hook, hook_name, hook_type, context, secrets, get_db, history_id, book_id, app_version=None):
     """Execute a single hook and log the result."""
     try:
         if hook_type == 'webhook':
-            result = execute_webhook_hook(hook, context, secrets)
+            result = execute_webhook_hook(hook, context, secrets, app_version=app_version)
         else:
             result = execute_command_hook(hook, context)
 
@@ -369,6 +475,37 @@ def _run_single_hook(hook, hook_name, hook_type, context, secrets, get_db, histo
         error_result = {'success': False, 'error': str(e), 'duration_ms': 0}
         _log_hook_execution(get_db, history_id, book_id, hook_name, hook_type, error_result)
         return error_result
+
+
+# ============== EVENT EMISSION (Issue #187) ==============
+
+def emit_event(event_name, context_dict, config, get_db, secrets=None, app_version=None):
+    """Emit a hook event, filtering hooks by their run_on list.
+
+    This is the primary entry point for triggering hooks from anywhere in the app.
+    It normalizes the event name, ensures the context has the event field set,
+    and delegates to run_hooks() which handles filtering, sync/async, and logging.
+
+    Args:
+        event_name: One of the HOOK_EVENTS keys (e.g. 'rename_applied', 'scan_started')
+        context_dict: Dict of template variables for this event.
+                      For rename events, use build_hook_context().
+                      For other events, use build_event_context() or pass a plain dict.
+        config: The app config dict (must contain 'post_processing_hooks')
+        get_db: Database connection factory
+        secrets: Optional secrets dict for webhook auth
+        app_version: Optional app version string for webhook envelope
+    """
+    # Normalize legacy event names
+    event_name = _EVENT_ALIASES.get(event_name, event_name)
+
+    # Ensure context has the event and timestamp fields
+    context_dict['event'] = event_name
+    if 'timestamp' not in context_dict:
+        context_dict['timestamp'] = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    logger.debug(f"[HOOKS] Emitting event: {event_name}")
+    run_hooks(context_dict, config, get_db, secrets=secrets, app_version=app_version)
 
 
 # ============== TEST HOOK ==============
@@ -393,7 +530,7 @@ def test_hook(hook, secrets=None):
         new_series_num='',
         new_year='1977',
         media_type='audiobook',
-        event='fixed',
+        event='rename_applied',
     )
 
     hook_type = hook.get('type', 'command')
@@ -461,6 +598,12 @@ def api_hooks_log_clear():
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@hooks_bp.route('/api/hooks/events')
+def api_hooks_events():
+    """Return available hook events with descriptions (Issue #187)."""
+    return jsonify({'events': HOOK_EVENTS})
 
 
 @hooks_bp.route('/api/hooks/save', methods=['POST'])

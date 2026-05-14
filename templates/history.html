@@ -57,10 +57,6 @@
 </div>
 
 {% if history_items %}
-<style>
-    .resizable-table th { resize: horizontal; overflow: auto; min-width: 60px; }
-    .resizable-table td { word-break: break-word; }
-</style>
 <div class="card">
     <div class="card-body p-0" style="max-height: 700px; overflow: auto;">
         <table class="table table-sm mb-0 resizable-table" style="table-layout: auto;">
@@ -215,7 +211,7 @@
 {% else %}
 <div class="card">
     <div class="card-body text-center py-5">
-        <i class="bi bi-journal-x text-muted" style="font-size: 4rem;"></i>
+        <i class="bi bi-journal-x text-muted fs-icon-xl"></i>
         <h4 class="mt-3">No history yet</h4>
         <p class="text-muted">Process the queue to start fixing books.</p>
         <a href="/queue" class="btn btn-primary">View Queue</a>
@@ -497,12 +493,7 @@ function unlockBook(bookId) {
         .catch(e => alert('Error: ' + e));
 }
 
-function escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
+// escapeHtml provided by common.js
 
 // ===== EXISTING FUNCTIONS =====
 function applyFix(historyId) {

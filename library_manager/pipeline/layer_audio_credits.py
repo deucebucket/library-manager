@@ -219,10 +219,11 @@ def process_layer_3_audio(
             else:
                 # Audio suggests different values - build new path
                 lib_path = None
+                book_path_resolved = book_path.resolve()
                 for lp in config.get('library_paths', []):
-                    lp_path = Path(lp)
+                    lp_path = Path(lp).resolve()
                     try:
-                        book_path.relative_to(lp_path)
+                        book_path_resolved.relative_to(lp_path)
                         lib_path = lp_path
                         break
                     except ValueError:
@@ -240,7 +241,10 @@ def process_layer_3_audio(
                         logger.debug(f"Watch folder path check failed: {e}")
 
                 if lib_path is None:
-                    lib_path = book_path.parent.parent
+                    if book_path.is_file():
+                        lib_path = book_path.parent
+                    else:
+                        lib_path = book_path.parent.parent
                     logger.warning(f"[LAYER 3] Book path {book_path} not under any configured library, guessing lib_path={lib_path}")
 
                 # Detect language for multi-language naming

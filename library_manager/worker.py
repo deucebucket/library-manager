@@ -143,6 +143,11 @@ def process_all_queue(
 
     Philosophy: The audio content IS the book. Folder names can be wrong.
 
+    When config['use_modular_pipeline'] is True, delegates to
+    PipelineOrchestrator instead of running the hardcoded sequence below.
+    The orchestrator uses the same layer functions via adapter objects
+    and produces identical behavior, but is configurable via pipeline_order.
+
     Args:
         config: Configuration dict
         get_db: Function to get database connection. Returns a new
@@ -162,6 +167,33 @@ def process_all_queue(
     Returns:
         Tuple of (total_processed, total_fixed)
     """
+    # Feature flag: use modular pipeline orchestrator when enabled
+    if config.get('use_modular_pipeline', False):
+        from library_manager.pipeline.orchestrator import PipelineOrchestrator
+        from library_manager.pipeline.adapters import build_default_adapters
+        from library_manager.pipeline.registry import default_registry
+
+        deps = {
+            'get_db': get_db,
+            'load_config': load_config,
+            'is_circuit_open': is_circuit_open,
+            'get_circuit_breaker': get_circuit_breaker,
+            'check_rate_limit': check_rate_limit,
+            'process_layer_1_audio': process_layer_1_audio,
+            'process_layer_3_audio': process_layer_3_audio,
+            'process_layer_1_api': process_layer_1_api,
+            'process_queue': process_queue,
+            'process_sl_requeue_verification': process_sl_requeue_verification,
+        }
+        orchestrator = PipelineOrchestrator(
+            registry=default_registry,
+            adapters=build_default_adapters(),
+            config=config,
+            deps=deps,
+        )
+        return orchestrator.run_pipeline()
+
+    # === Legacy hardcoded pipeline (default, unchanged) ===
     global _processing_status
 
     conn = get_db()

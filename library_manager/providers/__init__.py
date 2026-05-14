@@ -44,7 +44,6 @@ from library_manager.providers.ollama import (
 )
 from library_manager.providers.openrouter import (
     OPENROUTER_API_URL,
-    DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL,
     call_openrouter,
     call_openrouter_simple,
     identify_book_from_transcript,
@@ -52,8 +51,6 @@ from library_manager.providers.openrouter import (
 )
 from library_manager.providers.gemini import (
     GEMINI_API_URL,
-    DEFAULT_TEXT_MODEL as GEMINI_DEFAULT_TEXT_MODEL,
-    DEFAULT_AUDIO_MODEL as GEMINI_DEFAULT_AUDIO_MODEL,
     _call_gemini_simple,
     call_gemini,
     analyze_audio_with_gemini,
@@ -107,15 +104,12 @@ __all__ = [
     'test_ollama_connection',
     # OpenRouter
     'OPENROUTER_API_URL',
-    'OPENROUTER_DEFAULT_MODEL',
     'call_openrouter',
     'call_openrouter_simple',
     'identify_book_from_transcript',
     'test_openrouter_connection',
     # Gemini
     'GEMINI_API_URL',
-    'GEMINI_DEFAULT_TEXT_MODEL',
-    'GEMINI_DEFAULT_AUDIO_MODEL',
     '_call_gemini_simple',
     'call_gemini',
     'analyze_audio_with_gemini',

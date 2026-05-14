@@ -15,6 +15,7 @@ import time
 import logging
 import subprocess
 import tempfile
+import threading
 import requests
 from pathlib import Path
 
@@ -32,6 +33,22 @@ from library_manager.utils.voice_embedding import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Issue #208: Skaldleita can signal "stop retrying this task" via a server_notice
+# in the JSON response. We stash the notice in a thread-local so the caller
+# (e.g. the watch-folder worker) can pick it up and mark the item as aborted
+# without a 30-second retry loop. Thread-local keeps the signal scoped to the
+# thread that issued the matching request.
+_abort_state = threading.local()
+
+
+def get_and_clear_server_abort():
+    """Return (and clear) the last server_notice with action=abort_task seen
+    on this thread, or None. Safe to call when none was set."""
+    notice = getattr(_abort_state, 'notice', None)
+    if notice is not None:
+        _abort_state.notice = None
+    return notice
 
 # Skaldleita API endpoint (our metadata service, legacy name: BookDB)
 BOOKDB_API_URL = "https://bookdb.deucebucket.com"  # URL unchanged for backwards compatibility
@@ -167,6 +184,21 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
             API_CIRCUIT_BREAKER['bookdb']['failures'] = 0
 
         data = resp.json()
+
+        # Issue #208: honor Skaldleita server_notice. Log every notice; on
+        # action=abort_task, stash in thread-local so the watch-folder worker
+        # can stop retrying instead of hammering /match every 30s.
+        notice = data.get('server_notice')
+        if notice:
+            code = notice.get('code', 'unknown')
+            msg = notice.get('message', '')
+            upgrade_url = notice.get('upgrade_url')
+            severity = notice.get('severity', 'info')
+            logger.warning(f"[SKALDLEITA] server notice ({severity}) [{code}]: {msg}")
+            if upgrade_url:
+                logger.warning(f"[SKALDLEITA] upgrade: {upgrade_url}")
+            if notice.get('action') == 'abort_task':
+                _abort_state.notice = notice
 
         # Check confidence threshold
         if data.get('confidence', 0) < 0.5:

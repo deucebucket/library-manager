@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.134"
+APP_VERSION = "0.9.0-beta.150"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -52,7 +52,8 @@ from library_manager.config import (
 from library_manager.database import (
     init_db, get_db, set_db_path, cleanup_garbage_entries,
     cleanup_duplicate_history_entries, insert_history_entry,
-    should_requeue_book
+    should_requeue_book,
+    watch_folder_is_processed, watch_folder_mark_processed
 )
 from library_manager.models.book_profile import (
     SOURCE_WEIGHTS, FIELD_WEIGHTS, FieldValue, BookProfile,
@@ -118,8 +119,11 @@ from library_manager.feedback import (
     get_system_info, store_feedback, sanitize_string as feedback_sanitize,
 )
 from library_manager.folder_triage import triage_folder, triage_book_path, should_use_path_hints, confidence_modifier
+from library_manager.file_validation import validate_audio_file, check_ffmpeg_available
 from library_manager.hints import get_all_hints
 from library_manager.hooks import hooks_bp, run_hooks, build_hook_context
+from library_manager.plugins import plugins_bp
+from library_manager.plugin_loader import register_plugins, teardown_plugins
 
 # Try to import P2P cache (optional - gracefully degrades if not available)
 try:
@@ -560,6 +564,7 @@ logging.getLogger('werkzeug').setLevel(logging.ERROR)
 app = Flask(__name__)
 app.secret_key = 'library-manager-secret-key-2024'
 app.register_blueprint(hooks_bp)
+app.register_blueprint(plugins_bp)
 
 # ============== INTERNATIONALIZATION (i18n) ==============
 # Flask-Babel for UI translations - book metadata (author/title) is NOT translated
@@ -2354,7 +2359,11 @@ def transcribe_and_identify_content(audio_file, config):
         # === ATTEMPT 1: Gemini Audio API ===
         gemini_key = config.get('gemini_api_key')
         if gemini_key:
-            result = _try_gemini_content_identification(sample_path, gemini_key)
+            result = _try_gemini_content_identification(
+                sample_path,
+                gemini_key,
+                (config.get('gemini_model') or '').strip()
+            )
 
         # === ATTEMPT 2: Whisper + OpenRouter fallback ===
         if result is None:
@@ -2378,7 +2387,7 @@ def transcribe_and_identify_content(audio_file, config):
     return result
 
 
-def _try_gemini_content_identification(sample_path, api_key):
+def _try_gemini_content_identification(sample_path, api_key, model):
     """Try Gemini Audio API for content identification. Returns result or None.
 
     Wrapper that passes app-level dependencies to the extracted module.
@@ -2386,6 +2395,7 @@ def _try_gemini_content_identification(sample_path, api_key):
     return _try_gemini_content_identification_raw(
         sample_path=sample_path,
         api_key=api_key,
+        model=model,
         parse_json_response_fn=parse_json_response
     )
 
@@ -3615,8 +3625,12 @@ Return JSON: {{"author": "Name", "title": "Title", "confidence": "high/medium/lo
 If unsure, return {{"confidence": "none"}}"""
 
     try:
+        model = (config.get('gemini_model') or '').strip()
+        if not model:
+            logger.warning("Gemini model is not configured; refresh models in Settings and save a model")
+            return None
         response = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{config.get('gemini_model', 'gemini-2.0-flash')}:generateContent",
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
             headers={'Content-Type': 'application/json'},
             params={'key': gemini_key},
             json={'contents': [{'parts': [{'text': prompt}]}]},
@@ -4859,6 +4873,53 @@ def compare_book_folders(source_path, dest_path, deep_analysis=True):
     return result
 
 
+def _validate_book_audio(book_path, config, ffmpeg_available):
+    """Issue #110: Validate a book's audio file before queueing.
+
+    Finds the first audio file in the book folder and validates it.
+
+    Args:
+        book_path: Path to the book folder (or file for loose files)
+        config: Configuration dictionary
+        ffmpeg_available: Whether ffprobe/ffmpeg are available
+
+    Returns:
+        (status, reason) where:
+        - ('valid', 'valid') - file passed validation
+        - ('invalid', reason) - file failed validation
+        - ('skipped', reason) - validation was skipped (disabled or ffmpeg unavailable)
+    """
+    if not config.get('enable_file_validation', True):
+        return 'skipped', 'validation_disabled'
+
+    if not ffmpeg_available:
+        return 'skipped', 'ffprobe_not_available'
+
+    # Determine audio file to validate
+    path = Path(book_path)
+    if path.is_file():
+        audio_file = str(path)
+    else:
+        audio_file = get_first_audio_file(str(path))
+
+    if not audio_file:
+        return 'skipped', 'no_audio_file_found'
+
+    # Get config thresholds
+    min_duration = config.get('min_audio_duration_seconds', 600)
+    min_size_mb = config.get('min_audio_file_size_mb', 1)
+    min_size_bytes = min_size_mb * 1_000_000
+
+    is_valid, reason, metadata = validate_audio_file(
+        audio_file, min_duration=min_duration, min_size=min_size_bytes
+    )
+
+    if is_valid:
+        return 'valid', 'valid'
+    else:
+        return 'invalid', reason
+
+
 def deep_scan_library(config):
     """
     Deep scan library - the AUTISTIC LIBRARIAN approach.
@@ -4870,8 +4931,18 @@ def deep_scan_library(config):
     checked = 0  # Total book folders examined
     scanned = 0  # New books added to tracking
     queued = 0   # Books added to fix queue
+    validation_counts = {'valid': 0, 'invalid': 0, 'skipped': 0}  # Issue #110: File validation stats
     issues_found = {}  # path -> list of issues
     triage_counts = {'clean': 0, 'messy': 0, 'garbage': 0}  # Issue #110: Folder triage stats
+    triage_enabled = config.get('enable_folder_triage', True)  # Issue #110: Folder triage toggle
+
+    # Issue #110: Check ffmpeg availability once at scan start
+    ffmpeg_available, ffmpeg_msg = check_ffmpeg_available()
+    if config.get('enable_file_validation', True):
+        if ffmpeg_available:
+            logger.info("[VALIDATION] ffprobe available - file validation enabled")
+        else:
+            logger.warning(f"[VALIDATION] {ffmpeg_msg} - file validation will be skipped")
 
     # Track files for duplicate detection
     file_signatures = {}  # signature -> list of paths
@@ -4939,6 +5010,17 @@ def deep_scan_library(config):
                              (path_str, 'Unknown', cleaned_filename, 'loose_file'))
                     book_id = c.lastrowid
                     reset_layer = 1  # New books always start at layer 1
+
+                # Issue #110: Validate audio file before queueing
+                v_status, v_reason = _validate_book_audio(path_str, config, ffmpeg_available)
+                validation_counts[v_status] = validation_counts.get(v_status, 0) + 1
+                c.execute('UPDATE books SET validation_status = ?, validation_reason = ? WHERE id = ?',
+                         (v_status, v_reason, book_id))
+                if v_status == 'invalid':
+                    c.execute('UPDATE books SET status = ? WHERE id = ?', ('validation_failed', book_id))
+                    conn.commit()
+                    logger.info(f"[VALIDATION] Skipping invalid loose file ({v_reason}): {filename}")
+                    continue
 
                 # Add to queue with special "loose_file" reason
                 c.execute('''INSERT OR REPLACE INTO queue
@@ -5040,7 +5122,7 @@ def deep_scan_library(config):
                 # Issue #132: Resolve path to prevent duplicates
                 flat_path = str(author_dir.resolve())
                 # Issue #110: Triage folder name quality
-                flat_triage = triage_folder(author)
+                flat_triage = triage_folder(author) if triage_enabled else 'clean'
 
                 checked += 1
 
@@ -5067,6 +5149,17 @@ def deep_scan_library(config):
                     scanned += 1
                     reset_layer = 1
                     logger.info(f"Added flat book: {flat_author} - {flat_title} (triage: {flat_triage})")
+
+                # Issue #110: Validate audio file before queueing
+                v_status, v_reason = _validate_book_audio(flat_path, config, ffmpeg_available)
+                validation_counts[v_status] = validation_counts.get(v_status, 0) + 1
+                c.execute('UPDATE books SET validation_status = ?, validation_reason = ? WHERE id = ?',
+                         (v_status, v_reason, flat_book_id))
+                if v_status == 'invalid':
+                    c.execute('UPDATE books SET status = ? WHERE id = ?', ('validation_failed', flat_book_id))
+                    conn.commit()
+                    logger.info(f"[VALIDATION] Skipping invalid flat book ({v_reason}): {flat_author} - {flat_title}")
+                    continue
 
                 # Queue for processing
                 c.execute('SELECT id FROM queue WHERE book_id = ?', (flat_book_id,))
@@ -5211,7 +5304,7 @@ def deep_scan_library(config):
 
                             checked += 1
                             # Issue #110: Triage folder name quality
-                            series_book_triage = triage_folder(book_title)
+                            series_book_triage = triage_folder(book_title) if triage_enabled else 'clean'
 
                             # Check if already tracked
                             c.execute('''SELECT id, status, profile, user_locked, attempt_count,
@@ -5235,6 +5328,17 @@ def deep_scan_library(config):
                                 book_id = c.lastrowid
                                 scanned += 1
                                 reset_layer = 1
+
+                            # Issue #110: Validate audio file before queueing
+                            v_status, v_reason = _validate_book_audio(book_path, config, ffmpeg_available)
+                            validation_counts[v_status] = validation_counts.get(v_status, 0) + 1
+                            c.execute('UPDATE books SET validation_status = ?, validation_reason = ? WHERE id = ?',
+                                     (v_status, v_reason, book_id))
+                            if v_status == 'invalid':
+                                c.execute('UPDATE books SET status = ? WHERE id = ?', ('validation_failed', book_id))
+                                conn.commit()
+                                logger.info(f"[VALIDATION] Skipping invalid series book ({v_reason}): {author}/{book_title}")
+                                continue
 
                             # Queue for processing
                             c.execute('SELECT id FROM queue WHERE book_id = ?', (book_id,))
@@ -5277,7 +5381,7 @@ def deep_scan_library(config):
                 checked += 1
 
                 # Issue #110: Triage folder name quality
-                folder_triage_result = triage_folder(title)
+                folder_triage_result = triage_folder(title) if triage_enabled else 'clean'
                 triage_counts[folder_triage_result] = triage_counts.get(folder_triage_result, 0) + 1
                 if folder_triage_result != 'clean':
                     logger.info(f"Folder triage: {folder_triage_result} - {title[:60]}")
@@ -5356,6 +5460,17 @@ def deep_scan_library(config):
                     scanned += 1
                     reset_layer = 1
 
+                # Issue #110: Validate audio file before queueing
+                v_status, v_reason = _validate_book_audio(path, config, ffmpeg_available)
+                validation_counts[v_status] = validation_counts.get(v_status, 0) + 1
+                c.execute('UPDATE books SET validation_status = ?, validation_reason = ? WHERE id = ?',
+                         (v_status, v_reason, book_id))
+                if v_status == 'invalid':
+                    c.execute('UPDATE books SET status = ? WHERE id = ?', ('validation_failed', book_id))
+                    conn.commit()
+                    logger.info(f"[VALIDATION] Skipping invalid book ({v_reason}): {author}/{title}")
+                    continue
+
                 # Add to queue if has issues
                 if all_issues:
                     # Skip multi-book collections - they need manual splitting, not renaming
@@ -5412,6 +5527,7 @@ def deep_scan_library(config):
     logger.info(f"Queued: {queued} books need fixing")
     logger.info(f"Already correct: {checked - queued} books")
     logger.info(f"Folder triage: {triage_counts['clean']} clean, {triage_counts['messy']} messy, {triage_counts['garbage']} garbage")
+    logger.info(f"File validation: {validation_counts['valid']} valid, {validation_counts['invalid']} invalid, {validation_counts['skipped']} skipped")
 
     return checked, scanned, queued
 
@@ -5713,7 +5829,7 @@ def transcribe_audio_intro(file_path, duration_seconds=45):
                     audio_data = base64.standard_b64encode(f.read()).decode('utf-8')
                 os.unlink(tmp_path)
 
-                # Send to Gemini with audio
+                # Send to Gemini with audio using the configured model.
                 prompt = """Listen to this audiobook intro. Write out exactly what the narrator says, word for word.
 Focus on:
 - The book title announcement
@@ -5723,8 +5839,10 @@ Focus on:
 
 Just write what you hear - no interpretation or formatting."""
 
-                # Force gemini-2.0-flash for audio - other models don't support audio input
-                gemini_model = 'gemini-2.0-flash'  # Audio requires this model
+                gemini_model = (config.get('gemini_model') or '').strip()
+                if not gemini_model:
+                    logger.warning("[LAYER 1/AUDIO] Gemini model is not configured")
+                    return None
                 response = requests.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent",
                     params={'key': gemini_key},
@@ -5851,7 +5969,10 @@ If you cannot identify the book from the transcript, return:
         # Fallback to Gemini
         if config.get('gemini_api_key'):
             api_key = config.get('gemini_api_key')
-            model = config.get('gemini_model', 'gemini-2.0-flash')
+            model = (config.get('gemini_model') or '').strip()
+            if not model:
+                logger.warning("[LAYER 1/AUDIO] Gemini model is not configured")
+                return None
 
             response = requests.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
@@ -5869,6 +5990,10 @@ If you cannot identify the book from the transcript, return:
 
         # Fallback to OpenRouter
         if config.get('openrouter_api_key'):
+            model = (config.get('openrouter_model') or '').strip()
+            if not model:
+                logger.warning("[LAYER 1/AUDIO] OpenRouter model is not configured")
+                return None
             response = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers={
@@ -5876,7 +6001,7 @@ If you cannot identify the book from the transcript, return:
                     'Content-Type': 'application/json'
                 },
                 json={
-                    'model': config.get('openrouter_model', 'google/gemini-flash-1.5'),
+                    'model': model,
                     'messages': [{'role': 'user', 'content': prompt}]
                 },
                 timeout=30
@@ -6326,8 +6451,8 @@ def process_all_queue(config):
 # WATCH FOLDER FUNCTIONALITY
 # ============================================================================
 
-# Track processed watch folder items to avoid reprocessing
-watch_folder_processed = set()
+# Issue #208: watch-folder dedup now lives in the watch_folder_processed
+# SQLite table (see library_manager.database) so restarts don't reset state.
 watch_folder_last_scan = 0
 
 def get_watch_folder_items(watch_folder: str, min_age_seconds: int = 30) -> list:
@@ -6350,8 +6475,8 @@ def get_watch_folder_items(watch_folder: str, min_age_seconds: int = 30) -> list
     for item in watch_path.iterdir():
         item_path = str(item.resolve())
 
-        # Skip if already processed
-        if item_path in watch_folder_processed:
+        # Skip if already processed (persisted in SQLite, Issue #208)
+        if watch_folder_is_processed(item_path):
             continue
 
         # Check if folder contains audio files or is an audio file
@@ -6413,6 +6538,22 @@ def move_to_output_folder(source_path: str, output_folder: str, author: str, tit
             output.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             return False, None, f"Cannot create output folder: {e}"
+
+    # Issue #209: Fail fast if hard links requested across filesystems.
+    # Without this, a later os.link EXDEV would silently fall back to copy+delete,
+    # destroying the user's originals (e.g. breaking torrent seeds, doubling disk).
+    if use_hard_links:
+        try:
+            if source.stat().st_dev != output.stat().st_dev:
+                return False, None, (
+                    "Hard link failed: watch folder and library are on different "
+                    "filesystems. Hard links require both paths on the same volume. "
+                    "Move your library to the same volume as the watch folder, or "
+                    "disable 'Use hard links' in Settings. Source files were not "
+                    "modified."
+                )
+        except OSError as e:
+            return False, None, f"Cannot verify filesystem compatibility: {e}"
 
     # Sanitize author and title for filesystem
     safe_author = sanitize_path_component(author) if author else "Unknown"
@@ -6492,10 +6633,6 @@ def move_to_output_folder(source_path: str, output_folder: str, author: str, tit
         if not atomic_move_done:
             dest_folder.mkdir(parents=True, exist_ok=True)
 
-        # Track if we fell back to copy (need to delete originals afterward)
-        used_copy_fallback = False
-        files_to_delete = []
-
         if atomic_move_done:
             # Atomic move succeeded - nothing more to do for the files
             pass
@@ -6503,17 +6640,9 @@ def move_to_output_folder(source_path: str, output_folder: str, author: str, tit
             # Single file - move/link to destination folder
             dest_file = dest_folder / source.name
             if use_hard_links:
-                try:
-                    os.link(source, dest_file)
-                except OSError as e:
-                    if "Invalid cross-device link" in str(e) or e.errno == 18:
-                        # Cross-filesystem - fall back to copy, then delete original
-                        logger.warning(f"Hard link failed (cross-filesystem), falling back to copy+delete: {source.name}")
-                        shutil.copy2(source, dest_file)
-                        used_copy_fallback = True
-                        files_to_delete.append(source)
-                    else:
-                        raise
+                # Pre-check guarantees same filesystem; other OSErrors (perm, ENOSPC)
+                # propagate to the outer handler with source intact.
+                os.link(source, dest_file)
             else:
                 shutil.move(str(source), str(dest_file))
         else:
@@ -6531,23 +6660,13 @@ def move_to_output_folder(source_path: str, output_folder: str, author: str, tit
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
 
                     if use_hard_links:
-                        try:
-                            os.link(src_file, dest_file)
-                        except OSError as e:
-                            if "Invalid cross-device link" in str(e) or e.errno == 18:
-                                logger.warning(f"Hard link failed, copy+delete: {src_file.name}")
-                                shutil.copy2(src_file, dest_file)
-                                used_copy_fallback = True
-                                files_to_delete.append(src_file)
-                            else:
-                                raise
+                        os.link(src_file, dest_file)
                     else:
                         shutil.move(str(src_file), str(dest_file))
 
-            # Clean up empty source folder if not using hard links OR if we used copy fallback
-            if (not use_hard_links or used_copy_fallback) and delete_empty:
+            # Clean up empty source folder when we moved files out (not for hardlinks — originals stay)
+            if not use_hard_links and delete_empty:
                 try:
-                    # Remove empty directories bottom-up
                     for dirpath, dirnames, filenames in os.walk(str(source), topdown=False):
                         if not filenames and not dirnames:
                             os.rmdir(dirpath)
@@ -6555,16 +6674,6 @@ def move_to_output_folder(source_path: str, output_folder: str, author: str, tit
                         source.rmdir()
                 except Exception as e:
                     logger.debug(f"Could not clean up empty folder {source}: {e}")
-
-        # Delete originals if we used copy fallback (handles both single files and directories)
-        if used_copy_fallback and delete_empty:
-            for f in files_to_delete:
-                try:
-                    if f.exists():
-                        f.unlink()
-                        logger.debug(f"Deleted source after copy fallback: {f}")
-                except Exception as e:
-                    logger.warning(f"Could not delete source {f}: {e}")
 
         return True, str(dest_folder), None
 
@@ -6578,7 +6687,7 @@ def process_watch_folder(config: dict) -> int:
     Process items in the watch folder.
     Returns number of items processed.
     """
-    global watch_folder_processed, watch_folder_last_scan
+    global watch_folder_last_scan
 
     watch_folder = config.get('watch_folder', '').strip()
     output_folder = config.get('watch_output_folder', '').strip()
@@ -6738,6 +6847,18 @@ def process_watch_folder(config: dict) -> int:
             except Exception as e:
                 logger.debug(f"Watch folder: API lookup failed, using path analysis: {e}")
 
+            # Issue #208: Skaldleita may have signalled 'abort_task' during the
+            # lookup above (retry-loop protection). Stop retrying this item and
+            # persist it so future scans skip it until the user upgrades / fixes
+            # the source. The warning + upgrade URL are already in the logs.
+            from library_manager.providers.bookdb import get_and_clear_server_abort
+            server_abort = get_and_clear_server_abort()
+            if server_abort:
+                abort_msg = server_abort.get('message', 'Skaldleita requested task abort')
+                logger.warning(f"Watch folder: Aborting '{item.name}' per Skaldleita server notice")
+                watch_folder_mark_processed(item_path, 'aborted_by_server', abort_msg)
+                continue
+
             # Issue #57: Verify drastic author changes before accepting
             if needs_verification and api_author and api_title:
                 try:
@@ -6790,7 +6911,7 @@ def process_watch_folder(config: dict) -> int:
 
             if success:
                 logger.info(f"Watch folder: Moved to {new_path}")
-                watch_folder_processed.add(item_path)
+                watch_folder_mark_processed(item_path, 'moved')
                 processed += 1
 
                 # Add to books table
@@ -6800,7 +6921,7 @@ def process_watch_folder(config: dict) -> int:
                         # Unknown author - requires user intervention before processing
                         # Issue #57: Include source_type for watch folder tracking
                         c.execute('''INSERT OR REPLACE INTO books
-                                     (path, current_author, current_title, status, error_message, source_type, added_at, updated_at)
+                                     (path, current_author, current_title, status, error_message, source_type, created_at, updated_at)
                                      VALUES (?, ?, ?, 'needs_attention', ?, 'watch_folder', datetime('now'), datetime('now'))''',
                                   (new_path, author, title, 'Watch folder: Could not determine author - please review and correct'))
                         logger.info(f"Watch folder: Flagged for attention (unknown author): {title}")
@@ -6808,7 +6929,7 @@ def process_watch_folder(config: dict) -> int:
                         # Known author - normal processing
                         # Issue #57: Include source_type for watch folder tracking
                         c.execute('''INSERT OR REPLACE INTO books
-                                     (path, current_author, current_title, status, source_type, added_at, updated_at)
+                                     (path, current_author, current_title, status, source_type, created_at, updated_at)
                                      VALUES (?, ?, ?, 'pending', 'watch_folder', datetime('now'), datetime('now'))''',
                                   (new_path, author, title))
                         # Issue #126: Auto-enqueue for full pipeline processing
@@ -6820,12 +6941,13 @@ def process_watch_folder(config: dict) -> int:
                         logger.info(f"Watch folder: Auto-enqueued for processing: {author}/{title}")
                     conn.commit()
                 except Exception as e:
-                    logger.debug(f"Watch folder: Could not add to books table: {e}")
+                    # Issue #211: was logger.debug which hid the real exception.
+                    logger.warning(f"Watch folder: Could not add to books table: {e}", exc_info=True)
             else:
                 logger.error(f"Watch folder: Failed to move {item.name}: {error}")
                 # Issue #49: Track failed items in the database so user can see and fix them
-                # Add to watch_folder_processed to prevent infinite retry loop
-                watch_folder_processed.add(item_path)
+                # Issue #208: persist dedup so the retry loop dies across restarts too
+                watch_folder_mark_processed(item_path, 'move_failed', error)
                 try:
                     # Check if this item is already tracked
                     c.execute('SELECT id FROM books WHERE path = ?', (item_path,))
@@ -6838,13 +6960,15 @@ def process_watch_folder(config: dict) -> int:
                     else:
                         # Insert new record for the failed item
                         c.execute('''INSERT INTO books
-                                     (path, current_author, current_title, status, error_message, source_type, added_at, updated_at)
+                                     (path, current_author, current_title, status, error_message, source_type, created_at, updated_at)
                                      VALUES (?, ?, ?, 'watch_folder_error', ?, 'watch_folder', datetime('now'), datetime('now'))''',
                                   (item_path, author, title, f'Watch folder: {error}'))
                     conn.commit()
                     logger.info(f"Watch folder: Tracked failure for user review: {item.name}")
                 except Exception as db_err:
-                    logger.debug(f"Watch folder: Could not track failure in DB: {db_err}")
+                    # Issue #211: was logger.debug which hid the real exception; raise level
+                    # so failures surface in normal operation instead of rotting silently.
+                    logger.warning(f"Watch folder: Could not track failure in DB: {db_err}", exc_info=True)
 
         except Exception as e:
             logger.error(f"Watch folder: Error processing {item_path}: {e}")
@@ -6923,6 +7047,15 @@ def dashboard():
                  WHERE h.status = 'pending_fix' ''')
     pending_fixes = c.fetchone()['count']
 
+    # Issue #110: Count validation failures
+    c.execute("SELECT COUNT(*) as count FROM books WHERE validation_status = 'invalid'")
+    validation_failed_count = c.fetchone()['count']
+
+    # Issue #110: Count folder triage categories
+    c.execute("SELECT folder_triage, COUNT(*) as count FROM books WHERE folder_triage != 'clean' GROUP BY folder_triage")
+    triage_rows = c.fetchall()
+    triage_counts = {row['folder_triage']: row['count'] for row in triage_rows}
+
     # Get recent history (use LEFT JOIN in case book was deleted)
     c.execute('''SELECT h.*, b.path FROM history h
                  LEFT JOIN books b ON h.book_id = b.id
@@ -6944,6 +7077,8 @@ def dashboard():
                           fixed_count=fixed_count,
                           verified_count=verified_count,
                           pending_fixes=pending_fixes,
+                          validation_failed_count=validation_failed_count,
+                          triage_counts=triage_counts,
                           recent_history=recent_history,
                           daily_stats=daily_stats,
                           config=config,
@@ -7128,8 +7263,8 @@ def settings_page():
         # Update config values
         config['library_paths'] = [p.strip() for p in request.form.get('library_paths', '').split('\n') if p.strip()]
         config['ai_provider'] = request.form.get('ai_provider', 'openrouter')
-        config['openrouter_model'] = request.form.get('openrouter_model', 'google/gemma-3n-e4b-it:free')
-        config['gemini_model'] = request.form.get('gemini_model', 'gemini-1.5-flash')
+        config['openrouter_model'] = request.form.get('openrouter_model', '').strip()
+        config['gemini_model'] = request.form.get('gemini_model', '').strip()
         config['ollama_url'] = request.form.get('ollama_url', 'http://localhost:11434').strip()
         config['ollama_model'] = request.form.get('ollama_model', 'llama3.2:3b').strip()
         config['scan_interval_hours'] = int(request.form.get('scan_interval_hours', 6))
@@ -7153,7 +7288,7 @@ def settings_page():
         config['enable_audio_analysis'] = 'enable_audio_analysis' in request.form
         config['enable_content_analysis'] = 'enable_content_analysis' in request.form  # Issue #65: Layer 4
         config['whisper_model'] = request.form.get('whisper_model', 'base')  # Issue #77: was missing
-        config['layer4_openrouter_model'] = request.form.get('layer4_openrouter_model', 'google/gemma-3n-e4b-it:free')
+        config['layer4_openrouter_model'] = request.form.get('layer4_openrouter_model', '').strip()
         # Handle both old and new config names for backwards compatibility
         use_sl = 'use_skaldleita_for_audio' in request.form or 'use_bookdb_for_audio' in request.form
         config['use_skaldleita_for_audio'] = use_sl
@@ -7200,11 +7335,33 @@ def settings_page():
         # P2P cache setting (Issue #62)
         config['enable_p2p_cache'] = 'enable_p2p_cache' in request.form
 
+        # Issue #110: File validation settings
+        config['enable_file_validation'] = 'enable_file_validation' in request.form
+        config['min_audio_duration_seconds'] = int(request.form.get('min_audio_duration_seconds', 600))
+        config['min_audio_file_size_mb'] = int(request.form.get('min_audio_file_size_mb', 1))
+        config['enable_folder_triage'] = 'enable_folder_triage' in request.form
+
         # Provider chain settings - parse comma-separated values into lists
         audio_chain_str = request.form.get('audio_provider_chain', 'bookdb,gemini').strip()
         config['audio_provider_chain'] = [p.strip() for p in audio_chain_str.split(',') if p.strip()]
         text_chain_str = request.form.get('text_provider_chain', 'gemini,openrouter').strip()
         config['text_provider_chain'] = [p.strip() for p in text_chain_str.split(',') if p.strip()]
+
+        # Pipeline order and modular pipeline feature flag
+        config['use_modular_pipeline'] = 'use_modular_pipeline' in request.form
+        pipeline_order_json = request.form.get('pipeline_order', '').strip()
+        if pipeline_order_json:
+            try:
+                proposed_order = json.loads(pipeline_order_json)
+                if isinstance(proposed_order, list):
+                    from library_manager.pipeline.registry import default_registry
+                    is_valid, errors = default_registry.validate_order(proposed_order)
+                    if is_valid:
+                        config['pipeline_order'] = proposed_order
+                    else:
+                        logger.warning(f"Invalid pipeline_order from settings form: {errors}")
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Failed to parse pipeline_order from settings form: {e}")
 
         # Save config (without secrets)
         save_config(config)
@@ -7238,7 +7395,15 @@ def settings_page():
     config['openrouter_api_key'] = secrets.get('openrouter_api_key', '')
     config['google_books_api_key'] = secrets.get('google_books_api_key', '')
     config['bookdb_api_key'] = secrets.get('bookdb_api_key', '')
-    return render_template('settings.html', config=config, version=APP_VERSION)
+    # Pipeline layer info for settings UI
+    from library_manager.pipeline.registry import default_registry
+    pipeline_layers = default_registry.get_ordered_layers(config)
+    pipeline_order = [layer.layer_id for layer in pipeline_layers]
+    pipeline_default_order = default_registry.get_all_layer_ids()
+    return render_template('settings.html', config=config, version=APP_VERSION,
+                           pipeline_layers=pipeline_layers,
+                           pipeline_order=pipeline_order,
+                           pipeline_default_order=pipeline_default_order)
 
 
 # ============== PATH DIAGNOSTIC ==============
@@ -7926,6 +8091,95 @@ def api_process_background():
 def api_process_status():
     """Get current processing status."""
     return jsonify(get_processing_status())
+
+
+@app.route('/api/pipeline/run-layer/<layer_id>', methods=['POST'])
+def api_run_single_layer(layer_id):
+    """Run a single pipeline layer on demand.
+
+    Executes one batch of the specified layer synchronously.
+    The request blocks until the layer finishes processing its batch.
+    """
+    global _bg_processing_active
+
+    # Validate layer_id exists in registry
+    from library_manager.pipeline.registry import default_registry
+    layer_info = default_registry.get_layer(layer_id)
+    if layer_info is None:
+        return jsonify({
+            'success': False,
+            'message': f'Unknown layer: {layer_id}'
+        }), 404
+
+    # Check that background processing is not currently running
+    if _bg_processing_active:
+        return jsonify({
+            'success': False,
+            'message': 'Background processing is already running. Wait for it to finish.'
+        }), 409
+
+    config = load_config()
+
+    # Check that the layer is enabled in config
+    if not config.get(layer_info.config_enable_key, True):
+        return jsonify({
+            'success': False,
+            'message': f'Layer "{layer_info.layer_name}" is disabled. Enable it in settings first.'
+        }), 400
+
+    # Map layer_id to the corresponding processing function
+    layer_functions = {
+        'audio_id': lambda: process_layer_1_audio(config),
+        'audio_credits': lambda: process_layer_3_audio(config, verification_layer=2),
+        'sl_requeue': lambda: process_sl_requeue_verification(config),
+        'api_lookup': lambda: process_layer_1_api(config),
+        'ai_verify': lambda: process_queue(config, verification_layer=4),
+    }
+
+    layer_func = layer_functions.get(layer_id)
+    if layer_func is None:
+        return jsonify({
+            'success': False,
+            'message': f'Layer "{layer_id}" does not have a processing function mapped.'
+        }), 501
+
+    # Update status to show this layer is running
+    update_processing_status('active', True)
+    update_processing_status('layer_name', layer_info.layer_name)
+    update_processing_status('current', f'Running {layer_info.layer_name} (manual)...')
+
+    try:
+        processed, resolved = layer_func()
+        # process_queue returns -1 when rate-limited
+        if processed == -1:
+            processed = 0
+            message = f'{layer_info.layer_name}: Rate limited, try again later.'
+        elif processed == 0:
+            message = f'{layer_info.layer_name}: No items to process at this layer.'
+        else:
+            message = f'{layer_info.layer_name}: {processed} processed, {resolved} resolved.'
+
+        log_action("run_layer", detail=f"layer={layer_id} processed={processed} resolved={resolved}", result="success")
+
+        return jsonify({
+            'success': True,
+            'layer_id': layer_id,
+            'layer_name': layer_info.layer_name,
+            'processed': max(0, processed),
+            'resolved': resolved,
+            'message': message
+        })
+    except Exception as e:
+        logger.error(f"Error running layer {layer_id}: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'message': f'Error running {layer_info.layer_name}: {str(e)}'
+        }), 500
+    finally:
+        update_processing_status('active', False)
+        update_processing_status('layer_name', 'Idle')
+        update_processing_status('current', 'Idle')
+        clear_current_book()
 
 
 @app.route('/api/live_status')
@@ -8722,6 +8976,10 @@ def api_stats():
     c.execute("SELECT COUNT(*) as count FROM books WHERE status = 'verified'")
     verified = c.fetchone()['count']
 
+    # Issue #110: Validation failure count
+    c.execute("SELECT COUNT(*) as count FROM books WHERE validation_status = 'invalid'")
+    validation_failed = c.fetchone()['count']
+
     conn.close()
 
     return jsonify({
@@ -8730,6 +8988,7 @@ def api_stats():
         'fixed': fixed,
         'pending_fixes': pending,
         'verified': verified,
+        'validation_failed': validation_failed,
         'worker_running': is_worker_running(),
         'processing': get_processing_status()
     })
@@ -9230,6 +9489,10 @@ def api_library():
     c.execute("SELECT COUNT(*) FROM books WHERE user_locked = 1")
     counts['locked'] = c.fetchone()[0]
 
+    # Issue #110: Count validation failures
+    c.execute("SELECT COUNT(*) FROM books WHERE validation_status = 'invalid'")
+    counts['validation_failed'] = c.fetchone()[0]
+
     # Count orphans (detected on-the-fly)
     orphan_list = []
     for lib_path in config.get('library_paths', []):
@@ -9468,6 +9731,27 @@ def api_library():
                 'user_locked': True
             })
 
+    # Issue #110: Validation failed filter
+    elif status_filter == 'validation_failed':
+        order = build_order_by(BOOK_SORT_COLS, 'current_author, current_title')
+        c.execute('''SELECT id, path, current_author, current_title, status, updated_at,
+                            validation_status, validation_reason
+                     FROM books
+                     WHERE validation_status = 'invalid'
+                     ''' + order + '''
+                     LIMIT ? OFFSET ?''', (per_page, offset))
+        for row in c.fetchall():
+            items.append({
+                'id': row['id'],
+                'type': 'book',
+                'book_id': row['id'],
+                'author': row['current_author'],
+                'title': row['current_title'],
+                'path': row['path'],
+                'status': 'validation_failed',
+                'validation_reason': row['validation_reason']
+            })
+
     # Issue #53: Media type filters
     elif status_filter == 'audiobook_only':
         order = build_order_by(BOOK_SORT_COLS, 'current_author, current_title')
@@ -9559,7 +9843,7 @@ def api_library():
     else:  # 'all' - show everything from books table
         order = build_order_by(BOOK_SORT_COLS, 'current_author ASC, current_title ASC')
         c.execute('''SELECT b.id, b.path, b.current_author, b.current_title, b.status,
-                            b.user_locked, b.confidence, b.media_type,
+                            b.user_locked, b.confidence, b.media_type, b.folder_triage,
                             h.old_author, h.old_title, h.new_author, h.new_title,
                             h.old_path, h.new_path, h.status as history_status,
                             h.fixed_at, h.error_message
@@ -9598,7 +9882,8 @@ def api_library():
                 'status': history_status or book_status,
                 'confidence': row['confidence'] or 0,
                 'user_locked': row['user_locked'] == 1,
-                'media_type': row['media_type'] or 'audiobook'
+                'media_type': row['media_type'] or 'audiobook',
+                'folder_triage': row['folder_triage'] or 'clean'
             }
             # Overlay history data when present
             if history_status:
@@ -9635,6 +9920,8 @@ def api_library():
         total = counts['attention']
     elif status_filter == 'locked':
         total = counts['locked']
+    elif status_filter == 'validation_failed':
+        total = counts['validation_failed']
     elif status_filter == 'search':
         total = counts.get('search', 0)
     # Issue #53: Media type filters
@@ -10192,6 +10479,98 @@ def api_ollama_models():
         })
 
 
+@app.route('/api/gemini_models', methods=['POST'])
+def api_gemini_models():
+    """Fetch Gemini models available to the configured API key."""
+    data = request.get_json() or {}
+    config = load_config()
+    api_key = (data.get('gemini_api_key') or '').strip() or config.get('gemini_api_key', '')
+
+    if not api_key:
+        return jsonify({
+            'success': False,
+            'models': [],
+            'error': 'No Gemini API key configured'
+        })
+
+    try:
+        resp = requests.get(
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            params={'key': api_key},
+            timeout=10
+        )
+        if resp.status_code != 200:
+            try:
+                error_msg = resp.json().get('error', {}).get('message', f'Status {resp.status_code}')
+            except Exception:
+                error_msg = f'Status {resp.status_code}'
+            return jsonify({'success': False, 'models': [], 'error': error_msg})
+
+        models = []
+        for model in resp.json().get('models', []):
+            methods = model.get('supportedGenerationMethods') or []
+            if 'generateContent' not in methods:
+                continue
+            model_id = (model.get('name') or '').replace('models/', '', 1)
+            if not model_id:
+                continue
+            models.append({
+                'id': model_id,
+                'name': model.get('displayName') or model_id
+            })
+
+        models.sort(key=lambda item: item['id'])
+        return jsonify({'success': True, 'models': models})
+    except requests.exceptions.Timeout:
+        return jsonify({'success': False, 'models': [], 'error': 'Gemini model request timed out'})
+    except Exception as e:
+        logger.warning(f"Could not fetch Gemini models: {e}")
+        return jsonify({'success': False, 'models': [], 'error': 'Could not fetch Gemini models'})
+
+
+@app.route('/api/openrouter_models', methods=['POST'])
+def api_openrouter_models():
+    """Fetch current OpenRouter model IDs."""
+    data = request.get_json() or {}
+    config = load_config()
+    api_key = (data.get('openrouter_api_key') or '').strip() or config.get('openrouter_api_key', '')
+
+    try:
+        headers = {}
+        if api_key:
+            headers['Authorization'] = f"Bearer {api_key}"
+
+        resp = requests.get(
+            "https://openrouter.ai/api/v1/models",
+            headers=headers,
+            timeout=10
+        )
+        if resp.status_code != 200:
+            try:
+                error_msg = resp.json().get('error', {}).get('message', f'Status {resp.status_code}')
+            except Exception:
+                error_msg = f'Status {resp.status_code}'
+            return jsonify({'success': False, 'models': [], 'error': error_msg})
+
+        models = []
+        for model in resp.json().get('data', []):
+            model_id = model.get('id')
+            if not model_id:
+                continue
+            models.append({
+                'id': model_id,
+                'name': model.get('name') or model_id
+            })
+
+        models.sort(key=lambda item: (':free' not in item['id'], item['id']))
+        return jsonify({'success': True, 'models': models})
+    except requests.exceptions.Timeout:
+        return jsonify({'success': False, 'models': [], 'error': 'OpenRouter model request timed out'})
+    except Exception as e:
+        logger.warning(f"Could not fetch OpenRouter models: {e}")
+        return jsonify({'success': False, 'models': [], 'error': 'Could not fetch OpenRouter models'})
+
+
 # ============== SKALDLEITA INSTANCE REGISTRATION ==============
 
 @app.route('/api/skaldleita/register', methods=['POST'])
@@ -10417,7 +10796,12 @@ def api_test_gemini():
         })
 
     try:
-        model = config.get('gemini_model', 'gemini-2.0-flash')
+        model = (config.get('gemini_model') or '').strip()
+        if not model:
+            return jsonify({
+                'success': False,
+                'error': 'No Gemini model configured. Refresh models in Settings and save one.'
+            })
         resp = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
             headers={"Content-Type": "application/json"},
@@ -10449,7 +10833,7 @@ def api_test_openrouter():
     """Test OpenRouter API connection."""
     config = load_config()
     api_key = config.get('openrouter_api_key', '')
-    model = config.get('openrouter_model', 'google/gemma-3n-e4b-it:free')
+    model = (config.get('openrouter_model') or '').strip()
     result = test_openrouter_connection(api_key, model)
     return jsonify(result)
 
@@ -11465,17 +11849,22 @@ def api_manual_match():
 
         # If not from watch folder, find which library it belongs to
         if lib_path is None:
+            old_path_resolved = Path(old_path).resolve()
             for lp in config.get('library_paths', []):
-                lp_path = Path(lp)
+                lp_path = Path(lp).resolve()
                 try:
-                    Path(old_path).relative_to(lp_path)
+                    old_path_resolved.relative_to(lp_path)
                     lib_path = lp_path
                     break
                 except ValueError:
                     continue
 
         if lib_path is None:
-            lib_path = Path(old_path).parent.parent
+            old_p = Path(old_path)
+            if old_p.is_file():
+                lib_path = old_p.parent
+            else:
+                lib_path = old_p.parent.parent
 
         # Detect language from title for multi-language naming
         lang_code = detect_title_language(new_title) if new_title else None
@@ -11634,17 +12023,22 @@ def api_edit_book():
                 return jsonify({'success': False, 'error': 'No output folder configured for watch folder items'})
         else:
             # Normal library item - find which library it belongs to
+            old_path_resolved = Path(old_path).resolve()
             for lp in config.get('library_paths', []):
-                lp_path = Path(lp)
+                lp_path = Path(lp).resolve()
                 try:
-                    Path(old_path).relative_to(lp_path)
+                    old_path_resolved.relative_to(lp_path)
                     lib_path = lp_path
                     break
                 except ValueError:
                     continue
 
             if lib_path is None:
-                lib_path = Path(old_path).parent.parent
+                old_p = Path(old_path)
+                if old_p.is_file():
+                    lib_path = old_p.parent
+                else:
+                    lib_path = old_p.parent.parent
 
         # Detect language from title for multi-language naming
         lang_code = detect_title_language(new_title) if new_title else None
@@ -11883,6 +12277,18 @@ if __name__ == '__main__':
     init_db()
     cleanup_garbage_entries()  # Remove @eaDir, #recycle, etc. from database (Issue #88)
     cleanup_duplicate_history_entries()  # Remove duplicate history entries (Issue #79)
+
+    # Issue #188: Load drop-in Python plugins
+    try:
+        from library_manager.pipeline.registry import default_registry
+        _startup_config = load_config()
+        _loaded_plugins = register_plugins(default_registry, _startup_config, get_db)
+        if _loaded_plugins:
+            logger.info(f"[PLUGIN] {len(_loaded_plugins)} plugin(s) loaded and registered")
+    except Exception as e:
+        logger.error(f"[PLUGIN] Failed to load plugins: {e}")
+        _loaded_plugins = []
+
     start_worker()
     port = int(os.environ.get('PORT', 5757))
     app.run(host='0.0.0.0', port=port, debug=False)

@@ -1423,6 +1423,38 @@ def main():
         failed += 1
 
     # ==========================================
+    # Issue #169: clean_search_title "by Author" regex edge cases
+    # ==========================================
+    print("\n--- Issue #169: 'by Author' regex handles special characters ---")
+
+    by_author_tests = [
+        # Basic case (already worked)
+        ("The Great Gatsby by F Scott Fitzgerald", "The Great Gatsby"),
+        # Periods/initials in author name
+        ("The Great Gatsby by F. Scott Fitzgerald", "The Great Gatsby"),
+        ("A Space Odyssey by Arthur C. Clarke", "A Space Odyssey"),
+        # Apostrophes in author name
+        ("Leaving Las Vegas by John O'Brien", "Leaving Las Vegas"),
+        # Hyphens in author name
+        ("The Joy Luck Club by Mary-Jane Smith", "The Joy Luck Club"),
+        # Parenthetical content after author
+        ("LAST RITES by Ozzy Osbourne (Audiobook)(Nonfiction)", "LAST RITES"),
+        ("Some Book by Jane Doe (Unabridged)", "Some Book"),
+        # Combined edge cases
+        ("A Tale by J.R.R. Tolkien (Fantasy)", "A Tale"),
+        ("My Book by Mary O'Brien-Smith (Audiobook)", "My Book"),
+    ]
+
+    for input_title, expected in by_author_tests:
+        result = clean_search_title(input_title)
+        if test_result(f"By-author strip: '{input_title}'",
+                       result.strip() == expected,
+                       f"Expected '{expected}', got '{result.strip()}'"):
+            passed += 1
+        else:
+            failed += 1
+
+    # ==========================================
     # Summary
     # ==========================================
     print("\n" + "=" * 60)

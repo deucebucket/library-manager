@@ -108,6 +108,15 @@ HINTS = {
 
     # === Post-Processing Hooks ===
     'post_processing': 'Run external scripts or webhooks after a book is successfully renamed. Use for M4B conversion, Audiobookshelf library scans, Discord notifications, backup scripts, etc. Hook failures never undo a successful rename.',
+
+    # === Folder Triage ===
+    'folder_triage': 'Classifies folder names as clean, messy (scene tags, torrent markers), or garbage (hashes, generic names). Messy and garbage folders skip path-based hints and rely on audio/metadata identification only.',
+
+    # === Plugins ===
+    'custom_api_sources': 'Add your own book metadata APIs as processing layers. Each source queries an HTTP endpoint and maps the response into the book profile system.',
+    'python_plugins': 'Drop-in Python plugins for advanced users. Place a plugin folder in /data/plugins/ with a manifest.json and a Python file extending BasePlugin. Plugins are auto-discovered on startup.',
+    'plugin_health': 'Monitor the health and performance of your custom API sources and Python plugins. Plugins are auto-disabled after 5 consecutive failures to protect your processing pipeline.',
+    'plugin_secrets': 'API keys and passwords are stored in secrets.json (not config.json) so they are never exposed in backups or logs. Add your key as a named entry, then reference the key name here.',
 }
 
 

@@ -29,10 +29,6 @@ logger = logging.getLogger(__name__)
 # OpenRouter API endpoint
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# Default model for OpenRouter
-DEFAULT_MODEL = "xiaomi/mimo-v2-flash:free"
-
-
 def _explain_http_error(status_code, provider):
     """Convert HTTP status codes to human-readable errors."""
     errors = {
@@ -108,6 +104,10 @@ def call_openrouter(prompt, config, error_reporter=None):
     rate_limit_wait('openrouter')  # Respect free tier limits
 
     try:
+        model = (config.get('openrouter_model') or '').strip()
+        if not model:
+            logger.warning("OpenRouter model is not configured")
+            return None
         resp = requests.post(
             OPENROUTER_API_URL,
             headers={
@@ -117,7 +117,7 @@ def call_openrouter(prompt, config, error_reporter=None):
                 "X-Title": "Library Metadata Manager"
             },
             json={
-                "model": config.get('openrouter_model', DEFAULT_MODEL),
+                "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1
             },
@@ -195,6 +195,10 @@ def call_openrouter_simple(prompt, config):
     """
     rate_limit_wait('openrouter')  # Respect free tier limits
     try:
+        model = (config.get('openrouter_model') or '').strip()
+        if not model:
+            logger.debug("OpenRouter model is not configured")
+            return None
         resp = requests.post(
             OPENROUTER_API_URL,
             headers={
@@ -202,7 +206,7 @@ def call_openrouter_simple(prompt, config):
                 "Content-Type": "application/json",
             },
             json={
-                "model": config.get('openrouter_model', 'google/gemma-3n-e4b-it:free'),
+                "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1
             },
@@ -239,9 +243,10 @@ def identify_book_from_transcript(transcript, config):
     # Respect free tier rate limits (20 req/min + daily limits)
     rate_limit_wait('openrouter')
 
-    # Use a capable free model for book identification
-    # Options: xiaomi/mimo-v2-flash:free (262K ctx), allenai/molmo-2-8b:free, mistralai/devstral-2512:free
-    model = config.get('layer4_openrouter_model', 'xiaomi/mimo-v2-flash:free')
+    model = (config.get('layer4_openrouter_model') or config.get('openrouter_model') or '').strip()
+    if not model:
+        logger.warning("[LAYER 4] No OpenRouter model configured for transcript identification")
+        return None
 
     prompt = f"""You are a literary expert. Based on this audiobook transcript excerpt, identify the book.
 
@@ -316,7 +321,7 @@ def test_openrouter_connection(api_key, model=None):
 
     Args:
         api_key: The OpenRouter API key to test
-        model: Optional model to test with (defaults to gemma-3n-e4b-it:free)
+        model: Optional model to test with
 
     Returns:
         dict with 'success', 'model', 'message' or 'error' keys
@@ -328,7 +333,12 @@ def test_openrouter_connection(api_key, model=None):
         }
 
     try:
-        model = model or 'google/gemma-3n-e4b-it:free'
+        model = (model or '').strip()
+        if not model:
+            return {
+                'success': False,
+                'error': 'No OpenRouter model configured. Refresh models in Settings and save one.'
+            }
         resp = requests.post(
             OPENROUTER_API_URL,
             headers={
@@ -365,7 +375,6 @@ def test_openrouter_connection(api_key, model=None):
 
 __all__ = [
     'OPENROUTER_API_URL',
-    'DEFAULT_MODEL',
     'call_openrouter',
     'call_openrouter_simple',
     'identify_book_from_transcript',

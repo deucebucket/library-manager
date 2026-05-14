@@ -1,8 +1,8 @@
 {
   "library_paths": ["/path/to/your/audiobooks"],
   "ai_provider": "gemini",
-  "gemini_model": "gemini-2.0-flash",
-  "openrouter_model": "google/gemma-3n-e4b-it:free",
+  "gemini_model": "",
+  "openrouter_model": "",
   "scan_interval_hours": 6,
   "batch_size": 3,
   "max_requests_per_hour": 2000,
