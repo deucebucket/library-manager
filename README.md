@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.149-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.150-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
@@ -15,6 +15,11 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.150** - **Fix: Hosted AI Model Picker Uses Live Provider Models** (Issue #216)
+> - Replaced stale hardcoded Gemini/OpenRouter model dropdowns with editable model fields backed by live provider model lists.
+> - Gemini models load from the configured Gemini key; OpenRouter models load from OpenRouter's `/models` endpoint.
+> - Removed old hosted-model fallback IDs so misconfiguration fails clearly instead of silently retrying retired models.
 
 > **beta.149** - **Fix: Watch-Folder Move Failures Now Appear in the UI** (Issue #211)
 > - Three `INSERT` statements in the watch-folder worker referenced a phantom `added_at` column on the `books` table (the real column is `created_at`). Every insert silently raised `OperationalError`, caught by a `logger.debug` that hid the error. Result: watch-folder move failures never produced a `watch_folder_error` row — the UI never showed the failure, users only saw it in logs.

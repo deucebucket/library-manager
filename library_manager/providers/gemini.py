@@ -27,11 +27,6 @@ logger = logging.getLogger(__name__)
 # Gemini API base URL
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-# Default models
-DEFAULT_TEXT_MODEL = "gemini-2.0-flash"
-DEFAULT_AUDIO_MODEL = "gemini-2.5-flash"
-
-
 def _call_gemini_simple(prompt, config, parse_json_response_fn):
     """Simple Gemini call for localization queries.
 
@@ -50,7 +45,10 @@ def _call_gemini_simple(prompt, config, parse_json_response_fn):
 
     try:
         api_key = config.get('gemini_api_key')
-        model = config.get('gemini_model', DEFAULT_TEXT_MODEL)
+        model = (config.get('gemini_model') or '').strip()
+        if not model:
+            logger.warning("Gemini model is not configured")
+            return None
         resp = requests.post(
             f"{GEMINI_API_URL}/{model}:generateContent?key={api_key}",
             headers={"Content-Type": "application/json"},
@@ -93,7 +91,10 @@ def call_gemini(prompt, config, retry_count=0, parse_json_response_fn=None,
 
     try:
         api_key = config.get('gemini_api_key')
-        model = config.get('gemini_model', DEFAULT_TEXT_MODEL)
+        model = (config.get('gemini_model') or '').strip()
+        if not model:
+            logger.warning("Gemini model is not configured")
+            return None
 
         resp = requests.post(
             f"{GEMINI_API_URL}/{model}:generateContent?key={api_key}",
@@ -220,8 +221,10 @@ def analyze_audio_with_gemini(audio_file, config, duration=90, mode='credits',
         # Clean up temp file
         os.unlink(sample_path)
 
-        # Use gemini-2.5-flash for audio (separate quota from text analysis model)
-        model = DEFAULT_AUDIO_MODEL
+        model = (config.get('gemini_model') or '').strip()
+        if not model:
+            logger.warning("[GEMINI AUDIO] Gemini model is not configured")
+            return None
 
         # Different prompts for different analysis modes
         if mode == 'identify':
@@ -365,7 +368,10 @@ def detect_audio_language(audio_file, config, extract_audio_sample_fn=None, pars
 
         os.unlink(sample_path)
 
-        model = DEFAULT_AUDIO_MODEL
+        model = (config.get('gemini_model') or '').strip()
+        if not model:
+            logger.warning("[GEMINI AUDIO] Gemini model is not configured")
+            return None
 
         prompt = """Listen to this audiobook sample and identify the spoken language.
 
@@ -412,7 +418,7 @@ Focus on the SPOKEN language you hear in the narration, not any background music
     return None
 
 
-def try_gemini_content_identification(sample_path, api_key, parse_json_response_fn=None):
+def try_gemini_content_identification(sample_path, api_key, model=None, parse_json_response_fn=None):
     """Try Gemini Audio API for content identification. Returns result or None.
 
     This function analyzes story CONTENT (not credits) to identify books from
@@ -421,6 +427,7 @@ def try_gemini_content_identification(sample_path, api_key, parse_json_response_
     Args:
         sample_path: Path to the audio sample file (already extracted)
         api_key: Gemini API key
+        model: Gemini model ID to use
         parse_json_response_fn: Function to parse JSON from AI response (optional, uses internal parsing if not provided)
 
     Returns:
@@ -438,7 +445,10 @@ def try_gemini_content_identification(sample_path, api_key, parse_json_response_
         with open(sample_path, 'rb') as f:
             audio_data = base64.b64encode(f.read()).decode('utf-8')
 
-        model = DEFAULT_AUDIO_MODEL
+        model = (model or '').strip()
+        if not model:
+            logger.warning("[LAYER 4] Gemini model is not configured")
+            return None
 
         prompt = """Listen to this audiobook excerpt and perform these tasks:
 
@@ -553,8 +563,6 @@ Use character names, plot elements, and writing style as clues."""
 
 __all__ = [
     'GEMINI_API_URL',
-    'DEFAULT_TEXT_MODEL',
-    'DEFAULT_AUDIO_MODEL',
     '_call_gemini_simple',
     'call_gemini',
     'analyze_audio_with_gemini',

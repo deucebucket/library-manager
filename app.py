@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.149"
+APP_VERSION = "0.9.0-beta.150"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -2359,7 +2359,11 @@ def transcribe_and_identify_content(audio_file, config):
         # === ATTEMPT 1: Gemini Audio API ===
         gemini_key = config.get('gemini_api_key')
         if gemini_key:
-            result = _try_gemini_content_identification(sample_path, gemini_key)
+            result = _try_gemini_content_identification(
+                sample_path,
+                gemini_key,
+                (config.get('gemini_model') or '').strip()
+            )
 
         # === ATTEMPT 2: Whisper + OpenRouter fallback ===
         if result is None:
@@ -2383,7 +2387,7 @@ def transcribe_and_identify_content(audio_file, config):
     return result
 
 
-def _try_gemini_content_identification(sample_path, api_key):
+def _try_gemini_content_identification(sample_path, api_key, model):
     """Try Gemini Audio API for content identification. Returns result or None.
 
     Wrapper that passes app-level dependencies to the extracted module.
@@ -2391,6 +2395,7 @@ def _try_gemini_content_identification(sample_path, api_key):
     return _try_gemini_content_identification_raw(
         sample_path=sample_path,
         api_key=api_key,
+        model=model,
         parse_json_response_fn=parse_json_response
     )
 
@@ -3620,8 +3625,12 @@ Return JSON: {{"author": "Name", "title": "Title", "confidence": "high/medium/lo
 If unsure, return {{"confidence": "none"}}"""
 
     try:
+        model = (config.get('gemini_model') or '').strip()
+        if not model:
+            logger.warning("Gemini model is not configured; refresh models in Settings and save a model")
+            return None
         response = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{config.get('gemini_model', 'gemini-2.0-flash')}:generateContent",
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
             headers={'Content-Type': 'application/json'},
             params={'key': gemini_key},
             json={'contents': [{'parts': [{'text': prompt}]}]},
@@ -5820,7 +5829,7 @@ def transcribe_audio_intro(file_path, duration_seconds=45):
                     audio_data = base64.standard_b64encode(f.read()).decode('utf-8')
                 os.unlink(tmp_path)
 
-                # Send to Gemini with audio
+                # Send to Gemini with audio using the configured model.
                 prompt = """Listen to this audiobook intro. Write out exactly what the narrator says, word for word.
 Focus on:
 - The book title announcement
@@ -5830,8 +5839,10 @@ Focus on:
 
 Just write what you hear - no interpretation or formatting."""
 
-                # Force gemini-2.0-flash for audio - other models don't support audio input
-                gemini_model = 'gemini-2.0-flash'  # Audio requires this model
+                gemini_model = (config.get('gemini_model') or '').strip()
+                if not gemini_model:
+                    logger.warning("[LAYER 1/AUDIO] Gemini model is not configured")
+                    return None
                 response = requests.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent",
                     params={'key': gemini_key},
@@ -5958,7 +5969,10 @@ If you cannot identify the book from the transcript, return:
         # Fallback to Gemini
         if config.get('gemini_api_key'):
             api_key = config.get('gemini_api_key')
-            model = config.get('gemini_model', 'gemini-2.0-flash')
+            model = (config.get('gemini_model') or '').strip()
+            if not model:
+                logger.warning("[LAYER 1/AUDIO] Gemini model is not configured")
+                return None
 
             response = requests.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
@@ -5976,6 +5990,10 @@ If you cannot identify the book from the transcript, return:
 
         # Fallback to OpenRouter
         if config.get('openrouter_api_key'):
+            model = (config.get('openrouter_model') or '').strip()
+            if not model:
+                logger.warning("[LAYER 1/AUDIO] OpenRouter model is not configured")
+                return None
             response = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers={
@@ -5983,7 +6001,7 @@ If you cannot identify the book from the transcript, return:
                     'Content-Type': 'application/json'
                 },
                 json={
-                    'model': config.get('openrouter_model', 'google/gemini-flash-1.5'),
+                    'model': model,
                     'messages': [{'role': 'user', 'content': prompt}]
                 },
                 timeout=30
@@ -7245,8 +7263,8 @@ def settings_page():
         # Update config values
         config['library_paths'] = [p.strip() for p in request.form.get('library_paths', '').split('\n') if p.strip()]
         config['ai_provider'] = request.form.get('ai_provider', 'openrouter')
-        config['openrouter_model'] = request.form.get('openrouter_model', 'google/gemma-3n-e4b-it:free')
-        config['gemini_model'] = request.form.get('gemini_model', 'gemini-1.5-flash')
+        config['openrouter_model'] = request.form.get('openrouter_model', '').strip()
+        config['gemini_model'] = request.form.get('gemini_model', '').strip()
         config['ollama_url'] = request.form.get('ollama_url', 'http://localhost:11434').strip()
         config['ollama_model'] = request.form.get('ollama_model', 'llama3.2:3b').strip()
         config['scan_interval_hours'] = int(request.form.get('scan_interval_hours', 6))
@@ -7270,7 +7288,7 @@ def settings_page():
         config['enable_audio_analysis'] = 'enable_audio_analysis' in request.form
         config['enable_content_analysis'] = 'enable_content_analysis' in request.form  # Issue #65: Layer 4
         config['whisper_model'] = request.form.get('whisper_model', 'base')  # Issue #77: was missing
-        config['layer4_openrouter_model'] = request.form.get('layer4_openrouter_model', 'google/gemma-3n-e4b-it:free')
+        config['layer4_openrouter_model'] = request.form.get('layer4_openrouter_model', '').strip()
         # Handle both old and new config names for backwards compatibility
         use_sl = 'use_skaldleita_for_audio' in request.form or 'use_bookdb_for_audio' in request.form
         config['use_skaldleita_for_audio'] = use_sl
@@ -10461,6 +10479,98 @@ def api_ollama_models():
         })
 
 
+@app.route('/api/gemini_models', methods=['POST'])
+def api_gemini_models():
+    """Fetch Gemini models available to the configured API key."""
+    data = request.get_json() or {}
+    config = load_config()
+    api_key = (data.get('gemini_api_key') or '').strip() or config.get('gemini_api_key', '')
+
+    if not api_key:
+        return jsonify({
+            'success': False,
+            'models': [],
+            'error': 'No Gemini API key configured'
+        })
+
+    try:
+        resp = requests.get(
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            params={'key': api_key},
+            timeout=10
+        )
+        if resp.status_code != 200:
+            try:
+                error_msg = resp.json().get('error', {}).get('message', f'Status {resp.status_code}')
+            except Exception:
+                error_msg = f'Status {resp.status_code}'
+            return jsonify({'success': False, 'models': [], 'error': error_msg})
+
+        models = []
+        for model in resp.json().get('models', []):
+            methods = model.get('supportedGenerationMethods') or []
+            if 'generateContent' not in methods:
+                continue
+            model_id = (model.get('name') or '').replace('models/', '', 1)
+            if not model_id:
+                continue
+            models.append({
+                'id': model_id,
+                'name': model.get('displayName') or model_id
+            })
+
+        models.sort(key=lambda item: item['id'])
+        return jsonify({'success': True, 'models': models})
+    except requests.exceptions.Timeout:
+        return jsonify({'success': False, 'models': [], 'error': 'Gemini model request timed out'})
+    except Exception as e:
+        logger.warning(f"Could not fetch Gemini models: {e}")
+        return jsonify({'success': False, 'models': [], 'error': 'Could not fetch Gemini models'})
+
+
+@app.route('/api/openrouter_models', methods=['POST'])
+def api_openrouter_models():
+    """Fetch current OpenRouter model IDs."""
+    data = request.get_json() or {}
+    config = load_config()
+    api_key = (data.get('openrouter_api_key') or '').strip() or config.get('openrouter_api_key', '')
+
+    try:
+        headers = {}
+        if api_key:
+            headers['Authorization'] = f"Bearer {api_key}"
+
+        resp = requests.get(
+            "https://openrouter.ai/api/v1/models",
+            headers=headers,
+            timeout=10
+        )
+        if resp.status_code != 200:
+            try:
+                error_msg = resp.json().get('error', {}).get('message', f'Status {resp.status_code}')
+            except Exception:
+                error_msg = f'Status {resp.status_code}'
+            return jsonify({'success': False, 'models': [], 'error': error_msg})
+
+        models = []
+        for model in resp.json().get('data', []):
+            model_id = model.get('id')
+            if not model_id:
+                continue
+            models.append({
+                'id': model_id,
+                'name': model.get('name') or model_id
+            })
+
+        models.sort(key=lambda item: (':free' not in item['id'], item['id']))
+        return jsonify({'success': True, 'models': models})
+    except requests.exceptions.Timeout:
+        return jsonify({'success': False, 'models': [], 'error': 'OpenRouter model request timed out'})
+    except Exception as e:
+        logger.warning(f"Could not fetch OpenRouter models: {e}")
+        return jsonify({'success': False, 'models': [], 'error': 'Could not fetch OpenRouter models'})
+
+
 # ============== SKALDLEITA INSTANCE REGISTRATION ==============
 
 @app.route('/api/skaldleita/register', methods=['POST'])
@@ -10686,7 +10796,12 @@ def api_test_gemini():
         })
 
     try:
-        model = config.get('gemini_model', 'gemini-2.0-flash')
+        model = (config.get('gemini_model') or '').strip()
+        if not model:
+            return jsonify({
+                'success': False,
+                'error': 'No Gemini model configured. Refresh models in Settings and save one.'
+            })
         resp = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
             headers={"Content-Type": "application/json"},
@@ -10718,7 +10833,7 @@ def api_test_openrouter():
     """Test OpenRouter API connection."""
     config = load_config()
     api_key = config.get('openrouter_api_key', '')
-    model = config.get('openrouter_model', 'google/gemma-3n-e4b-it:free')
+    model = (config.get('openrouter_model') or '').strip()
     result = test_openrouter_connection(api_key, model)
     return jsonify(result)
 

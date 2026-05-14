@@ -2,6 +2,14 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.150] - 2026-05-14
+
+### Fixed
+
+- **Issue #216: Hosted AI model selection no longer depends on stale hardcoded lists** — Replaced the Gemini and OpenRouter model dropdowns with editable model fields backed by live provider model lists. Settings can now refresh Gemini models from the configured Gemini key and OpenRouter models from OpenRouter's `/models` endpoint, while still allowing manual model IDs when a provider list is unavailable. Removed old Gemini/OpenRouter fallback model IDs from runtime provider calls so model misconfiguration surfaces as a clear Settings error instead of silently retrying retired models.
+
+---
+
 ## [0.9.0-beta.149] - 2026-04-17
 
 ### Fixed

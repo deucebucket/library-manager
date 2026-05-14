@@ -62,8 +62,8 @@ SECRETS_PATH = DATA_DIR / 'secrets.json'
 DEFAULT_CONFIG = {
     "library_paths": [],  # Empty by default - user configures via Settings
     "ai_provider": "gemini",  # "gemini", "openrouter", or "ollama"
-    "openrouter_model": "xiaomi/mimo-v2-flash:free",  # Best free model: 262K context
-    "gemini_model": "gemma-3-27b-it",  # Gemma 3 - unlimited free tier
+    "openrouter_model": "",  # Populated from OpenRouter's live model list in Settings
+    "gemini_model": "",  # Populated from Gemini's live model list in Settings
     "ollama_url": "http://localhost:11434",  # Ollama server URL
     "ollama_model": "llama3.2:3b",  # Default model - good for 8-12GB VRAM
     "scan_interval_hours": 6,

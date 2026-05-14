@@ -596,13 +596,14 @@
                                     <small class="text-muted">Model downloads automatically on first use</small>
                                 </div>
                                 <div class="mb-0">
-                                    <label class="form-label small mb-1">Book ID Model (OpenRouter)</label>
-                                    <select class="form-select form-select-sm bg-dark text-light" name="layer4_openrouter_model" id="layer4_openrouter_model">
-                                        <option value="xiaomi/mimo-v2-flash:free" {% if config.layer4_openrouter_model == 'xiaomi/mimo-v2-flash:free' or not config.layer4_openrouter_model %}selected{% endif %}>Xiaomi MiMo Flash (Free, 262K ctx)</option>
-                                        <option value="mistralai/devstral-2512:free" {% if config.layer4_openrouter_model == 'mistralai/devstral-2512:free' %}selected{% endif %}>Mistral Devstral (Free)</option>
-                                        <option value="meta-llama/llama-3.1-8b-instruct:free" {% if config.layer4_openrouter_model == 'meta-llama/llama-3.1-8b-instruct:free' %}selected{% endif %}>Llama 3.1 8B (Free)</option>
-                                    </select>
-                                    <small class="text-muted">Requires OpenRouter API key</small>
+                                    <div class="d-flex justify-content-between align-items-center mb-1">
+                                        <label class="form-label small mb-0" for="layer4_openrouter_model">Book ID Model (OpenRouter)</label>
+                                        <button class="btn btn-sm btn-outline-secondary py-0" type="button" onclick="refreshOpenRouterModels()">Refresh models</button>
+                                    </div>
+                                    <input class="form-control form-control-sm bg-dark text-light" name="layer4_openrouter_model" id="layer4_openrouter_model"
+                                           list="openrouter-model-options" value="{{ config.layer4_openrouter_model or '' }}"
+                                           placeholder="Select or type an OpenRouter model ID">
+                                    <small class="text-muted">Requires OpenRouter API key. Uses the same live model list as OpenRouter settings.</small>
                                 </div>
                                 <div class="mt-2">
                                     <span id="whisper-status" class="badge bg-secondary">Checking whisper status...</span>
@@ -870,23 +871,30 @@
                             <!-- Gemini Model Selection -->
                             <div id="gemini-settings">
                                 <div class="mb-0">
-                                    <label class="form-label">Gemini Model</label>
-                                    <select class="form-select bg-dark text-light" name="gemini_model">
-                                        <option value="gemma-3-27b-it" {% if config.gemini_model == 'gemma-3-27b-it' %}selected{% endif %}>Gemma 3 27B (Best - Free)</option>
-                                        <option value="gemma-3-12b-it" {% if config.gemini_model == 'gemma-3-12b-it' %}selected{% endif %}>Gemma 3 12B (Faster - Free)</option>
-                                        <option value="gemini-2.0-flash" {% if config.gemini_model == 'gemini-2.0-flash' %}selected{% endif %}>Gemini 2.0 Flash</option>
-                                    </select>
+                                    <div class="d-flex justify-content-between align-items-center mb-1">
+                                        <label class="form-label mb-0" for="gemini_model">Gemini Model</label>
+                                        <button class="btn btn-sm btn-outline-secondary py-0" type="button" onclick="refreshGeminiModels()">Refresh models</button>
+                                    </div>
+                                    <input class="form-control bg-dark text-light" name="gemini_model" id="gemini_model"
+                                           list="gemini-model-options" value="{{ config.gemini_model or '' }}"
+                                           placeholder="Select or type a Gemini model ID">
+                                    <datalist id="gemini-model-options"></datalist>
+                                    <small class="text-muted" id="gemini-model-status">Type a model ID or refresh models from your Gemini key.</small>
                                 </div>
                             </div>
 
                             <!-- OpenRouter Model Selection -->
                             <div id="openrouter-settings" style="display: none;">
                                 <div class="mb-0">
-                                    <label class="form-label">OpenRouter Model</label>
-                                    <select class="form-select bg-dark text-light" name="openrouter_model">
-                                        <option value="google/gemma-3n-e4b-it:free" {% if config.openrouter_model == 'google/gemma-3n-e4b-it:free' %}selected{% endif %}>Google Gemma 3N (Free)</option>
-                                        <option value="meta-llama/llama-3.3-70b-instruct:free" {% if config.openrouter_model == 'meta-llama/llama-3.3-70b-instruct:free' %}selected{% endif %}>Llama 3.3 70B (Free)</option>
-                                    </select>
+                                    <div class="d-flex justify-content-between align-items-center mb-1">
+                                        <label class="form-label mb-0" for="openrouter_model">OpenRouter Model</label>
+                                        <button class="btn btn-sm btn-outline-secondary py-0" type="button" onclick="refreshOpenRouterModels()">Refresh models</button>
+                                    </div>
+                                    <input class="form-control bg-dark text-light" name="openrouter_model" id="openrouter_model"
+                                           list="openrouter-model-options" value="{{ config.openrouter_model or '' }}"
+                                           placeholder="Select or type an OpenRouter model ID">
+                                    <datalist id="openrouter-model-options"></datalist>
+                                    <small class="text-muted" id="openrouter-model-status">Type a model ID or refresh models from OpenRouter.</small>
                                 </div>
                             </div>
 
@@ -1705,7 +1713,67 @@ function toggleProviderFields() {
     document.getElementById('gemini-settings').style.display = provider === 'gemini' ? 'block' : 'none';
     document.getElementById('openrouter-settings').style.display = provider === 'openrouter' ? 'block' : 'none';
     document.getElementById('ollama-settings').style.display = provider === 'ollama' ? 'block' : 'none';
+    if (provider === 'gemini') refreshGeminiModels();
+    if (provider === 'openrouter') refreshOpenRouterModels();
     if (provider === 'ollama') refreshOllamaModels();
+}
+
+function populateModelDatalist(datalistId, models) {
+    const datalist = document.getElementById(datalistId);
+    if (!datalist) return;
+    datalist.innerHTML = '';
+    models.forEach(model => {
+        const opt = document.createElement('option');
+        opt.value = model.id || model;
+        if (model.name && model.name !== model.id) opt.label = model.name;
+        datalist.appendChild(opt);
+    });
+}
+
+function refreshGeminiModels() {
+    const statusEl = document.getElementById('gemini-model-status');
+    const keyInput = document.getElementById('gemini_api_key');
+    if (statusEl) statusEl.textContent = 'Loading Gemini models...';
+    fetch('/api/gemini_models', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({gemini_api_key: keyInput ? keyInput.value.trim() : ''})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success && data.models && data.models.length > 0) {
+            populateModelDatalist('gemini-model-options', data.models);
+            if (statusEl) statusEl.textContent = `Loaded ${data.models.length} Gemini models. You can also type a custom model ID.`;
+        } else if (statusEl) {
+            statusEl.textContent = data.error || 'Could not load Gemini models. Type a model ID manually.';
+        }
+    })
+    .catch(() => {
+        if (statusEl) statusEl.textContent = 'Could not load Gemini models. Type a model ID manually.';
+    });
+}
+
+function refreshOpenRouterModels() {
+    const statusEl = document.getElementById('openrouter-model-status');
+    const keyInput = document.getElementById('openrouter_api_key');
+    if (statusEl) statusEl.textContent = 'Loading OpenRouter models...';
+    fetch('/api/openrouter_models', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({openrouter_api_key: keyInput ? keyInput.value.trim() : ''})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success && data.models && data.models.length > 0) {
+            populateModelDatalist('openrouter-model-options', data.models);
+            if (statusEl) statusEl.textContent = `Loaded ${data.models.length} OpenRouter models. You can also type a custom model ID.`;
+        } else if (statusEl) {
+            statusEl.textContent = data.error || 'Could not load OpenRouter models. Type a model ID manually.';
+        }
+    })
+    .catch(() => {
+        if (statusEl) statusEl.textContent = 'Could not load OpenRouter models. Type a model ID manually.';
+    });
 }
 
 function testOllamaConnection() {

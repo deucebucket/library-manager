@@ -228,7 +228,7 @@ def process_queue(
     is_free = ai_provider == 'ollama'  # Ollama is local/free
     provider_name = ai_provider.title()
     if ai_provider == 'gemini':
-        model = config.get('gemini_model', 'gemma-3-27b-it')
+        model = (config.get('gemini_model') or 'not configured').strip()
         # Gemma models are free
         is_free = 'gemma' in model.lower()
         provider_name = f"Gemini ({model})"
