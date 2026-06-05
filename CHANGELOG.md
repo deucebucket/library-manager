@@ -2,6 +2,14 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.151] - 2026-06-05
+
+### Changed
+
+- **Skaldleita API key requirement copy** — Updated Settings text so users can see that Skaldleita now requires an API key for metadata and audio identification before enabling or configuring the source.
+
+---
+
 ## [0.9.0-beta.150] - 2026-05-14
 
 ### Fixed
