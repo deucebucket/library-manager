@@ -519,7 +519,7 @@
                                     <i class="bi bi-cloud text-info"></i> <strong>Layer 1: Database Lookups</strong>
                                     <span class="badge bg-success">Free</span>
                                     <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.layer_1 }}</span></span>
-                                    <br><small class="text-muted">Skaldleita, Audnexus, OpenLibrary, Google Books</small>
+                                    <br><small class="text-muted">Skaldleita (API key required), Audnexus, OpenLibrary, Google Books</small>
                                 </label>
                             </div>
 
@@ -555,7 +555,7 @@
                                     <i class="bi bi-cloud-arrow-up text-primary"></i> Use Skaldleita for Audio ID
                                     <span class="badge bg-success">Recommended</span>
                                     <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.skaldleita }}</span></span>
-                                    <br><small class="text-muted">GPU Whisper + 50M book database (faster, no rate limits). Disable to use your own AI/Whisper.</small>
+                                    <br><small class="text-muted">GPU Whisper + 50M book database. Requires a Skaldleita API key. Disable to use your own AI/Whisper.</small>
                                 </label>
                             </div>
 
@@ -760,7 +760,7 @@
                             <div class="mb-3">
                                 <label class="form-label">
                                     <i class="bi bi-book text-primary"></i> Skaldleita API Key
-                                    <span class="badge bg-secondary ms-1">Optional</span>
+                                    <span class="badge bg-warning text-dark ms-1">Required</span>
                                 </label>
 
                                 <!-- Instance ID display -->
@@ -798,7 +798,7 @@
                                     </div>
                                     <div class="card-body">
                                         <p class="small text-muted mb-2">
-                                            API key gives you 1000 requests/hour (vs 500 without).
+                                            Skaldleita now requires an API key for metadata and audio identification.
                                             Your key will be emailed to you and automatically applied.
                                         </p>
                                         <div class="mb-2">
@@ -815,7 +815,7 @@
                                 {% endif %}
 
                                 <small class="text-muted d-block mt-1">
-                                    Higher rate limits (1000/hr). Already have a key? Paste it above and save settings.
+                                    Required to use Skaldleita. Already have a key? Paste it above and save settings.
                                 </small>
                             </div>
 
