@@ -8759,6 +8759,9 @@ def api_undo(history_id):
             logger.warning(f"Could not restore tags during undo: {tag_err}")
             tags_message = " (Tags could not be restored)"
 
+        # Ensure parent directory exists (may have been cleaned up)
+        Path(old_path).parent.mkdir(parents=True, exist_ok=True)
+
         # Rename back to original
         shutil.move(new_path, old_path)
         logger.info(f"Undo: Renamed '{new_path}' back to '{old_path}'")
