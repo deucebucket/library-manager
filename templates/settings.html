@@ -953,23 +953,7 @@
                                 <li><strong>Hardcover</strong> - Indie/modern books</li>
                                 <li><strong>AI Fallback</strong> - When APIs fail</li>
                             </ol>
-                            <div class="mb-0">
-                                <label class="form-label small">Google Books API Key <span class="text-muted">(optional)</span></label>
-                                <div class="input-group input-group-sm">
-                                    <input type="password" class="form-control bg-dark text-light" name="google_books_api_key" id="google_books_api_key"
-                                           value="{{ config.google_books_api_key or '' }}" placeholder="For higher rate limits"
-                                           data-has-key="{{ 'true' if config.google_books_api_key else 'false' }}">
-                                    <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('google_books_api_key')" title="Show/hide key">
-                                        <i class="bi bi-eye"></i>
-                                    </button>
-                                    {% if config.google_books_api_key %}
-                                    <span class="input-group-text bg-success text-white" id="google-books-key-check"><i class="bi bi-check"></i></span>
-                                    <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('google_books_api_key')" title="Remove key">
-                                        <i class="bi bi-trash"></i>
-                                    </button>
-                                    {% endif %}
-                                </div>
-                            </div>
+                            <p class="text-muted small mb-0">Google Books API key can be configured in the AI Setup tab above.</p>
                         </div>
                     </div>
 

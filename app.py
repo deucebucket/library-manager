@@ -7284,6 +7284,7 @@ def settings_page():
         config['ebook_library_mode'] = request.form.get('ebook_library_mode', 'merge')
         # Verification layer settings (added beta.43)
         config['enable_api_lookups'] = 'enable_api_lookups' in request.form
+        config['enable_isbn_lookup'] = 'enable_isbn_lookup' in request.form
         config['enable_ai_verification'] = 'enable_ai_verification' in request.form
         config['enable_audio_analysis'] = 'enable_audio_analysis' in request.form
         config['enable_content_analysis'] = 'enable_content_analysis' in request.form  # Issue #65: Layer 4
@@ -7293,6 +7294,7 @@ def settings_page():
         use_sl = 'use_skaldleita_for_audio' in request.form or 'use_bookdb_for_audio' in request.form
         config['use_skaldleita_for_audio'] = use_sl
         config.pop('use_bookdb_for_audio', None)  # Remove deprecated key
+        config['sl_trust_mode'] = request.form.get('sl_trust_mode', 'full')
         config['enable_voice_id'] = 'enable_voice_id' in request.form  # Skaldleita narrator voice ID
         config['deep_scan_mode'] = 'deep_scan_mode' in request.form
         config['profile_confidence_threshold'] = int(request.form.get('profile_confidence_threshold', 85))
