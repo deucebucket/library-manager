@@ -591,10 +591,17 @@ def process_layer_1_audio(
             elif bookdb_result and bookdb_result.get('author') and bookdb_result.get('title'):
                 # Skaldleita got a full identification - validate against path first
                 sl_source = bookdb_result.get('sl_source', 'audio')
-                # Safely parse confidence - Skaldleita may return float, string, or garbage
+                # Safely parse confidence - Skaldleita may return 0-1 float or 0-100 int
                 raw_confidence = bookdb_result.get('confidence', 0.8)
                 try:
-                    sl_confidence = int(float(raw_confidence) * 100) if isinstance(raw_confidence, (int, float)) else 80
+                    conf_float = float(raw_confidence) if isinstance(raw_confidence, (int, float, str)) else 0.8
+                    # Scale detection: values > 1.0 are already percentages
+                    if conf_float > 1.0:
+                        sl_confidence = int(conf_float)
+                    else:
+                        sl_confidence = int(conf_float * 100)
+                    # Clamp to valid range
+                    sl_confidence = min(100, max(0, sl_confidence))
                 except (ValueError, TypeError):
                     sl_confidence = 80  # Default if parsing fails
                 set_current_provider("Skaldleita", f"Identified from {sl_source}", is_free=True)
@@ -720,6 +727,12 @@ def process_layer_1_audio(
                 if series_num:
                     profile['series_num'] = {'value': str(series_num), 'source': sl_source, 'confidence': 75}
 
+                # Issue #227: Save original author/title BEFORE updating the DB.
+                # If validation fails later, we must revert these to prevent
+                # garbage values from persisting permanently.
+                original_author = row['current_author']
+                original_title = row['current_title']
+
                 # Phase 5: Track SL requeue suggestion for future re-verification
                 # After nightly merge, the book should be re-checked against main DB
                 if result.get('requeue_suggested'):
@@ -770,10 +783,12 @@ def process_layer_1_audio(
                 # Validate before creating pending_fix (Issue #92: prevent garbage recommendations)
                 if not is_valid_author_for_recommendation(author):
                     logger.warning(f"[LAYER 1/AUDIO] Rejected garbage author: '{author}' for {row['current_title']}")
+                    # Issue #227: Revert current_author/current_title corrupted by the UPDATE above
                     # Don't create garbage pending_fix - advance to Layer 2 instead
-                    c.execute('''UPDATE books SET verification_layer = 2,
+                    c.execute('''UPDATE books SET current_author = ?, current_title = ?,
+                                verification_layer = 2,
                                 status = CASE WHEN status = 'needs_attention' THEN 'pending' ELSE status END
-                                WHERE id = ?''', (row['book_id'],))
+                                WHERE id = ?''', (original_author, original_title, row['book_id']))
                     c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                     conn.commit()
                     conn.close()
@@ -781,10 +796,12 @@ def process_layer_1_audio(
 
                 if not is_valid_title_for_recommendation(title):
                     logger.warning(f"[LAYER 1/AUDIO] Rejected garbage title: '{title}' for {row['current_author']}")
+                    # Issue #227: Revert current_author/current_title corrupted by the UPDATE above
                     # Don't create garbage pending_fix - advance to Layer 2 instead
-                    c.execute('''UPDATE books SET verification_layer = 2,
+                    c.execute('''UPDATE books SET current_author = ?, current_title = ?,
+                                verification_layer = 2,
                                 status = CASE WHEN status = 'needs_attention' THEN 'pending' ELSE status END
-                                WHERE id = ?''', (row['book_id'],))
+                                WHERE id = ?''', (original_author, original_title, row['book_id']))
                     c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                     conn.commit()
                     conn.close()

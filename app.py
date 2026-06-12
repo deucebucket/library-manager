@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.151"
+APP_VERSION = "0.9.0-beta.152"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -6127,12 +6127,17 @@ def apply_fix(history_id):
     conn = get_db()
     c = conn.cursor()
 
+    # Issue #220: Atomic status guard — claim the row before doing any work.
+    # If another caller already claimed it, rowcount will be 0.
+    c.execute("UPDATE history SET status = 'applying' WHERE id = ? AND status = 'pending_fix'",
+              (history_id,))
+    conn.commit()
+    if c.rowcount == 0:
+        conn.close()
+        return False, "Fix not found or already being applied"
+
     c.execute('SELECT * FROM history WHERE id = ?', (history_id,))
     fix = c.fetchone()
-
-    if not fix:
-        conn.close()
-        return False, "Fix not found"
 
     # Issue #69: Handle history entries with missing paths
     # Some older code paths created history entries without old_path/new_path
@@ -6145,6 +6150,8 @@ def apply_fix(history_id):
         c.execute('SELECT path FROM books WHERE id = ?', (book_id,))
         book_row = c.fetchone()
         if not book_row or not book_row['path']:
+            c.execute("UPDATE history SET status = 'pending_fix' WHERE id = ?", (history_id,))
+            conn.commit()
             conn.close()
             return False, "Cannot determine source path - book not found"
         old_path = Path(book_row['path'])
@@ -6157,6 +6164,8 @@ def apply_fix(history_id):
         config = load_config()
         library_paths = config.get('library_paths', [])
         if not library_paths:
+            c.execute("UPDATE history SET status = 'pending_fix' WHERE id = ?", (history_id,))
+            conn.commit()
             conn.close()
             return False, "Cannot determine destination - no library paths configured"
 
@@ -6178,6 +6187,8 @@ def apply_fix(history_id):
             config=config
         )
         if not new_path:
+            c.execute("UPDATE history SET status = 'pending_fix' WHERE id = ?", (history_id,))
+            conn.commit()
             conn.close()
             return False, "Cannot build destination path - invalid author/title"
         new_path = Path(new_path)
@@ -7284,6 +7295,7 @@ def settings_page():
         config['ebook_library_mode'] = request.form.get('ebook_library_mode', 'merge')
         # Verification layer settings (added beta.43)
         config['enable_api_lookups'] = 'enable_api_lookups' in request.form
+        config['enable_isbn_lookup'] = 'enable_isbn_lookup' in request.form
         config['enable_ai_verification'] = 'enable_ai_verification' in request.form
         config['enable_audio_analysis'] = 'enable_audio_analysis' in request.form
         config['enable_content_analysis'] = 'enable_content_analysis' in request.form  # Issue #65: Layer 4
@@ -7293,6 +7305,7 @@ def settings_page():
         use_sl = 'use_skaldleita_for_audio' in request.form or 'use_bookdb_for_audio' in request.form
         config['use_skaldleita_for_audio'] = use_sl
         config.pop('use_bookdb_for_audio', None)  # Remove deprecated key
+        config['sl_trust_mode'] = request.form.get('sl_trust_mode', 'full')
         config['enable_voice_id'] = 'enable_voice_id' in request.form  # Skaldleita narrator voice ID
         config['deep_scan_mode'] = 'deep_scan_mode' in request.form
         config['profile_confidence_threshold'] = int(request.form.get('profile_confidence_threshold', 85))
@@ -7964,6 +7977,15 @@ def api_delete_corrupt():
 @app.route('/api/process', methods=['POST'])
 def api_process():
     """Process the queue using layered processing."""
+    global _bg_processing_active
+
+    # Re-entrancy guard - don't start if background processing is already running
+    if _bg_processing_active:
+        return jsonify({
+            'success': False,
+            'message': 'Processing is already running in the background'
+        })
+
     config = load_config()
     data = request.json if request.is_json else {}
     process_all = data.get('all', False)
@@ -8538,6 +8560,12 @@ def api_undo_all_drastic():
                  WHERE status = 'fixed' AND old_path != new_path''')
     items = c.fetchall()
 
+    # Issue #219: Pre-compute library boundaries for validation
+    config = load_config()
+    library_paths = [Path(p).resolve() for p in config.get('library_paths', [])]
+    watch_folder = config.get('watch_folder', '').strip()
+    watch_output_folder = config.get('watch_output_folder', '').strip()
+
     undone = 0
     errors = 0
 
@@ -8547,6 +8575,53 @@ def api_undo_all_drastic():
 
         old_path = item['old_path']
         new_path = item['new_path']
+
+        # Issue #219: Validate both paths are inside library boundary
+        old_in_library = False
+        new_in_library = False
+        for lib in library_paths:
+            try:
+                Path(old_path).resolve().relative_to(lib)
+                old_in_library = True
+            except ValueError:
+                pass
+            try:
+                Path(new_path).resolve().relative_to(lib)
+                new_in_library = True
+            except ValueError:
+                pass
+        if watch_folder:
+            watch_resolved = Path(watch_folder).resolve()
+            if not old_in_library:
+                try:
+                    Path(old_path).resolve().relative_to(watch_resolved)
+                    old_in_library = True
+                except ValueError:
+                    pass
+            if not new_in_library:
+                try:
+                    Path(new_path).resolve().relative_to(watch_resolved)
+                    new_in_library = True
+                except ValueError:
+                    pass
+        if watch_output_folder:
+            watch_out_resolved = Path(watch_output_folder).resolve()
+            if not old_in_library:
+                try:
+                    Path(old_path).resolve().relative_to(watch_out_resolved)
+                    old_in_library = True
+                except ValueError:
+                    pass
+            if not new_in_library:
+                try:
+                    Path(new_path).resolve().relative_to(watch_out_resolved)
+                    new_in_library = True
+                except ValueError:
+                    pass
+        if not old_in_library or not new_in_library:
+            errors += 1
+            logger.error(f"SAFETY BLOCK in undo_all_drastic: Path outside library! old={old_path}, new={new_path}")
+            continue
 
         # Check if paths exist correctly
         if not os.path.exists(new_path):
@@ -8614,9 +8689,65 @@ def api_undo(history_id):
             'error': f'Original path already exists: {old_path}'
         }), 409
 
+    # Issue #219: Validate paths are inside library boundary before any file operations
+    config = load_config()
+    library_paths = [Path(p).resolve() for p in config.get('library_paths', [])]
+    watch_folder = config.get('watch_folder', '').strip()
+    watch_output_folder = config.get('watch_output_folder', '').strip()
+
+    old_in_library = False
+    new_in_library = False
+    for lib in library_paths:
+        try:
+            Path(old_path).resolve().relative_to(lib)
+            old_in_library = True
+        except ValueError:
+            pass
+        try:
+            Path(new_path).resolve().relative_to(lib)
+            new_in_library = True
+        except ValueError:
+            pass
+    if watch_folder:
+        watch_resolved = Path(watch_folder).resolve()
+        if not old_in_library:
+            try:
+                Path(old_path).resolve().relative_to(watch_resolved)
+                old_in_library = True
+            except ValueError:
+                pass
+        if not new_in_library:
+            try:
+                Path(new_path).resolve().relative_to(watch_resolved)
+                new_in_library = True
+            except ValueError:
+                pass
+    if watch_output_folder:
+        watch_out_resolved = Path(watch_output_folder).resolve()
+        if not old_in_library:
+            try:
+                Path(old_path).resolve().relative_to(watch_out_resolved)
+                old_in_library = True
+            except ValueError:
+                pass
+        if not new_in_library:
+            try:
+                Path(new_path).resolve().relative_to(watch_out_resolved)
+                new_in_library = True
+            except ValueError:
+                pass
+
+    if not old_in_library or not new_in_library:
+        conn.close()
+        logger.error(f"SAFETY BLOCK in undo: Path outside library! old_in_lib={old_in_library}, new_in_lib={new_in_library}")
+        return jsonify({
+            'success': False,
+            'error': 'Safety block: path is outside library boundary'
+        }), 403
+
     try:
         new_path_obj = Path(new_path)
-        
+
         # Determine folder for sidecar (if new_path is a file, parent has sidecar)
         if new_path_obj.is_file():
             sidecar_folder = new_path_obj.parent
@@ -8640,6 +8771,9 @@ def api_undo(history_id):
         except Exception as tag_err:
             logger.warning(f"Could not restore tags during undo: {tag_err}")
             tags_message = " (Tags could not be restored)"
+
+        # Ensure parent directory exists (may have been cleaned up)
+        Path(old_path).parent.mkdir(parents=True, exist_ok=True)
 
         # Rename back to original
         shutil.move(new_path, old_path)
@@ -8702,6 +8836,41 @@ def api_remove_duplicate(history_id):
 
     old_path = record['old_path']  # This is the duplicate to remove
     new_path = record['new_path']  # This is the properly named copy to keep
+
+    # Issue #219: Validate paths are inside library boundary before any file operations
+    config = load_config()
+    library_paths = [Path(p).resolve() for p in config.get('library_paths', [])]
+    watch_folder = config.get('watch_folder', '').strip()
+    watch_output_folder = config.get('watch_output_folder', '').strip()
+
+    old_in_library = False
+    for lib in library_paths:
+        try:
+            Path(old_path).resolve().relative_to(lib)
+            old_in_library = True
+            break
+        except ValueError:
+            continue
+    if watch_folder and not old_in_library:
+        try:
+            Path(old_path).resolve().relative_to(Path(watch_folder).resolve())
+            old_in_library = True
+        except ValueError:
+            pass
+    if watch_output_folder and not old_in_library:
+        try:
+            Path(old_path).resolve().relative_to(Path(watch_output_folder).resolve())
+            old_in_library = True
+        except ValueError:
+            pass
+
+    if not old_in_library:
+        conn.close()
+        logger.error(f"SAFETY BLOCK in remove_duplicate: old_path outside library: {old_path}")
+        return jsonify({
+            'success': False,
+            'error': 'Safety block: path is outside library boundary'
+        }), 403
 
     # Safety checks
     if not os.path.exists(old_path):
@@ -8788,6 +8957,62 @@ def api_replace_corrupt(history_id):
     old_path = record['old_path']  # Valid source
     new_path = record['new_path']  # Corrupt destination
 
+    # Issue #219: Validate paths are inside library boundary before any file operations
+    config = load_config()
+    library_paths = [Path(p).resolve() for p in config.get('library_paths', [])]
+    watch_folder = config.get('watch_folder', '').strip()
+    watch_output_folder = config.get('watch_output_folder', '').strip()
+
+    old_in_library = False
+    new_in_library = False
+    for lib in library_paths:
+        try:
+            Path(old_path).resolve().relative_to(lib)
+            old_in_library = True
+        except ValueError:
+            pass
+        try:
+            Path(new_path).resolve().relative_to(lib)
+            new_in_library = True
+        except ValueError:
+            pass
+    if watch_folder:
+        watch_resolved = Path(watch_folder).resolve()
+        if not old_in_library:
+            try:
+                Path(old_path).resolve().relative_to(watch_resolved)
+                old_in_library = True
+            except ValueError:
+                pass
+        if not new_in_library:
+            try:
+                Path(new_path).resolve().relative_to(watch_resolved)
+                new_in_library = True
+            except ValueError:
+                pass
+    if watch_output_folder:
+        watch_out_resolved = Path(watch_output_folder).resolve()
+        if not old_in_library:
+            try:
+                Path(old_path).resolve().relative_to(watch_out_resolved)
+                old_in_library = True
+            except ValueError:
+                pass
+        if not new_in_library:
+            try:
+                Path(new_path).resolve().relative_to(watch_out_resolved)
+                new_in_library = True
+            except ValueError:
+                pass
+
+    if not old_in_library or not new_in_library:
+        conn.close()
+        logger.error(f"SAFETY BLOCK in replace_corrupt: Path outside library! old_in_lib={old_in_library}, new_in_lib={new_in_library}")
+        return jsonify({
+            'success': False,
+            'error': 'Safety block: path is outside library boundary'
+        }), 403
+
     # Safety checks
     if not os.path.exists(old_path):
         conn.close()
@@ -8858,6 +9083,12 @@ def api_remove_all_duplicates():
         conn.close()
         return jsonify({'success': True, 'message': 'No duplicates to remove', 'removed': 0})
 
+    # Issue #219: Pre-compute library boundaries for validation
+    config = load_config()
+    library_paths = [Path(p).resolve() for p in config.get('library_paths', [])]
+    watch_folder = config.get('watch_folder', '').strip()
+    watch_output_folder = config.get('watch_output_folder', '').strip()
+
     removed = 0
     skipped = 0
     errors = []
@@ -8866,6 +9097,33 @@ def api_remove_all_duplicates():
     for record in duplicates:
         old_path = record['old_path']
         new_path = record['new_path']
+
+        # Issue #219: Validate both paths are inside library boundary
+        old_in_library = False
+        for lib in library_paths:
+            try:
+                Path(old_path).resolve().relative_to(lib)
+                old_in_library = True
+                break
+            except ValueError:
+                continue
+        if watch_folder and not old_in_library:
+            try:
+                Path(old_path).resolve().relative_to(Path(watch_folder).resolve())
+                old_in_library = True
+            except ValueError:
+                pass
+        if watch_output_folder and not old_in_library:
+            try:
+                Path(old_path).resolve().relative_to(Path(watch_output_folder).resolve())
+                old_in_library = True
+            except ValueError:
+                pass
+        if not old_in_library:
+            skipped += 1
+            logger.error(f"SAFETY BLOCK in remove_all_duplicates: old_path outside library: {old_path}")
+            errors.append(f"Skipped {old_path}: path outside library boundary")
+            continue
 
         # Skip if already removed
         if not os.path.exists(old_path):

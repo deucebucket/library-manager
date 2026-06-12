@@ -150,11 +150,11 @@ def lookup_audnexus_by_asin(asin, region='us'):
 
         resp = requests.get(url, timeout=10, headers={'Accept': 'application/json'})
 
-        record_api_success('audnexus')
-
         if resp.status_code != 200:
             logger.debug(f"Audnexus: ASIN lookup returned status {resp.status_code}")
             return None
+
+        record_api_success('audnexus')
 
         data = resp.json()
         if not data or not data.get('title'):

@@ -283,7 +283,8 @@ def sanitize_path_component(name):
         return None
 
     # Block directory traversal attempts
-    if '..' in name or name.startswith('/') or name.startswith('\\'):
+    # Only block if the component IS ".." exactly (not substrings like "What If..?")
+    if name.strip() == '..' or name.startswith('/') or name.startswith('\\'):
         logger.warning(f"BLOCKED dangerous path component: {name}")
         return None
 

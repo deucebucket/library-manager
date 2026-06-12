@@ -480,6 +480,9 @@ function saveEdit() {
 function unlockBook(bookId) {
     if (!confirm('Unlock this book?\n\nThis will allow the system to re-process it on future scans. Your current settings will remain until the system finds a different match.')) return;
 
+    const btn = event.currentTarget;
+    btn.disabled = true;
+
     fetch(`/api/unlock_book/${bookId}`, {method: 'POST'})
         .then(r => r.json())
         .then(data => {
@@ -490,7 +493,8 @@ function unlockBook(bookId) {
                 alert('Error: ' + (data.error || 'Unknown error'));
             }
         })
-        .catch(e => alert('Error: ' + e));
+        .catch(e => alert('Error: ' + e))
+        .finally(() => { btn.disabled = false; });
 }
 
 // escapeHtml provided by common.js
@@ -498,6 +502,9 @@ function unlockBook(bookId) {
 // ===== EXISTING FUNCTIONS =====
 function applyFix(historyId) {
     if (!confirm('Apply this fix? The folder will be renamed.')) return;
+
+    const btn = event.currentTarget;
+    btn.disabled = true;
 
     fetch(`/api/apply_fix/${historyId}`, {method: 'POST'})
         .then(r => r.json())
@@ -508,11 +515,15 @@ function applyFix(historyId) {
             } else {
                 alert('Error: ' + data.message);
             }
-        });
+        })
+        .finally(() => { btn.disabled = false; });
 }
 
 function undoFix(historyId) {
     if (!confirm('Undo this fix? The folder will be renamed back to its original name.')) return;
+
+    const btn = event.currentTarget;
+    btn.disabled = true;
 
     fetch(`/api/undo/${historyId}`, {method: 'POST'})
         .then(r => r.json())
@@ -524,11 +535,15 @@ function undoFix(historyId) {
                 alert('Error: ' + (data.error || 'Unknown error'));
             }
         })
-        .catch(e => alert('Error: ' + e));
+        .catch(e => alert('Error: ' + e))
+        .finally(() => { btn.disabled = false; });
 }
 
 function rejectFix(historyId) {
     if (!confirm('Reject this fix? It will be deleted and the book will be marked as OK.')) return;
+
+    const btn = event.currentTarget;
+    btn.disabled = true;
 
     fetch(`/api/reject_fix/${historyId}`, {method: 'POST'})
         .then(r => r.json())
@@ -540,11 +555,15 @@ function rejectFix(historyId) {
                 alert('Error: ' + (data.error || 'Unknown error'));
             }
         })
-        .catch(e => alert('Error: ' + e));
+        .catch(e => alert('Error: ' + e))
+        .finally(() => { btn.disabled = false; });
 }
 
 function dismissError(historyId) {
     if (!confirm('Dismiss this error entry? It will be removed from history.')) return;
+
+    const btn = event.currentTarget;
+    btn.disabled = true;
 
     fetch(`/api/dismiss_error/${historyId}`, {method: 'POST'})
         .then(r => r.json())
@@ -555,11 +574,15 @@ function dismissError(historyId) {
                 alert('Error: ' + (data.error || 'Unknown error'));
             }
         })
-        .catch(e => alert('Error: ' + e));
+        .catch(e => alert('Error: ' + e))
+        .finally(() => { btn.disabled = false; });
 }
 
 function removeDuplicate(historyId) {
     if (!confirm('Remove this duplicate?\n\nThis will DELETE the misnamed copy and keep the properly-named version.\n\nThis cannot be undone!')) return;
+
+    const btn = event.currentTarget;
+    btn.disabled = true;
 
     fetch(`/api/remove_duplicate/${historyId}`, {method: 'POST'})
         .then(r => r.json())
@@ -571,11 +594,15 @@ function removeDuplicate(historyId) {
                 alert('Error: ' + (data.error || 'Unknown error'));
             }
         })
-        .catch(e => alert('Error: ' + e));
+        .catch(e => alert('Error: ' + e))
+        .finally(() => { btn.disabled = false; });
 }
 
 function removeAllDuplicates() {
     if (!confirm('Remove ALL confirmed duplicates?\n\nThis will DELETE all misnamed copies and keep the properly-named versions.\n\nThis cannot be undone!')) return;
+
+    const btn = event.currentTarget;
+    btn.disabled = true;
 
     fetch('/api/remove_all_duplicates', {method: 'POST'})
         .then(r => r.json())
@@ -594,11 +621,15 @@ function removeAllDuplicates() {
                 alert('Error: ' + (data.error || 'Unknown error'));
             }
         })
-        .catch(e => alert('Error: ' + e));
+        .catch(e => alert('Error: ' + e))
+        .finally(() => { btn.disabled = false; });
 }
 
 function replaceCorrupt(historyId) {
     if (!confirm('Replace corrupt destination with valid source?\n\nThis will:\n1. Delete the corrupt destination folder\n2. Move the valid source to the correct location\n\nThis cannot be undone!')) return;
+
+    const btn = event.currentTarget;
+    btn.disabled = true;
 
     fetch(`/api/replace_corrupt/${historyId}`, {method: 'POST'})
         .then(r => r.json())
@@ -610,11 +641,15 @@ function replaceCorrupt(historyId) {
                 alert('Error: ' + (data.error || 'Unknown error'));
             }
         })
-        .catch(e => alert('Error: ' + e));
+        .catch(e => alert('Error: ' + e))
+        .finally(() => { btn.disabled = false; });
 }
 
 function clearAllErrors() {
     if (!confirm('Clear all error entries from history?\n\nThis will remove all error records. The actual files are not affected.')) return;
+
+    const btn = event.currentTarget;
+    btn.disabled = true;
 
     fetch('/api/clear_all_errors', {method: 'POST'})
         .then(r => r.json())
@@ -626,11 +661,15 @@ function clearAllErrors() {
                 alert('Error: ' + (data.error || 'Unknown error'));
             }
         })
-        .catch(e => alert('Error: ' + e));
+        .catch(e => alert('Error: ' + e))
+        .finally(() => { btn.disabled = false; });
 }
 
 function applyAllPending() {
     if (!confirm('Apply ALL pending fixes?\n\nThis will rename all folders according to the AI suggestions.\nMake sure you have reviewed them first!')) return;
+
+    const btn = event.currentTarget;
+    btn.disabled = true;
 
     fetch('/api/apply_all_pending', {method: 'POST'})
         .then(r => r.json())
@@ -642,11 +681,15 @@ function applyAllPending() {
                 alert('Error: ' + (data.error || 'Unknown error'));
             }
         })
-        .catch(e => alert('Error: ' + e));
+        .catch(e => alert('Error: ' + e))
+        .finally(() => { btn.disabled = false; });
 }
 
 function rejectAllPending() {
     if (!confirm('Reject ALL pending fixes?\n\nThis will mark all pending items as OK without making any changes.')) return;
+
+    const btn = event.currentTarget;
+    btn.disabled = true;
 
     fetch('/api/reject_all_pending', {method: 'POST'})
         .then(r => r.json())
@@ -658,7 +701,8 @@ function rejectAllPending() {
                 alert('Error: ' + (data.error || 'Unknown error'));
             }
         })
-        .catch(e => alert('Error: ' + e));
+        .catch(e => alert('Error: ' + e))
+        .finally(() => { btn.disabled = false; });
 }
 </script>
 {% endblock %}

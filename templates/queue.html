@@ -1219,7 +1219,7 @@ async function saveAllMultiEdits() {
     let saved = 0;
     for (const item of modified) {
         try {
-            const resp = await fetch('/api/queue/manual_match', {
+            const resp = await fetch('/api/manual_match', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

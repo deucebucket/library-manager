@@ -3,11 +3,14 @@
 Flask Blueprint providing CRUD, test, and health monitoring endpoints for custom HTTP
 API layers. These layers let users add their own book metadata sources without writing code.
 """
+import ipaddress
 import json
 import logging
 import re
+import socket
 import sqlite3
 import time
+from urllib.parse import urlparse
 
 import requests as http_requests
 from flask import Blueprint, request, jsonify
@@ -42,6 +45,54 @@ def _save_config_safe(config):
     config_only = {k: v for k, v in config.items() if k not in SECRETS_KEYS}
     with open(CONFIG_PATH, 'w') as f:
         json.dump(config_only, f, indent=2)
+
+
+def _validate_url(url):
+    """Validate a URL to prevent SSRF attacks.
+
+    Checks that the URL uses http/https and that the resolved IP address
+    is not in a private or reserved range (localhost, LAN, link-local, etc.).
+
+    Returns:
+        (True, None) if the URL is safe to request.
+        (False, error_message) if the URL is blocked.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False, 'Invalid URL'
+
+    if parsed.scheme not in ('http', 'https'):
+        return False, f'URL scheme "{parsed.scheme}" is not allowed (only http/https)'
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False, 'URL has no hostname'
+
+    # Resolve hostname to IP address(es)
+    try:
+        addr_infos = socket.getaddrinfo(hostname, parsed.port or 80,
+                                        proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        return False, f'Cannot resolve hostname "{hostname}"'
+
+    if not addr_infos:
+        return False, f'Cannot resolve hostname "{hostname}"'
+
+    for addr_info in addr_infos:
+        ip_str = addr_info[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return False, f'Invalid IP address resolved: {ip_str}'
+
+        if ip.is_private or ip.is_reserved or ip.is_loopback or ip.is_link_local:
+            return False, (
+                f'URL resolves to private/reserved address {ip_str} '
+                f'- requests to internal networks are blocked'
+            )
+
+    return True, None
 
 
 # ============== PLUGIN METRICS DATABASE ==============
@@ -194,6 +245,16 @@ def api_plugins_save():
     layer['timeout'] = max(1, min(int(layer.get('timeout', 10)), 60))
     layer['source_weight'] = max(0, min(int(layer.get('source_weight', 55)), 100))
 
+    # Validate URL template to prevent SSRF
+    test_context = {
+        'title': 'test', 'author': 'test', 'narrator': '',
+        'path': '/test', 'isbn': '',
+    }
+    test_url = _substitute_url_template(layer['url_template'], test_context)
+    url_ok, url_error = _validate_url(test_url)
+    if not url_ok:
+        return jsonify({'success': False, 'error': url_error}), 400
+
     try:
         config = load_config()
         custom_layers = config.get('custom_layers', [])
@@ -306,6 +367,11 @@ def api_plugins_test():
 
     # Substitute URL template
     url = _substitute_url_template(url_template, context)
+
+    # Validate URL to prevent SSRF
+    url_ok, url_error = _validate_url(url)
+    if not url_ok:
+        return jsonify({'success': False, 'error': url_error}), 400
 
     # Build auth headers
     secrets = load_secrets()
