@@ -406,6 +406,21 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
 
             submit_data = response.json()
 
+            # Issue #253: Check server_notice on the submit response itself.
+            # BookDB may signal abort before we even enter the poll loop.
+            notice = submit_data.get('server_notice')
+            if notice:
+                code = notice.get('code', 'unknown')
+                msg = notice.get('message', '')
+                upgrade_url = notice.get('upgrade_url')
+                severity = notice.get('severity', 'info')
+                logger.warning(f"[SKALDLEITA] server notice ({severity}) [{code}]: {msg}")
+                if upgrade_url:
+                    logger.warning(f"[SKALDLEITA] upgrade: {upgrade_url}")
+                if notice.get('action') == 'abort_task':
+                    _abort_state.notice = notice
+                    return None
+
             # Check if it's the new queue system (has ticket_id) or old sync system
             if 'ticket_id' in submit_data:
                 # New queue system - poll for result
@@ -447,6 +462,21 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                             # Got result!
                             data = status_data.get('result', {})
                             logger.info(f"[SKALDLEITA] Complete! Processing result...")
+
+                            # Issue #253: Check server_notice in the poll result
+                            notice = status_data.get('server_notice')
+                            if notice:
+                                code = notice.get('code', 'unknown')
+                                msg = notice.get('message', '')
+                                upgrade_url = notice.get('upgrade_url')
+                                severity = notice.get('severity', 'info')
+                                logger.warning(f"[SKALDLEITA] server notice ({severity}) [{code}]: {msg}")
+                                if upgrade_url:
+                                    logger.warning(f"[SKALDLEITA] upgrade: {upgrade_url}")
+                                if notice.get('action') == 'abort_task':
+                                    _abort_state.notice = notice
+                                    return None
+
                             break
 
                         elif status == 'error':
@@ -464,6 +494,21 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
             else:
                 # Old sync system - response has result directly
                 data = submit_data
+
+            # Issue #253: Check server_notice in the final result data.
+            # Covers the old sync path and acts as a catch-all for the queue path.
+            notice = data.get('server_notice')
+            if notice:
+                code = notice.get('code', 'unknown')
+                msg = notice.get('message', '')
+                upgrade_url = notice.get('upgrade_url')
+                severity = notice.get('severity', 'info')
+                logger.warning(f"[SKALDLEITA] server notice ({severity}) [{code}]: {msg}")
+                if upgrade_url:
+                    logger.warning(f"[SKALDLEITA] upgrade: {upgrade_url}")
+                if notice.get('action') == 'abort_task':
+                    _abort_state.notice = notice
+                    return None
 
             # Process result (same for both systems)
             transcript = data.get('transcript') or ''
