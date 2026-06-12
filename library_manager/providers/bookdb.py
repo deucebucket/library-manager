@@ -26,6 +26,8 @@ from library_manager.providers.rate_limiter import (
     record_api_success,
     handle_rate_limit_response,
     API_CIRCUIT_BREAKER,
+    API_RATE_LIMITS,
+    API_RATE_LOCK,
 )
 from library_manager.utils.voice_embedding import (
     is_voice_embedding_available,
@@ -147,7 +149,7 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
         logger.debug(f"Skaldleita: Circuit open, skipping ({remaining}s remaining)")
         return None
 
-    rate_limit_wait('bookdb')  # 3.6s delay = max 1000/hr, never skips
+    rate_limit_wait('bookdb')  # 12.0s delay = max 300/hr (API key tier), never skips
 
     # Use configured URL or fall back to default cloud URL
     base_url = bookdb_url or BOOKDB_API_URL
@@ -169,6 +171,19 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
         # Handle rate limiting with exponential backoff
         if resp.status_code == 429:
             rl = handle_rate_limit_response(resp, 'bookdb', retry_count)
+            # Adaptive: if BookDB says slow down via Retry-After, increase our
+            # min_delay so future requests are paced more conservatively
+            if rl['retry_after']:
+                try:
+                    retry_secs = int(rl['retry_after'])
+                    with API_RATE_LOCK:
+                        current_delay = API_RATE_LIMITS['bookdb']['min_delay']
+                        if retry_secs > current_delay:
+                            API_RATE_LIMITS['bookdb']['min_delay'] = float(retry_secs)
+                            logger.info(f"[BOOKDB] Adaptive rate limit: increased min_delay "
+                                        f"from {current_delay}s to {retry_secs}s per Retry-After header")
+                except (ValueError, TypeError):
+                    pass
             if rl['should_retry']:
                 time.sleep(rl['wait_seconds'])
                 return search_bookdb(title, author, api_key, retry_count + 1, bookdb_url,
@@ -367,6 +382,24 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                     headers=get_signed_headers(),
                     timeout=30  # Just submitting, should be fast
                 )
+
+            # Handle 429 rate limiting specifically — record the failure and
+            # adaptively increase min_delay if Retry-After header is present
+            if response.status_code == 429:
+                rl = handle_rate_limit_response(response, 'bookdb')
+                if rl['retry_after']:
+                    try:
+                        retry_secs = int(rl['retry_after'])
+                        with API_RATE_LOCK:
+                            current_delay = API_RATE_LIMITS['bookdb']['min_delay']
+                            if retry_secs > current_delay:
+                                API_RATE_LIMITS['bookdb']['min_delay'] = float(retry_secs)
+                                logger.info(f"[SKALDLEITA] Adaptive rate limit: increased min_delay "
+                                            f"from {current_delay}s to {retry_secs}s per Retry-After header")
+                    except (ValueError, TypeError):
+                        pass
+                logger.warning(f"[SKALDLEITA] Rate limited (429) on audio identify")
+                return None
 
             if response.status_code != 200:
                 logger.warning(f"[SKALDLEITA] API returned {response.status_code}: {response.text[:200]}")
