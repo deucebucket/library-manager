@@ -720,6 +720,12 @@ def process_layer_1_audio(
                 if series_num:
                     profile['series_num'] = {'value': str(series_num), 'source': sl_source, 'confidence': 75}
 
+                # Issue #227: Save original author/title BEFORE updating the DB.
+                # If validation fails later, we must revert these to prevent
+                # garbage values from persisting permanently.
+                original_author = row['current_author']
+                original_title = row['current_title']
+
                 # Phase 5: Track SL requeue suggestion for future re-verification
                 # After nightly merge, the book should be re-checked against main DB
                 if result.get('requeue_suggested'):
@@ -770,10 +776,12 @@ def process_layer_1_audio(
                 # Validate before creating pending_fix (Issue #92: prevent garbage recommendations)
                 if not is_valid_author_for_recommendation(author):
                     logger.warning(f"[LAYER 1/AUDIO] Rejected garbage author: '{author}' for {row['current_title']}")
+                    # Issue #227: Revert current_author/current_title corrupted by the UPDATE above
                     # Don't create garbage pending_fix - advance to Layer 2 instead
-                    c.execute('''UPDATE books SET verification_layer = 2,
+                    c.execute('''UPDATE books SET current_author = ?, current_title = ?,
+                                verification_layer = 2,
                                 status = CASE WHEN status = 'needs_attention' THEN 'pending' ELSE status END
-                                WHERE id = ?''', (row['book_id'],))
+                                WHERE id = ?''', (original_author, original_title, row['book_id']))
                     c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                     conn.commit()
                     conn.close()
@@ -781,10 +789,12 @@ def process_layer_1_audio(
 
                 if not is_valid_title_for_recommendation(title):
                     logger.warning(f"[LAYER 1/AUDIO] Rejected garbage title: '{title}' for {row['current_author']}")
+                    # Issue #227: Revert current_author/current_title corrupted by the UPDATE above
                     # Don't create garbage pending_fix - advance to Layer 2 instead
-                    c.execute('''UPDATE books SET verification_layer = 2,
+                    c.execute('''UPDATE books SET current_author = ?, current_title = ?,
+                                verification_layer = 2,
                                 status = CASE WHEN status = 'needs_attention' THEN 'pending' ELSE status END
-                                WHERE id = ?''', (row['book_id'],))
+                                WHERE id = ?''', (original_author, original_title, row['book_id']))
                     c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                     conn.commit()
                     conn.close()
