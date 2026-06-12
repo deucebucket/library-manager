@@ -76,27 +76,30 @@ def get_user_agent():
 # Request signing - uses shared module for Skaldleita sync
 # See library_manager/signing.py for constants and derivation logic
 # Skaldleita fetches that file to stay in sync automatically
-from library_manager.signing import generate_signature
+from library_manager.signing import generate_signature, generate_nonce
 
 
 def get_signed_headers():
     """
     Generate signed headers for Skaldleita API requests.
 
-    Returns dict with User-Agent, X-LM-Signature, and X-LM-Timestamp.
+    Returns dict with User-Agent, X-LM-Signature, X-LM-Timestamp, and X-LM-Nonce.
     Secret is derived from version - changes with each release.
+    Nonce prevents replay attacks within the timestamp tolerance window.
     Skaldleita fetches signing.py to stay in sync.
 
     See library_manager/signing.py for derivation logic.
     """
     timestamp = str(int(time.time()))
     lm_version = get_lm_version()
-    signature = generate_signature(lm_version, timestamp)
+    nonce = generate_nonce()
+    signature = generate_signature(lm_version, timestamp, nonce=nonce)
 
     return {
         'User-Agent': f'LibraryManager/{lm_version}',
         'X-LM-Signature': signature,
         'X-LM-Timestamp': timestamp,
+        'X-LM-Nonce': nonce,
     }
 
 
