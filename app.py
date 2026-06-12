@@ -6127,12 +6127,17 @@ def apply_fix(history_id):
     conn = get_db()
     c = conn.cursor()
 
+    # Issue #220: Atomic status guard — claim the row before doing any work.
+    # If another caller already claimed it, rowcount will be 0.
+    c.execute("UPDATE history SET status = 'applying' WHERE id = ? AND status = 'pending_fix'",
+              (history_id,))
+    conn.commit()
+    if c.rowcount == 0:
+        conn.close()
+        return False, "Fix not found or already being applied"
+
     c.execute('SELECT * FROM history WHERE id = ?', (history_id,))
     fix = c.fetchone()
-
-    if not fix:
-        conn.close()
-        return False, "Fix not found"
 
     # Issue #69: Handle history entries with missing paths
     # Some older code paths created history entries without old_path/new_path
@@ -6145,6 +6150,8 @@ def apply_fix(history_id):
         c.execute('SELECT path FROM books WHERE id = ?', (book_id,))
         book_row = c.fetchone()
         if not book_row or not book_row['path']:
+            c.execute("UPDATE history SET status = 'pending_fix' WHERE id = ?", (history_id,))
+            conn.commit()
             conn.close()
             return False, "Cannot determine source path - book not found"
         old_path = Path(book_row['path'])
@@ -6157,6 +6164,8 @@ def apply_fix(history_id):
         config = load_config()
         library_paths = config.get('library_paths', [])
         if not library_paths:
+            c.execute("UPDATE history SET status = 'pending_fix' WHERE id = ?", (history_id,))
+            conn.commit()
             conn.close()
             return False, "Cannot determine destination - no library paths configured"
 
@@ -6178,6 +6187,8 @@ def apply_fix(history_id):
             config=config
         )
         if not new_path:
+            c.execute("UPDATE history SET status = 'pending_fix' WHERE id = ?", (history_id,))
+            conn.commit()
             conn.close()
             return False, "Cannot build destination path - invalid author/title"
         new_path = Path(new_path)
