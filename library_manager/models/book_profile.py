@@ -166,6 +166,7 @@ class FieldValue:
     confidence: int = 0
     sources: List[str] = field(default_factory=list)
     raw_values: Dict[str, Any] = field(default_factory=dict)  # source -> raw value
+    source_weights: Dict[str, int] = field(default_factory=dict)  # source -> weight override
 
     def add_source(self, source: str, value: Any, weight: int = None):
         """Add evidence from a source."""
@@ -174,16 +175,24 @@ class FieldValue:
         if weight is None:
             weight = SOURCE_WEIGHTS.get(source, 30)
         self.raw_values[source] = value
+        self.source_weights[source] = weight
         if source not in self.sources:
             self.sources.append(source)
 
+    def _get_weight(self, source: str) -> int:
+        """Get weight for a source, preferring stored override."""
+        return self.source_weights.get(source, SOURCE_WEIGHTS.get(source, 30))
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to JSON-serializable dictionary."""
-        return {
+        d = {
             'value': self.value,
             'confidence': self.confidence,
             'sources': self.sources
         }
+        if self.source_weights:
+            d['source_weights'] = self.source_weights
+        return d
 
 
 @dataclass
@@ -257,7 +266,7 @@ class BookProfile:
             normalized = normalize(value)
             if normalized not in value_groups:
                 value_groups[normalized] = []
-            weight = SOURCE_WEIGHTS.get(source, 30)
+            weight = fv._get_weight(source)
             value_groups[normalized].append((source, value, weight))
 
         if not value_groups:
@@ -347,7 +356,7 @@ class BookProfile:
                 continue  # Skip the corrupt value
             if normalized not in value_groups:
                 value_groups[normalized] = []
-            weight = SOURCE_WEIGHTS.get(source, 30)
+            weight = self.author._get_weight(source)
             value_groups[normalized].append((source, value, weight))
 
         if not value_groups:
@@ -414,7 +423,8 @@ class BookProfile:
                 fv = FieldValue(
                     value=fd.get('value'),
                     confidence=fd.get('confidence', 0),
-                    sources=fd.get('sources', [])
+                    sources=fd.get('sources', []),
+                    source_weights=fd.get('source_weights', {})
                 )
                 setattr(profile, field_name, fv)
         profile.overall_confidence = data.get('overall_confidence', 0)
