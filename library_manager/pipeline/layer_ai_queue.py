@@ -692,6 +692,16 @@ def process_queue(
                     else:
                         # Standard mode - block the change
                         logger.warning(f"BLOCKED (verification failed): {row['current_author']} -> {new_author}")
+                        # Issue #228: Create history entry so user can see and act on the book
+                        insert_history_entry(
+                            c, row['book_id'], row['current_author'], row['current_title'],
+                            new_author, new_title, str(old_path), str(new_path), 'pending_fix',
+                            error_message=f"Verification failed: AI could not confirm change",
+                            new_narrator=new_narrator, new_series=new_series,
+                            new_series_num=str(new_series_num) if new_series_num else None,
+                            new_year=str(new_year) if new_year else None,
+                            new_edition=new_edition, new_variant=new_variant
+                        )
                         c.execute('UPDATE books SET status = ? WHERE id = ?', ('pending_fix', row['book_id']))
                         c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))
                         processed += 1
