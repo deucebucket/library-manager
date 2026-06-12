@@ -347,6 +347,11 @@ def detect_audio_language(audio_file, config, extract_audio_sample_fn=None, pars
     Returns:
         dict with 'language' (ISO 639-1 code), 'language_name', and 'confidence', or None
     """
+    # Check circuit breaker before doing any work
+    if is_circuit_open('gemini'):
+        logger.debug("[GEMINI AUDIO] Circuit breaker open, skipping language detection")
+        return None
+
     api_key = config.get('gemini_api_key')
     if not api_key:
         logger.debug("No Gemini API key for audio language detection")

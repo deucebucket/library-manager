@@ -240,6 +240,10 @@ def identify_book_from_transcript(transcript, config):
         logger.warning("[LAYER 4] No OpenRouter API key for transcript identification")
         return None
 
+    # Check circuit breaker - skip if we've hit daily limits
+    if is_circuit_open('openrouter'):
+        return None
+
     # Respect free tier rate limits (20 req/min + daily limits)
     rate_limit_wait('openrouter')
 
