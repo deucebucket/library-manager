@@ -332,12 +332,11 @@ def process_layer_1_api(
             logger.info(action['log_message'])
 
         if action['type'] == 'trust_sl':
-            # SL audio ID was high confidence - mark as resolved, skip Layer 2 (AI)
-            # Advance to Layer 4 for final verification/fix application
+            # Issue #229: SL audio ID was high confidence - skip Layer 2 (AI), advance to Layer 4
+            # Keep queue entry so Layer 4 can pick up the book (deleting it orphans the book)
             c.execute('''UPDATE books SET verification_layer = 4,
                         max_layer_reached = MAX(COALESCE(max_layer_reached, 0), 4)
                         WHERE id = ?''', (action['book_id'],))
-            c.execute('DELETE FROM queue WHERE id = ?', (action['queue_id'],))
             resolved += 1
         elif action['type'] == 'verified':
             # Save profile and mark as verified
