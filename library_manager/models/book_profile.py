@@ -18,7 +18,10 @@ SOURCE_WEIGHTS = {
     'id3': 80,          # Embedded by producer/publisher
     'json': 75,         # Explicit metadata file
     'nfo': 70,          # Release info files
-    'bookdb': 65,       # Verified database match
+    'bookdb': 65,        # Verified database match
+    'bookdb_audio': 65,  # BookDB database match (same as bookdb)
+    'bookdb_transcript': 55,  # BookDB Whisper transcript only (unverified)
+    'bookdb_scrape': 45,     # BookDB live web scrape (unreliable)
     'ai': 60,           # AI verification
     'audnexus': 55,     # Audible data
     'googlebooks': 50,  # Google Books API
