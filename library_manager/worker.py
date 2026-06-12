@@ -275,6 +275,8 @@ def process_all_queue(
         layer1_processed = 0
         layer1_resolved = 0
         while True:
+            if not _worker_running:
+                break
             # Issue #74: Check if Skaldleita circuit breaker is open - wait instead of skipping
             if is_circuit_open('bookdb'):
                 cb = get_circuit_breaker('bookdb')
@@ -310,6 +312,8 @@ def process_all_queue(
         layer2_resolved = 0
         circuit_wait_count = 0
         while True:
+            if not _worker_running:
+                break
             # Check if Gemini circuit breaker is open - wait instead of skipping
             if is_circuit_open('gemini'):
                 cb = get_circuit_breaker('gemini')
@@ -379,6 +383,8 @@ def process_all_queue(
         _processing_status["last_activity_time"] = time.time()
         layer3_processed = 0
         while True:
+            if not _worker_running:
+                break
             processed, resolved = process_layer_1_api(config)  # Existing API lookup
             if processed == 0:
                 break
@@ -405,6 +411,8 @@ def process_all_queue(
     layer4_fixed = 0
 
     while True:
+        if not _worker_running:
+            break
         config = load_config()
 
         allowed, calls_made, max_calls = check_rate_limit(config)
