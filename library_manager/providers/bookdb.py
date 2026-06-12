@@ -520,6 +520,8 @@ def contribute_to_bookdb(title, author=None, narrator=None, series=None,
 
     url = bookdb_url or BOOKDB_API_URL
 
+    rate_limit_wait('bookdb')
+
     try:
         payload = {
             "title": title.strip(),
@@ -583,7 +585,14 @@ def lookup_community_consensus(title, author=None, bookdb_url=None):
     if not title or len(title.strip()) < 2:
         return None
 
+    # Check circuit breaker - skip if we've been rate limited too much
+    if is_circuit_open('bookdb'):
+        logger.debug("[SKALDLEITA COMMUNITY] Circuit open, skipping")
+        return None
+
     url = bookdb_url or BOOKDB_API_URL
+
+    rate_limit_wait('bookdb')
 
     try:
         params = {"title": title.strip()}

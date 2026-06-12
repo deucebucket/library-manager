@@ -7964,6 +7964,15 @@ def api_delete_corrupt():
 @app.route('/api/process', methods=['POST'])
 def api_process():
     """Process the queue using layered processing."""
+    global _bg_processing_active
+
+    # Re-entrancy guard - don't start if background processing is already running
+    if _bg_processing_active:
+        return jsonify({
+            'success': False,
+            'message': 'Processing is already running in the background'
+        })
+
     config = load_config()
     data = request.json if request.is_json else {}
     process_all = data.get('all', False)
