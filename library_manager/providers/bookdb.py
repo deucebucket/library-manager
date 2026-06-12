@@ -11,6 +11,7 @@ Note: Internal names use 'bookdb' for backwards compatibility with existing conf
 """
 
 import os
+import re
 import time
 import logging
 import subprocess
@@ -49,6 +50,33 @@ def get_and_clear_server_abort():
     if notice is not None:
         _abort_state.notice = None
     return notice
+
+def _sanitize_api_response(data, context='bookdb'):
+    """Sanitize string fields from API responses to prevent path traversal, XSS, and oversized data."""
+    if not isinstance(data, dict):
+        return data
+
+    MAX_FIELD_LENGTH = 500
+    sanitized = {}
+    string_fields = ('title', 'author', 'author_name', 'narrator', 'series', 'series_name', 'name', 'variant', 'edition')
+
+    for key, value in data.items():
+        if key in string_fields and isinstance(value, str):
+            original = value
+            # Strip null bytes and control characters (keep newlines for descriptions)
+            value = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', value)
+            # Strip HTML tags
+            value = re.sub(r'<[^>]+>', '', value)
+            # Truncate oversized fields
+            if len(value) > MAX_FIELD_LENGTH:
+                value = value[:MAX_FIELD_LENGTH]
+            # Log if sanitization changed the value
+            if value != original:
+                logger.warning(f"[{context}] Sanitized '{key}': {original[:100]!r} → {value[:100]!r}")
+        sanitized[key] = value
+
+    return sanitized
+
 
 # Skaldleita API endpoint (our metadata service, legacy name: BookDB)
 BOOKDB_API_URL = "https://bookdb.deucebucket.com"  # URL unchanged for backwards compatibility
@@ -184,6 +212,7 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
             API_CIRCUIT_BREAKER['bookdb']['failures'] = 0
 
         data = resp.json()
+        data = _sanitize_api_response(data)
 
         # Issue #208: honor Skaldleita server_notice. Log every notice; on
         # action=abort_task, stash in thread-local so the watch-folder worker
@@ -225,6 +254,9 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
             # If no specific match, use first book
             if not best_book:
                 best_book = books[0]
+
+        if best_book:
+            best_book = _sanitize_api_response(best_book)
 
         # Build result - handle standalone books (no series) and series books
         result = {
@@ -460,6 +492,7 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                 'confidence': 'high' if best_match or sl_source == 'database' else 'medium',
                 'transcript': transcript[:500],
             }
+            result = _sanitize_api_response(result, context='SKALDLEITA')
 
             if result['author'] and result['title']:
                 logger.info(f"[SKALDLEITA] Identified: {result['author']} - {result['title']}" +
@@ -626,6 +659,7 @@ def lookup_community_consensus(title, author=None, bookdb_url=None):
 __all__ = [
     'BOOKDB_API_URL',
     'BOOKDB_PUBLIC_KEY',
+    '_sanitize_api_response',
     'get_signed_headers',
     'search_bookdb',
     'identify_audio_with_bookdb',
