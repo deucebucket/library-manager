@@ -18,6 +18,7 @@ from typing import Optional, Dict, Any, Tuple
 
 import requests
 
+from library_manager.providers.bookdb import _sanitize_api_response
 from library_manager.providers.rate_limiter import handle_rate_limit_response
 
 logger = logging.getLogger(__name__)
@@ -157,6 +158,7 @@ def lookup_fingerprint(
                 # Return book if linked to database, otherwise contributed metadata
                 result = data.get('book') or data.get('contributed_metadata')
                 if result:
+                    result = _sanitize_api_response(result, context='FINGERPRINT')
                     result['confidence'] = data.get('confidence', 0)
                     title = result.get('title', 'Unknown')
                     logger.info(f"[FINGERPRINT] Match found: {title} "
