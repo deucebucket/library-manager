@@ -591,10 +591,17 @@ def process_layer_1_audio(
             elif bookdb_result and bookdb_result.get('author') and bookdb_result.get('title'):
                 # Skaldleita got a full identification - validate against path first
                 sl_source = bookdb_result.get('sl_source', 'audio')
-                # Safely parse confidence - Skaldleita may return float, string, or garbage
+                # Safely parse confidence - Skaldleita may return 0-1 float or 0-100 int
                 raw_confidence = bookdb_result.get('confidence', 0.8)
                 try:
-                    sl_confidence = int(float(raw_confidence) * 100) if isinstance(raw_confidence, (int, float)) else 80
+                    conf_float = float(raw_confidence) if isinstance(raw_confidence, (int, float, str)) else 0.8
+                    # Scale detection: values > 1.0 are already percentages
+                    if conf_float > 1.0:
+                        sl_confidence = int(conf_float)
+                    else:
+                        sl_confidence = int(conf_float * 100)
+                    # Clamp to valid range
+                    sl_confidence = min(100, max(0, sl_confidence))
                 except (ValueError, TypeError):
                     sl_confidence = 80  # Default if parsing fails
                 set_current_provider("Skaldleita", f"Identified from {sl_source}", is_free=True)

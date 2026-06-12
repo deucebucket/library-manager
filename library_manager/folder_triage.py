@@ -41,6 +41,12 @@ GARBAGE_PATTERNS: List[str] = [
     r'^Unknown\s*(Artist|Author|Album)?$',  # Generic unknowns
 ]
 
+# Famous numeric titles that are valid book names, not garbage
+# Shared with book_profile.py is_valid_title() - keep in sync
+FAMOUS_NUMERIC_TITLES = {
+    '1984', '2001', '2010', '1776', '1066', '1421', '1491', '1493', '11/22/63',
+}
+
 # Compiled patterns for performance (compiled once at import time)
 _MESSY_COMPILED = [re.compile(p, re.IGNORECASE) for p in MESSY_PATTERNS]
 _GARBAGE_COMPILED = [re.compile(p, re.IGNORECASE) for p in GARBAGE_PATTERNS]
@@ -59,6 +65,10 @@ def triage_folder(folder_name: str) -> str:
         return 'garbage'
 
     folder_name = folder_name.strip()
+
+    # Skip garbage check for famous numeric book titles (e.g. "1984")
+    if folder_name in FAMOUS_NUMERIC_TITLES:
+        return 'clean'
 
     # Check garbage first (most restrictive)
     for pattern in _GARBAGE_COMPILED:
