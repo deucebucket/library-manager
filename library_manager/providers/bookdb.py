@@ -448,14 +448,23 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
             sl_source = data.get('source', 'audio')  # 'database', 'audio', or 'live_scrape'
             requeue_suggested = data.get('requeue_suggested', False)
 
+            # Map sl_source to differentiated source names for trust weighting
+            # database = verified DB match (highest), audio = Whisper only, live_scrape = web scraping
+            source_map = {
+                'database': 'bookdb_audio',
+                'audio': 'bookdb_transcript',
+                'live_scrape': 'bookdb_scrape',
+            }
+            mapped_source = source_map.get(sl_source, 'bookdb_audio')
+
             result = {
                 'author': data.get('author') or (best_match.get('author_name') if best_match else None),
                 'title': data.get('title') or (best_match.get('title') if best_match else None),
                 'narrator': data.get('narrator'),
                 'series': best_match.get('series_name') if best_match else None,
                 'series_num': best_match.get('series_position') if best_match else None,
-                'source': 'bookdb_audio',
-                'sl_source': sl_source,  # Where SL got the data: 'database' or 'audio'
+                'source': mapped_source,
+                'sl_source': sl_source,  # Where SL got the data: 'database', 'audio', or 'live_scrape'
                 'requeue_suggested': requeue_suggested,  # True if LM should retry later
                 'confidence': 'high' if best_match or sl_source == 'database' else 'medium',
                 'transcript': transcript[:500],
@@ -468,7 +477,7 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
 
             if transcript:
                 logger.info(f"[SKALDLEITA] No match but got transcript ({len(transcript)} chars) - returning for AI fallback")
-                return {'transcript': transcript, 'source': 'bookdb_audio'}
+                return {'transcript': transcript, 'source': mapped_source}
 
             logger.warning(f"[SKALDLEITA] No identification and no transcript returned")
             return None
