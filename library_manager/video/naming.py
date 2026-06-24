@@ -166,30 +166,38 @@ def _yeartag(p: Parsed) -> str:
     return f" ({p.year})" if p.year else ""
 
 
-def format_movie(p: Parsed, server: str = "plex", *, tmdb_id=None, imdb_id=None) -> str:
+def _tag_default(server: str, tag_ids) -> bool:
+    # Jellyfin/Emby matching is materially improved by id tags; Plex/Kodi match
+    # cleanly on name+year, so default them to clean names. Caller can force.
+    return (server in ("jellyfin", "emby")) if tag_ids is None else bool(tag_ids)
+
+
+def format_movie(p: Parsed, server: str = "plex", *, tmdb_id=None, imdb_id=None,
+                 tag_ids=None) -> str:
     """Return RELATIVE path:  'Movie (Year)/Movie (Year)[ tags].ext'."""
     folder = f"{p.title}{_yeartag(p)}".strip()
     name = folder
     if p.edition:
         name += f" {{edition-{p.edition.title()}}}" if server in ("plex",) else f" - {p.edition.title()}"
-    if server in ("jellyfin", "emby"):
-        if tmdb_id:
-            name += f" [tmdbid-{tmdb_id}]"
+    if _tag_default(server, tag_ids):
+        if server in ("jellyfin", "emby"):
+            if tmdb_id:
+                name += f" [tmdbid-{tmdb_id}]"
+            elif imdb_id:
+                name += f" [imdbid-{imdb_id}]"
         elif imdb_id:
-            name += f" [imdbid-{imdb_id}]"
-    elif server == "plex" and imdb_id:
-        name += f" {{imdb-{imdb_id}}}"
+            name += f" {{imdb-{imdb_id}}}"
     return f"{folder}/{name}.{p.ext}"
 
 
 def format_episode(p: Parsed, server: str = "plex", *, show_year=None,
-                   tvdb_id=None) -> str:
+                   tvdb_id=None, tag_ids=None) -> str:
     """Return RELATIVE path under the show folder:
     'Show (Year)/Season 01/Show (Year) - S01E02 - Title.ext'."""
     yr = show_year or p.year
     show = f"{p.title}" + (f" ({yr})" if yr else "")
     show_folder = show
-    if server in ("jellyfin", "emby") and tvdb_id:
+    if _tag_default(server, tag_ids) and server in ("jellyfin", "emby") and tvdb_id:
         show_folder += f" [tvdbid-{tvdb_id}]"
     sd = _season_dir(server, p.season or 0)
     ep = "".join(f"E{e:02d}" for e in p.episodes) or "E00"
