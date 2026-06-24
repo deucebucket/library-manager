@@ -43,5 +43,5 @@ identify → verify → rename/approve → undo → history) and automation API.
 
 ## Status
 - Branch: `feature/video-libraries`
-- Done: phase 1 (parse + server presets + test suite).
-- Next: phase 2 (TMDb/TVDB + AI parse + ffprobe).
+- Done: phase 1 (naming) + phase 2 (TMDb identify, ffprobe, identify orchestration) + phase 3 (Plex reconcile, file-level).
+- Next: phase 4 (organize/rename via approval+undo) then phase 5 (modular UI tabs + /api/plex/*).
