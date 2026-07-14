@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.153"
+APP_VERSION = "0.9.0-beta.154"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -2295,9 +2295,14 @@ def identify_ebook_from_filename(filename, folder_path, config):
         search_query = f"{author} {title}" if author else title
         logger.debug(f"[EBOOK] Searching BookDB for: {search_query}")
 
+        api_key = config.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
+        headers = get_signed_headers() or {}
+        headers['X-API-Key'] = api_key
+
         resp = requests.get(
             f"{BOOKDB_API_URL}/search",
             params={'q': search_query[:100]},  # Limit query length
+            headers=headers,
             timeout=10
         )
 
@@ -11902,11 +11907,14 @@ def api_book_detail(book_id):
     """
     Get full book details from BookBucket + ABS status.
     Used for hover cards and detail modals.
-    Uses public endpoint - no API key required.
     """
     try:
         # Fetch full book details from BookBucket
-        resp = requests.get(f"{BOOKDB_API_URL}/book/{book_id}", timeout=10)
+        secrets = load_secrets()
+        api_key = secrets.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
+        headers = get_signed_headers() or {}
+        headers['X-API-Key'] = api_key
+        resp = requests.get(f"{BOOKDB_API_URL}/book/{book_id}", headers=headers, timeout=10)
 
         if resp.status_code != 200:
             return jsonify({'error': f'Book not found (status {resp.status_code})'})
@@ -11977,10 +11985,13 @@ def api_author_detail(author_id):
     """
     Get author details from BookBucket.
     Used for hover cards on author search results.
-    Uses public endpoint - no API key required.
     """
     try:
-        resp = requests.get(f"{BOOKDB_API_URL}/author/{author_id}", timeout=10)
+        secrets = load_secrets()
+        api_key = secrets.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
+        headers = get_signed_headers() or {}
+        headers['X-API-Key'] = api_key
+        resp = requests.get(f"{BOOKDB_API_URL}/author/{author_id}", headers=headers, timeout=10)
 
         if resp.status_code != 200:
             return jsonify({'error': f'Author not found (status {resp.status_code})'})
@@ -12000,10 +12011,13 @@ def api_series_detail(series_id):
     """
     Get series details from BookBucket.
     Used for hover cards on series search results.
-    Uses public endpoint - no API key required.
     """
     try:
-        resp = requests.get(f"{BOOKDB_API_URL}/series/{series_id}", timeout=10)
+        secrets = load_secrets()
+        api_key = secrets.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
+        headers = get_signed_headers() or {}
+        headers['X-API-Key'] = api_key
+        resp = requests.get(f"{BOOKDB_API_URL}/series/{series_id}", headers=headers, timeout=10)
 
         if resp.status_code != 200:
             return jsonify({'error': f'Series not found (status {resp.status_code})'})
