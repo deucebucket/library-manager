@@ -2,6 +2,48 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.153] - 2026-06-12
+
+### Security
+- **#255: Validate and sanitize BookDB response data** — Added `_sanitize_api_response()` to strip null bytes, control characters, HTML tags, and truncate oversized fields from all Skaldleita/BookDB API responses. Prevents path traversal, XSS, and memory issues from malformed responses.
+- **#256: Signing nonce and tighter replay window** — Added UUID nonce (`X-LM-Nonce`) to signed request headers for replay attack prevention. Reduced timestamp tolerance from 300s to 120s. Backwards compatible with existing BookDB.
+- **#236: SSRF prevention on plugin endpoints** — (from 0.9.0-beta.152)
+
+### Fixed
+- **#252: Rate limiter aligned with actual BookDB tiers** — Increased min_delay from 3.6s (1000/hr) to 12.0s (300/hr) to match BookDB's API key tier. Added adaptive backoff from Retry-After headers and specific 429 handling in audio identification.
+- **#253: server_notice handled in audio identification** — BookDB's abort/notice signals are now processed in `identify_audio_with_bookdb()` (submit, poll, and result stages), matching existing coverage in `search_bookdb()`.
+
+### Enhanced
+- **#254: Differentiated BookDB source trust weighting** — `sl_source` field now maps to distinct source names (`bookdb_audio`, `bookdb_transcript`, `bookdb_scrape`) with graduated weights (65/55/45) instead of treating all BookDB audio results identically.
+
+### Documentation
+- **#257: ABS plugin architecture** — Added `docs/ABS-Plugin-Architecture.md` scoping Library Manager as an Audiobookshelf metadata provider plugin.
+
+---
+
+## [0.9.0-beta.152] - 2026-06-12
+
+### Security
+- **#219: Library boundary enforcement** on undo/replace/remove file operations
+- **#237: XSS fix** — escapeHtml covers all 5 HTML entities including single quotes
+- **#236: SSRF prevention** on custom plugin endpoints
+
+### Fixed
+- **#220: Atomic status guard** on apply_fix prevents race condition double-renames
+- **#221: Worker stop checks** in all 4 legacy batch loops
+- **#222-224: Rate limits and circuit breakers** for BookDB contribute, community consensus, Gemini language detect, OpenRouter identify, plus process endpoint re-entrancy guard
+- **#225-226: Undo parent mkdir** and path sanitize false positive fix
+- **#227: L1 preserves original metadata** on validation failure
+- **#228-229: Pipeline stuck prevention** — L3 trust_sl no longer deletes queue entry before L4, AI verify creates history on null drastic check
+- **#230: Custom source weights** now actually used in confidence calculations
+- **#231: Fixed broken route** in queue multi-edit modal
+- **#232: Settings save** now persists sl_trust_mode and enable_isbn_lookup, removed duplicate field
+- **#233: Double-click prevention** on all 11 history page action buttons
+- **#234: Famous numeric titles** (1984, 2001, etc.) no longer flagged as garbage
+- **#235: Confidence scale normalization** handles both 0-1 and 0-100 scales
+
+---
+
 ## [0.9.0-beta.151] - 2026-06-05
 
 ### Changed

@@ -11,6 +11,7 @@ Note: Internal names use 'bookdb' for backwards compatibility with existing conf
 """
 
 import os
+import re
 import time
 import logging
 import subprocess
@@ -26,6 +27,8 @@ from library_manager.providers.rate_limiter import (
     record_api_success,
     handle_rate_limit_response,
     API_CIRCUIT_BREAKER,
+    API_RATE_LIMITS,
+    API_RATE_LOCK,
 )
 from library_manager.utils.voice_embedding import (
     is_voice_embedding_available,
@@ -49,6 +52,33 @@ def get_and_clear_server_abort():
     if notice is not None:
         _abort_state.notice = None
     return notice
+
+def _sanitize_api_response(data, context='bookdb'):
+    """Sanitize string fields from API responses to prevent path traversal, XSS, and oversized data."""
+    if not isinstance(data, dict):
+        return data
+
+    MAX_FIELD_LENGTH = 500
+    sanitized = {}
+    string_fields = ('title', 'author', 'author_name', 'narrator', 'series', 'series_name', 'name', 'variant', 'edition')
+
+    for key, value in data.items():
+        if key in string_fields and isinstance(value, str):
+            original = value
+            # Strip null bytes and control characters (keep newlines for descriptions)
+            value = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', value)
+            # Strip HTML tags
+            value = re.sub(r'<[^>]+>', '', value)
+            # Truncate oversized fields
+            if len(value) > MAX_FIELD_LENGTH:
+                value = value[:MAX_FIELD_LENGTH]
+            # Log if sanitization changed the value
+            if value != original:
+                logger.warning(f"[{context}] Sanitized '{key}': {original[:100]!r} → {value[:100]!r}")
+        sanitized[key] = value
+
+    return sanitized
+
 
 # Skaldleita API endpoint (our metadata service, legacy name: BookDB)
 BOOKDB_API_URL = "https://bookdb.deucebucket.com"  # URL unchanged for backwards compatibility
@@ -76,27 +106,30 @@ def get_user_agent():
 # Request signing - uses shared module for Skaldleita sync
 # See library_manager/signing.py for constants and derivation logic
 # Skaldleita fetches that file to stay in sync automatically
-from library_manager.signing import generate_signature
+from library_manager.signing import generate_signature, generate_nonce
 
 
 def get_signed_headers():
     """
     Generate signed headers for Skaldleita API requests.
 
-    Returns dict with User-Agent, X-LM-Signature, and X-LM-Timestamp.
+    Returns dict with User-Agent, X-LM-Signature, X-LM-Timestamp, and X-LM-Nonce.
     Secret is derived from version - changes with each release.
+    Nonce prevents replay attacks within the timestamp tolerance window.
     Skaldleita fetches signing.py to stay in sync.
 
     See library_manager/signing.py for derivation logic.
     """
     timestamp = str(int(time.time()))
     lm_version = get_lm_version()
-    signature = generate_signature(lm_version, timestamp)
+    nonce = generate_nonce()
+    signature = generate_signature(lm_version, timestamp, nonce=nonce)
 
     return {
         'User-Agent': f'LibraryManager/{lm_version}',
         'X-LM-Signature': signature,
         'X-LM-Timestamp': timestamp,
+        'X-LM-Nonce': nonce,
     }
 
 
@@ -147,7 +180,7 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
         logger.debug(f"Skaldleita: Circuit open, skipping ({remaining}s remaining)")
         return None
 
-    rate_limit_wait('bookdb')  # 3.6s delay = max 1000/hr, never skips
+    rate_limit_wait('bookdb')  # 12.0s delay = max 300/hr (API key tier), never skips
 
     # Use configured URL or fall back to default cloud URL
     base_url = bookdb_url or BOOKDB_API_URL
@@ -169,6 +202,19 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
         # Handle rate limiting with exponential backoff
         if resp.status_code == 429:
             rl = handle_rate_limit_response(resp, 'bookdb', retry_count)
+            # Adaptive: if BookDB says slow down via Retry-After, increase our
+            # min_delay so future requests are paced more conservatively
+            if rl['retry_after']:
+                try:
+                    retry_secs = int(rl['retry_after'])
+                    with API_RATE_LOCK:
+                        current_delay = API_RATE_LIMITS['bookdb']['min_delay']
+                        if retry_secs > current_delay:
+                            API_RATE_LIMITS['bookdb']['min_delay'] = float(retry_secs)
+                            logger.info(f"[BOOKDB] Adaptive rate limit: increased min_delay "
+                                        f"from {current_delay}s to {retry_secs}s per Retry-After header")
+                except (ValueError, TypeError):
+                    pass
             if rl['should_retry']:
                 time.sleep(rl['wait_seconds'])
                 return search_bookdb(title, author, api_key, retry_count + 1, bookdb_url,
@@ -184,6 +230,7 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
             API_CIRCUIT_BREAKER['bookdb']['failures'] = 0
 
         data = resp.json()
+        data = _sanitize_api_response(data)
 
         # Issue #208: honor Skaldleita server_notice. Log every notice; on
         # action=abort_task, stash in thread-local so the watch-folder worker
@@ -225,6 +272,9 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
             # If no specific match, use first book
             if not best_book:
                 best_book = books[0]
+
+        if best_book:
+            best_book = _sanitize_api_response(best_book)
 
         # Build result - handle standalone books (no series) and series books
         result = {
@@ -368,11 +418,44 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                     timeout=30  # Just submitting, should be fast
                 )
 
+            # Handle 429 rate limiting specifically — record the failure and
+            # adaptively increase min_delay if Retry-After header is present
+            if response.status_code == 429:
+                rl = handle_rate_limit_response(response, 'bookdb')
+                if rl['retry_after']:
+                    try:
+                        retry_secs = int(rl['retry_after'])
+                        with API_RATE_LOCK:
+                            current_delay = API_RATE_LIMITS['bookdb']['min_delay']
+                            if retry_secs > current_delay:
+                                API_RATE_LIMITS['bookdb']['min_delay'] = float(retry_secs)
+                                logger.info(f"[SKALDLEITA] Adaptive rate limit: increased min_delay "
+                                            f"from {current_delay}s to {retry_secs}s per Retry-After header")
+                    except (ValueError, TypeError):
+                        pass
+                logger.warning(f"[SKALDLEITA] Rate limited (429) on audio identify")
+                return None
+
             if response.status_code != 200:
                 logger.warning(f"[SKALDLEITA] API returned {response.status_code}: {response.text[:200]}")
                 return None
 
             submit_data = response.json()
+
+            # Issue #253: Check server_notice on the submit response itself.
+            # BookDB may signal abort before we even enter the poll loop.
+            notice = submit_data.get('server_notice')
+            if notice:
+                code = notice.get('code', 'unknown')
+                msg = notice.get('message', '')
+                upgrade_url = notice.get('upgrade_url')
+                severity = notice.get('severity', 'info')
+                logger.warning(f"[SKALDLEITA] server notice ({severity}) [{code}]: {msg}")
+                if upgrade_url:
+                    logger.warning(f"[SKALDLEITA] upgrade: {upgrade_url}")
+                if notice.get('action') == 'abort_task':
+                    _abort_state.notice = notice
+                    return None
 
             # Check if it's the new queue system (has ticket_id) or old sync system
             if 'ticket_id' in submit_data:
@@ -415,6 +498,21 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                             # Got result!
                             data = status_data.get('result', {})
                             logger.info(f"[SKALDLEITA] Complete! Processing result...")
+
+                            # Issue #253: Check server_notice in the poll result
+                            notice = status_data.get('server_notice')
+                            if notice:
+                                code = notice.get('code', 'unknown')
+                                msg = notice.get('message', '')
+                                upgrade_url = notice.get('upgrade_url')
+                                severity = notice.get('severity', 'info')
+                                logger.warning(f"[SKALDLEITA] server notice ({severity}) [{code}]: {msg}")
+                                if upgrade_url:
+                                    logger.warning(f"[SKALDLEITA] upgrade: {upgrade_url}")
+                                if notice.get('action') == 'abort_task':
+                                    _abort_state.notice = notice
+                                    return None
+
                             break
 
                         elif status == 'error':
@@ -433,6 +531,21 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                 # Old sync system - response has result directly
                 data = submit_data
 
+            # Issue #253: Check server_notice in the final result data.
+            # Covers the old sync path and acts as a catch-all for the queue path.
+            notice = data.get('server_notice')
+            if notice:
+                code = notice.get('code', 'unknown')
+                msg = notice.get('message', '')
+                upgrade_url = notice.get('upgrade_url')
+                severity = notice.get('severity', 'info')
+                logger.warning(f"[SKALDLEITA] server notice ({severity}) [{code}]: {msg}")
+                if upgrade_url:
+                    logger.warning(f"[SKALDLEITA] upgrade: {upgrade_url}")
+                if notice.get('action') == 'abort_task':
+                    _abort_state.notice = notice
+                    return None
+
             # Process result (same for both systems)
             transcript = data.get('transcript') or ''
             matched_books = data.get('matched_books') or []
@@ -448,18 +561,28 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
             sl_source = data.get('source', 'audio')  # 'database', 'audio', or 'live_scrape'
             requeue_suggested = data.get('requeue_suggested', False)
 
+            # Map sl_source to differentiated source names for trust weighting
+            # database = verified DB match (highest), audio = Whisper only, live_scrape = web scraping
+            source_map = {
+                'database': 'bookdb_audio',
+                'audio': 'bookdb_transcript',
+                'live_scrape': 'bookdb_scrape',
+            }
+            mapped_source = source_map.get(sl_source, 'bookdb_audio')
+
             result = {
                 'author': data.get('author') or (best_match.get('author_name') if best_match else None),
                 'title': data.get('title') or (best_match.get('title') if best_match else None),
                 'narrator': data.get('narrator'),
                 'series': best_match.get('series_name') if best_match else None,
                 'series_num': best_match.get('series_position') if best_match else None,
-                'source': 'bookdb_audio',
-                'sl_source': sl_source,  # Where SL got the data: 'database' or 'audio'
+                'source': mapped_source,
+                'sl_source': sl_source,  # Where SL got the data: 'database', 'audio', or 'live_scrape'
                 'requeue_suggested': requeue_suggested,  # True if LM should retry later
                 'confidence': 'high' if best_match or sl_source == 'database' else 'medium',
                 'transcript': transcript[:500],
             }
+            result = _sanitize_api_response(result, context='SKALDLEITA')
 
             if result['author'] and result['title']:
                 logger.info(f"[SKALDLEITA] Identified: {result['author']} - {result['title']}" +
@@ -468,7 +591,7 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
 
             if transcript:
                 logger.info(f"[SKALDLEITA] No match but got transcript ({len(transcript)} chars) - returning for AI fallback")
-                return {'transcript': transcript, 'source': 'bookdb_audio'}
+                return {'transcript': transcript, 'source': mapped_source}
 
             logger.warning(f"[SKALDLEITA] No identification and no transcript returned")
             return None
@@ -626,6 +749,7 @@ def lookup_community_consensus(title, author=None, bookdb_url=None):
 __all__ = [
     'BOOKDB_API_URL',
     'BOOKDB_PUBLIC_KEY',
+    '_sanitize_api_response',
     'get_signed_headers',
     'search_bookdb',
     'identify_audio_with_bookdb',

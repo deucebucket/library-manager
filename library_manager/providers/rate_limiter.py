@@ -11,9 +11,9 @@ logger = logging.getLogger(__name__)
 
 # Rate limiting to stay under API limits
 # Format: api_name -> {last_call, min_delay}
-# Skaldleita (bookdb): 3.6 sec delay = 1000 requests/hour max, spread evenly (never hits limit)
+# Skaldleita (bookdb): 12.0 sec delay = 300 requests/hour max (API key tier)
 API_RATE_LIMITS = {
-    'bookdb': {'last_call': 0, 'min_delay': 3.6},        # Skaldleita: 3600s / 1000 = 3.6s between calls = exactly 1000/hr
+    'bookdb': {'last_call': 0, 'min_delay': 12.0},       # Skaldleita: 3600s / 300 = 12.0s between calls = 300/hr (API key tier)
     'audnexus': {'last_call': 0, 'min_delay': 2.0},      # ~100/hr community API - be nice
     'openlibrary': {'last_call': 0, 'min_delay': 1.5},   # They request max 1/sec, add buffer
     'googlebooks': {'last_call': 0, 'min_delay': 1.0},   # 1000/day, no per-sec limit but be safe
@@ -39,7 +39,7 @@ def rate_limit_wait(api_name):
     """
     Wait if needed to respect rate limits for the given API.
 
-    For Skaldleita: 3.6s delay ensures exactly 1000 requests/hour max.
+    For Skaldleita: 12.0s delay ensures max 300 requests/hour (API key tier).
     All requests go through - no skipping, just proper pacing.
     """
     with API_RATE_LOCK:

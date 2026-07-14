@@ -714,18 +714,20 @@ def process_layer_1_audio(
                 c = conn.cursor()
 
                 # Update book with audio-identified info
-                sl_source = result.get('sl_source', 'audio_transcription')
+                # Use the mapped source name (bookdb_audio/bookdb_transcript/bookdb_scrape)
+                # for proper trust weighting in BookProfile, falling back to sl_source
+                profile_source = result.get('source', result.get('sl_source', 'audio_transcription'))
                 base_confidence = 85 if confidence == 'high' else 70
                 profile = {
-                    'author': {'value': author, 'source': sl_source, 'confidence': base_confidence},
-                    'title': {'value': title, 'source': sl_source, 'confidence': base_confidence},
+                    'author': {'value': author, 'source': profile_source, 'confidence': base_confidence},
+                    'title': {'value': title, 'source': profile_source, 'confidence': base_confidence},
                 }
                 if narrator:
-                    profile['narrator'] = {'value': narrator, 'source': sl_source, 'confidence': 80}
+                    profile['narrator'] = {'value': narrator, 'source': profile_source, 'confidence': 80}
                 if series:
-                    profile['series'] = {'value': series, 'source': sl_source, 'confidence': 75}
+                    profile['series'] = {'value': series, 'source': profile_source, 'confidence': 75}
                 if series_num:
-                    profile['series_num'] = {'value': str(series_num), 'source': sl_source, 'confidence': 75}
+                    profile['series_num'] = {'value': str(series_num), 'source': profile_source, 'confidence': 75}
 
                 # Issue #227: Save original author/title BEFORE updating the DB.
                 # If validation fails later, we must revert these to prevent
