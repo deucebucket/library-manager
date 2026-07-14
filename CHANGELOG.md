@@ -2,6 +2,11 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.154] - 2026-07-14
+
+### Fixed
+- **#264: Auth headers on all Skaldleita API calls** — Added signed headers + API key to 4 call sites that previously sent keyless requests to the Skaldleita API: `api_book_detail`, `api_author_detail`, `api_series_detail`, and `identify_ebook_from_filename`. These endpoints now require authentication after the gate was changed to key-or-401.
+
 ## [0.9.0-beta.153] - 2026-06-12
 
 ### Security
