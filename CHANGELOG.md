@@ -2,6 +2,11 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- **License restored to MIT** - Replaced AGPL-3.0 with the project's original MIT license and updated README and contribution terms to match.
+
 ## [0.9.0-beta.154] - 2026-07-14
 
 ### Fixed
