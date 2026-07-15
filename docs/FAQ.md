@@ -33,10 +33,7 @@ Just renames folders. Files inside stay exactly where they are - only the folder
 
 ### What APIs does it use?
 
-1. Audnexus (Audible data)
-2. OpenLibrary (Internet Archive)
-3. Google Books
-4. Hardcover
+Metadata can come from Skaldleita, Audnexus, OpenLibrary, Google Books, and Hardcover. Optional AI verification uses the configured Gemini, OpenRouter, Ollama, or OpenAI-compatible provider.
 
 ### Why Gemini over GPT-4?
 

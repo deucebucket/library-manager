@@ -4,8 +4,13 @@ All notable changes to Library Manager will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.0-beta.156] - 2026-07-15
+
 ### Changed
 - **License restored to MIT** - Replaced AGPL-3.0 with the project's original MIT license and updated README and contribution terms to match.
+
+### Documentation
+- Synchronized the published version, provider lists, Skaldleita credential guidance, multilingual-provider notes, and configured request-rate defaults with current behavior.
 
 ## [0.9.0-beta.155] - 2026-07-15
 

@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.153-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.156-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 
@@ -15,6 +15,10 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.156** - **MIT License and Documentation Sync**
+> - Restored the project's MIT license and aligned contribution terms.
+> - Synchronized provider, Skaldleita credential, multilingual model, and request-rate guidance with current behavior.
 
 > **beta.155** - **Local AI Is Provider-Agnostic**
 > - Added llama.cpp and generic OpenAI-compatible API support with live `/v1/models` discovery.
