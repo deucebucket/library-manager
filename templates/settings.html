@@ -855,7 +855,7 @@
                         <div class="card-body">
                             <p class="text-muted small mb-2">Select which AI to try first. Falls back to others automatically.</p>
                             <div class="mb-3">
-                                <select class="form-select bg-dark text-light" name="ai_provider" id="ai_provider" onchange="toggleProviderFields()">
+                                <select class="form-select bg-dark text-light" name="ai_provider" id="ai_provider" onchange="toggleProviderFields(true)">
                                     <option value="gemini" {% if config.ai_provider == 'gemini' %}selected{% endif %}>
                                         Google Gemini (Recommended)
                                     </option>
@@ -864,6 +864,9 @@
                                     </option>
                                     <option value="ollama" {% if config.ai_provider == 'ollama' %}selected{% endif %}>
                                         Ollama (Self-hosted)
+                                    </option>
+                                    <option value="openai_compatible" {% if config.ai_provider == 'openai_compatible' %}selected{% endif %}>
+                                        llama.cpp / OpenAI-compatible
                                     </option>
                                 </select>
                             </div>
@@ -906,25 +909,68 @@
                                            value="{{ config.ollama_url or 'http://localhost:11434' }}" placeholder="http://localhost:11434">
                                 </div>
                                 <div class="mb-3">
-                                    <label class="form-label">Model</label>
+                                    <label class="form-label" for="ollama_model">Model</label>
                                     <div class="input-group">
-                                        <select class="form-select bg-dark text-light" name="ollama_model" id="ollama_model">
-                                            {% if config.ollama_model %}
-                                            <option value="{{ config.ollama_model }}" selected>{{ config.ollama_model }}</option>
-                                            {% else %}
-                                            <option value="llama3.2:3b" selected>llama3.2:3b (default)</option>
-                                            {% endif %}
-                                        </select>
+                                        <input class="form-control bg-dark text-light" name="ollama_model" id="ollama_model"
+                                               list="ollama-model-options" value="{{ config.ollama_model or '' }}"
+                                               placeholder="Select or type an Ollama model ID">
+                                        <datalist id="ollama-model-options"></datalist>
                                         <button type="button" class="btn btn-outline-secondary" onclick="refreshOllamaModels()" title="Refresh">
                                             <i class="bi bi-arrow-clockwise"></i>
                                         </button>
                                     </div>
+                                    <small class="text-muted" id="ollama-model-status">Models are loaded from this Ollama server.</small>
                                 </div>
                                 <div class="mb-0">
                                     <button type="button" class="btn btn-sm btn-outline-info" onclick="testOllamaConnection()">
                                         <i class="bi bi-plug"></i> Test Connection
                                     </button>
                                     <span id="ollama-status" class="ms-2"></span>
+                                </div>
+                            </div>
+
+                            <!-- Generic OpenAI-compatible Settings -->
+                            <div id="openai-compatible-settings" style="display: none;">
+                                <div class="mb-3">
+                                    <label class="form-label" for="openai_compatible_url">API Base URL</label>
+                                    <input type="text" class="form-control bg-dark text-light" name="openai_compatible_url" id="openai_compatible_url"
+                                           value="{{ config.openai_compatible_url or 'http://localhost:8080/v1' }}"
+                                           placeholder="http://host:8080/v1">
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label" for="openai_compatible_api_key">API Key</label>
+                                    <div class="input-group">
+                                        <input type="password" class="form-control bg-dark text-light" name="openai_compatible_api_key"
+                                               id="openai_compatible_api_key" value="{{ config.openai_compatible_api_key or '' }}"
+                                               placeholder="Optional">
+                                        <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('openai_compatible_api_key')" title="Show/hide key">
+                                            <i class="bi bi-eye"></i>
+                                        </button>
+                                        {% if config.openai_compatible_api_key %}
+                                        <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('openai_compatible_api_key')" title="Remove key">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label" for="openai_compatible_model">Model</label>
+                                    <div class="input-group">
+                                        <input class="form-control bg-dark text-light" name="openai_compatible_model" id="openai_compatible_model"
+                                               list="openai-compatible-model-options" value="{{ config.openai_compatible_model or '' }}"
+                                               placeholder="Loaded from the selected server">
+                                        <datalist id="openai-compatible-model-options"></datalist>
+                                        <button type="button" class="btn btn-outline-secondary" onclick="refreshOpenAICompatibleModels()" title="Refresh">
+                                            <i class="bi bi-arrow-clockwise"></i>
+                                        </button>
+                                    </div>
+                                    <small class="text-muted" id="openai-compatible-model-status">Models are loaded from the configured server.</small>
+                                </div>
+                                <div class="mb-0">
+                                    <button type="button" class="btn btn-sm btn-outline-info" onclick="testOpenAICompatibleConnection()">
+                                        <i class="bi bi-plug"></i> Test Connection
+                                    </button>
+                                    <span id="openai-compatible-status" class="ms-2"></span>
                                 </div>
                             </div>
                         </div>
@@ -976,7 +1022,7 @@
                                 </label>
                                 <div id="audio-provider-chain" class="provider-chain">
                                     {% set audio_chain = config.audio_provider_chain or ['bookdb', 'gemini'] %}
-                                    {% set all_audio_providers = ['bookdb', 'gemini', 'openrouter', 'ollama'] %}
+                                    {% set all_audio_providers = ['bookdb', 'gemini', 'openrouter', 'ollama', 'openai_compatible'] %}
                                     {% for provider in audio_chain %}
                                     <div class="provider-item d-flex align-items-center mb-1 p-2 bg-dark rounded" data-provider="{{ provider }}">
                                         <i class="bi bi-grip-vertical me-2 text-muted drag-handle" style="cursor: grab;"></i>
@@ -990,6 +1036,8 @@
                                             <strong>OpenRouter</strong> <small class="text-warning">(Needs local Whisper)</small>
                                             {% elif provider == 'ollama' %}
                                             <strong>Ollama</strong> <small class="text-warning">(Needs local Whisper)</small>
+                                            {% elif provider == 'openai_compatible' %}
+                                            <strong>llama.cpp / Compatible API</strong> <small class="text-warning">(Needs transcription)</small>
                                             {% endif %}
                                         </span>
                                     </div>
@@ -1007,6 +1055,8 @@
                                             <strong>OpenRouter</strong> <small class="text-warning">(Needs local Whisper)</small>
                                             {% elif provider == 'ollama' %}
                                             <strong>Ollama</strong> <small class="text-warning">(Needs local Whisper)</small>
+                                            {% elif provider == 'openai_compatible' %}
+                                            <strong>llama.cpp / Compatible API</strong> <small class="text-warning">(Needs transcription)</small>
                                             {% endif %}
                                         </span>
                                     </div>
@@ -1023,7 +1073,7 @@
                                 </label>
                                 <div id="text-provider-chain" class="provider-chain">
                                     {% set text_chain = config.text_provider_chain or ['gemini', 'openrouter'] %}
-                                    {% set all_text_providers = ['gemini', 'openrouter', 'ollama'] %}
+                                    {% set all_text_providers = ['gemini', 'openrouter', 'ollama', 'openai_compatible'] %}
                                     {% for provider in text_chain %}
                                     <div class="provider-item d-flex align-items-center mb-1 p-2 bg-dark rounded" data-provider="{{ provider }}">
                                         <i class="bi bi-grip-vertical me-2 text-muted drag-handle" style="cursor: grab;"></i>
@@ -1035,6 +1085,8 @@
                                             <strong>OpenRouter</strong> <small class="text-info">(Free models)</small>
                                             {% elif provider == 'ollama' %}
                                             <strong>Ollama</strong> <small class="text-warning">(Self-hosted)</small>
+                                            {% elif provider == 'openai_compatible' %}
+                                            <strong>llama.cpp / Compatible API</strong> <small class="text-warning">(User endpoint)</small>
                                             {% endif %}
                                         </span>
                                     </div>
@@ -1050,6 +1102,8 @@
                                             <strong>OpenRouter</strong> <small class="text-info">(Free models)</small>
                                             {% elif provider == 'ollama' %}
                                             <strong>Ollama</strong> <small class="text-warning">(Self-hosted)</small>
+                                            {% elif provider == 'openai_compatible' %}
+                                            <strong>llama.cpp / Compatible API</strong> <small class="text-warning">(User endpoint)</small>
                                             {% endif %}
                                         </span>
                                     </div>
@@ -1692,14 +1746,35 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
-function toggleProviderFields() {
+function toggleProviderFields(syncChain = false) {
     const provider = document.getElementById('ai_provider').value;
     document.getElementById('gemini-settings').style.display = provider === 'gemini' ? 'block' : 'none';
     document.getElementById('openrouter-settings').style.display = provider === 'openrouter' ? 'block' : 'none';
     document.getElementById('ollama-settings').style.display = provider === 'ollama' ? 'block' : 'none';
+    document.getElementById('openai-compatible-settings').style.display = provider === 'openai_compatible' ? 'block' : 'none';
+
+    if (syncChain) {
+        const item = document.querySelector(`#text-provider-chain .provider-item[data-provider="${provider}"]`);
+        if (item) {
+            item.querySelector('input[type="checkbox"]').checked = true;
+            document.getElementById('text-provider-chain').prepend(item);
+            updateProviderChain('text');
+        }
+        const audioItem = document.querySelector(`#audio-provider-chain .provider-item[data-provider="${provider}"]`);
+        if (audioItem) {
+            audioItem.querySelector('input[type="checkbox"]').checked = true;
+            const audioChain = document.getElementById('audio-provider-chain');
+            const skaldleitaItem = audioChain.querySelector('.provider-item[data-provider="bookdb"]');
+            if (skaldleitaItem) skaldleitaItem.after(audioItem);
+            else audioChain.prepend(audioItem);
+            updateProviderChain('audio');
+        }
+    }
+
     if (provider === 'gemini') refreshGeminiModels();
     if (provider === 'openrouter') refreshOpenRouterModels();
     if (provider === 'ollama') refreshOllamaModels();
+    if (provider === 'openai_compatible') refreshOpenAICompatibleModels();
 }
 
 function populateModelDatalist(datalistId, models) {
@@ -1780,10 +1855,9 @@ function testOllamaConnection() {
 
 function refreshOllamaModels() {
     const url = document.getElementById('ollama_url').value;
-    const select = document.getElementById('ollama_model');
-    const currentValue = select.value;
-    select.innerHTML = '<option value="">Loading...</option>';
-    select.disabled = true;
+    const input = document.getElementById('ollama_model');
+    const statusEl = document.getElementById('ollama-model-status');
+    if (statusEl) statusEl.textContent = 'Loading Ollama models...';
     fetch('/api/ollama_models', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -1791,23 +1865,71 @@ function refreshOllamaModels() {
     })
     .then(r => r.json())
     .then(data => {
-        select.disabled = false;
         if (data.success && data.models && data.models.length > 0) {
-            select.innerHTML = '';
-            data.models.forEach(model => {
-                const opt = document.createElement('option');
-                opt.value = model;
-                opt.textContent = model;
-                if (model === currentValue) opt.selected = true;
-                select.appendChild(opt);
-            });
-        } else {
-            select.innerHTML = '<option value="llama3.2:3b">llama3.2:3b</option><option value="mistral:7b">mistral:7b</option>';
+            populateModelDatalist('ollama-model-options', data.models);
+            if (!input.value && data.models.length === 1) input.value = data.models[0];
+            if (statusEl) statusEl.textContent = `Loaded ${data.models.length} model${data.models.length === 1 ? '' : 's'} from Ollama.`;
+        } else if (statusEl) {
+            statusEl.textContent = data.error || 'Could not load Ollama models. Type a model ID manually.';
         }
     })
-    .catch(e => {
-        select.disabled = false;
-        select.innerHTML = '<option value="llama3.2:3b">llama3.2:3b</option>';
+    .catch(() => {
+        if (statusEl) statusEl.textContent = 'Could not load Ollama models. Type a model ID manually.';
+    });
+}
+
+function openAICompatibleRequestData() {
+    return {
+        openai_compatible_url: document.getElementById('openai_compatible_url').value.trim(),
+        openai_compatible_api_key: document.getElementById('openai_compatible_api_key').value.trim()
+    };
+}
+
+function refreshOpenAICompatibleModels() {
+    const input = document.getElementById('openai_compatible_model');
+    const statusEl = document.getElementById('openai-compatible-model-status');
+    if (statusEl) statusEl.textContent = 'Loading models from the configured server...';
+    fetch('/api/openai_compatible_models', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(openAICompatibleRequestData())
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success && data.models && data.models.length > 0) {
+            populateModelDatalist('openai-compatible-model-options', data.models);
+            if (!input.value && data.models.length === 1) input.value = data.models[0];
+            if (statusEl) statusEl.textContent = `Loaded ${data.models.length} model${data.models.length === 1 ? '' : 's'} from the configured server.`;
+        } else if (statusEl) {
+            statusEl.textContent = data.error || 'Could not load models. Type a model ID manually.';
+        }
+    })
+    .catch(() => {
+        if (statusEl) statusEl.textContent = 'Could not load models. Type a model ID manually.';
+    });
+}
+
+function testOpenAICompatibleConnection() {
+    const statusEl = document.getElementById('openai-compatible-status');
+    statusEl.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split"></i></span>';
+    fetch('/api/test_openai_compatible', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(openAICompatibleRequestData())
+    })
+    .then(r => r.json())
+    .then(data => {
+        statusEl.innerHTML = data.success
+            ? `<span class="text-success"><i class="bi bi-check-circle"></i> Connected (${data.model_count} model${data.model_count === 1 ? '' : 's'})</span>`
+            : `<span class="text-danger"><i class="bi bi-x-circle"></i> ${escapeHtml(data.error || 'Failed')}</span>`;
+        if (data.success && data.models) {
+            populateModelDatalist('openai-compatible-model-options', data.models);
+            const input = document.getElementById('openai_compatible_model');
+            if (!input.value && data.models.length === 1) input.value = data.models[0];
+        }
+    })
+    .catch(() => {
+        statusEl.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle"></i> Error</span>';
     });
 }
 

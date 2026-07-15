@@ -16,6 +16,11 @@
 
 ## Recent Changes (stable)
 
+> **beta.155** - **Local AI Is Provider-Agnostic**
+> - Added llama.cpp and generic OpenAI-compatible API support with live `/v1/models` discovery.
+> - Removed hardcoded Ollama model fallbacks and fixed `undefined` model entries across API response shapes.
+> - Skaldleita transcripts now continue into the selected AI fallback instead of stopping early.
+
 > **beta.150** - **Fix: Hosted AI Model Picker Uses Live Provider Models** (Issue #216)
 > - Replaced stale hardcoded Gemini/OpenRouter model dropdowns with editable model fields backed by live provider model lists.
 > - Gemini models load from the configured Gemini key; OpenRouter models load from OpenRouter's `/models` endpoint.
@@ -419,6 +424,14 @@ See [docs/DOCKER.md](docs/DOCKER.md) for detailed setup guides.
 - Multiple model options
 - Free tier available
 
+**Ollama**
+- Self-hosted with live model discovery from the user's server
+- No hardcoded model requirement
+
+**llama.cpp / OpenAI-compatible**
+- Works with llama.cpp, LM Studio, vLLM, LocalAI, and compatible `/v1` APIs
+- Live model discovery and optional API-key authentication
+
 ---
 
 ## API Reference
@@ -561,7 +574,7 @@ The idea for **Skaldleita** (audio fingerprinting + narrator voice identificatio
 ## Contributing
 
 Pull requests welcome! Ideas:
-- [ ] Ollama/local LLM support
+- [x] Ollama and generic local LLM support
 - [ ] Cover art fetching
 - [x] Metadata embedding (added in v0.9.0-beta.20)
 - [ ] Movie/music library support

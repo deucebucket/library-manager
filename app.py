@@ -8,10 +8,10 @@ Features:
 - Queue of books needing fixes
 - History of all fixes made
 - Settings management
-- Multi-provider AI (Gemini, OpenRouter, Ollama)
+- Multi-provider AI (Gemini, OpenRouter, Ollama, OpenAI-compatible APIs)
 """
 
-APP_VERSION = "0.9.0-beta.154"
+APP_VERSION = "0.9.0-beta.155"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -84,6 +84,9 @@ from library_manager.providers import (
     get_ollama_models, test_ollama_connection,
     call_openrouter, call_openrouter_simple, identify_book_from_transcript,
     test_openrouter_connection,
+    call_openai_compatible as _call_openai_compatible_raw,
+    call_openai_compatible_simple as _call_openai_compatible_simple_raw,
+    test_openai_compatible_connection,
     # Gemini provider
     call_gemini as _call_gemini_raw,
     _call_gemini_simple as _call_gemini_simple_raw,
@@ -1026,6 +1029,8 @@ If you're not certain, return: {{"localized_title": "{title}", "is_translation":
     try:
         if provider == 'ollama':
             result = _call_ollama_simple(prompt, config)
+        elif provider == 'openai_compatible':
+            result = _call_openai_compatible_simple(prompt, config)
         elif provider == 'gemini' and config.get('gemini_api_key'):
             result = _call_gemini_simple(prompt, config)
         elif config.get('openrouter_api_key'):
@@ -1056,6 +1061,15 @@ def _call_ollama_simple(prompt, config):
     Wrapper that passes app-level dependencies to the extracted module.
     """
     return _call_ollama_simple_raw(prompt, config, parse_json_fn=parse_json_response)
+
+
+def _call_openai_compatible_simple(prompt, config):
+    """Call a user-configured OpenAI-compatible API for localization."""
+    return _call_openai_compatible_simple_raw(
+        prompt,
+        config,
+        parse_json_fn=parse_json_response,
+    )
 
 
 # ============== BOOK METADATA APIs ==============
@@ -1684,6 +1698,17 @@ def call_ollama(prompt, config):
     )
 
 
+def call_openai_compatible(prompt, config):
+    """Call a user-configured OpenAI-compatible API."""
+    return _call_openai_compatible_raw(
+        prompt,
+        config,
+        parse_json_fn=parse_json_response,
+        explain_error_fn=explain_http_error,
+        report_error_fn=report_anonymous_error,
+    )
+
+
 # get_ollama_models and test_ollama_connection are imported directly from library_manager.providers
 
 
@@ -1696,11 +1721,14 @@ def call_text_provider_chain(prompt, config):
 
     Uses config['text_provider_chain'] to determine order.
     Default: ["gemini", "openrouter"]
-    Available: "gemini", "openrouter", "ollama"
+    Available: "gemini", "openrouter", "ollama", "openai_compatible"
 
     Returns parsed response or None if all providers fail.
     """
     chain = config.get('text_provider_chain', ['gemini', 'openrouter'])
+    primary_provider = config.get('ai_provider')
+    if primary_provider and primary_provider not in chain:
+        chain = [primary_provider, *chain]
     secrets = load_secrets()
 
     # Merge secrets into config for provider calls
@@ -1735,6 +1763,12 @@ def call_text_provider_chain(prompt, config):
                     logger.info(f"[PROVIDER CHAIN] Success with ollama")
                     return result
 
+            elif provider == 'openai_compatible':
+                result = call_openai_compatible(prompt, merged_config)
+                if result:
+                    logger.info("[PROVIDER CHAIN] Success with OpenAI-compatible API")
+                    return result
+
             else:
                 logger.warning(f"[PROVIDER CHAIN] Unknown text provider: {provider}")
 
@@ -1752,9 +1786,9 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
 
     Uses config['audio_provider_chain'] to determine order.
     Default: ["bookdb", "gemini"]
-    Available: "bookdb", "gemini", "openrouter", "ollama"
+    Available: "bookdb", "gemini", "openrouter", "ollama", "openai_compatible"
 
-    Note: openrouter and ollama require transcription first (slower).
+    Note: text-only AI providers require transcription first (slower).
 
     FINGERPRINT FAST PATH: Before trying any providers, we attempt fingerprint
     lookup which is instant if the book is already in the database.
@@ -1811,6 +1845,11 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
         elif p == 'ollama':
             has_fallback = True
             break
+        elif p == 'openai_compatible':
+            has_fallback = True
+            break
+
+    shared_transcript = None
 
     for provider in chain:
         provider = provider.lower().strip()
@@ -1833,9 +1872,12 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
                         result = _verify_and_correct_narrator(audio_file, result, merged_config)
                         return result
                     elif result and result.get('transcript'):
-                        # Got transcript but no match - still useful, return for potential AI fallback
-                        logger.info(f"[AUDIO CHAIN] BookDB returned transcript only")
-                        return result
+                        # Reuse Skaldleita's transcript with the configured local/cloud AI fallback.
+                        shared_transcript = result.get('transcript')
+                        logger.info("[AUDIO CHAIN] Skaldleita returned a transcript for AI fallback")
+                        if not has_fallback:
+                            return result
+                        break
                     elif result is None and attempt < max_retries - 1:
                         # Connection might be down, wait and retry
                         wait_time = retry_delay * (attempt + 1)
@@ -1868,7 +1910,7 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
                     logger.debug("[AUDIO CHAIN] Skipping openrouter - no API key")
                     continue
                 # OpenRouter needs transcription first - try local whisper or skip
-                transcript = transcribe_audio_local(audio_file, duration)
+                transcript = shared_transcript or transcribe_audio_local(audio_file, duration)
                 if transcript:
                     result = identify_book_from_transcript(transcript, merged_config)
                     if result and result.get('title'):
@@ -1881,7 +1923,7 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
 
             elif provider == 'ollama':
                 # Ollama needs transcription first
-                transcript = transcribe_audio_local(audio_file, duration)
+                transcript = shared_transcript or transcribe_audio_local(audio_file, duration)
                 if transcript:
                     # Build prompt for book identification
                     prompt = f"""Based on this audiobook transcript excerpt, identify the book.
@@ -1898,6 +1940,24 @@ Return JSON with: author, title, narrator (if mentioned), series (if mentioned),
                         return result
                 else:
                     logger.debug("[AUDIO CHAIN] ollama - no transcript available")
+
+            elif provider == 'openai_compatible':
+                transcript = shared_transcript or transcribe_audio_local(audio_file, duration)
+                if transcript:
+                    prompt = f"""Based on this audiobook transcript excerpt, identify the book.
+
+Transcript:
+{transcript[:2000]}
+
+Return JSON with: author, title, narrator (if mentioned), series (if mentioned), confidence (high/medium/low)"""
+                    result = call_openai_compatible(prompt, merged_config)
+                    if result and result.get('title'):
+                        logger.info("[AUDIO CHAIN] Success with OpenAI-compatible API: %s - %s", result.get('author'), result.get('title'))
+                        _contribute_fingerprint_async(fingerprint_data, result, merged_config)
+                        result = _verify_and_correct_narrator(audio_file, result, merged_config)
+                        return result
+                else:
+                    logger.debug("[AUDIO CHAIN] OpenAI-compatible API - no transcript available")
 
             else:
                 logger.warning(f"[AUDIO CHAIN] Unknown audio provider: {provider}")
@@ -5944,85 +6004,17 @@ If you cannot identify the book from the transcript, return:
 {{"title": null, "author": null, "narrator": null, "series": null, "series_num": null, "confidence": "none", "reason": "why"}}"""
 
     try:
-        # Try local Ollama FIRST (no cold starts, no rate limits)
-        ollama_url = config.get('ollama_url', 'http://localhost:11434')
-        ollama_model = config.get('ollama_model', 'qwen2.5:0.5b')  # Tiny model (912MB VRAM)
-
-        try:
-            ollama_response = requests.post(
-                f"{ollama_url}/api/generate",
-                json={
-                    'model': ollama_model,
-                    'prompt': prompt,
-                    'stream': False,
-                    'options': {'temperature': 0.1}
-                },
-                timeout=60
+        result = call_text_provider_chain(prompt, config)
+        if result:
+            logger.info(
+                "[LAYER 1/AUDIO] AI parsed: %s - %s",
+                result.get('author', '?'),
+                result.get('title', '?'),
             )
-
-            if ollama_response.status_code == 200:
-                ollama_text = ollama_response.json().get('response', '')
-                result = parse_json_response(ollama_text)
-                if result and result.get('author') and result.get('title'):
-                    logger.info(f"[LAYER 1/AUDIO] Local LLM parsed: {result.get('author', '?')} - {result.get('title', '?')}")
-                    return result
-                else:
-                    logger.debug(f"[LAYER 1/AUDIO] Local LLM returned incomplete result, trying external APIs")
-        except requests.exceptions.RequestException as e:
-            logger.debug(f"[LAYER 1/AUDIO] Local Ollama not available: {e}")
-
-        # Fallback to Gemini
-        if config.get('gemini_api_key'):
-            api_key = config.get('gemini_api_key')
-            model = (config.get('gemini_model') or '').strip()
-            if not model:
-                logger.warning("[LAYER 1/AUDIO] Gemini model is not configured")
-                return None
-
-            response = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                params={'key': api_key},
-                json={'contents': [{'parts': [{'text': prompt}]}]},
-                timeout=30
-            )
-
-            if response.status_code == 200:
-                text = response.json().get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
-                result = parse_json_response(text)
-                if result:
-                    logger.info(f"[LAYER 1/AUDIO] Gemini parsed: {result.get('author', '?')} - {result.get('title', '?')}")
-                    return result
-
-        # Fallback to OpenRouter
-        if config.get('openrouter_api_key'):
-            model = (config.get('openrouter_model') or '').strip()
-            if not model:
-                logger.warning("[LAYER 1/AUDIO] OpenRouter model is not configured")
-                return None
-            response = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    'Authorization': f"Bearer {config['openrouter_api_key']}",
-                    'Content-Type': 'application/json'
-                },
-                json={
-                    'model': model,
-                    'messages': [{'role': 'user', 'content': prompt}]
-                },
-                timeout=30
-            )
-
-            if response.status_code == 200:
-                text = response.json().get('choices', [{}])[0].get('message', {}).get('content', '')
-                result = parse_json_response(text)
-                if result:
-                    logger.info(f"[LAYER 1/AUDIO] AI parsed: {result.get('author', '?')} - {result.get('title', '?')}")
-                    return result
-
+        return result
     except Exception as e:
         logger.warning(f"[LAYER 1/AUDIO] AI parsing failed: {e}")
-
-    return None
+        return None
 
 
 def process_layer_1_audio(config, limit=None):
@@ -7143,6 +7135,28 @@ def complete_setup():
         config['ollama_url'] = data['ollama_url']
     if data.get('ollama_model'):
         config['ollama_model'] = data['ollama_model']
+    if data.get('openai_compatible_url'):
+        config['openai_compatible_url'] = data['openai_compatible_url']
+    if data.get('openai_compatible_model'):
+        config['openai_compatible_model'] = data['openai_compatible_model']
+    if data.get('openai_compatible_api_key'):
+        secrets['openai_compatible_api_key'] = data['openai_compatible_api_key']
+
+    # A wizard selection must work immediately without requiring chain editing.
+    if data.get('ai_provider'):
+        selected_provider = data['ai_provider']
+        text_chain = config.get('text_provider_chain', ['gemini', 'openrouter'])
+        config['text_provider_chain'] = [selected_provider] + [
+            provider for provider in text_chain if provider != selected_provider
+        ]
+        audio_chain = [
+            provider
+            for provider in config.get('audio_provider_chain', ['bookdb', 'gemini'])
+            if provider != selected_provider
+        ]
+        insert_at = 1 if audio_chain and audio_chain[0] == 'bookdb' else 0
+        audio_chain.insert(insert_at, selected_provider)
+        config['audio_provider_chain'] = audio_chain
 
     # Only update toggles if explicitly set in wizard
     if 'auto_fix' in data:
@@ -7278,11 +7292,17 @@ def settings_page():
 
         # Update config values
         config['library_paths'] = [p.strip() for p in request.form.get('library_paths', '').split('\n') if p.strip()]
-        config['ai_provider'] = request.form.get('ai_provider', 'openrouter')
+        config['ai_provider'] = request.form.get('ai_provider', 'gemini')
         config['openrouter_model'] = request.form.get('openrouter_model', '').strip()
         config['gemini_model'] = request.form.get('gemini_model', '').strip()
         config['ollama_url'] = request.form.get('ollama_url', 'http://localhost:11434').strip()
-        config['ollama_model'] = request.form.get('ollama_model', 'llama3.2:3b').strip()
+        config['ollama_model'] = request.form.get('ollama_model', '').strip()
+        config['openai_compatible_url'] = request.form.get(
+            'openai_compatible_url', 'http://localhost:8080/v1'
+        ).strip()
+        config['openai_compatible_model'] = request.form.get(
+            'openai_compatible_model', ''
+        ).strip()
         config['scan_interval_hours'] = int(request.form.get('scan_interval_hours', 6))
         config['batch_size'] = int(request.form.get('batch_size', 3))
         # Clamp rate limit to safe range (10-500) to prevent API bans
@@ -7389,6 +7409,7 @@ def settings_page():
         secrets = load_secrets()
         new_openrouter_key = request.form.get('openrouter_api_key', '').strip()
         new_gemini_key = request.form.get('gemini_api_key', '').strip()
+        new_openai_compatible_key = request.form.get('openai_compatible_api_key', '').strip()
         new_google_books_key = request.form.get('google_books_api_key', '').strip()
         new_bookdb_key = request.form.get('bookdb_api_key', '').strip()
 
@@ -7397,6 +7418,8 @@ def settings_page():
             secrets['openrouter_api_key'] = new_openrouter_key
         if new_gemini_key:
             secrets['gemini_api_key'] = new_gemini_key
+        if new_openai_compatible_key:
+            secrets['openai_compatible_api_key'] = new_openai_compatible_key
         if new_google_books_key:
             secrets['google_books_api_key'] = new_google_books_key
         if new_bookdb_key:
@@ -7411,6 +7434,7 @@ def settings_page():
     # This is a local/self-hosted app - users need to verify their keys were saved correctly
     config['gemini_api_key'] = secrets.get('gemini_api_key', '')
     config['openrouter_api_key'] = secrets.get('openrouter_api_key', '')
+    config['openai_compatible_api_key'] = secrets.get('openai_compatible_api_key', '')
     config['google_books_api_key'] = secrets.get('google_books_api_key', '')
     config['bookdb_api_key'] = secrets.get('bookdb_api_key', '')
     # Pipeline layer info for settings UI
@@ -10629,7 +10653,8 @@ def api_bug_report():
         'scan_interval_hours', 'batch_size', 'max_requests_per_hour',
         'enable_api_lookups', 'enable_ai_verification', 'enable_audio_analysis',
         'deep_scan_mode', 'profile_confidence_threshold', 'skip_confirmations',
-        'ai_provider', 'openrouter_model', 'ollama_model', 'update_channel',
+        'ai_provider', 'openrouter_model', 'ollama_model',
+        'openai_compatible_model', 'update_channel',
         'enable_ebooks', 'embed_metadata', 'library_language'
     ]
     for key in safe_keys:
@@ -10734,12 +10759,55 @@ def api_ollama_models():
             'success': True,
             'models': models
         })
-    else:
-        return jsonify({
-            'success': False,
-            'models': [],
-            'error': 'Could not fetch models from Ollama server'
-        })
+    return jsonify({
+        'success': False,
+        'models': [],
+        'error': 'Could not fetch models from Ollama server'
+    })
+
+
+@app.route('/api/test_openai_compatible', methods=['POST'])
+def api_test_openai_compatible():
+    """Test a user-configured OpenAI-compatible server."""
+    data = request.get_json() or {}
+    saved = load_config()
+    provider_config = {
+        'openai_compatible_url': data.get(
+            'openai_compatible_url',
+            saved.get('openai_compatible_url', 'http://localhost:8080/v1'),
+        ),
+        'openai_compatible_api_key': (
+            data.get('openai_compatible_api_key') or
+            saved.get('openai_compatible_api_key', '')
+        ),
+    }
+    return jsonify(test_openai_compatible_connection(provider_config))
+
+
+@app.route('/api/openai_compatible_models', methods=['POST'])
+def api_openai_compatible_models():
+    """Fetch live model IDs from a user-configured compatible server."""
+    data = request.get_json() or {}
+    saved = load_config()
+    provider_config = {
+        'openai_compatible_url': data.get(
+            'openai_compatible_url',
+            saved.get('openai_compatible_url', 'http://localhost:8080/v1'),
+        ),
+        'openai_compatible_api_key': (
+            data.get('openai_compatible_api_key') or
+            saved.get('openai_compatible_api_key', '')
+        ),
+    }
+    result = test_openai_compatible_connection(provider_config)
+    models = result.get('models', [])
+    if result.get('success') and models:
+        return jsonify({'success': True, 'models': models})
+    return jsonify({
+        'success': False,
+        'models': [],
+        'error': result.get('error') or 'Connected server did not return any model IDs',
+    })
 
 
 @app.route('/api/gemini_models', methods=['POST'])
@@ -11015,7 +11083,10 @@ def api_clear_api_key():
     key_name = data.get('key_name', '')
 
     # Whitelist of allowed keys to clear
-    allowed_keys = ['gemini_api_key', 'openrouter_api_key', 'google_books_api_key', 'bookdb_api_key']
+    allowed_keys = [
+        'gemini_api_key', 'openrouter_api_key', 'openai_compatible_api_key',
+        'google_books_api_key', 'bookdb_api_key'
+    ]
 
     if key_name not in allowed_keys:
         return jsonify({

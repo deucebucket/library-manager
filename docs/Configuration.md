@@ -21,9 +21,18 @@ All settings are configured through the web UI at **Settings**.
 
 | Setting | Description |
 |---------|-------------|
-| AI Provider | Gemini (recommended) or OpenRouter |
-| API Key | Your API key from the provider |
-| Model | Which AI model to use |
+| AI Provider | Gemini, OpenRouter, Ollama, or a llama.cpp/OpenAI-compatible server |
+| API Key | Provider key; optional for self-hosted compatible servers |
+| Model | Loaded live from the selected provider, with manual IDs supported |
+| API Base URL | User-selected endpoint for Ollama or OpenAI-compatible servers |
+
+Library Manager continues to use Skaldleita for hosted metadata and audio identification. A self-hosted AI endpoint is an optional fallback for text verification and for parsing transcripts that Skaldleita or local Whisper produced.
+
+### Self-Hosted AI
+
+Ollama model IDs are loaded from its `/api/tags` endpoint. Other local servers use the OpenAI-compatible `/v1/models` and `/v1/chat/completions` endpoints. When a server returns one model, Library Manager selects it automatically; when it returns several, choose from the live list.
+
+For Docker installs, the API base URL must be reachable from inside the Library Manager container. `localhost` refers to the container itself.
 
 ### Advanced Tab
 
@@ -89,6 +98,7 @@ When "Backup Tags" is enabled, original tags are saved to `.library-manager.tags
 |----------|-----------|
 | Gemini | 14,400 calls/day |
 | OpenRouter | Varies by model |
+| Ollama / local compatible API | Self-hosted |
 
 The app defaults to 2000 calls/hour to stay well under limits.
 

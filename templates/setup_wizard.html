@@ -186,7 +186,7 @@
                 <h3 class="mb-4"><i class="bi bi-robot text-success me-2"></i> How should we identify your books?</h3>
 
                 <p class="text-muted mb-4">
-                    AI helps identify books from messy folder names. All options require a free API key.
+                    AI helps identify books from messy folder names. Local providers do not require an API key.
                 </p>
 
                 <div class="row g-3 mb-4">
@@ -223,6 +223,18 @@
                                 <div class="flex-grow-1">
                                     <strong>Ollama (Local)</strong>
                                     <p class="text-muted mb-0 small">Run AI on your own computer. No API key needed, but requires Ollama installed.</p>
+                                </div>
+                            </div>
+                        </label>
+                    </div>
+                    <div class="col-12">
+                        <label class="option-card d-block" onclick="selectProvider('openai_compatible')">
+                            <input type="radio" name="ai_provider" value="openai_compatible">
+                            <div class="d-flex align-items-center">
+                                <i class="bi bi-hdd-network fs-2 text-secondary me-3"></i>
+                                <div class="flex-grow-1">
+                                    <strong>llama.cpp / OpenAI-compatible</strong>
+                                    <p class="text-muted mb-0 small">Use a local llama.cpp, LM Studio, vLLM, LocalAI, or compatible server.</p>
                                 </div>
                             </div>
                         </label>
@@ -264,12 +276,45 @@
                 <!-- Ollama URL Input -->
                 <div id="ollama-section" class="d-none mb-4">
                     <label class="form-label">Ollama URL</label>
-                    <input type="text" class="form-control bg-dark text-light" id="ollama-url-input"
-                           value="http://localhost:11434" placeholder="http://localhost:11434">
+                    <div class="input-group mb-2">
+                        <input type="text" class="form-control bg-dark text-light" id="ollama-url-input"
+                               value="http://localhost:11434" placeholder="http://localhost:11434">
+                        <button type="button" class="btn btn-outline-secondary" onclick="refreshWizardModels('ollama')" title="Refresh models">
+                            <i class="bi bi-arrow-clockwise"></i>
+                        </button>
+                    </div>
+                    <label class="form-label" for="ollama-model-input">Model</label>
+                    <input class="form-control bg-dark text-light" id="ollama-model-input"
+                           list="wizard-ollama-models" placeholder="Loaded from Ollama">
+                    <datalist id="wizard-ollama-models"></datalist>
+                    <small class="text-muted" id="wizard-ollama-model-status"></small>
                     <div class="form-text">
                         <i class="bi bi-info-circle"></i> Default is http://localhost:11434. Change if Ollama runs on a different machine.
                         <br><small class="text-muted">Download Ollama from <a href="https://ollama.ai" target="_blank" class="text-info">ollama.ai</a></small>
                     </div>
+                </div>
+
+                <div id="openai-compatible-section" class="d-none mb-4">
+                    <label class="form-label" for="openai-compatible-url-input">API Base URL</label>
+                    <div class="input-group mb-2">
+                        <input type="text" class="form-control bg-dark text-light" id="openai-compatible-url-input"
+                               value="http://localhost:8080/v1" placeholder="http://host:8080/v1">
+                        <button type="button" class="btn btn-outline-secondary" onclick="refreshWizardModels('openai_compatible')" title="Refresh models">
+                            <i class="bi bi-arrow-clockwise"></i>
+                        </button>
+                    </div>
+                    <label class="form-label" for="openai-compatible-key-input">API Key</label>
+                    <div class="input-group mb-2">
+                        <input type="password" class="form-control bg-dark text-light" id="openai-compatible-key-input" placeholder="Optional">
+                        <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('openai-compatible-key-input')" title="Show/hide key">
+                            <i class="bi bi-eye"></i>
+                        </button>
+                    </div>
+                    <label class="form-label" for="openai-compatible-model-input">Model</label>
+                    <input class="form-control bg-dark text-light" id="openai-compatible-model-input"
+                           list="wizard-openai-compatible-models" placeholder="Loaded from the configured server">
+                    <datalist id="wizard-openai-compatible-models"></datalist>
+                    <small class="text-muted" id="wizard-openai-compatible-model-status"></small>
                 </div>
 
                 <div class="d-flex justify-content-between mt-4">
@@ -418,7 +463,11 @@
         trust_the_process: false,
         gemini_api_key: '',
         openrouter_api_key: '',
-        ollama_url: 'http://localhost:11434'
+        ollama_url: 'http://localhost:11434',
+        ollama_model: '',
+        openai_compatible_url: 'http://localhost:8080/v1',
+        openai_compatible_model: '',
+        openai_compatible_api_key: ''
     };
 
     // Issue #60: Toggle password visibility
@@ -603,10 +652,12 @@
         const geminiSection = document.getElementById('gemini-section');
         const openrouterSection = document.getElementById('openrouter-section');
         const ollamaSection = document.getElementById('ollama-section');
+        const openaiCompatibleSection = document.getElementById('openai-compatible-section');
 
         geminiSection.classList.add('d-none');
         openrouterSection.classList.add('d-none');
         ollamaSection.classList.add('d-none');
+        openaiCompatibleSection.classList.add('d-none');
 
         if (provider === 'gemini') {
             geminiSection.classList.remove('d-none');
@@ -614,7 +665,50 @@
             openrouterSection.classList.remove('d-none');
         } else if (provider === 'ollama') {
             ollamaSection.classList.remove('d-none');
+            refreshWizardModels('ollama');
+        } else if (provider === 'openai_compatible') {
+            openaiCompatibleSection.classList.remove('d-none');
+            refreshWizardModels('openai_compatible');
         }
+    }
+
+    function refreshWizardModels(provider) {
+        const isOllama = provider === 'ollama';
+        const endpoint = isOllama ? '/api/ollama_models' : '/api/openai_compatible_models';
+        const input = document.getElementById(isOllama ? 'ollama-model-input' : 'openai-compatible-model-input');
+        const datalist = document.getElementById(isOllama ? 'wizard-ollama-models' : 'wizard-openai-compatible-models');
+        const status = document.getElementById(isOllama ? 'wizard-ollama-model-status' : 'wizard-openai-compatible-model-status');
+        const body = isOllama
+            ? {ollama_url: document.getElementById('ollama-url-input').value.trim()}
+            : {
+                openai_compatible_url: document.getElementById('openai-compatible-url-input').value.trim(),
+                openai_compatible_api_key: document.getElementById('openai-compatible-key-input').value.trim()
+            };
+
+        status.textContent = 'Loading models...';
+        fetch(endpoint, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+        })
+        .then(r => r.json())
+        .then(data => {
+            datalist.innerHTML = '';
+            if (data.success && data.models && data.models.length) {
+                data.models.forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model.id || model;
+                    datalist.appendChild(option);
+                });
+                if (!input.value && data.models.length === 1) input.value = data.models[0].id || data.models[0];
+                status.textContent = `Loaded ${data.models.length} model${data.models.length === 1 ? '' : 's'}.`;
+            } else {
+                status.textContent = data.error || 'Could not load models. Type a model ID manually.';
+            }
+        })
+        .catch(() => {
+            status.textContent = 'Could not load models. Type a model ID manually.';
+        });
     }
 
     // Step 6: Summary
@@ -639,7 +733,8 @@
         const providerLabels = {
             'gemini': 'Google Gemini',
             'openrouter': 'OpenRouter',
-            'ollama': 'Ollama (Local)'
+            'ollama': 'Ollama (Local)',
+            'openai_compatible': 'llama.cpp / OpenAI-compatible'
         };
         document.getElementById('summary-ai').textContent = providerLabels[setupData.ai_provider] || 'Not set';
 
@@ -669,6 +764,11 @@
             setupData.openrouter_api_key = document.getElementById('openrouter-api-key-input').value.trim();
         } else if (setupData.ai_provider === 'ollama') {
             setupData.ollama_url = document.getElementById('ollama-url-input').value.trim();
+            setupData.ollama_model = document.getElementById('ollama-model-input').value.trim();
+        } else if (setupData.ai_provider === 'openai_compatible') {
+            setupData.openai_compatible_url = document.getElementById('openai-compatible-url-input').value.trim();
+            setupData.openai_compatible_model = document.getElementById('openai-compatible-model-input').value.trim();
+            setupData.openai_compatible_api_key = document.getElementById('openai-compatible-key-input').value.trim();
         }
 
         // Send to server

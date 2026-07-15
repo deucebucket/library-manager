@@ -50,8 +50,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Naming Tests
-        run: python test-env/test-naming-issues.py
+      - name: Run Tests
+        run: |
+          python test-env/test-naming-issues.py
+          python test-env/test-ai-providers.py
+          python test-env/test-ai-provider-integration.py
 
   version-check:
     runs-on: ubuntu-latest
