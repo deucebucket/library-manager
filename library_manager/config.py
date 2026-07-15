@@ -157,7 +157,7 @@ DEFAULT_SECRETS = {
     "openrouter_api_key": "",
     "gemini_api_key": "",
     "openai_compatible_api_key": "",
-    "bookdb_api_key": "",  # Optional API key for Skaldleita (not required for public endpoints)
+    "bookdb_api_key": "",  # Optional personal key; the bundled shared key is used when empty
     "abs_api_token": "",
     "webhook_secret": ""   # Shared secret for webhook authentication (referenced as {{webhook_secret}} in hook headers)
 }

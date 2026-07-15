@@ -100,7 +100,7 @@ When "Backup Tags" is enabled, original tags are saved to `.library-manager.tags
 | OpenRouter | Varies by model |
 | Ollama / local compatible API | Self-hosted |
 
-The app defaults to 2000 calls/hour to stay well under limits.
+Library Manager defaults to 200 requests/hour and allows a configured range of 10-500 requests/hour. Provider-specific backoff and circuit breakers apply when a service returns rate-limit responses.
 
 ## Config Files
 
