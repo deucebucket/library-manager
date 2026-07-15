@@ -537,11 +537,11 @@
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" name="enable_audio_analysis"
                                        id="enable_audio_analysis" {% if config.enable_audio_analysis %}checked{% endif %}
-                                       {% if not config.gemini_api_key %}disabled title="Requires Gemini API key"{% endif %}>
+                                       {% if not config.has_gemini_api_key %}disabled title="Requires Gemini API key"{% endif %}>
                                 <label class="form-check-label" for="enable_audio_analysis">
                                     <i class="bi bi-soundwave text-danger"></i> <strong>Layer 3: Audio Analysis</strong>
                                     <span class="badge bg-warning text-dark">Uses Tokens</span>
-                                    {% if not config.gemini_api_key %}<span class="badge bg-secondary">Needs Gemini</span>{% endif %}
+                                    {% if not config.has_gemini_api_key %}<span class="badge bg-secondary">Needs Gemini</span>{% endif %}
                                     <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.layer_3 }}</span></span>
                                     <br><small class="text-muted">Listen to first 90 seconds for narrator intro</small>
                                 </label>
@@ -718,12 +718,12 @@
                                 </label>
                                 <div class="input-group">
                                     <input type="password" class="form-control bg-dark text-light" name="gemini_api_key" id="gemini_api_key"
-                                           value="{{ config.gemini_api_key or '' }}" placeholder="AIza..."
-                                           data-has-key="{{ 'true' if config.gemini_api_key else 'false' }}">
+                                           value="" placeholder="{{ 'Saved - enter a replacement' if config.has_gemini_api_key else 'AIza...' }}"
+                                           data-has-key="{{ 'true' if config.has_gemini_api_key else 'false' }}">
                                     <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('gemini_api_key')" title="Show/hide key">
                                         <i class="bi bi-eye"></i>
                                     </button>
-                                    {% if config.gemini_api_key %}
+                                    {% if config.has_gemini_api_key %}
                                     <span class="input-group-text bg-success text-white"><i class="bi bi-check"></i></span>
                                     <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('gemini_api_key')" title="Remove key">
                                         <i class="bi bi-trash"></i>
@@ -741,12 +741,12 @@
                                 </label>
                                 <div class="input-group">
                                     <input type="password" class="form-control bg-dark text-light" name="openrouter_api_key" id="openrouter_api_key"
-                                           value="{{ config.openrouter_api_key or '' }}" placeholder="sk-or-v1-..."
-                                           data-has-key="{{ 'true' if config.openrouter_api_key else 'false' }}">
+                                           value="" placeholder="{{ 'Saved - enter a replacement' if config.has_openrouter_api_key else 'sk-or-v1-...' }}"
+                                           data-has-key="{{ 'true' if config.has_openrouter_api_key else 'false' }}">
                                     <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('openrouter_api_key')" title="Show/hide key">
                                         <i class="bi bi-eye"></i>
                                     </button>
-                                    {% if config.openrouter_api_key %}
+                                    {% if config.has_openrouter_api_key %}
                                     <span class="input-group-text bg-success text-white"><i class="bi bi-check"></i></span>
                                     <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('openrouter_api_key')" title="Remove key">
                                         <i class="bi bi-trash"></i>
@@ -773,15 +773,15 @@
 
                                 <div class="input-group">
                                     <input type="password" class="form-control bg-dark text-light" name="bookdb_api_key" id="bookdb_api_key"
-                                           value="{{ config.bookdb_api_key or '' }}" placeholder="bdb_..."
-                                           data-has-key="{{ 'true' if config.bookdb_api_key else 'false' }}">
+                                           value="" placeholder="{{ 'Saved - enter a replacement' if config.has_bookdb_api_key else 'bdb_...' }}"
+                                           data-has-key="{{ 'true' if config.has_bookdb_api_key else 'false' }}">
                                     <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('bookdb_api_key')" title="Show/hide key">
                                         <i class="bi bi-eye"></i>
                                     </button>
                                     <button class="btn btn-outline-info" type="button" onclick="validateSkaldleitaKey()" title="Validate key">
                                         <i class="bi bi-check-circle"></i>
                                     </button>
-                                    {% if config.bookdb_api_key %}
+                                    {% if config.has_bookdb_api_key %}
                                     <span class="input-group-text bg-success text-white"><i class="bi bi-check"></i></span>
                                     <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('bookdb_api_key')" title="Remove key">
                                         <i class="bi bi-trash"></i>
@@ -791,7 +791,7 @@
                                 <div id="skaldleita-key-status" class="mt-1"></div>
 
                                 <!-- Registration Form (shown when no key) -->
-                                {% if not config.bookdb_api_key %}
+                                {% if not config.has_bookdb_api_key %}
                                 <div class="card mt-3 border-primary" id="skaldleita-register-card">
                                     <div class="card-header bg-primary text-white py-2">
                                         <i class="bi bi-key"></i> Get Free API Key
@@ -827,12 +827,12 @@
                                 </label>
                                 <div class="input-group">
                                     <input type="password" class="form-control bg-dark text-light" name="google_books_api_key" id="google_books_api_key"
-                                           value="{{ config.google_books_api_key or '' }}" placeholder="AIza..."
-                                           data-has-key="{{ 'true' if config.google_books_api_key else 'false' }}">
+                                           value="" placeholder="{{ 'Saved - enter a replacement' if config.has_google_books_api_key else 'AIza...' }}"
+                                           data-has-key="{{ 'true' if config.has_google_books_api_key else 'false' }}">
                                     <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('google_books_api_key')" title="Show/hide key">
                                         <i class="bi bi-eye"></i>
                                     </button>
-                                    {% if config.google_books_api_key %}
+                                    {% if config.has_google_books_api_key %}
                                     <span class="input-group-text bg-success text-white"><i class="bi bi-check"></i></span>
                                     <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('google_books_api_key')" title="Remove key">
                                         <i class="bi bi-trash"></i>
@@ -941,12 +941,13 @@
                                     <label class="form-label" for="openai_compatible_api_key">API Key</label>
                                     <div class="input-group">
                                         <input type="password" class="form-control bg-dark text-light" name="openai_compatible_api_key"
-                                               id="openai_compatible_api_key" value="{{ config.openai_compatible_api_key or '' }}"
-                                               placeholder="Optional">
+                                               id="openai_compatible_api_key" value=""
+                                               placeholder="{{ 'Saved - enter a replacement' if config.has_openai_compatible_api_key else 'Optional' }}"
+                                               data-has-key="{{ 'true' if config.has_openai_compatible_api_key else 'false' }}">
                                         <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('openai_compatible_api_key')" title="Show/hide key">
                                             <i class="bi bi-eye"></i>
                                         </button>
-                                        {% if config.openai_compatible_api_key %}
+                                        {% if config.has_openai_compatible_api_key %}
                                         <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('openai_compatible_api_key')" title="Remove key">
                                             <i class="bi bi-trash"></i>
                                         </button>
@@ -1693,9 +1694,6 @@ function registerSkaldleita() {
             const card = document.getElementById('skaldleita-register-card');
             if (card) card.style.display = 'none';
 
-            // Update the key field to show something is there (masked)
-            document.getElementById('bookdb_api_key').value = '••••••••••••••••';
-            document.getElementById('bookdb_api_key').dataset.hasKey = 'true';
         } else {
             resultDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle"></i> ${escapeHtml(data.error)}</span>`;
         }

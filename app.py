@@ -1652,7 +1652,13 @@ def call_ai(messy_names, config):
     prompt = build_prompt(messy_names, api_results)
 
     # Use the provider chain for fallback support
-    return call_text_provider_chain(prompt, config)
+    response_schema = {
+        "type": "array",
+        "items": {"type": "object"},
+        "minItems": len(messy_names),
+        "maxItems": len(messy_names),
+    }
+    return call_text_provider_chain(prompt, config, response_schema=response_schema)
 
 
 def explain_http_error(status_code, provider):
@@ -1685,7 +1691,7 @@ def call_gemini(prompt, config, retry_count=0):
     )
 
 
-def call_ollama(prompt, config):
+def call_ollama(prompt, config, response_schema=None):
     """Call local Ollama API for fully self-hosted AI.
 
     Wrapper that passes app-level dependencies to the extracted module.
@@ -1694,7 +1700,8 @@ def call_ollama(prompt, config):
         prompt, config,
         parse_json_fn=parse_json_response,
         explain_error_fn=explain_http_error,
-        report_error_fn=report_anonymous_error
+        report_error_fn=report_anonymous_error,
+        response_schema=response_schema,
     )
 
 
@@ -1715,7 +1722,7 @@ def call_openai_compatible(prompt, config):
 # ============== PROVIDER CHAIN SYSTEM ==============
 # Configurable fallback chains for audio and text identification
 
-def call_text_provider_chain(prompt, config):
+def call_text_provider_chain(prompt, config, response_schema=None):
     """
     Call AI providers in configured order until one succeeds.
 
@@ -1758,7 +1765,11 @@ def call_text_provider_chain(prompt, config):
                     return result
 
             elif provider == 'ollama':
-                result = call_ollama(prompt, merged_config)
+                result = call_ollama(
+                    prompt,
+                    merged_config,
+                    response_schema=response_schema,
+                )
                 if result:
                     logger.info(f"[PROVIDER CHAIN] Success with ollama")
                     return result
@@ -7430,13 +7441,17 @@ def settings_page():
 
     config = load_config()
     secrets = load_secrets()
-    # Pass actual API key values to template (hidden by default, eye toggle to reveal)
-    # This is a local/self-hosted app - users need to verify their keys were saved correctly
-    config['gemini_api_key'] = secrets.get('gemini_api_key', '')
-    config['openrouter_api_key'] = secrets.get('openrouter_api_key', '')
-    config['openai_compatible_api_key'] = secrets.get('openai_compatible_api_key', '')
-    config['google_books_api_key'] = secrets.get('google_books_api_key', '')
-    config['bookdb_api_key'] = secrets.get('bookdb_api_key', '')
+    # Expose only configured state to the browser, never stored secret values.
+    settings_secret_keys = (
+        'gemini_api_key',
+        'openrouter_api_key',
+        'openai_compatible_api_key',
+        'google_books_api_key',
+        'bookdb_api_key',
+    )
+    for key in settings_secret_keys:
+        config[f'has_{key}'] = bool(secrets.get(key) or config.get(key))
+        config.pop(key, None)
     # Pipeline layer info for settings UI
     from library_manager.pipeline.registry import default_registry
     pipeline_layers = default_registry.get_ordered_layers(config)

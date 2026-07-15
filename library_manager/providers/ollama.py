@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # Default Ollama settings. Models are discovered from the user's server.
 DEFAULT_OLLAMA_URL = 'http://localhost:11434'
 DEFAULT_OLLAMA_MODEL = ''
+DEFAULT_MAX_TOKENS = 2048
 
 
 def _ollama_url(config):
@@ -38,6 +39,9 @@ def _ollama_model_names(payload):
         if isinstance(model, str):
             name = model
         elif isinstance(model, dict):
+            capabilities = model.get('capabilities')
+            if isinstance(capabilities, list) and 'completion' not in capabilities:
+                continue
             name = model.get('name') or model.get('model') or model.get('id')
         else:
             continue
@@ -60,7 +64,14 @@ def _resolve_ollama_model(config):
     return None
 
 
-def call_ollama(prompt, config, parse_json_fn=None, explain_error_fn=None, report_error_fn=None):
+def call_ollama(
+    prompt,
+    config,
+    parse_json_fn=None,
+    explain_error_fn=None,
+    report_error_fn=None,
+    response_schema=None,
+):
     """
     Call local Ollama API for fully self-hosted AI.
 
@@ -87,8 +98,10 @@ def call_ollama(prompt, config, parse_json_fn=None, explain_error_fn=None, repor
                 "model": model,
                 "prompt": prompt,
                 "stream": False,
+                "format": response_schema or "json",
                 "options": {
-                    "temperature": 0.1
+                    "temperature": 0.1,
+                    "num_predict": DEFAULT_MAX_TOKENS,
                 }
             },
             timeout=120  # Local models can be slower, especially on first load
@@ -113,7 +126,7 @@ def call_ollama(prompt, config, parse_json_fn=None, explain_error_fn=None, repor
                 detail = resp.json().get('error', '')
                 if detail:
                     logger.warning(f"Ollama detail: {detail}")
-            except:
+            except (ValueError, AttributeError):
                 pass
     except requests.exceptions.Timeout:
         logger.error("Ollama: Request timed out after 120 seconds - model may still be loading")
@@ -157,7 +170,11 @@ def call_ollama_simple(prompt, config, parse_json_fn=None):
                 "model": model,
                 "prompt": prompt,
                 "stream": False,
-                "options": {"temperature": 0.1}
+                "format": "json",
+                "options": {
+                    "temperature": 0.1,
+                    "num_predict": DEFAULT_MAX_TOKENS,
+                }
             },
             timeout=60
         )
@@ -224,6 +241,7 @@ def test_ollama_connection(config):
 __all__ = [
     'DEFAULT_OLLAMA_URL',
     'DEFAULT_OLLAMA_MODEL',
+    'DEFAULT_MAX_TOKENS',
     'call_ollama',
     'call_ollama_simple',
     'get_ollama_models',

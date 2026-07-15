@@ -3,6 +3,7 @@
 
 import sys
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -71,6 +72,7 @@ class OpenAICompatibleProviderTests(unittest.TestCase):
         request = mock_post.call_args
         self.assertEqual(request.args[0], "http://llama:8080/v1/chat/completions")
         self.assertEqual(request.kwargs["json"]["model"], "my-model")
+        self.assertEqual(request.kwargs["json"]["max_tokens"], 2048)
         self.assertEqual(request.kwargs["headers"]["Authorization"], "Bearer secret")
 
     @patch("library_manager.providers.openai_compatible.requests.post")
@@ -113,6 +115,7 @@ class OllamaProviderTests(unittest.TestCase):
                 {"name": "named:latest"},
                 {"model": "model-field:latest"},
                 "string-model:latest",
+                {"name": "embedding-only", "capabilities": ["embedding"]},
                 {"name": None},
             ],
         })
@@ -140,6 +143,42 @@ class OllamaProviderTests(unittest.TestCase):
         self.assertIsNone(result)
         mock_post.assert_not_called()
 
+    @patch("library_manager.providers.ollama.requests.post")
+    def test_generation_uses_json_mode_and_a_token_bound(self, mock_post):
+        mock_post.return_value = response(payload={"response": '{"title":"Dune"}'})
+
+        result = call_ollama("identify", {
+            "ollama_url": "http://ollama:11434",
+            "ollama_model": "local-model",
+        })
+
+        self.assertEqual(result, {"raw_response": '{"title":"Dune"}'})
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["format"], "json")
+        self.assertEqual(payload["options"]["num_predict"], 2048)
+
+    @patch("library_manager.providers.ollama.requests.post")
+    def test_generation_accepts_an_explicit_array_schema(self, mock_post):
+        mock_post.return_value = response(payload={"response": '[]'})
+        schema = {
+            "type": "array",
+            "items": {"type": "object"},
+            "minItems": 2,
+            "maxItems": 2,
+        }
+
+        result = call_ollama(
+            "identify two books",
+            {
+                "ollama_url": "http://ollama:11434",
+                "ollama_model": "local-model",
+            },
+            response_schema=schema,
+        )
+
+        self.assertEqual(result, {"raw_response": "[]"})
+        self.assertEqual(mock_post.call_args.kwargs["json"]["format"], schema)
+
 
 class ConfigSecretTests(unittest.TestCase):
     def test_provider_secrets_never_write_to_config_json(self):
@@ -156,6 +195,20 @@ class ConfigSecretTests(unittest.TestCase):
 
             saved = json.loads(config_path.read_text())
             self.assertEqual(saved, {"ai_provider": "openai_compatible"})
+
+    def test_secrets_file_is_owner_only_after_every_save(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            secrets_path = Path(temp_dir) / "secrets.json"
+            secrets_path.write_text('{"old":"value"}')
+            secrets_path.chmod(0o664)
+
+            with patch.object(config_module, "SECRETS_PATH", secrets_path):
+                config_module.save_secrets({"api_key": "secret"})
+
+            saved = json.loads(secrets_path.read_text())
+            mode = os.stat(secrets_path).st_mode & 0o777
+            self.assertEqual(saved, {"api_key": "secret"})
+            self.assertEqual(mode, 0o600)
 
 
 if __name__ == "__main__":

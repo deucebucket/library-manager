@@ -8,9 +8,10 @@ All notable changes to Library Manager will be documented in this file.
 - **Generic local AI provider** - Added a user-configured OpenAI-compatible provider for llama.cpp, LM Studio, vLLM, LocalAI, and similar servers. Library Manager discovers live model IDs from `/v1/models`, supports optional bearer authentication, and uses `/v1/chat/completions` across text verification, localization, and transcript identification.
 
 ### Fixed
-- **Ollama model selection is no longer locked to a hardcoded model** - Removed runtime and UI fallbacks to specific Ollama model names. Model discovery now accepts `name`, `model`, and string response shapes, keeps the model field editable, and auto-selects only when the server exposes exactly one model.
+- **Ollama model selection is no longer locked to a hardcoded model** - Removed runtime and UI fallbacks to specific Ollama model names. Model discovery now accepts `name`, `model`, and string response shapes, excludes embedding-only entries, keeps the model field editable, and auto-selects only when the server exposes exactly one model. Native Ollama requests use bounded structured output, including an explicit array schema for multi-book batches, and both local-provider paths prevent runaway responses.
 - **Skaldleita transcripts now reach AI fallbacks** - When Skaldleita transcribes audio but cannot identify the book, the transcript continues through the configured provider chain instead of ending the audio-identification attempt early.
 - **Provider selection configures working fallback chains** - Setup and Settings automatically place the selected AI provider into the text and audio fallback chains while preserving Skaldleita as the first hosted audio-identification service.
+- **Provider secrets stay server-side** - New and updated `secrets.json` files enforce `0600` permissions, provider keys remain excluded from `config.json`, and Settings receives only configured/not-configured state instead of raw stored tokens.
 
 ## [0.9.0-beta.154] - 2026-07-14
 

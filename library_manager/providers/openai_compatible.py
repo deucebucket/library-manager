@@ -11,6 +11,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 DEFAULT_OPENAI_COMPATIBLE_URL = "http://localhost:8080/v1"
+DEFAULT_MAX_TOKENS = 2048
 
 
 def normalize_openai_compatible_url(url):
@@ -127,6 +128,7 @@ def call_openai_compatible(
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
+                "max_tokens": DEFAULT_MAX_TOKENS,
                 "stream": False,
             },
             timeout=timeout,
@@ -203,6 +205,7 @@ def test_openai_compatible_connection(config):
 
 __all__ = [
     "DEFAULT_OPENAI_COMPATIBLE_URL",
+    "DEFAULT_MAX_TOKENS",
     "normalize_openai_compatible_url",
     "call_openai_compatible",
     "call_openai_compatible_simple",

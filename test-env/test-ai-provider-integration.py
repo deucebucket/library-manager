@@ -12,6 +12,50 @@ import app as app_module
 
 
 class ProviderChainIntegrationTests(unittest.TestCase):
+    @patch.object(app_module, "load_secrets")
+    @patch.object(app_module, "load_config")
+    def test_settings_html_never_contains_saved_secrets(self, mock_config, mock_secrets):
+        secret_values = {
+            "gemini_api_key": "gemini-render-secret",
+            "openrouter_api_key": "openrouter-render-secret",
+            "openai_compatible_api_key": "compatible-render-secret",
+            "google_books_api_key": "google-render-secret",
+            "bookdb_api_key": "skaldleita-render-secret",
+        }
+        mock_config.return_value = {**app_module.DEFAULT_CONFIG, **secret_values}
+        mock_secrets.return_value = secret_values
+
+        response = app_module.app.test_client().get("/settings")
+        html = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        for value in secret_values.values():
+            self.assertNotIn(value, html)
+        self.assertEqual(html.count('data-has-key="true"'), len(secret_values))
+
+    @patch.object(app_module, "load_secrets", return_value={})
+    @patch.object(app_module, "call_ollama")
+    def test_batch_schema_reaches_ollama(self, mock_ollama, _mock_secrets):
+        mock_ollama.return_value = [
+            {"item": "ITEM_1", "title": "Dune"},
+            {"item": "ITEM_2", "title": "The Hobbit"},
+        ]
+        schema = {
+            "type": "array",
+            "items": {"type": "object"},
+            "minItems": 2,
+            "maxItems": 2,
+        }
+
+        result = app_module.call_text_provider_chain(
+            "identify two books",
+            {"text_provider_chain": ["ollama"]},
+            response_schema=schema,
+        )
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(mock_ollama.call_args.kwargs["response_schema"], schema)
+
     @patch.object(app_module, "load_secrets", return_value={})
     @patch.object(app_module, "call_openai_compatible")
     def test_primary_provider_is_used_even_when_missing_from_legacy_chain(

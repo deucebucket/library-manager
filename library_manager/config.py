@@ -234,9 +234,10 @@ def init_config():
         logger.info(f"Created default config at {CONFIG_PATH}")
 
     if not SECRETS_PATH.exists():
-        with open(SECRETS_PATH, 'w') as f:
-            json.dump(DEFAULT_SECRETS, f, indent=2)
+        save_secrets(DEFAULT_SECRETS)
         logger.info(f"Created default secrets at {SECRETS_PATH}")
+    else:
+        os.chmod(SECRETS_PATH, 0o600)
 
 
 def needs_setup(config):
@@ -302,8 +303,10 @@ def save_config(config):
 
 
 def save_secrets(secrets):
-    """Save API keys to secrets file."""
-    with open(SECRETS_PATH, 'w') as f:
+    """Save API keys to an owner-readable secrets file."""
+    fd = os.open(SECRETS_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as f:
+        os.fchmod(f.fileno(), 0o600)
         json.dump(secrets, f, indent=2)
 
 
