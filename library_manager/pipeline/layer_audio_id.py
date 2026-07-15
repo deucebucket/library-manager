@@ -647,7 +647,8 @@ def process_layer_1_audio(
 
             # Parse with AI (fallback path - when Skaldleita disabled or didn't identify)
             ai_provider = config.get('ai_provider', 'gemini')
-            set_current_provider(ai_provider.title(), "Parsing transcript with AI...", is_free=(ai_provider == 'ollama'))
+            provider_name = 'llama.cpp / Compatible API' if ai_provider == 'openai_compatible' else ai_provider.title()
+            set_current_provider(provider_name, "Parsing transcript with AI...", is_free=(ai_provider == 'ollama'))
             result = parse_transcript_with_ai(transcript, folder_hint, config)
 
             # Sanity check: validate AI result against path info

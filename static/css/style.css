@@ -1104,7 +1104,8 @@ th[onclick]:hover {
     }
 }
 @media (max-width: 576px) {
-    .container { padding-left: 0.5rem; padding-right: 0.5rem; }
+    .container { padding-left: 0.75rem; padding-right: 0.75rem; }
+    .pipeline-layer > .flex-grow-1 { min-width: 0; overflow-wrap: anywhere; }
     .modal-dialog { margin: 0.5rem; }
     h2 { font-size: 1.3rem; }
 }

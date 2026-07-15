@@ -61,11 +61,13 @@ SECRETS_PATH = DATA_DIR / 'secrets.json'
 
 DEFAULT_CONFIG = {
     "library_paths": [],  # Empty by default - user configures via Settings
-    "ai_provider": "gemini",  # "gemini", "openrouter", or "ollama"
+    "ai_provider": "gemini",  # Primary text AI provider
     "openrouter_model": "",  # Populated from OpenRouter's live model list in Settings
     "gemini_model": "",  # Populated from Gemini's live model list in Settings
     "ollama_url": "http://localhost:11434",  # Ollama server URL
-    "ollama_model": "llama3.2:3b",  # Default model - good for 8-12GB VRAM
+    "ollama_model": "",  # Populated from the user's Ollama server
+    "openai_compatible_url": "http://localhost:8080/v1",  # llama.cpp and similar servers
+    "openai_compatible_model": "",  # Populated from the compatible server's model list
     "scan_interval_hours": 6,
     "batch_size": 10,
     "max_requests_per_hour": 200,
@@ -112,8 +114,8 @@ DEFAULT_CONFIG = {
     "sl_trust_mode": "full",               # "full" = trust 80%+ audio ID, "boost" = verify with APIs, "legacy" = use AI fallback
     "sl_confidence_threshold": 80,         # Minimum confidence to trust SL audio ID without AI verification
     # Provider Chains - ordered lists of providers to try (first = primary, rest = fallbacks)
-    # Audio providers: "bookdb" (Skaldleita), "gemini", "openrouter", "ollama"
-    # Text providers: "gemini", "openrouter", "ollama"
+    # Audio providers: "bookdb" (Skaldleita), "gemini", "openrouter", "ollama", "openai_compatible"
+    # Text providers: "gemini", "openrouter", "ollama", "openai_compatible"
     "audio_provider_chain": ["bookdb", "gemini"],  # Order to try audio identification (bookdb = Skaldleita)
     "text_provider_chain": ["gemini", "openrouter"],  # Order to try text-based AI
     # Pipeline layer ordering - controls the sequence layers execute in
@@ -154,6 +156,7 @@ DEFAULT_CONFIG = {
 DEFAULT_SECRETS = {
     "openrouter_api_key": "",
     "gemini_api_key": "",
+    "openai_compatible_api_key": "",
     "bookdb_api_key": "",  # Optional API key for Skaldleita (not required for public endpoints)
     "abs_api_token": "",
     "webhook_secret": ""   # Shared secret for webhook authentication (referenced as {{webhook_secret}} in hook headers)
@@ -231,9 +234,10 @@ def init_config():
         logger.info(f"Created default config at {CONFIG_PATH}")
 
     if not SECRETS_PATH.exists():
-        with open(SECRETS_PATH, 'w') as f:
-            json.dump(DEFAULT_SECRETS, f, indent=2)
+        save_secrets(DEFAULT_SECRETS)
         logger.info(f"Created default secrets at {SECRETS_PATH}")
+    else:
+        os.chmod(SECRETS_PATH, 0o600)
 
 
 def needs_setup(config):
@@ -288,7 +292,10 @@ def load_config():
 def save_config(config):
     """Save configuration to file (excludes secrets)."""
     # Separate secrets from config
-    secrets_keys = ['openrouter_api_key', 'gemini_api_key', 'google_books_api_key', 'abs_api_token', 'webhook_secret']
+    secrets_keys = [
+        'openrouter_api_key', 'gemini_api_key', 'openai_compatible_api_key',
+        'google_books_api_key', 'bookdb_api_key', 'abs_api_token', 'webhook_secret'
+    ]
     config_only = {k: v for k, v in config.items() if k not in secrets_keys}
 
     with open(CONFIG_PATH, 'w') as f:
@@ -296,8 +303,10 @@ def save_config(config):
 
 
 def save_secrets(secrets):
-    """Save API keys to secrets file."""
-    with open(SECRETS_PATH, 'w') as f:
+    """Save API keys to an owner-readable secrets file."""
+    fd = os.open(SECRETS_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as f:
+        os.fchmod(f.fileno(), 0o600)
         json.dump(secrets, f, indent=2)
 
 

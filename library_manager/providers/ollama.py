@@ -16,12 +16,62 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# Default Ollama settings
+# Default Ollama settings. Models are discovered from the user's server.
 DEFAULT_OLLAMA_URL = 'http://localhost:11434'
-DEFAULT_OLLAMA_MODEL = 'llama3.2:3b'
+DEFAULT_OLLAMA_MODEL = ''
+DEFAULT_MAX_TOKENS = 2048
 
 
-def call_ollama(prompt, config, parse_json_fn=None, explain_error_fn=None, report_error_fn=None):
+def _ollama_url(config):
+    return (config.get('ollama_url') or DEFAULT_OLLAMA_URL).strip().rstrip('/')
+
+
+def _ollama_model_names(payload):
+    """Extract model names across Ollama API response versions."""
+    if not isinstance(payload, dict):
+        return []
+    models = payload.get('models', [])
+    if not isinstance(models, list):
+        return []
+
+    names = []
+    for model in models:
+        if isinstance(model, str):
+            name = model
+        elif isinstance(model, dict):
+            capabilities = model.get('capabilities')
+            if isinstance(capabilities, list) and 'completion' not in capabilities:
+                continue
+            name = model.get('name') or model.get('model') or model.get('id')
+        else:
+            continue
+        if isinstance(name, str) and name.strip() and name not in names:
+            names.append(name.strip())
+    return names
+
+
+def _resolve_ollama_model(config):
+    model = (config.get('ollama_model') or '').strip()
+    if model:
+        return model
+    models = get_ollama_models(config)
+    if len(models) == 1:
+        return models[0]
+    if models:
+        logger.warning("Ollama returned multiple models; select one in Settings")
+    else:
+        logger.warning("Ollama model is not configured and discovery returned no models")
+    return None
+
+
+def call_ollama(
+    prompt,
+    config,
+    parse_json_fn=None,
+    explain_error_fn=None,
+    report_error_fn=None,
+    response_schema=None,
+):
     """
     Call local Ollama API for fully self-hosted AI.
 
@@ -36,8 +86,10 @@ def call_ollama(prompt, config, parse_json_fn=None, explain_error_fn=None, repor
         Parsed JSON response dict, or None on failure
     """
     try:
-        ollama_url = config.get('ollama_url', DEFAULT_OLLAMA_URL)
-        model = config.get('ollama_model', DEFAULT_OLLAMA_MODEL)
+        ollama_url = _ollama_url(config)
+        model = _resolve_ollama_model(config)
+        if not model:
+            return None
 
         # Ollama's generate endpoint
         resp = requests.post(
@@ -46,8 +98,10 @@ def call_ollama(prompt, config, parse_json_fn=None, explain_error_fn=None, repor
                 "model": model,
                 "prompt": prompt,
                 "stream": False,
+                "format": response_schema or "json",
                 "options": {
-                    "temperature": 0.1
+                    "temperature": 0.1,
+                    "num_predict": DEFAULT_MAX_TOKENS,
                 }
             },
             timeout=120  # Local models can be slower, especially on first load
@@ -72,14 +126,14 @@ def call_ollama(prompt, config, parse_json_fn=None, explain_error_fn=None, repor
                 detail = resp.json().get('error', '')
                 if detail:
                     logger.warning(f"Ollama detail: {detail}")
-            except:
+            except (ValueError, AttributeError):
                 pass
     except requests.exceptions.Timeout:
         logger.error("Ollama: Request timed out after 120 seconds - model may still be loading")
         if report_error_fn:
             report_error_fn("Ollama timeout after 120 seconds", context="ollama_api")
     except requests.exceptions.ConnectionError:
-        ollama_url = config.get('ollama_url', DEFAULT_OLLAMA_URL)
+        ollama_url = _ollama_url(config)
         logger.error(f"Ollama: Connection failed - is Ollama running at {ollama_url}?")
         if report_error_fn:
             report_error_fn("Ollama connection failed", context="ollama_api")
@@ -106,15 +160,21 @@ def call_ollama_simple(prompt, config, parse_json_fn=None):
         Parsed JSON response dict, or None on failure
     """
     try:
-        ollama_url = config.get('ollama_url', DEFAULT_OLLAMA_URL)
-        model = config.get('ollama_model', DEFAULT_OLLAMA_MODEL)
+        ollama_url = _ollama_url(config)
+        model = _resolve_ollama_model(config)
+        if not model:
+            return None
         resp = requests.post(
             f"{ollama_url}/api/generate",
             json={
                 "model": model,
                 "prompt": prompt,
                 "stream": False,
-                "options": {"temperature": 0.1}
+                "format": "json",
+                "options": {
+                    "temperature": 0.1,
+                    "num_predict": DEFAULT_MAX_TOKENS,
+                }
             },
             timeout=60
         )
@@ -140,13 +200,12 @@ def get_ollama_models(config):
         List of model names (strings), or empty list on failure
     """
     try:
-        ollama_url = config.get('ollama_url', DEFAULT_OLLAMA_URL)
+        ollama_url = _ollama_url(config)
         resp = requests.get(f"{ollama_url}/api/tags", timeout=10)
         if resp.status_code == 200:
-            models = resp.json().get('models', [])
-            return [m.get('name', '') for m in models if m.get('name')]
+            return _ollama_model_names(resp.json())
         return []
-    except:
+    except (requests.RequestException, ValueError):
         return []
 
 
@@ -160,14 +219,14 @@ def test_ollama_connection(config):
     Returns:
         Dict with 'success' (bool), and either 'models'/'model_count' or 'error'
     """
-    ollama_url = config.get('ollama_url', DEFAULT_OLLAMA_URL)
+    ollama_url = _ollama_url(config)
     try:
         resp = requests.get(f"{ollama_url}/api/tags", timeout=10)
         if resp.status_code == 200:
-            models = resp.json().get('models', [])
+            models = _ollama_model_names(resp.json())
             return {
                 'success': True,
-                'models': [m.get('name', '') for m in models],
+                'models': models,
                 'model_count': len(models)
             }
         return {'success': False, 'error': f'HTTP {resp.status_code}'}
@@ -182,6 +241,7 @@ def test_ollama_connection(config):
 __all__ = [
     'DEFAULT_OLLAMA_URL',
     'DEFAULT_OLLAMA_MODEL',
+    'DEFAULT_MAX_TOKENS',
     'call_ollama',
     'call_ollama_simple',
     'get_ollama_models',

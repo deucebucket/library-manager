@@ -36,7 +36,7 @@ Library Manager automatically fixes messy audiobook folder names using real book
 ## Features
 
 - Multi-source metadata (Audnexus, OpenLibrary, Google Books, Hardcover)
-- AI verification with Gemini or OpenRouter
+- AI verification with Gemini, OpenRouter, Ollama, llama.cpp, or another OpenAI-compatible server
 - Series grouping (Audiobookshelf-compatible)
 - Smart narrator preservation
 - Undo any fix
