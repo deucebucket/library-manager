@@ -32,9 +32,10 @@ docker-compose up -d
 
 - Python 3.8+ (for direct install)
 - Docker (for containerized install)
-- API key from either:
+- For hosted AI, an API key from either:
   - [Google AI Studio](https://aistudio.google.com) (Gemini - recommended, 14,400 free calls/day)
   - [OpenRouter](https://openrouter.ai) (multiple models available)
+- Or a reachable Ollama, llama.cpp, or OpenAI-compatible server (no key required unless you configured one)
 
 ## First Run
 

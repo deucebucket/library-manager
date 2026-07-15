@@ -56,6 +56,9 @@ HINTS = {
     # === Settings - AI Setup Tab ===
     'gemini_api_key': 'Free API key from Google AI Studio (aistudio.google.com). Enables Gemini AI for text verification and audio analysis. 14,400 free calls per day.',
     'openrouter_api_key': 'API key from openrouter.ai. Provides access to free AI models as fallback, and enables Layer 4 content analysis.',
+    'openai_compatible_api_key': 'Optional bearer token for a user-configured OpenAI-compatible AI server.',
+    'openai_compatible_url': 'API base URL for llama.cpp, LM Studio, vLLM, LocalAI, or another OpenAI-compatible server.',
+    'openai_compatible_model': 'Model ID loaded from the configured server. Manual model IDs are also accepted.',
     'bookdb_api_key': 'Optional Skaldleita API key. Increases your rate limit from 500 to 1000 requests per hour. Free to register.',
     'google_books_api_key': 'Optional Google Books API key for higher rate limits on book lookups.',
     'ai_provider': 'Which AI to try first for text verification. Falls back to other configured providers automatically if the primary fails.',
