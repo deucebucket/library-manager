@@ -61,6 +61,7 @@ SECRETS_PATH = DATA_DIR / 'secrets.json'
 
 DEFAULT_CONFIG = {
     "library_paths": [],  # Empty by default - user configures via Settings
+    "music_library_roots": [],  # [{"id": opaque stable name, "path": configured root}]
     "ai_provider": "gemini",  # "gemini", "openrouter", or "ollama"
     "openrouter_model": "",  # Populated from OpenRouter's live model list in Settings
     "gemini_model": "",  # Populated from Gemini's live model list in Settings

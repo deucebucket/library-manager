@@ -39,6 +39,7 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file, session
+from library_manager.music.api import music_api_bp
 from flask_babel import Babel, gettext as _, lazy_gettext as _l
 from audio_tagging import embed_tags_for_path, build_metadata_for_embedding
 
@@ -565,6 +566,7 @@ app = Flask(__name__)
 app.secret_key = 'library-manager-secret-key-2024'
 app.register_blueprint(hooks_bp)
 app.register_blueprint(plugins_bp)
+app.register_blueprint(music_api_bp)
 
 # ============== INTERNATIONALIZATION (i18n) ==============
 # Flask-Babel for UI translations - book metadata (author/title) is NOT translated
