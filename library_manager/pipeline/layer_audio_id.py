@@ -288,10 +288,10 @@ def _complete_result_from_path(result: Dict, folder_hint: str, book_path: str) -
         if not shorter or not longer:
             return False
         s = shorter.strip()
-        l = longer.strip()
-        if len(s) < 4 or len(s) >= len(l):
+        lng = longer.strip()
+        if len(s) < 4 or len(s) >= len(lng):
             return False
-        return l.lower().startswith(s.lower())
+        return lng.lower().startswith(s.lower())
 
     completed_any = False
 

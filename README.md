@@ -477,8 +477,6 @@ See [docs/DOCKER.md](docs/DOCKER.md) for detailed setup guides.
 CONTAINER_RUNTIME=docker ./test-env/run-integration-tests.sh --offline --local
 ```
 
-See `test-env/e2e-todo.md` for a production-style checklist and release acceptance criteria.
-
 ### Local Development
 
 ```bash
