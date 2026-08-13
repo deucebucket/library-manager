@@ -14,6 +14,7 @@ from library_manager.utils.validation import (
     is_garbage_match,
     is_placeholder_author,
     is_drastic_author_change,
+    looks_like_asin,
 )
 from library_manager.utils.audio import (
     AUDIO_EXTENSIONS,
@@ -43,6 +44,7 @@ __all__ = [
     'is_garbage_match',
     'is_placeholder_author',
     'is_drastic_author_change',
+    'looks_like_asin',
     # audio
     'AUDIO_EXTENSIONS',
     'EBOOK_EXTENSIONS',
