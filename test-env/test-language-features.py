@@ -546,6 +546,54 @@ def main():
           p is not None and p.relative_to(lib).parts == ("Frank Herbert", "Der Wuestenplanet [de]"),
           f"got: {p}")
 
+    # ==========================================
+    # E2E-found bug: ISO 639-2 codes from Skaldleita (eng, ger) must be
+    # normalized to 639-1 everywhere, or naming produces "ENG/" folders
+    # ==========================================
+    print("\n--- Regression: ISO 639-2 normalization in language extraction ---")
+
+    from library_manager.pipeline.layer_audio_id import _normalize_language_code
+    from library_manager.pipeline.layer_api import _extract_detected_language as extract_api
+    from library_manager.pipeline.layer_ai_queue import _extract_detected_language as extract_aiq
+    from app import _extract_detected_language as extract_app
+
+    check("_normalize_language_code maps eng -> en",
+          _normalize_language_code('eng') == 'en')
+    check("_normalize_language_code maps ger -> de",
+          _normalize_language_code('ger') == 'de')
+    check("_normalize_language_code upper-case ENG -> en",
+          _normalize_language_code('ENG') == 'en')
+    check("_normalize_language_code strips region pt-BR -> pt",
+          _normalize_language_code('pt-BR') == 'pt')
+    check("_normalize_language_code und -> None",
+          _normalize_language_code('und') is None)
+    check("_normalize_language_code unknown 3-letter passes through",
+          _normalize_language_code('xyz') == 'xyz')
+    check("_normalize_language_code 2-letter unchanged",
+          _normalize_language_code('fr') == 'fr')
+
+    profile_eng = {'detected_language': {'value': 'eng', 'confidence': 95}}
+    check("extract (app) maps eng -> en from FieldValue dict",
+          extract_app(profile_eng) == 'en')
+    check("extract (layer_api) maps eng -> en",
+          extract_api(profile_eng) == 'en')
+    check("extract (layer_ai_queue) maps eng -> en",
+          extract_aiq(profile_eng) == 'en')
+    check("extract maps plain ger -> de",
+          extract_app({'language': 'ger'}) == 'de')
+    check("extract keeps 2-letter codes",
+          extract_app({'detected_language': 'fr'}) == 'fr')
+
+    # End-to-end: a 639-2 code reaching build_new_path via extraction must
+    # produce an English/ top folder, not ENG/
+    cfg_top2 = dict(cfg_multi, language_tag_position='top_folder')
+    extracted = extract_app(profile_eng)
+    p = build_new_path(lib, "Frank Herbert", "Dune",
+                       language=None, language_code=extracted, config=cfg_top2)
+    check("Skaldleita 'eng' -> English/ top folder (not ENG/)",
+          p is not None and p.relative_to(lib).parts == ("English", "Frank Herbert", "Dune"),
+          f"got: {p}")
+
     print("\n" + "=" * 60)
     print(f"RESULTS: {passed} passed, {failed} failed")
     print("=" * 60)

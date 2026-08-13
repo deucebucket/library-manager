@@ -22,6 +22,7 @@ from typing import Callable, Dict, Optional, Tuple
 
 from library_manager.config import use_skaldleita_for_audio
 from library_manager.database import insert_history_entry, get_series_language_override
+from library_manager.utils.path_safety import ISO_639_2_TO_1
 from library_manager.utils.validation import (
     is_garbage_author_match, is_placeholder_author,
     is_valid_author_for_recommendation, is_valid_title_for_recommendation
@@ -42,7 +43,12 @@ def _detect_title_language(text):
 
 
 def _normalize_language_code(language_code):
-    """Normalize a language identifier to the region map format used by the app."""
+    """Normalize a language identifier to the region map format used by the app.
+
+    Returns ISO 639-1 two-letter codes. Three-letter ISO 639-2 codes
+    (e.g. 'eng', 'ger' from Skaldleita) are mapped to their 639-1 equivalent
+    so downstream lookups (LANGUAGE_NAMES, region maps, tag formats) work.
+    """
     if not language_code:
         return None
     normalized = str(language_code).lower().strip()
@@ -53,6 +59,9 @@ def _normalize_language_code(language_code):
         normalized = normalized.split('-')[0].strip()
     if normalized in ('', 'none', 'null', 'und'):
         return None
+    # Map ISO 639-2 three-letter codes (eng, ger, ...) to ISO 639-1
+    if len(normalized) == 3 and normalized in ISO_639_2_TO_1:
+        normalized = ISO_639_2_TO_1[normalized]
     return normalized
 
 
