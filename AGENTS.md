@@ -34,6 +34,10 @@ Name Python tests as `test-*.py` in `test-env/`. Prefer focused tests for parsin
 
 Recent commits use concise prefixes such as `fix:`, `feat:`, `docs:`, or `Fix #211:` with issue references when available. Branch from `develop`, keep each PR focused, and target `develop` unless maintainers say otherwise. PRs should include a summary, change list, testing notes, linked issues, and screenshots for UI changes. Update `CHANGELOG.md`, `config.example.json`, docs, and `APP_VERSION` in `app.py` when code changes require them.
 
+## Issue Lifecycle
+
+Do **not** close an issue just because the related PR has merged. Issues are closed only when the maintainer confirms the fix/feature is working in production and all wrap-up work (docs, follow-up tests, user verification) is complete. Use linking keywords (`Closes #NNN`) in PR descriptions for traceability, but keep the issue open until wrap-up is confirmed.
+
 ## Security & Configuration Tips
 
 Never commit `config.json`, `secrets.json`, local databases, logs, screenshots, or generated test libraries. Validate paths before file writes, keep operations inside configured library paths, preserve rollback data, and avoid shell execution or network calls unless they are explicit, reviewed behavior.
