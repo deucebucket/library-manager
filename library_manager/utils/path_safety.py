@@ -547,13 +547,24 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
         language_code: ISO 639-1 code like "ru" (optional)
         languages: Ordered list of ISO 639-1 codes, primary first (optional,
             Issue #280). When multiple languages are present and tagging
-            applies, the tag shows all of them (e.g. "(German/English)").
+            applies, the tag shows all of them (e.g. "(German, English)").
         config: Configuration dict
 
     SAFETY: Returns None if path would be invalid/dangerous.
     """
     naming_format = config.get('naming_format', 'author/title') if config else 'author/title'
     series_grouping = config.get('series_grouping', False) if config else False
+
+    # Defensive: callers may pass ISO 639-2 three-letter codes straight from
+    # metadata sources (Skaldleita emits 'eng', 'ger'). Normalize to 639-1 so
+    # name/flag/tag lookups work regardless of the caller.
+    if language_code and len(str(language_code).strip()) == 3:
+        language_code = ISO_639_2_TO_1.get(str(language_code).strip().lower(), language_code)
+    if languages:
+        languages = [
+            ISO_639_2_TO_1.get(str(c).strip().lower(), c) if c and len(str(c).strip()) == 3 else c
+            for c in languages
+        ]
 
     # Issue #125: Strip encoding/format junk before path building
     author = strip_encoding_junk(author)
