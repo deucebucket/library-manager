@@ -18,6 +18,52 @@ from library_manager.worker import set_current_provider
 logger = logging.getLogger(__name__)
 
 
+def _extract_book_id(candidate: Dict) -> Optional[str]:
+    """Extract a best-effort book identifier from a candidate result."""
+    if not isinstance(candidate, dict):
+        return None
+
+    for key in ('asin', 'audible_id', 'book_id', 'id', 'bookdb_id', 'audio_id'):
+        value = candidate.get(key)
+        if value:
+            value_str = str(value).strip()
+            if value_str:
+                return value_str
+
+    return None
+
+
+def _extract_detected_language(candidate) -> Optional[str]:
+    """Extract a previously detected language code from payload or profile JSON.
+
+    Handles both plain top-level values (legacy/ebook paths) and serialized
+    BookProfile FieldValue dicts where language is stored as
+    {'value': 'de', 'confidence': 95, ...}.
+    """
+    if not candidate:
+        return None
+
+    if isinstance(candidate, str):
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            return None
+    elif isinstance(candidate, dict):
+        parsed = candidate
+    else:
+        return None
+
+    for key in ('detected_language', 'language'):
+        language = parsed.get(key)
+        if language and isinstance(language, dict):
+            language = language.get('value')
+        if language:
+            language = str(language).strip().lower()
+            if language:
+                return language
+    return None
+
+
 def process_layer_1_api(
     config: Dict,
     get_db: Callable,
@@ -173,6 +219,8 @@ def process_layer_1_api(
             'type': None,  # Will be set below
             'profile_json': None,
             'confidence': None,
+            'candidate_book_id': None,
+            'candidate_language': None,
             'log_message': None
         }
 
@@ -225,6 +273,9 @@ def process_layer_1_api(
             if not best_match:
                 best_match = candidates[0]  # Ultimate fallback
 
+            action['candidate_book_id'] = _extract_book_id(best_match)
+            action['candidate_language'] = best_match.get('language') or best_match.get('detected_language')
+
             # Check if this is a good enough match
             match_title = best_match.get('title', '')
             match_author = best_match.get('author', '')
@@ -269,6 +320,10 @@ def process_layer_1_api(
                                     profile.series.add_source('path', extracted_series)
                                     if extracted_num:
                                         profile.series_num.add_source('path', extracted_num)
+                            if action['candidate_book_id']:
+                                profile.book_id = action['candidate_book_id']
+                            if action['candidate_language']:
+                                profile.language.add_source(api_source, action['candidate_language'])
 
                             profile.verification_layers_used = ['api']
                             profile.finalize()
@@ -323,6 +378,22 @@ def process_layer_1_api(
     conn = get_db()
     c = conn.cursor()
 
+    def _persist_candidate_profile(book_id, candidate_book_id, candidate_language):
+        """Merge API candidate identifiers into the existing book profile."""
+        if not candidate_book_id and not candidate_language:
+            return
+        c.execute('SELECT profile FROM books WHERE id = ?', (book_id,))
+        row = c.fetchone()
+        try:
+            profile = json.loads(row['profile'] or '{}') if row and row['profile'] else {}
+        except Exception:
+            profile = {}
+        if candidate_book_id and not _extract_book_id(profile):
+            profile['book_id'] = candidate_book_id
+        if candidate_language and not _extract_detected_language(profile):
+            profile['detected_language'] = candidate_language
+        c.execute('UPDATE books SET profile = ? WHERE id = ?', (json.dumps(profile), book_id))
+
     processed = 0
     resolved = 0
 
@@ -348,10 +419,12 @@ def process_layer_1_api(
             resolved += 1
         elif action['type'] == 'advance_to_layer4':
             # Skip Layer 2 (AI), go directly to Layer 4 (final verification/fix)
+            _persist_candidate_profile(action['book_id'], action['candidate_book_id'], action['candidate_language'])
             c.execute('''UPDATE books SET verification_layer = 4,
                         max_layer_reached = MAX(COALESCE(max_layer_reached, 0), 4)
                         WHERE id = ?''', (action['book_id'],))
         elif action['type'] == 'advance_to_layer2':
+            _persist_candidate_profile(action['book_id'], action['candidate_book_id'], action['candidate_language'])
             c.execute('''UPDATE books SET verification_layer = 2,
                         max_layer_reached = MAX(COALESCE(max_layer_reached, 0), 2)
                         WHERE id = ?''', (action['book_id'],))
@@ -454,12 +527,13 @@ def process_sl_requeue_verification(
             if sl_results and len(sl_results) > 0:
                 # Found in main DB now - upgrade confidence
                 best_match = sl_results[0]
+                candidate_book_id = _extract_book_id(best_match)
                 new_confidence = min(95, book['confidence'] + 10)
 
                 # Update profile - remove requeue flag, add SL verification
                 profile.pop('sl_requeue', None)
                 profile['sl_verified'] = {
-                    'book_id': best_match.get('id'),
+                    'book_id': candidate_book_id,
                     'verified_at': datetime.now().isoformat(),
                     'confidence_boost': 10
                 }

@@ -22,6 +22,111 @@ from library_manager.worker import set_current_provider
 logger = logging.getLogger(__name__)
 
 
+def _extract_book_id(candidate):
+    """Extract a best-effort book identifier from a payload or persisted profile JSON."""
+    if not candidate:
+        return None
+
+    if isinstance(candidate, str):
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            return None
+    elif isinstance(candidate, dict):
+        parsed = candidate
+    else:
+        return None
+
+    for key in ('asin', 'audible_id', 'book_id', 'id', 'bookdb_id', 'audio_id'):
+        value = parsed.get(key)
+        if value:
+            value = str(value).strip()
+            if value:
+                return value
+    return None
+
+
+def _build_audible_url(book_id, language_code=None):
+    """Build an Audible URL from a book identifier and language."""
+    if not book_id:
+        return None
+
+    book_id_value = str(book_id).strip()
+    if not book_id_value:
+        return None
+
+    normalized_lang = (str(language_code).strip().lower().split('-')[0] if language_code else 'en')
+
+    # Skaldleita returns MARC/ISO-639-2 3-letter codes (e.g. 'eng', 'ger');
+    # map them to ISO-639-1 so the region lookup below works.
+    marc_to_iso = {
+        'eng': 'en', 'ger': 'de', 'fre': 'fr', 'ita': 'it', 'spa': 'es',
+        'jpn': 'ja', 'por': 'pt', 'dut': 'nl', 'rus': 'ru', 'chi': 'zh',
+        'ara': 'ar', 'hin': 'hi', 'kor': 'ko', 'swe': 'sv', 'nor': 'no',
+        'dan': 'da', 'fin': 'fi', 'pol': 'pl', 'tur': 'tr', 'cze': 'cs',
+        'hun': 'hu', 'gre': 'el', 'heb': 'he',
+    }
+    normalized_lang = marc_to_iso.get(normalized_lang, normalized_lang)
+
+    region = {
+        'en': 'us',   # Default English to US
+        'de': 'de',
+        'fr': 'fr',
+        'it': 'it',
+        'es': 'es',
+        'ja': 'jp',
+        'au': 'au',
+        'uk': 'uk',
+        'in': 'in',
+        'ca': 'ca',
+    }.get(normalized_lang, 'us')
+
+    region_to_domain = {
+        'us': 'audible.com',
+        'de': 'audible.de',
+        'fr': 'audible.fr',
+        'it': 'audible.it',
+        'es': 'audible.es',
+        'jp': 'audible.co.jp',
+        'au': 'audible.com.au',
+        'uk': 'audible.co.uk',
+        'in': 'audible.in',
+        'ca': 'audible.ca',
+    }
+    domain = region_to_domain.get(region, 'audible.com')
+    return f"https://www.{domain}/pd/{book_id_value}"
+
+
+def _extract_detected_language(candidate):
+    """Extract a previously detected language code from a payload or persisted profile JSON.
+
+    Handles both plain top-level values and serialized BookProfile FieldValue
+    dicts where language is stored as {'value': 'de', 'confidence': 95, ...}.
+    """
+    if not candidate:
+        return None
+
+    if isinstance(candidate, str):
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            return None
+    elif isinstance(candidate, dict):
+        parsed = candidate
+    else:
+        return None
+
+    for key in ('detected_language', 'language'):
+        language = parsed.get(key)
+        if language and isinstance(language, dict):
+            language = language.get('value')
+        if language:
+            language = str(language).strip().lower()
+            if language:
+                return language
+    return None
+
+
 # Language detection for multi-language naming
 def _detect_title_language(text):
     """Detect language from title text."""
@@ -254,6 +359,10 @@ def process_queue(
     processed = 0
     fixed = 0
     for row, result in zip(batch, results):
+        profile_book_id = _extract_book_id(row.get('profile'))
+        profile_language = _extract_detected_language(row.get('profile'))
+        audible_url = _build_audible_url(profile_book_id, profile_language or config.get('preferred_language', 'en'))
+
         # Issue #86: Validate result is a dict before processing
         # AI can return malformed JSON that parses as string/list/None
         if not isinstance(result, dict):
@@ -1097,7 +1206,9 @@ def process_queue(
                                 narrator=new_narrator,
                                 year=str(new_year) if new_year else None,
                                 edition=new_edition,
-                                variant=new_variant
+                                variant=new_variant,
+                                book_id=profile_book_id,
+                                audible_url=audible_url
                             )
                             embed_result = embed_tags_for_path(
                                 new_path,

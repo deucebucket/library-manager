@@ -44,6 +44,28 @@ FIELD_WEIGHTS = {
 }
 
 
+def _extract_book_id(candidate):
+    """Extract a best-effort book identifier from a payload."""
+    if not candidate:
+        return None
+
+    if isinstance(candidate, str):
+        try:
+            candidate = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not isinstance(candidate, dict):
+        return None
+
+    for key in ('asin', 'audible_id', 'book_id', 'id', 'bookdb_id', 'audio_id'):
+        value = candidate.get(key)
+        if value:
+            value_str = str(value).strip()
+            if value_str:
+                return value_str
+    return None
+
+
 def is_valid_title(title: str) -> bool:
     """
     Validate that a string looks like a real book title, not garbage.
@@ -679,6 +701,12 @@ def build_profile_from_sources(
                 profile.series_num.add_source(source, candidate['series_num'])
             if candidate.get('year'):
                 profile.year.add_source(source, candidate['year'])
+            if candidate.get('language'):
+                profile.language.add_source(source, candidate['language'])
+            if not profile.book_id:
+                candidate_book_id = _extract_book_id(candidate)
+                if candidate_book_id:
+                    profile.book_id = candidate_book_id
 
     # Layer 3: AI result
     if ai_result:

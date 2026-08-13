@@ -469,7 +469,15 @@ See [docs/DOCKER.md](docs/DOCKER.md) for detailed setup guides.
 
 # Rebuild 2GB test library first
 ./test-env/run-integration-tests.sh --rebuild
+
+# Offline/no-network mode (disable API/AI layers)
+./test-env/run-integration-tests.sh --offline --local --rebuild
+
+# If your runtime is docker (not podman):
+CONTAINER_RUNTIME=docker ./test-env/run-integration-tests.sh --offline --local
 ```
+
+See `test-env/e2e-todo.md` for a production-style checklist and release acceptance criteria.
 
 ### Local Development
 

@@ -203,6 +203,7 @@ def embed_tags_mp3(file_path: Path, metadata: Dict[str, Any], overwrite: bool = 
             ('series_num', 'SERIESNUMBER'),
             ('narrator', 'NARRATOR'),
             ('narrator_id', 'NARRATORID'),
+            ('audible_url', 'WWWAUDIOFILE'),
             ('edition', 'EDITION'),
             ('variant', 'VARIANT'),
             ('book_id', 'BOOKID'),
@@ -264,6 +265,7 @@ def embed_tags_mp4(file_path: Path, metadata: Dict[str, Any], overwrite: bool = 
             ('series_num', 'SERIESNUMBER'),
             ('narrator', 'NARRATOR'),
             ('narrator_id', 'NARRATORID'),
+            ('audible_url', 'WWWAUDIOFILE'),
             ('edition', 'EDITION'),
             ('variant', 'VARIANT'),
             ('book_id', 'BOOKID'),
@@ -328,6 +330,7 @@ def embed_tags_vorbis(file_path: Path, metadata: Dict[str, Any], overwrite: bool
             ('series_num', 'SERIESNUMBER'),
             ('narrator', 'NARRATOR'),
             ('narrator_id', 'NARRATORID'),
+            ('audible_url', 'WWWAUDIOFILE'),
             ('edition', 'EDITION'),
             ('variant', 'VARIANT'),
             ('book_id', 'BOOKID'),
@@ -383,6 +386,7 @@ def embed_tags_asf(file_path: Path, metadata: Dict[str, Any], overwrite: bool = 
             ('series_num', 'WM/SeriesNumber'),
             ('narrator', 'WM/Narrator'),
             ('narrator_id', 'WM/NarratorId'),
+            ('audible_url', 'WM/WWWAudioFile'),
             ('edition', 'WM/Edition'),
             ('variant', 'WM/Variant'),
             ('book_id', 'WM/BookId'),
@@ -449,6 +453,7 @@ def build_metadata_for_embedding(
     series_num: Optional[str] = None,
     narrator: Optional[str] = None,
     narrator_id: Optional[str] = None,
+    audible_url: Optional[str] = None,
     year: Optional[str] = None,
     edition: Optional[str] = None,
     variant: Optional[str] = None,
@@ -464,6 +469,7 @@ def build_metadata_for_embedding(
     Extended fields for tracking:
     - narrator_id: Unique narrator identifier (Audnexus ASIN, internal ID, etc.)
     - book_id: Book identifier (ISBN, ASIN, internal ID)
+    - audible_url: Audible URL for this book
     - audio_fingerprint: Audio fingerprint hash (AcoustID, Chromaprint)
     - version_id: Unique version identifier for this specific recording
     - libman_processed: Timestamp when Library Manager processed this file
@@ -485,6 +491,8 @@ def build_metadata_for_embedding(
         metadata['narrator'] = narrator
     if narrator_id:
         metadata['narrator_id'] = narrator_id
+    if audible_url:
+        metadata['audible_url'] = audible_url
     if edition:
         metadata['edition'] = edition
     if variant:
@@ -516,7 +524,7 @@ def restore_tags_mp3(file_path: Path, tags_snapshot: Dict[str, Any]) -> bool:
 
         # Clear managed tags first, then restore from snapshot
         managed_frames = ['TIT2', 'TALB', 'TPE1', 'TPE2', 'TDRC']
-        custom_descs = ['SERIES', 'SERIESNUMBER', 'NARRATOR', 'EDITION', 'VARIANT']
+        custom_descs = ['SERIES', 'SERIESNUMBER', 'NARRATOR', 'NARRATORID', 'WWWAUDIOFILE', 'EDITION', 'VARIANT']
 
         # Remove our managed tags
         for frame_id in managed_frames:
@@ -570,8 +578,9 @@ def restore_tags_mp4(file_path: Path, tags_snapshot: Dict[str, Any]) -> bool:
 
         # Standard and custom tag keys we manage
         managed_keys = ['\xa9nam', '\xa9alb', '\xa9ART', 'aART', '\xa9day']
-        custom_keys = [f'----:com.apple.iTunes:{name}' for name in 
-                       ['SERIES', 'SERIESNUMBER', 'NARRATOR', 'EDITION', 'VARIANT']]
+        custom_keys = [f'----:com.apple.iTunes:{name}' for name in
+                       ['SERIES', 'SERIESNUMBER', 'NARRATOR', 'NARRATORID', 'WWWAUDIOFILE',
+                        'EDITION', 'VARIANT']]
 
         # Remove our managed tags
         for key in managed_keys + custom_keys:
@@ -617,7 +626,8 @@ def restore_tags_vorbis(file_path: Path, tags_snapshot: Dict[str, Any]) -> bool:
 
         # Keys we manage
         managed_keys = ['TITLE', 'ALBUM', 'ARTIST', 'ALBUMARTIST', 'DATE',
-                        'SERIES', 'SERIESNUMBER', 'NARRATOR', 'EDITION', 'VARIANT']
+                        'SERIES', 'SERIESNUMBER', 'NARRATOR', 'NARRATORID', 'WWWAUDIOFILE',
+                        'EDITION', 'VARIANT']
 
         # Remove our managed tags (case-insensitive check)
         keys_to_remove = []
@@ -654,7 +664,8 @@ def restore_tags_asf(file_path: Path, tags_snapshot: Dict[str, Any]) -> bool:
 
         # Keys we manage
         managed_keys = ['Title', 'WM/AlbumTitle', 'Author', 'WM/AlbumArtist', 'WM/Year',
-                        'WM/Series', 'WM/SeriesNumber', 'WM/Narrator', 'WM/Edition', 'WM/Variant']
+                        'WM/Series', 'WM/SeriesNumber', 'WM/Narrator', 'WM/NarratorId',
+                        'WM/WWWAudioFile', 'WM/Edition', 'WM/Variant']
 
         # Remove our managed tags
         for key in managed_keys:
@@ -864,4 +875,3 @@ def embed_tags_for_path(
         logger.error(f"Error embedding tags at {target_path}: {e}")
 
     return result
-

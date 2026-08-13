@@ -77,7 +77,7 @@ from library_manager.providers import (
     rate_limit_wait, is_circuit_open, record_api_failure, record_api_success,
     handle_rate_limit_response,
     API_RATE_LIMITS, API_CIRCUIT_BREAKER,
-    search_audnexus, search_openlibrary, search_google_books, search_hardcover,
+    search_audnexus, lookup_audnexus_by_asin, search_openlibrary, search_google_books, search_hardcover,
     BOOKDB_API_URL, BOOKDB_PUBLIC_KEY, get_signed_headers,
     search_bookdb as _search_bookdb_raw, identify_audio_with_bookdb,
     call_ollama as _call_ollama_raw, call_ollama_simple as _call_ollama_simple_raw,
@@ -971,6 +971,90 @@ def get_audible_region_for_language(lang_code):
     return region_map.get(lang_code, 'us')
 
 
+def _extract_book_id(result):
+    """Extract a best-effort book identifier from payload or persisted profile JSON."""
+    if not result:
+        return None
+
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except json.JSONDecodeError:
+            return None
+    elif isinstance(result, dict):
+        parsed = result
+    else:
+        return None
+
+    for key in ('asin', 'audible_id', 'book_id', 'id', 'bookdb_id', 'audio_id'):
+        value = parsed.get(key)
+        if value:
+            value = str(value).strip()
+            if value:
+                return value
+    return None
+
+
+def _build_audible_url(book_id, language_code=None):
+    """Build an Audible URL from a book id and preferred language."""
+    if not book_id:
+        return None
+
+    book_id_value = str(book_id).strip()
+    if not book_id_value:
+        return None
+
+    normalized_lang = (str(language_code).strip().lower().split('-')[0] if language_code else 'en')
+    region = get_audible_region_for_language(normalized_lang or 'en')
+
+    region_to_domain = {
+        'us': 'audible.com',
+        'de': 'audible.de',
+        'fr': 'audible.fr',
+        'it': 'audible.it',
+        'es': 'audible.es',
+        'jp': 'audible.co.jp',
+        'au': 'audible.com.au',
+        'uk': 'audible.co.uk',
+        'in': 'audible.in',
+        'ca': 'audible.ca',
+    }
+    domain = region_to_domain.get(region, AUDIBLE_LANGUAGE_ENDPOINTS.get('en', 'audible.com'))
+
+    return f"https://www.{domain}/pd/{book_id_value}"
+
+
+def _extract_detected_language(result):
+    """Extract a previously detected language code from payload or persisted profile JSON.
+
+    Handles both plain top-level values (legacy/ebook paths) and serialized
+    BookProfile FieldValue dicts where language is stored as
+    {'value': 'de', 'confidence': 95, ...}.
+    """
+    if not result:
+        return None
+
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except json.JSONDecodeError:
+            return None
+    elif isinstance(result, dict):
+        parsed = result
+    else:
+        return None
+
+    for key in ('detected_language', 'language'):
+        language = parsed.get(key)
+        if language and isinstance(language, dict):
+            language = language.get('value')
+        if language:
+            language = str(language).strip().lower()
+            if language:
+                return language
+    return None
+
+
 # ISO 639-1 language code to full name mapping
 LANGUAGE_NAMES = {
     'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish',
@@ -1221,6 +1305,25 @@ def gather_all_api_candidates(title, author=None, config=None):
                         candidates.append(result_no_author)
         except Exception as e:
             logger.debug(f"Error searching {api_name}: {e}")
+
+    # Issue #273/#274: Audnexus title search was removed by the Audnexus API,
+    # but ASIN lookup still works. Enrich any candidate that already has an ASIN
+    # (from BookDB, OpenLibrary, etc.) with Audnexus metadata so the ASIN is
+    # confirmed and Audible-region-aware fields are populated.
+    seen_asins = set()
+    for candidate in list(candidates):
+        asin = _extract_book_id(candidate)
+        if asin and asin not in seen_asins:
+            seen_asins.add(asin)
+            try:
+                enriched = lookup_audnexus_by_asin(asin, region=audible_region)
+                if enriched and enriched.get('title'):
+                    enriched['source'] = 'audnexus'
+                    enriched['search_query'] = candidate.get('search_query') or f"{author} - {clean_title}" if author else clean_title
+                    candidates.append(enriched)
+                    logger.info(f"[LAYER 1] Audnexus enriched ASIN {asin}: {enriched.get('author')} - {enriched.get('title')}")
+            except Exception as e:
+                logger.debug(f"[LAYER 1] Audnexus enrichment failed for {asin}: {e}")
 
     # Deduplicate by author+title
     seen = set()
@@ -1824,7 +1927,11 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
                 retry_delay = 10  # Start with 10 seconds
 
                 for attempt in range(max_retries):
-                    result = identify_audio_with_bookdb(audio_file)
+                    result = identify_audio_with_bookdb(
+                        audio_file,
+                        bookdb_url=merged_config.get('bookdb_url'),
+                        api_key=merged_config.get('bookdb_api_key')
+                    )
                     if result and result.get('title'):
                         logger.info(f"[AUDIO CHAIN] Success with bookdb: {result.get('author')} - {result.get('title')}")
                         # Contribute fingerprint - BookDB Whisper ID is different from fingerprint
@@ -6048,6 +6155,7 @@ def process_layer_1_audio(config, limit=None):
         load_config=load_config,
         build_new_path=build_new_path,
         update_processing_status=update_status,
+        detect_audio_language=detect_audio_language,
         set_current_book=set_book,
         limit=limit
     )
@@ -6147,20 +6255,35 @@ def apply_fix(history_id):
     # Issue #69: Handle history entries with missing paths
     # Some older code paths created history entries without old_path/new_path
     book_id = fix['book_id']
+    c.execute('SELECT path, source_type, profile FROM books WHERE id = ?', (book_id,))
+    book_row = c.fetchone()
 
     # Get old_path - fall back to books table if None
     if fix['old_path']:
         old_path = Path(fix['old_path'])
     else:
-        c.execute('SELECT path FROM books WHERE id = ?', (book_id,))
-        book_row = c.fetchone()
         if not book_row or not book_row['path']:
             c.execute("UPDATE history SET status = 'pending_fix' WHERE id = ?", (history_id,))
             conn.commit()
             conn.close()
             return False, "Cannot determine source path - book not found"
         old_path = Path(book_row['path'])
-        logger.info(f"[APPLY FIX] old_path was None, using book path: {old_path}")
+        logger.info(f"[APPLY FIX] old_path was None, using book row path: {old_path}")
+
+    # Issue #49: Check if this is a watch folder item
+    source_type = book_row['source_type'] if book_row and book_row['source_type'] else 'library'
+    is_watch_folder_item = (source_type == 'watch_folder')
+
+    # Resolve optional metadata enrichment fields from persisted profile
+    metadata_book_id = _extract_book_id(book_row['profile']) if book_row else None
+
+    # Resolve language for path + audible URL enrichment
+    # Prefer audio-detected language stored in the profile (#274), fall back to title detection
+    fix_title = fix['new_title'] or fix['old_title']
+    fix_lang = _extract_detected_language(book_row['profile']) if book_row else None
+    if not fix_lang and fix_title:
+        fix_lang = detect_title_language(fix_title)
+    audible_url = _build_audible_url(metadata_book_id, fix_lang)
 
     # Get new_path - compute from metadata if None
     if fix['new_path']:
@@ -6175,9 +6298,7 @@ def apply_fix(history_id):
             return False, "Cannot determine destination - no library paths configured"
 
         # Build new path from fix metadata
-        # Detect language from title for multi-language naming
-        fix_title = fix['new_title'] or fix['old_title']
-        lang_code = detect_title_language(fix_title) if fix_title else None
+        # Detect language for multi-language naming
         new_path = build_new_path(
             Path(library_paths[0]),
             fix['new_author'] or fix['old_author'],
@@ -6188,7 +6309,7 @@ def apply_fix(history_id):
             year=fix['new_year'] if fix['new_year'] else None,
             edition=fix['new_edition'] if fix['new_edition'] else None,
             variant=fix['new_variant'] if fix['new_variant'] else None,
-            language_code=lang_code,
+            language_code=fix_lang,
             config=config
         )
         if not new_path:
@@ -6198,12 +6319,6 @@ def apply_fix(history_id):
             return False, "Cannot build destination path - invalid author/title"
         new_path = Path(new_path)
         logger.info(f"[APPLY FIX] new_path was None, computed: {new_path}")
-
-    # Issue #49: Check if this is a watch folder item
-    c.execute('SELECT source_type FROM books WHERE id = ?', (book_id,))
-    book_row = c.fetchone()
-    source_type = book_row['source_type'] if book_row and book_row['source_type'] else 'library'
-    is_watch_folder_item = (source_type == 'watch_folder')
 
     # CRITICAL SAFETY: Validate paths before any file operations
     config = load_config()
@@ -6383,7 +6498,9 @@ def apply_fix(history_id):
                     narrator=fix['new_narrator'] if fix['new_narrator'] else None,
                     year=fix['new_year'] if fix['new_year'] else None,
                     edition=fix['new_edition'] if fix['new_edition'] else None,
-                    variant=fix['new_variant'] if fix['new_variant'] else None
+                    variant=fix['new_variant'] if fix['new_variant'] else None,
+                    book_id=metadata_book_id,
+                    audible_url=audible_url
                 )
                 embed_result = embed_tags_for_path(
                     new_path,
@@ -8001,8 +8118,9 @@ def api_process():
     # Update status to show we're processing
     update_processing_status('active', True)
 
-    if process_all:
-        # Process entire queue in batches
+    if process_all or config.get('use_modular_pipeline', False):
+        # Process entire queue in batches; when modular pipeline is enabled,
+        # process_all_queue runs the configured pipeline_order (audio-first by default).
         processed, fixed = process_all_queue(config)
     else:
         # Use layered processing even for limited batches
