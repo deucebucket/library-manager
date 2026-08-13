@@ -36,6 +36,17 @@ def api_scan():
         return False
 
 
+def api_process_background():
+    """Start background processing so scanned books are identified."""
+    req = urllib.request.Request(f"{BASE_URL}/api/process_background", method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.status == 200
+    except Exception as e:
+        print(f"[WARN] Process background API call failed: {e}")
+        return False
+
+
 def wait_for_book_state(status_targets, timeout=MAX_WAIT_SECONDS):
     """Poll the DB until the test book (matched by source path) reaches one of the target statuses."""
     conn = sqlite3.connect(DB_PATH)
@@ -90,6 +101,11 @@ def main():
     # 3. Trigger scan
     print("[INFO] Triggering library scan...")
     api_scan()
+
+    # 3b. Start background processing (the worker sleeps for hours by default,
+    # so the test must explicitly kick off processing after the scan).
+    print("[INFO] Starting background processing...")
+    api_process_background()
 
     # 4. Wait for book to be identified and pending fix (or verified if already correct)
     print("[INFO] Waiting for book to reach pending_fix or verified...")
