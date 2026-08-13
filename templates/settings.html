@@ -258,6 +258,41 @@
                                     </div>
                                 </div>
                             </div>
+
+                            <hr class="my-3">
+
+                            <!-- Series Language Overrides (Issue #281) -->
+                            <div class="mb-3">
+                                <label class="form-label">
+                                    <i class="bi bi-lock text-primary"></i>
+                                    <strong>Series Language Overrides</strong>
+                                    <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.series_language_override }}</span></span>
+                                </label>
+                                <small class="text-muted d-block mb-2">
+                                    Lock a series to a fixed language (e.g. "Mistborn" &rarr; German). The locked language
+                                    overrides audio/title detection for every book in that series. Matching is case-insensitive.
+                                </small>
+                                <div id="series-language-overrides-list" class="mb-2">
+                                    <small class="text-muted">Loading...</small>
+                                </div>
+                                <div class="row g-2 align-items-center">
+                                    <div class="col-5">
+                                        <input type="text" class="form-control form-control-sm bg-dark text-light"
+                                               id="series-override-name" placeholder="Series name">
+                                    </div>
+                                    <div class="col-4">
+                                        <select class="form-select form-select-sm bg-dark text-light" id="series-override-language">
+                                            <option value="auto">Auto (detect)</option>
+                                            {% for code, name in language_names.items() %}
+                                            <option value="{{ code }}">{{ name }} ({{ code }})</option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                    <div class="col-3">
+                                        <button type="button" class="btn btn-sm btn-outline-primary w-100" onclick="addSeriesLanguageOverride()">Add</button>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1600,7 +1635,54 @@ document.addEventListener('DOMContentLoaded', function() {
     toggleLayer4Settings();
     updateNamingPreview();
     refreshLogs();
+    loadSeriesLanguageOverrides();
 });
+
+// Series Language Overrides (Issue #281)
+function loadSeriesLanguageOverrides() {
+    const listEl = document.getElementById('series-language-overrides-list');
+    if (!listEl) return;
+    fetch('/api/series-language-overrides').then(r => r.json()).then(data => {
+        const overrides = (data && data.overrides) || [];
+        if (overrides.length === 0) {
+            listEl.innerHTML = '<small class="text-muted">No overrides set - all series use automatic detection.</small>';
+            return;
+        }
+        listEl.innerHTML = overrides.map(o =>
+            `<div class="d-flex justify-content-between align-items-center border border-secondary rounded px-2 py-1 mb-1">` +
+            `<span>${escapeHtml(o.series_name)} <span class="badge bg-secondary">${escapeHtml(o.language_code)}</span></span>` +
+            `<button type="button" class="btn btn-sm btn-outline-danger py-0" onclick="removeSeriesLanguageOverride('${encodeURIComponent(o.series_name)}')">` +
+            `<i class="bi bi-x"></i></button></div>`
+        ).join('');
+    }).catch(e => { listEl.innerHTML = `<small class="text-danger">Error loading overrides: ${escapeHtml(String(e))}</small>`; });
+}
+
+function addSeriesLanguageOverride() {
+    const name = document.getElementById('series-override-name').value.trim();
+    const code = document.getElementById('series-override-language').value;
+    if (!name) return;
+    fetch('/api/series-language-overrides', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({series_name: name, language_code: code})
+    }).then(r => r.json()).then(data => {
+        if (data.success) {
+            document.getElementById('series-override-name').value = '';
+            loadSeriesLanguageOverrides();
+        } else {
+            alert(data.error || 'Failed to save override');
+        }
+    }).catch(e => alert('Failed to save override: ' + e));
+}
+
+function removeSeriesLanguageOverride(encodedName) {
+    fetch('/api/series-language-overrides', {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({series_name: decodeURIComponent(encodedName)})
+    }).then(r => r.json()).then(() => loadSeriesLanguageOverrides())
+        .catch(e => alert('Failed to remove override: ' + e));
+}
 
 function dismissHowItWorks() {
     localStorage.setItem('hideHowItWorks', 'true');

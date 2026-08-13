@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
 from library_manager.config import use_skaldleita_for_audio
-from library_manager.database import insert_history_entry
+from library_manager.database import insert_history_entry, get_series_language_override
 from library_manager.utils.validation import (
     is_garbage_author_match, is_placeholder_author,
     is_valid_author_for_recommendation, is_valid_title_for_recommendation
@@ -76,9 +76,17 @@ def _resolve_metadata_language(
     title: Optional[str],
     config: Dict,
     detect_audio_language_fn=None,
-    language_hint: Optional[str] = None
+    language_hint: Optional[str] = None,
+    series_name: Optional[str] = None
 ):
     """Resolve metadata language using an explicit hint, configured audio detection, or title fallback."""
+    # Issue #281: A series language lock is a hard override - skip detection entirely
+    if series_name:
+        override = get_series_language_override(series_name)
+        if override:
+            logger.info(f"[LANG] Series '{series_name}' locked to language '{override}' - skipping detection")
+            return override
+
     if language_hint:
         hinted = _normalize_language_code(language_hint)
         if hinted:
@@ -531,7 +539,8 @@ def process_layer_1_audio(
                             title,
                             current_config,
                             detect_audio_language_fn=detect_audio_language,
-                            language_hint=ebook_result.get('language')
+                            language_hint=ebook_result.get('language'),
+                            series_name=ebook_result.get('series')
                         )
                         if lang_code:
                             profile['detected_language'] = lang_code
@@ -861,7 +870,8 @@ def process_layer_1_audio(
                         title,
                         audio_config,
                         detect_audio_language_fn=detect_audio_language,
-                        language_hint=result.get('detected_language') or result.get('language')
+                        language_hint=result.get('detected_language') or result.get('language'),
+                        series_name=series
                     )
                     if lang_code:
                         profile['detected_language'] = lang_code

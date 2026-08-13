@@ -258,6 +258,46 @@ def format_language_tag(lang_code: str, lang_name: str = None, fmt: str = "brack
     return ""
 
 
+def format_languages_tag(lang_codes, fmt: str = "bracket_full",
+                         code_format: str = "iso639-1") -> str:
+    """Format a language tag for one or more languages (Issue #280).
+
+    Args:
+        lang_codes: Ordered list of ISO 639-1 codes, primary first
+        fmt: Tag format - "code", "full", "bracket_code", "bracket_full", "emoji_flag"
+        code_format: "iso639-1" (pl) or "iso639-2" (pol) for code-based formats
+
+    Returns:
+        Formatted tag string. Multiple languages are joined: names with ", "
+        (e.g. " (German, English)"), codes with "," (e.g. " [de,en]"), emoji
+        flags with a space (e.g. " 🇩🇪 🇬🇧"). A single language is
+        byte-identical to format_language_tag().
+
+        NOTE: "/" is deliberately NOT used as a separator - it is a path
+        separator on POSIX and would nest folders when the tag lands in a
+        directory name.
+    """
+    codes = [str(c).lower().strip() for c in (lang_codes or []) if c]
+    if len(codes) <= 1:
+        return format_language_tag(codes[0], fmt=fmt, code_format=code_format) if codes else ""
+
+    if fmt == "emoji_flag":
+        flags = [LANGUAGE_FLAGS.get(c) for c in codes]
+        if all(flags):
+            return " " + " ".join(flags)
+        # Fall back to joined names when any language has no flag
+        return f" ({', '.join(LANGUAGE_NAMES.get(c, c.upper()) for c in codes)})"
+    if fmt == "code":
+        return "_" + ",".join(lang_code_for_display(c, code_format) for c in codes)
+    if fmt == "full":
+        return " " + ", ".join(LANGUAGE_NAMES.get(c, c.upper()) for c in codes)
+    if fmt == "bracket_code":
+        return " [" + ",".join(lang_code_for_display(c, code_format) for c in codes) + "]"
+    if fmt == "bracket_full":
+        return " (" + ", ".join(LANGUAGE_NAMES.get(c, c.upper()) for c in codes) + ")"
+    return ""
+
+
 def apply_language_tag(title: str, tag: str, position: str) -> str:
     """Apply language tag to title in specified position.
 
@@ -482,7 +522,7 @@ def find_existing_author_folder(lib_path, target_author) -> Optional[str]:
 
 
 def build_new_path(lib_path, author, title, series=None, series_num=None, narrator=None, year=None,
-                   edition=None, variant=None, language=None, language_code=None, config=None):
+                   edition=None, variant=None, language=None, language_code=None, languages=None, config=None):
     """Build a new path based on the naming format configuration.
 
     Audiobookshelf-compatible format (when series_grouping enabled):
@@ -505,6 +545,9 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
         variant: Variant info like "Graphic Audio" (optional)
         language: Full language name like "Russian" (optional)
         language_code: ISO 639-1 code like "ru" (optional)
+        languages: Ordered list of ISO 639-1 codes, primary first (optional,
+            Issue #280). When multiple languages are present and tagging
+            applies, the tag shows all of them (e.g. "(German/English)").
         config: Configuration dict
 
     SAFETY: Returns None if path would be invalid/dangerous.
@@ -610,7 +653,16 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
                 lang_subfolder = sanitize_path_component(lang_name)
             else:
                 # Add tag to title folder
-                lang_tag = format_language_tag(language_code, language, tag_format, code_format)
+                # Issue #280: show all languages when the book is multi-language
+                lang_codes = []
+                for code in ([language_code] + list(languages or [])):
+                    normalized = str(code).lower().strip() if code else ''
+                    if normalized and normalized not in lang_codes:
+                        lang_codes.append(normalized)
+                if len(lang_codes) > 1:
+                    lang_tag = format_languages_tag(lang_codes, tag_format, code_format)
+                else:
+                    lang_tag = format_language_tag(language_code, language, tag_format, code_format)
                 title_folder = apply_language_tag(title_folder, lang_tag, tag_position)
 
     if naming_format == 'custom':
@@ -781,6 +833,7 @@ __all__ = [
     'build_new_path',
     'find_existing_author_folder',
     'format_language_tag',
+    'format_languages_tag',
     'apply_language_tag',
     'lang_code_for_display',
     'strip_unabridged_markers',

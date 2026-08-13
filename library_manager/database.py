@@ -164,6 +164,13 @@ def init_db(db_path=None):
         except:
             pass  # Column already exists
 
+    # Issue #280: languages column - JSON array of ISO 639-1 codes
+    # (primary first) for bilingual/multi-language books
+    try:
+        c.execute('ALTER TABLE books ADD COLUMN languages TEXT')
+    except:
+        pass  # Column already exists
+
     # Stats table - daily stats
     c.execute('''CREATE TABLE IF NOT EXISTS stats (
         id INTEGER PRIMARY KEY,
@@ -184,6 +191,18 @@ def init_db(db_path=None):
         processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         outcome TEXT,
         error_message TEXT
+    )''')
+
+    # Issue #281: Per-series language overrides ("language lock")
+    # series_key is the normalized (lowercase, whitespace-stripped) series name
+    # used for case-insensitive matching; series_name keeps the display form.
+    c.execute('''CREATE TABLE IF NOT EXISTS series_language_overrides (
+        id INTEGER PRIMARY KEY,
+        series_name TEXT,
+        series_key TEXT UNIQUE,
+        language_code TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
 
     conn.commit()
@@ -489,6 +508,236 @@ def should_requeue_book(book_row, max_retries=3):
         return (True, 1)
 
 
+def _normalize_series_key(series_name):
+    """Normalize a series name for case-insensitive override matching."""
+    if not series_name:
+        return ''
+    return ' '.join(str(series_name).lower().split())
+
+
+def set_series_language_override(series_name, language_code, db_path=None):
+    """Set (or update) the language lock for a series (Issue #281).
+
+    Args:
+        series_name: Display name of the series (matched case-insensitively)
+        language_code: ISO 639-1 code from LANGUAGE_NAMES, or 'auto'/None to
+            remove the override and fall back to normal detection
+        db_path: Optional database path (defaults to the app database)
+
+    Raises:
+        ValueError: If the language code is not a known ISO 639-1 code
+    """
+    path = db_path or _db_path
+    if not path:
+        raise ValueError("Database path not set. Call set_db_path() first.")
+
+    series_name = (series_name or '').strip()
+    series_key = _normalize_series_key(series_name)
+    if not series_key:
+        raise ValueError("Series name is required")
+
+    code = (language_code or '').lower().strip()
+    if code in ('', 'auto'):
+        delete_series_language_override(series_name, db_path=db_path)
+        return
+
+    from library_manager.utils.path_safety import LANGUAGE_NAMES
+    if code not in LANGUAGE_NAMES:
+        raise ValueError(f"Unknown language code: {language_code}")
+
+    conn = sqlite3.connect(path, timeout=30)
+    try:
+        conn.execute(
+            '''INSERT INTO series_language_overrides (series_name, series_key, language_code)
+               VALUES (?, ?, ?)
+               ON CONFLICT(series_key) DO UPDATE SET
+                   series_name = excluded.series_name,
+                   language_code = excluded.language_code,
+                   updated_at = CURRENT_TIMESTAMP''',
+            (series_name, series_key, code)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_series_language_override(series_name, db_path=None):
+    """Return the locked language code for a series, or None if unset/auto."""
+    path = db_path or _db_path
+    if not path:
+        return None
+    series_key = _normalize_series_key(series_name)
+    if not series_key:
+        return None
+    conn = sqlite3.connect(path, timeout=30)
+    try:
+        c = conn.execute(
+            'SELECT language_code FROM series_language_overrides WHERE series_key = ? LIMIT 1',
+            (series_key,)
+        )
+        row = c.fetchone()
+        return row[0] if row else None
+    except sqlite3.OperationalError:
+        return None  # Table may not exist yet on older databases
+    finally:
+        conn.close()
+
+
+def get_all_series_language_overrides(db_path=None):
+    """Return all series language overrides as a list of dicts."""
+    path = db_path or _db_path
+    if not path:
+        return []
+    conn = sqlite3.connect(path, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.execute(
+            'SELECT series_name, language_code, updated_at FROM series_language_overrides ORDER BY series_name'
+        )
+        return [dict(row) for row in c.fetchall()]
+    except sqlite3.OperationalError:
+        return []  # Table may not exist yet on older databases
+    finally:
+        conn.close()
+
+
+def delete_series_language_override(series_name, db_path=None):
+    """Remove the language override for a series. Returns True if one existed."""
+    path = db_path or _db_path
+    if not path:
+        return False
+    series_key = _normalize_series_key(series_name)
+    if not series_key:
+        return False
+    conn = sqlite3.connect(path, timeout=30)
+    try:
+        cursor = conn.execute(
+            'DELETE FROM series_language_overrides WHERE series_key = ?',
+            (series_key,)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    except sqlite3.OperationalError:
+        return False
+    finally:
+        conn.close()
+
+
+def _normalize_language_list(languages):
+    """Normalize an ordered language list: lowercase, deduped, order preserved."""
+    cleaned = []
+    for code in languages or []:
+        normalized = str(code).lower().strip() if code else ''
+        if normalized and normalized not in cleaned:
+            cleaned.append(normalized)
+    return cleaned
+
+
+def set_book_languages(book_id, languages, db_path=None):
+    """Set the full language list for a book (Issue #280).
+
+    Args:
+        book_id: books table row id
+        languages: Ordered list of ISO 639-1 codes, primary first. An empty
+            list clears the list (book falls back to single-language behavior).
+        db_path: Optional database path (defaults to the app database)
+
+    Raises:
+        ValueError: If any code is not a known ISO 639-1 code
+    """
+    path = db_path or _db_path
+    if not path:
+        raise ValueError("Database path not set. Call set_db_path() first.")
+
+    import json as _json
+    from library_manager.utils.path_safety import LANGUAGE_NAMES
+
+    cleaned = _normalize_language_list(languages)
+    for code in cleaned:
+        if code not in LANGUAGE_NAMES:
+            raise ValueError(f"Unknown language code: {code}")
+
+    languages_json = _json.dumps(cleaned) if cleaned else None
+
+    conn = sqlite3.connect(path, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.execute(
+            'UPDATE books SET languages = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            (languages_json, book_id)
+        )
+        if c.rowcount == 0:
+            raise ValueError(f"Book not found: {book_id}")
+        # Keep the profile JSON in sync: primary language + full list
+        row = conn.execute('SELECT profile FROM books WHERE id = ?', (book_id,)).fetchone()
+        if row and row['profile']:
+            try:
+                profile = _json.loads(row['profile'])
+            except ValueError:
+                profile = None
+            if isinstance(profile, dict):
+                profile['languages'] = cleaned
+                lang_fv = profile.get('language')
+                if cleaned and isinstance(lang_fv, dict):
+                    lang_fv['value'] = cleaned[0]
+                conn.execute(
+                    'UPDATE books SET profile = ? WHERE id = ?',
+                    (_json.dumps(profile), book_id)
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_book_languages(book_id, db_path=None):
+    """Return the ordered language list for a book (primary first).
+
+    Falls back to the primary language stored in the profile JSON for rows
+    without a languages column value. Returns [] when nothing is known.
+    """
+    path = db_path or _db_path
+    if not path:
+        return []
+    import json as _json
+    conn = sqlite3.connect(path, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        try:
+            row = conn.execute('SELECT languages, profile FROM books WHERE id = ?', (book_id,)).fetchone()
+        except sqlite3.OperationalError:
+            # Older schema without the languages column
+            row = conn.execute('SELECT profile FROM books WHERE id = ?', (book_id,)).fetchone()
+        if not row:
+            return []
+        languages = row['languages'] if 'languages' in row.keys() else None
+        if languages:
+            try:
+                return _normalize_language_list(_json.loads(languages))
+            except ValueError:
+                return []
+        # Fall back to the profile JSON
+        if row['profile']:
+            try:
+                profile = _json.loads(row['profile'])
+            except ValueError:
+                return []
+            if isinstance(profile, dict):
+                listed = profile.get('languages')
+                if listed:
+                    return _normalize_language_list(listed)
+                lang = profile.get('language')
+                if isinstance(lang, dict):
+                    lang = lang.get('value')
+                if lang:
+                    return [str(lang).lower().strip()]
+        return []
+    finally:
+        conn.close()
+
+
 __all__ = ['init_db', 'get_db', 'set_db_path', 'cleanup_garbage_entries',
            'cleanup_duplicate_history_entries', 'insert_history_entry',
-           'should_requeue_book']
+           'should_requeue_book',
+           'set_series_language_override', 'get_series_language_override',
+           'get_all_series_language_overrides', 'delete_series_language_override',
+           'set_book_languages', 'get_book_languages']

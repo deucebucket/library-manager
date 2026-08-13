@@ -53,7 +53,10 @@ from library_manager.database import (
     init_db, get_db, set_db_path, cleanup_garbage_entries,
     cleanup_duplicate_history_entries, insert_history_entry,
     should_requeue_book,
-    watch_folder_is_processed, watch_folder_mark_processed
+    watch_folder_is_processed, watch_folder_mark_processed,
+    set_series_language_override, get_all_series_language_overrides,
+    delete_series_language_override,
+    set_book_languages, get_book_languages
 )
 from library_manager.models.book_profile import (
     SOURCE_WEIGHTS, FIELD_WEIGHTS, FieldValue, BookProfile,
@@ -1057,6 +1060,35 @@ def _extract_detected_language(result):
             if language:
                 return language
     return None
+
+
+def _extract_languages(result):
+    """Extract the full language list (primary first) from payload or profile JSON.
+
+    Issue #280: reads the serialized BookProfile 'languages' list; falls back
+    to the single detected language for older profiles.
+    """
+    if not result:
+        return []
+
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except json.JSONDecodeError:
+            return []
+    elif isinstance(result, dict):
+        parsed = result
+    else:
+        return []
+
+    languages = parsed.get('languages')
+    if isinstance(languages, list):
+        cleaned = [str(c).strip().lower() for c in languages if c]
+        if cleaned:
+            return cleaned
+
+    primary = _extract_detected_language(parsed)
+    return [primary] if primary else []
 
 
 # ISO 639-1 language code to full name mapping
@@ -6285,6 +6317,7 @@ def apply_fix(history_id):
     # Prefer audio-detected language stored in the profile (#274), fall back to title detection
     fix_title = fix['new_title'] or fix['old_title']
     fix_lang = _extract_detected_language(book_row['profile']) if book_row else None
+    fix_languages = _extract_languages(book_row['profile']) if book_row else []
     if not fix_lang and fix_title:
         fix_lang = detect_title_language(fix_title)
     audible_url = _build_audible_url(metadata_book_id, fix_lang)
@@ -6314,6 +6347,7 @@ def apply_fix(history_id):
             edition=fix['new_edition'] if fix['new_edition'] else None,
             variant=fix['new_variant'] if fix['new_variant'] else None,
             language_code=fix_lang,
+            languages=fix_languages or None,
             config=config
         )
         if not new_path:
@@ -7543,7 +7577,105 @@ def settings_page():
     return render_template('settings.html', config=config, version=APP_VERSION,
                            pipeline_layers=pipeline_layers,
                            pipeline_order=pipeline_order,
-                           pipeline_default_order=pipeline_default_order)
+                           pipeline_default_order=pipeline_default_order,
+                           language_names=LANGUAGE_NAMES)
+
+
+# ============== SERIES LANGUAGE OVERRIDES (Issue #281) ==============
+
+@app.route('/api/series-language-overrides', methods=['GET'])
+def api_series_language_overrides_list():
+    """List all per-series language overrides."""
+    return jsonify({'success': True, 'overrides': get_all_series_language_overrides()})
+
+
+@app.route('/api/series-language-overrides', methods=['POST'])
+def api_series_language_overrides_set():
+    """Add or update a per-series language override.
+
+    POST body: {"series_name": "Mistborn", "language_code": "de"}
+    language_code 'auto' (or empty) removes the override instead.
+    """
+    data = request.get_json() or {}
+    series_name = (data.get('series_name') or '').strip()
+    language_code = (data.get('language_code') or '').strip().lower()
+
+    if not series_name:
+        return jsonify({'success': False, 'error': 'series_name is required'}), 400
+
+    if language_code in ('', 'auto'):
+        delete_series_language_override(series_name)
+        return jsonify({'success': True})
+
+    try:
+        set_series_language_override(series_name, language_code)
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+
+    log_action('series_language_override', detail=f"{series_name} -> {language_code}", result='success')
+    return jsonify({'success': True})
+
+
+@app.route('/api/series-language-overrides', methods=['DELETE'])
+def api_series_language_overrides_delete():
+    """Remove a per-series language override.
+
+    DELETE body: {"series_name": "Mistborn"}
+    """
+    data = request.get_json() or {}
+    series_name = (data.get('series_name') or '').strip()
+    if not series_name:
+        return jsonify({'success': False, 'error': 'series_name is required'}), 400
+
+    removed = delete_series_language_override(series_name)
+    return jsonify({'success': True, 'removed': removed})
+
+
+# ============== BOOK LANGUAGES (Issue #280) ==============
+
+@app.route('/api/books/<int:book_id>/languages', methods=['GET'])
+def api_book_languages_get(book_id):
+    """Return the ordered language list for a book (primary first)."""
+    conn = get_db()
+    try:
+        row = conn.execute('SELECT id FROM books WHERE id = ?', (book_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({'success': False, 'error': 'Book not found'}), 404
+    return jsonify({'success': True, 'languages': get_book_languages(book_id)})
+
+
+@app.route('/api/books/<int:book_id>/languages', methods=['POST'])
+def api_book_languages_set(book_id):
+    """Set the secondary languages for a book (Issue #280).
+
+    POST body: {"languages": ["de", "en"]}
+    Ordered list of ISO 639-1 codes, first = primary. An empty list clears
+    the list (book falls back to single-language behavior).
+    """
+    data = request.get_json() or {}
+    languages = data.get('languages', [])
+
+    if not isinstance(languages, list):
+        return jsonify({'success': False, 'error': 'languages must be a list of ISO 639-1 codes'}), 400
+
+    conn = get_db()
+    try:
+        row = conn.execute('SELECT id FROM books WHERE id = ?', (book_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({'success': False, 'error': 'Book not found'}), 404
+
+    try:
+        set_book_languages(book_id, languages)
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+
+    cleaned = get_book_languages(book_id)
+    log_action('book_languages', detail=f"book {book_id} -> {','.join(cleaned) or '(cleared)'}", result='success')
+    return jsonify({'success': True, 'languages': cleaned})
 
 
 # ============== PATH DIAGNOSTIC ==============
