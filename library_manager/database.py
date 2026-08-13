@@ -735,9 +735,54 @@ def get_book_languages(book_id, db_path=None):
         conn.close()
 
 
+def get_language_distribution(db_path=None):
+    """Return a {language_code: count} map of detected book languages (Issue #284).
+
+    Reads the profile JSON of every book, extracts the primary language
+    (plain string or FieldValue dict), normalizes ISO 639-2 codes to 639-1,
+    and skips empty/undetermined values.
+    """
+    path = db_path or _db_path
+    if not path:
+        return {}
+    import json as _json
+    from library_manager.utils.path_safety import ISO_639_2_TO_1
+
+    conn = sqlite3.connect(path, timeout=30)
+    try:
+        rows = conn.execute(
+            'SELECT profile FROM books WHERE profile IS NOT NULL'
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}  # Table may not exist yet on older databases
+    finally:
+        conn.close()
+
+    distribution = {}
+    for (profile_json,) in rows:
+        try:
+            profile = _json.loads(profile_json)
+        except ValueError:
+            continue
+        if not isinstance(profile, dict):
+            continue
+        lang = profile.get('language')
+        if isinstance(lang, dict):
+            lang = lang.get('value')
+        if not lang:
+            continue
+        code = str(lang).lower().strip()
+        code = ISO_639_2_TO_1.get(code, code)
+        if not code or code == 'und':
+            continue
+        distribution[code] = distribution.get(code, 0) + 1
+    return distribution
+
+
 __all__ = ['init_db', 'get_db', 'set_db_path', 'cleanup_garbage_entries',
            'cleanup_duplicate_history_entries', 'insert_history_entry',
            'should_requeue_book',
            'set_series_language_override', 'get_series_language_override',
            'get_all_series_language_overrides', 'delete_series_language_override',
-           'set_book_languages', 'get_book_languages']
+           'set_book_languages', 'get_book_languages',
+           'get_language_distribution']

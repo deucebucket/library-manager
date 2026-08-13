@@ -2,6 +2,11 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.157] - 2026-08-13
+
+### Added
+- **#284: Multi-language library onboarding prompt** — After scanning, LM now detects multi-language libraries from the language distribution of processed books (ISO 639-2 normalized) and shows a dashboard banner with one-click naming preferences: keep native naming, tag non-preferred titles, or sort into top-level language folders. New `/api/language-summary` and `/api/language-onboarding` endpoints; the prompt can be dismissed via the new `multilang_onboarding_dismissed` config flag.
+
 ## [0.9.0-beta.156] - 2026-08-13
 
 ### Added

@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama)
 """
 
-APP_VERSION = "0.9.0-beta.156"
+APP_VERSION = "0.9.0-beta.157"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -56,7 +56,8 @@ from library_manager.database import (
     watch_folder_is_processed, watch_folder_mark_processed,
     set_series_language_override, get_all_series_language_overrides,
     delete_series_language_override,
-    set_book_languages, get_book_languages
+    set_book_languages, get_book_languages,
+    get_language_distribution
 )
 from library_manager.models.book_profile import (
     SOURCE_WEIGHTS, FIELD_WEIGHTS, FieldValue, BookProfile,
@@ -7680,6 +7681,65 @@ def api_book_languages_set(book_id):
     cleaned = get_book_languages(book_id)
     log_action('book_languages', detail=f"book {book_id} -> {','.join(cleaned) or '(cleared)'}", result='success')
     return jsonify({'success': True, 'languages': cleaned})
+
+
+# ============== MULTI-LANGUAGE ONBOARDING (Issue #284) ==============
+
+@app.route('/api/language-summary', methods=['GET'])
+def api_language_summary():
+    """Language distribution across processed books + onboarding prompt state."""
+    config = load_config()
+    languages = get_language_distribution()
+    preferred = config.get('preferred_language', 'en')
+    # Multi-language library: 2+ distinct languages, or a detected language
+    # that differs from the preferred one. Only books with a detected
+    # language are counted.
+    multi = len(languages) >= 2 or any(code != preferred for code in languages)
+    return jsonify({
+        'success': True,
+        'languages': languages,
+        'total_books': sum(languages.values()),
+        'preferred_language': preferred,
+        'multi': multi,
+        'dismissed': bool(config.get('multilang_onboarding_dismissed', False)),
+        'language_names': LANGUAGE_NAMES,
+    })
+
+
+@app.route('/api/language-onboarding', methods=['POST'])
+def api_language_onboarding():
+    """Apply a naming preference from the onboarding prompt, or dismiss it.
+
+    POST body: {"action": "apply", "choice": "native"|"tagged"|"top_folder"}
+            or {"action": "dismiss"}
+    """
+    data = request.get_json() or {}
+    action = (data.get('action') or '').strip().lower()
+    if action not in ('apply', 'dismiss'):
+        return jsonify({'success': False, 'error': "action must be 'apply' or 'dismiss'"}), 400
+
+    config = load_config()
+    if action == 'apply':
+        choice = (data.get('choice') or '').strip().lower()
+        if choice == 'native':
+            config['multilang_naming_mode'] = 'native'
+            config['language_tag_enabled'] = False
+        elif choice == 'tagged':
+            config['multilang_naming_mode'] = 'tagged'
+            config['language_tag_enabled'] = True  # keeps existing position/format
+        elif choice == 'top_folder':
+            config['language_tag_enabled'] = True
+            config['language_tag_position'] = 'top_folder'
+        else:
+            return jsonify({'success': False, 'error': "choice must be 'native', 'tagged', or 'top_folder'"}), 400
+
+    # Applying a choice counts as handling the prompt too
+    config['multilang_onboarding_dismissed'] = True
+    save_config(config)
+
+    detail = f"choice={data.get('choice')}" if action == 'apply' else 'dismissed'
+    log_action('language_onboarding', detail=detail, result='success')
+    return jsonify({'success': True, 'action': action})
 
 
 # ============== PATH DIAGNOSTIC ==============
