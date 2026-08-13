@@ -18,6 +18,11 @@ Unknown codecs are not inferred from extensions; missing or conflicting evidence
 Invalid requests and inaccessible or unsafe filesystem state are `unavailable`.
 These states are observations only and grant no authority to move or edit files.
 
+For Gus, `read_only_music_service.py` is the production adapter. It binds only to
+loopback and exposes `GET /health` plus this inspection POST. It deliberately does not
+import the general Flask application; PUT, PATCH, DELETE, organization, rename, apply,
+undo, hook, plugin, and UI routes are absent.
+
 Request schema:
 
 ```json
