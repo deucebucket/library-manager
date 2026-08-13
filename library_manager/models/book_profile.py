@@ -232,6 +232,10 @@ class BookProfile:
     series: FieldValue = field(default_factory=FieldValue)
     series_num: FieldValue = field(default_factory=FieldValue)
     language: FieldValue = field(default_factory=FieldValue)
+    # Issue #280: All languages for this book (ISO 639-1 codes, primary first).
+    # `language` stays the primary for back-compat; `languages` carries the
+    # full list for bilingual/multi-language books.
+    languages: List[str] = field(default_factory=list)
     year: FieldValue = field(default_factory=FieldValue)
     edition: FieldValue = field(default_factory=FieldValue)
     variant: FieldValue = field(default_factory=FieldValue)
@@ -271,6 +275,36 @@ class BookProfile:
             return False
         self.title.add_source(source, title, weight)
         return True
+
+    def get_languages(self) -> List[str]:
+        """All languages for the book (primary first).
+
+        Falls back to the primary `language` value when no explicit list
+        has been set, so single-language books keep working unchanged.
+        """
+        if self.languages:
+            return list(self.languages)
+        if self.language.value:
+            return [self.language.value]
+        return []
+
+    def set_languages(self, codes, source: str = 'user'):
+        """Set the language list (primary first), keeping `language` in sync.
+
+        Codes are normalized (lowercase, stripped) and deduped, preserving
+        order. The first entry becomes the primary `language` value so
+        existing consumers see no behavior change.
+        """
+        cleaned = []
+        for code in codes or []:
+            normalized = str(code).lower().strip() if code else ''
+            if normalized and normalized not in cleaned:
+                cleaned.append(normalized)
+        self.languages = cleaned
+        if cleaned:
+            self.language.value = cleaned[0]
+            if source not in self.language.sources:
+                self.language.sources.append(source)
 
     def calculate_field_confidence(self, fv: FieldValue) -> tuple:
         """Calculate confidence for a field based on source agreement."""
@@ -357,6 +391,11 @@ class BookProfile:
                 self.issues.append('series_as_author')
             self.needs_attention = True
 
+        # Issue #280: make sure the primary language is represented in the
+        # languages list once detection has settled on a value
+        if self.language.value and not self.languages:
+            self.languages = [self.language.value]
+
         self.calculate_overall_confidence()
         self.last_updated = datetime.now().isoformat()
 
@@ -425,6 +464,7 @@ class BookProfile:
         for field_name in FIELD_WEIGHTS.keys():
             fv = getattr(self, field_name)
             result[field_name] = fv.to_dict()
+        result['languages'] = list(self.languages)
         result['overall_confidence'] = self.overall_confidence
         result['verification_layers_used'] = self.verification_layers_used
         result['needs_attention'] = self.needs_attention
@@ -452,6 +492,7 @@ class BookProfile:
                     source_weights=fd.get('source_weights', {})
                 )
                 setattr(profile, field_name, fv)
+        profile.languages = [str(c).lower().strip() for c in data.get('languages', []) if c]
         profile.overall_confidence = data.get('overall_confidence', 0)
         profile.verification_layers_used = data.get('verification_layers_used', [])
         profile.needs_attention = data.get('needs_attention', False)
@@ -607,10 +648,20 @@ def save_book_profile(book_id: int, profile: BookProfile):
     c = conn.cursor()
     try:
         profile_json = json.dumps(profile.to_dict())
-        c.execute('''UPDATE books
-                     SET profile = ?, confidence = ?, updated_at = CURRENT_TIMESTAMP
-                     WHERE id = ?''',
-                  (profile_json, profile.overall_confidence, book_id))
+        # Issue #280: also persist the language list in its own column so
+        # downstream tools (e.g. beets-audible) can query it without
+        # parsing the profile JSON. Tolerate older schemas without the column.
+        languages_json = json.dumps(profile.get_languages())
+        try:
+            c.execute('''UPDATE books
+                         SET profile = ?, confidence = ?, languages = ?, updated_at = CURRENT_TIMESTAMP
+                         WHERE id = ?''',
+                      (profile_json, profile.overall_confidence, languages_json, book_id))
+        except Exception:
+            c.execute('''UPDATE books
+                         SET profile = ?, confidence = ?, updated_at = CURRENT_TIMESTAMP
+                         WHERE id = ?''',
+                      (profile_json, profile.overall_confidence, book_id))
         conn.commit()
     finally:
         conn.close()

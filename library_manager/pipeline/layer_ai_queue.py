@@ -127,6 +127,10 @@ def _extract_detected_language(candidate):
             language = language.get('value')
         if language:
             language = str(language).strip().lower()
+            # Map ISO 639-2 three-letter codes (eng, ger from Skaldleita) to 639-1
+            if len(language) == 3:
+                from library_manager.utils.path_safety import ISO_639_2_TO_1
+                language = ISO_639_2_TO_1.get(language, language)
             if language:
                 return language
     return None

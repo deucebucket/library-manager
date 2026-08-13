@@ -266,6 +266,13 @@
                     </div>
                     <small class="text-muted">Edit series info if it's missing or incorrect. Leave blank if not part of a series.</small>
                 </div>
+
+                <!-- Languages (Issue #280) -->
+                <div class="mb-2">
+                    <label class="form-label small text-muted"><i class="bi bi-translate"></i> Languages</label>
+                    <select class="form-select form-select-sm bg-dark text-light" id="edit-languages" multiple size="4"></select>
+                    <small class="text-muted">Ctrl/Cmd-click for multiple (bilingual books). First stored entry is the primary language; select none to fall back to auto-detection.</small>
+                </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -1087,6 +1094,51 @@ setInterval(() => {
 let editBookModal = null;
 let selectedBookDBResult = null;
 
+// Issue #280: mirror of LANGUAGE_NAMES from library_manager/utils/path_safety.py
+const EDIT_LANGUAGES = {
+    en: 'English', de: 'German', fr: 'French', es: 'Spanish',
+    it: 'Italian', pt: 'Portuguese', nl: 'Dutch', sv: 'Swedish',
+    no: 'Norwegian', da: 'Danish', fi: 'Finnish', pl: 'Polish',
+    ru: 'Russian', ja: 'Japanese', zh: 'Chinese', ko: 'Korean',
+    ar: 'Arabic', he: 'Hebrew', hi: 'Hindi', tr: 'Turkish',
+    cs: 'Czech', hu: 'Hungarian', el: 'Greek', th: 'Thai',
+    vi: 'Vietnamese', uk: 'Ukrainian', ro: 'Romanian', id: 'Indonesian'
+};
+let editBookPrimaryLanguage = null;
+
+function loadEditLanguages(bookId) {
+    const sel = document.getElementById('edit-languages');
+    sel.innerHTML = Object.entries(EDIT_LANGUAGES)
+        .map(([code, name]) => `<option value="${code}">${name} (${code})</option>`)
+        .join('');
+    editBookPrimaryLanguage = null;
+    fetch(`/api/books/${bookId}/languages`)
+        .then(r => r.json())
+        .then(data => {
+            const langs = data.languages || [];
+            editBookPrimaryLanguage = langs[0] || null;
+            for (const opt of sel.options) {
+                opt.selected = langs.includes(opt.value);
+            }
+        })
+        .catch(() => {});
+}
+
+function saveBookLanguages(bookId) {
+    const sel = document.getElementById('edit-languages');
+    let selected = [...sel.selectedOptions].map(o => o.value);
+    // Keep the existing primary first when it is still selected (the API
+    // treats the first entry as primary); otherwise the first option wins.
+    if (editBookPrimaryLanguage && selected.includes(editBookPrimaryLanguage)) {
+        selected = [editBookPrimaryLanguage, ...selected.filter(c => c !== editBookPrimaryLanguage)];
+    }
+    return fetch(`/api/books/${bookId}/languages`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({languages: selected})
+    });
+}
+
 function editBook(bookId, author, title) {
     // Warn if processing is active (item may change before save)
     if (isProcessing && !suppressProcessingWarning) {
@@ -1105,6 +1157,7 @@ function editBook(bookId, author, title) {
     document.getElementById('edit-series-name').value = '';
     document.getElementById('edit-series-num').value = '';
     selectedBookDBResult = null;
+    loadEditLanguages(bookId);
 
     if (!editBookModal) {
         editBookModal = new bootstrap.Modal(document.getElementById('editBookModal'));
@@ -1242,9 +1295,11 @@ function saveBookEdit() {
     .then(r => r.json())
     .then(data => {
         if (data.success) {
-            editBookModal.hide();
-            addActivity('Book saved and locked!', 'success');
-            loadLibrary();
+            saveBookLanguages(bookId).finally(() => {
+                editBookModal.hide();
+                addActivity('Book saved and locked!', 'success');
+                loadLibrary();
+            });
         } else {
             alert('Error: ' + (data.error || 'Unknown error'));
         }
