@@ -19,6 +19,50 @@ LANGUAGE_NAMES = {
     'vi': 'Vietnamese', 'uk': 'Ukrainian', 'ro': 'Romanian', 'id': 'Indonesian'
 }
 
+# Issue #282: ISO 639-1 code to regional-indicator flag emoji for compact
+# visual language tags (e.g. "Title 🇩🇪"). Languages mapped to their most
+# commonly associated country flag.
+LANGUAGE_FLAGS = {
+    'en': '🇬🇧', 'de': '🇩🇪', 'fr': '🇫🇷', 'es': '🇪🇸',
+    'it': '🇮🇹', 'pt': '🇵🇹', 'nl': '🇳🇱', 'sv': '🇸🇪',
+    'no': '🇳🇴', 'da': '🇩🇰', 'fi': '🇫🇮', 'pl': '🇵🇱',
+    'ru': '🇷🇺', 'ja': '🇯🇵', 'zh': '🇨🇳', 'ko': '🇰🇷',
+    'ar': '🇸🇦', 'he': '🇮🇱', 'hi': '🇮🇳', 'tr': '🇹🇷',
+    'cs': '🇨🇿', 'hu': '🇭🇺', 'el': '🇬🇷', 'th': '🇹🇭',
+    'vi': '🇻🇳', 'uk': '🇺🇦', 'ro': '🇷🇴', 'id': '🇮🇩'
+}
+
+# Issue #279: ISO 639-1 <-> ISO 639-2/B (bibliographic) mapping.
+# Bibliographic codes (ger, fre, ...) are used because Skaldleita and most
+# media tooling emit them. Only covers languages in LANGUAGE_NAMES.
+ISO_639_1_TO_2 = {
+    'en': 'eng', 'de': 'ger', 'fr': 'fre', 'es': 'spa',
+    'it': 'ita', 'pt': 'por', 'nl': 'dut', 'sv': 'swe',
+    'no': 'nor', 'da': 'dan', 'fi': 'fin', 'pl': 'pol',
+    'ru': 'rus', 'ja': 'jpn', 'zh': 'chi', 'ko': 'kor',
+    'ar': 'ara', 'he': 'heb', 'hi': 'hin', 'tr': 'tur',
+    'cs': 'cze', 'hu': 'hun', 'el': 'gre', 'th': 'tha',
+    'vi': 'vie', 'uk': 'ukr', 'ro': 'rum', 'id': 'ind'
+}
+ISO_639_2_TO_1 = {v: k for k, v in ISO_639_1_TO_2.items()}
+
+
+def lang_code_for_display(lang_code: str, code_format: str = 'iso639-1') -> str:
+    """Convert an internal ISO 639-1 code for display/naming output.
+
+    Args:
+        lang_code: Internal ISO 639-1 code (e.g. 'de')
+        code_format: 'iso639-1' (default) or 'iso639-2' (three-letter)
+
+    Returns:
+        Code in the requested format; unknown codes pass through unchanged.
+    """
+    if not lang_code:
+        return lang_code
+    if code_format == 'iso639-2':
+        return ISO_639_1_TO_2.get(lang_code, lang_code)
+    return lang_code
+
 # Patterns to strip from titles when strip_unabridged is enabled (Issue #92)
 UNABRIDGED_PATTERNS = [
     r'\s*\(Unabridged\)',
@@ -181,26 +225,35 @@ def format_author_fl(author: str) -> str:
     return f"{first} {last}"
 
 
-def format_language_tag(lang_code: str, lang_name: str = None, fmt: str = "bracket_full") -> str:
+def format_language_tag(lang_code: str, lang_name: str = None, fmt: str = "bracket_full",
+                        code_format: str = "iso639-1") -> str:
     """Format language tag based on user preference.
 
     Args:
         lang_code: ISO 639-1 language code (e.g., 'pl', 'ru')
         lang_name: Full language name (optional, will lookup from LANGUAGE_NAMES)
-        fmt: Tag format - "code", "full", "bracket_code", "bracket_full"
+        fmt: Tag format - "code", "full", "bracket_code", "bracket_full", "emoji_flag"
+        code_format: "iso639-1" (pl) or "iso639-2" (pol) for code-based formats
 
     Returns:
         Formatted tag string
     """
     name = lang_name or LANGUAGE_NAMES.get(lang_code, lang_code.upper())
+    display_code = lang_code_for_display(lang_code, code_format)
 
     if fmt == "code":
-        return f"_{lang_code}"
+        return f"_{display_code}"
     elif fmt == "full":
         return f" {name}"
     elif fmt == "bracket_code":
-        return f" [{lang_code}]"
+        return f" [{display_code}]"
     elif fmt == "bracket_full":
+        return f" ({name})"
+    elif fmt == "emoji_flag":
+        # Issue #282: compact flag emoji tag; fall back to name if unmapped
+        flag = LANGUAGE_FLAGS.get(lang_code)
+        if flag:
+            return f" {flag}"
         return f" ({name})"
     return ""
 
@@ -529,27 +582,35 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
                 title_folder = f"{title_folder} ({safe_narrator})"
 
     # Multi-language naming: add language tag to title folder if enabled
-    # (subfolder position handled separately during path construction)
+    # (subfolder/top_folder positions handled separately during path construction)
     lang_subfolder = None  # Will be set if position is "subfolder"
+    lang_top_folder = None  # Will be set if position is "top_folder" (Issue #278)
     if config and language_code:
         preferred_lang = config.get('preferred_language', 'en')
         multilang_mode = config.get('multilang_naming_mode', 'native')
         tag_enabled = config.get('language_tag_enabled', False)
+        tag_format = config.get('language_tag_format', 'bracket_full')
+        tag_position = config.get('language_tag_position', 'after_title')
+        code_format = config.get('language_code_format', 'iso639-1')
 
         # Determine if we should add a tag
-        should_tag = (tag_enabled or multilang_mode == 'tagged') and language_code != preferred_lang
+        tag_requested = tag_enabled or multilang_mode == 'tagged'
+        should_tag = tag_requested and language_code != preferred_lang
 
-        if should_tag:
-            tag_format = config.get('language_tag_format', 'bracket_full')
-            tag_position = config.get('language_tag_position', 'after_title')
-
+        if tag_requested and tag_position == 'top_folder':
+            # Issue #278: Language/Author/Title structure. Applies to ALL books
+            # with a known language (including the preferred one) so the library
+            # is fully partitioned by language at the top level.
+            lang_name = language or LANGUAGE_NAMES.get(language_code, language_code.upper())
+            lang_top_folder = sanitize_path_component(lang_name)
+        elif should_tag:
             if tag_position == 'subfolder':
                 # Will create Author/Language/Title structure
                 lang_name = language or LANGUAGE_NAMES.get(language_code, language_code.upper())
                 lang_subfolder = sanitize_path_component(lang_name)
             else:
                 # Add tag to title folder
-                lang_tag = format_language_tag(language_code, language, tag_format)
+                lang_tag = format_language_tag(language_code, language, tag_format, code_format)
                 title_folder = apply_language_tag(title_folder, lang_tag, tag_position)
 
     if naming_format == 'custom':
@@ -617,8 +678,11 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
         path_str = path_str.replace('{variant}', safe_variant)
         # Multi-language template tags
         safe_language = LANGUAGE_NAMES.get(language_code, language_code.upper()) if language_code else ''
+        tpl_code_format = config.get('language_code_format', 'iso639-1') if config else 'iso639-1'
         path_str = path_str.replace('{language}', safe_language)
-        path_str = path_str.replace('{lang_code}', language_code or '')
+        path_str = path_str.replace('{lang_code}', lang_code_for_display(language_code, tpl_code_format) if language_code else '')
+        # Issue #282: {lang_flag} - flag emoji for the book's language
+        path_str = path_str.replace('{lang_flag}', LANGUAGE_FLAGS.get(language_code, '') if language_code else '')
 
         # Clean up empty brackets/parens from missing optional data
         path_str = re.sub(r'\(\s*\)', '', path_str)  # Empty ()
@@ -685,6 +749,11 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
         # Default: Author/Title (two-level)
         result_path = lib_path / safe_author / title_folder
 
+    # Issue #278: Language as top-level folder - wrap whatever structure the
+    # naming format produced inside a language folder (Language/Author/...)
+    if lang_top_folder:
+        result_path = Path(lib_path) / lang_top_folder / result_path.relative_to(lib_path)
+
     # CRITICAL SAFETY: Verify path is within library and has minimum depth
     try:
         # Resolve to absolute path
@@ -713,11 +782,15 @@ __all__ = [
     'find_existing_author_folder',
     'format_language_tag',
     'apply_language_tag',
+    'lang_code_for_display',
     'strip_unabridged_markers',
     'parse_author_name',
     'format_author_lf',
     'format_author_fl',
     'LANGUAGE_NAMES',
+    'LANGUAGE_FLAGS',
+    'ISO_639_1_TO_2',
+    'ISO_639_2_TO_1',
     'NAME_PREFIXES',
     'NAME_SUFFIXES',
 ]

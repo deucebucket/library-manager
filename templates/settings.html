@@ -146,7 +146,8 @@
                                         <button type="button" class="btn btn-sm btn-outline-success naming-tag" onclick="insertTag('{narrator}')">{narrator}</button>
                                         <button type="button" class="btn btn-sm btn-outline-secondary naming-tag" onclick="insertTag('{year}')">{year}</button>
                                         <button type="button" class="btn btn-sm btn-outline-primary naming-tag" onclick="insertTag('{language}')" title="Full language name: English, Russian, Polish">{language}</button>
-                                        <button type="button" class="btn btn-sm btn-outline-primary naming-tag" onclick="insertTag('{lang_code}')" title="ISO code: en, ru, pl">{lang_code}</button>
+                                        <button type="button" class="btn btn-sm btn-outline-primary naming-tag" onclick="insertTag('{lang_code}')" title="ISO code: en, ru, pl (or eng, rus, pol with ISO 639-2 code format)">{lang_code}</button>
+                                        <button type="button" class="btn btn-sm btn-outline-primary naming-tag" onclick="insertTag('{lang_flag}')" title="Flag emoji: 🇬🇧, 🇷🇺, 🇵🇱">{lang_flag}</button>
                                     </div>
                                     <small class="text-muted d-block mt-1"><i class="bi bi-info-circle"></i> Use <code>.pad(N)</code> for zero-padding: <code>{series_num.pad(2)}</code> → 01, 02... 10</small>
                                     <small class="text-muted d-block"><i class="bi bi-info-circle"></i> Author formats: <code>{author_lf}</code> → "Sanderson, Brandon", <code>{author_last}</code> → "Sanderson", <code>{author_first}</code> → "Brandon"</small>
@@ -230,6 +231,7 @@
                                                 <option value="bracket_code" {% if config.language_tag_format == 'bracket_code' %}selected{% endif %}>[pl]</option>
                                                 <option value="full" {% if config.language_tag_format == 'full' %}selected{% endif %}>Polish</option>
                                                 <option value="code" {% if config.language_tag_format == 'code' %}selected{% endif %}>_pl</option>
+                                                <option value="emoji_flag" {% if config.language_tag_format == 'emoji_flag' %}selected{% endif %}>🇵🇱</option>
                                             </select>
                                         </div>
                                         <div class="col-6">
@@ -238,6 +240,16 @@
                                                 <option value="after_title" {% if config.language_tag_position == 'after_title' or not config.language_tag_position %}selected{% endif %}>After Title</option>
                                                 <option value="before_title" {% if config.language_tag_position == 'before_title' %}selected{% endif %}>Before Title</option>
                                                 <option value="subfolder" {% if config.language_tag_position == 'subfolder' %}selected{% endif %}>Subfolder</option>
+                                                <option value="top_folder" {% if config.language_tag_position == 'top_folder' %}selected{% endif %}>Top-Level Folder</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="row g-2 mt-1">
+                                        <div class="col-6">
+                                            <label class="form-label small mb-1">Code Format</label>
+                                            <select class="form-select form-select-sm bg-dark text-light" name="language_code_format" id="language_code_format" onchange="updateLanguageTagPreview()">
+                                                <option value="iso639-1" {% if config.language_code_format == 'iso639-1' or not config.language_code_format %}selected{% endif %}>ISO 639-1 (pl)</option>
+                                                <option value="iso639-2" {% if config.language_code_format == 'iso639-2' %}selected{% endif %}>ISO 639-2 (pol)</option>
                                             </select>
                                         </div>
                                     </div>
@@ -1849,16 +1861,20 @@ function toggleLanguageTagOptions() {
 function updateLanguageTagPreview() {
     const format = document.getElementById('language_tag_format').value;
     const position = document.getElementById('language_tag_position').value;
+    const codeFormatEl = document.getElementById('language_code_format');
+    const codeFormat = codeFormatEl ? codeFormatEl.value : 'iso639-1';
     const previewEl = document.getElementById('language-tag-preview');
     if (!previewEl) return;
 
     // Build tag based on format
+    const code = codeFormat === 'iso639-2' ? 'rus' : 'ru';
     let tag = '';
     switch (format) {
         case 'bracket_full': tag = ' (Russian)'; break;
-        case 'bracket_code': tag = ' [ru]'; break;
+        case 'bracket_code': tag = ' [' + code + ']'; break;
         case 'full': tag = ' Russian'; break;
-        case 'code': tag = '_ru'; break;
+        case 'code': tag = '_' + code; break;
+        case 'emoji_flag': tag = ' 🇷🇺'; break;
     }
 
     // Build preview based on position
@@ -1867,6 +1883,7 @@ function updateLanguageTagPreview() {
         case 'after_title': preview = 'Author/Title' + tag + '/'; break;
         case 'before_title': preview = 'Author/' + tag.trim() + ' Title/'; break;
         case 'subfolder': preview = 'Author/Russian/Title/'; break;
+        case 'top_folder': preview = 'Russian/Author/Title/'; break;
     }
     previewEl.textContent = preview;
 }

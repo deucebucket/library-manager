@@ -7453,6 +7453,7 @@ def settings_page():
         config['language_tag_enabled'] = 'language_tag_enabled' in request.form
         config['language_tag_format'] = request.form.get('language_tag_format', 'bracket_full')
         config['language_tag_position'] = request.form.get('language_tag_position', 'after_title')
+        config['language_code_format'] = request.form.get('language_code_format', 'iso639-1')
         # google_books_api_key is now stored in secrets only (security fix)
         config['update_channel'] = request.form.get('update_channel', 'stable')
         config['naming_format'] = request.form.get('naming_format', 'author/title')
