@@ -2,6 +2,18 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.156] - 2026-08-13
+
+### Added
+- **#278: Language as top-level folder** — New `top_folder` option for `language_tag_position` builds `Language/Author/[Series/]Title` for every book with a known language (preferred language included), wrapping all naming formats including custom templates.
+- **#282: Emoji flag language tags** — New `emoji_flag` tag format and `{lang_flag}` custom template tag with an ISO 639-1 to flag emoji mapping; unmapped codes fall back to the bracketed name.
+- **#279: ISO 639-2 code output** — New `language_code_format` setting (`iso639-1`/`iso639-2`, bibliographic codes to match Skaldleita) applied to code-based tags and `{lang_code}`.
+- **#281: Per-series language override** — New `series_language_overrides` table, `/api/series-language-overrides` endpoints, and a settings card. A locked series short-circuits language detection in `_resolve_metadata_language`; `auto` keeps per-book detection.
+- **#280: Multi-language book tagging** — `BookProfile.languages` list (primary first, back-compatible), `books.languages` column with migration, `/api/books/<id>/languages` endpoints, a languages multi-select in the library edit modal, and multi-language folder tags (names joined `, `, codes `,`, flags space).
+
+### Fixed
+- **ISO 639-2 normalization** — Three-letter codes from Skaldleita (`eng`, `ger`) are now mapped to ISO 639-1 in `_normalize_language_code`, all three `_extract_detected_language` copies, and defensively in `build_new_path`. Previously they produced `ENG/` top folders and wrongly tagged preferred-language books.
+
 ## [0.9.0-beta.154] - 2026-07-14
 
 ### Fixed
