@@ -4,6 +4,7 @@ Tests for language naming features:
 - Issue #278: language as top-level folder (top_folder position)
 - Issue #282: emoji flag language tags (emoji_flag format, {lang_flag} tag)
 - Issue #279: ISO 639-2 three-letter codes (language_code_format)
+- Issue #284: multi-language library detection + onboarding prompt
 """
 
 import sys
@@ -593,6 +594,154 @@ def main():
     check("Skaldleita 'eng' -> English/ top folder (not ENG/)",
           p is not None and p.relative_to(lib).parts == ("English", "Frank Herbert", "Dune"),
           f"got: {p}")
+
+    # ==========================================
+    # Issue #284: multi-language detection + onboarding prompt
+    # ==========================================
+    print("\n--- Issue #284: multi-language library onboarding ---")
+
+    from library_manager.config import DEFAULT_CONFIG as _DEFAULT_CONFIG
+
+    check("DEFAULT_CONFIG has multilang_onboarding_dismissed",
+          _DEFAULT_CONFIG.get('multilang_onboarding_dismissed') is False)
+
+    onb_db = tmp / "onboarding.db"
+    db.init_db(db_path=str(onb_db))
+
+    def _insert_onb_book(path, profile):
+        conn = db.get_db(db_path=str(onb_db))
+        conn.execute("INSERT INTO books (path, profile) VALUES (?, ?)",
+                     (str(tmp / path), _json.dumps(profile) if profile is not None else None))
+        conn.commit()
+        conn.close()
+
+    _insert_onb_book("b-de-plain", {'language': 'de'})
+    _insert_onb_book("b-de-fieldvalue", {'language': {'value': 'GER', 'confidence': 92}})
+    _insert_onb_book("b-en-6392", {'language': {'value': 'eng', 'confidence': 95}})
+    _insert_onb_book("b-en-plain", {'language': 'en'})
+    _insert_onb_book("b-fr-detected", {'detected_language': 'fr'})
+    _insert_onb_book("b-und", {'language': 'und'})
+    _insert_onb_book("b-empty", {'language': ''})
+    _insert_onb_book("b-missing", {'title': 'No language here'})
+    _insert_onb_book("b-noprofile", None)
+
+    dist = db.get_language_distribution(db_path=str(onb_db))
+    check("distribution counts plain + FieldValue languages",
+          dist.get('de') == 2, f"got: {dist}")
+    check("distribution normalizes 639-2 'eng'/'GER' -> 639-1",
+          dist.get('en') == 2 and 'eng' not in dist and 'ger' not in dist,
+          f"got: {dist}")
+    check("distribution reads detected_language key (what the pipeline persists)",
+          dist.get('fr') == 1, f"got: {dist}")
+    check("distribution skips und/empty/missing/no-profile",
+          len(dist) == 3, f"got: {dist}")
+
+    # --- API: GET /api/language-summary + POST /api/language-onboarding ---
+    import app as app_module
+    real_load_config = app_module.load_config
+    real_save_config = app_module.save_config
+    onb_cfg = {
+        'preferred_language': 'en',
+        'multilang_naming_mode': 'native',
+        'language_tag_enabled': False,
+        'language_tag_position': 'after_title',
+        'language_tag_format': 'bracket_full',
+        'multilang_onboarding_dismissed': False,
+    }
+    saved_configs = []
+
+    def _fake_save(cfg):
+        saved_configs.append(dict(cfg))
+        onb_cfg.update(cfg)
+
+    old_db_path = db._db_path
+    try:
+        app_module.load_config = lambda: dict(onb_cfg)
+        app_module.save_config = _fake_save
+        db.set_db_path(str(onb_db))
+
+        resp = client.get('/api/language-summary')
+        body = resp.get_json()
+        check("summary: multi true for mixed library",
+              resp.status_code == 200 and body.get('multi') is True,
+              f"got: {resp.status_code} {body}")
+        check("summary: counts only books with a detected language",
+              body.get('total_books') == 5 and body.get('languages') == {'de': 2, 'en': 2, 'fr': 1},
+              f"got: {body}")
+        check("summary: exposes preferred language and dismissed flag",
+              body.get('preferred_language') == 'en' and body.get('dismissed') is False)
+
+        # Single language == preferred -> not multi
+        conn = db.get_db(db_path=str(onb_db))
+        conn.execute("DELETE FROM books WHERE path LIKE '%b-de%' OR path LIKE '%b-fr%'")
+        conn.commit()
+        conn.close()
+        resp = client.get('/api/language-summary')
+        check("summary: single preferred-language library is not multi",
+              resp.get_json().get('multi') is False, f"got: {resp.get_json()}")
+
+        # Single language != preferred -> multi
+        onb_cfg['preferred_language'] = 'fr'
+        resp = client.get('/api/language-summary')
+        check("summary: language differing from preferred is multi",
+              resp.get_json().get('multi') is True, f"got: {resp.get_json()}")
+        onb_cfg['preferred_language'] = 'en'
+
+        # --- POST /api/language-onboarding: apply choices ---
+        resp = client.post('/api/language-onboarding', json={'action': 'apply', 'choice': 'tagged'})
+        check("apply 'tagged' succeeds",
+              resp.status_code == 200 and resp.get_json().get('success') is True,
+              f"got: {resp.status_code} {resp.get_json()}")
+        check("apply 'tagged' sets tagged mode + enables tags, keeps position/format",
+              onb_cfg.get('multilang_naming_mode') == 'tagged'
+              and onb_cfg.get('language_tag_enabled') is True
+              and onb_cfg.get('language_tag_position') == 'after_title'
+              and onb_cfg.get('language_tag_format') == 'bracket_full',
+              f"got: {onb_cfg}")
+        check("apply marks onboarding dismissed",
+              onb_cfg.get('multilang_onboarding_dismissed') is True)
+        check("apply persists config via save_config",
+              len(saved_configs) == 1 and saved_configs[0].get('multilang_onboarding_dismissed') is True)
+
+        resp = client.post('/api/language-onboarding', json={'action': 'apply', 'choice': 'native'})
+        check("apply 'native' sets native mode + disables tags",
+              resp.status_code == 200
+              and onb_cfg.get('multilang_naming_mode') == 'native'
+              and onb_cfg.get('language_tag_enabled') is False,
+              f"got: {resp.status_code} {onb_cfg}")
+
+        resp = client.post('/api/language-onboarding', json={'action': 'apply', 'choice': 'top_folder'})
+        check("apply 'top_folder' enables tags with top_folder position",
+              resp.status_code == 200
+              and onb_cfg.get('language_tag_enabled') is True
+              and onb_cfg.get('language_tag_position') == 'top_folder',
+              f"got: {resp.status_code} {onb_cfg}")
+
+        resp = client.post('/api/language-onboarding', json={'action': 'apply', 'choice': 'bogus'})
+        check("invalid choice rejected with 400",
+              resp.status_code == 400 and resp.get_json().get('success') is False,
+              f"got: {resp.status_code} {resp.get_json()}")
+        check("invalid choice does not persist config",
+              len(saved_configs) == 3, f"got: {len(saved_configs)}")
+
+        resp = client.post('/api/language-onboarding', json={'action': 'bogus'})
+        check("invalid action rejected with 400", resp.status_code == 400)
+
+        # Reset the flag, then dismiss via the banner's X button
+        onb_cfg['multilang_onboarding_dismissed'] = False
+        resp = client.post('/api/language-onboarding', json={'action': 'dismiss'})
+        check("dismiss succeeds and sets dismissed flag",
+              resp.status_code == 200
+              and onb_cfg.get('multilang_onboarding_dismissed') is True,
+              f"got: {resp.status_code} {onb_cfg}")
+
+        resp = client.get('/api/language-summary')
+        check("summary reflects dismissed flag",
+              resp.get_json().get('dismissed') is True, f"got: {resp.get_json()}")
+    finally:
+        app_module.load_config = real_load_config
+        app_module.save_config = real_save_config
+        db.set_db_path(old_db_path)
 
     print("\n" + "=" * 60)
     print(f"RESULTS: {passed} passed, {failed} failed")
