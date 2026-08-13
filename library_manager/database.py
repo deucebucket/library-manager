@@ -738,9 +738,9 @@ def get_book_languages(book_id, db_path=None):
 def get_language_distribution(db_path=None):
     """Return a {language_code: count} map of detected book languages (Issue #284).
 
-    Reads the profile JSON of every book, extracts the primary language
-    (plain string or FieldValue dict), normalizes ISO 639-2 codes to 639-1,
-    and skips empty/undetermined values.
+    Reads the profile JSON of every book, extracts the primary language from
+    'detected_language' or 'language' (plain string or FieldValue dict),
+    normalizes ISO 639-2 codes to 639-1, and skips empty/undetermined values.
     """
     path = db_path or _db_path
     if not path:
@@ -766,7 +766,10 @@ def get_language_distribution(db_path=None):
             continue
         if not isinstance(profile, dict):
             continue
-        lang = profile.get('language')
+        # The pipeline persists either 'detected_language' (plain string or
+        # FieldValue dict) or 'language' (FieldValue) - accept both, matching
+        # _extract_detected_language semantics.
+        lang = profile.get('detected_language') or profile.get('language')
         if isinstance(lang, dict):
             lang = lang.get('value')
         if not lang:

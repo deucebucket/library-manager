@@ -619,6 +619,7 @@ def main():
     _insert_onb_book("b-de-fieldvalue", {'language': {'value': 'GER', 'confidence': 92}})
     _insert_onb_book("b-en-6392", {'language': {'value': 'eng', 'confidence': 95}})
     _insert_onb_book("b-en-plain", {'language': 'en'})
+    _insert_onb_book("b-fr-detected", {'detected_language': 'fr'})
     _insert_onb_book("b-und", {'language': 'und'})
     _insert_onb_book("b-empty", {'language': ''})
     _insert_onb_book("b-missing", {'title': 'No language here'})
@@ -630,8 +631,10 @@ def main():
     check("distribution normalizes 639-2 'eng'/'GER' -> 639-1",
           dist.get('en') == 2 and 'eng' not in dist and 'ger' not in dist,
           f"got: {dist}")
+    check("distribution reads detected_language key (what the pipeline persists)",
+          dist.get('fr') == 1, f"got: {dist}")
     check("distribution skips und/empty/missing/no-profile",
-          len(dist) == 2, f"got: {dist}")
+          len(dist) == 3, f"got: {dist}")
 
     # --- API: GET /api/language-summary + POST /api/language-onboarding ---
     import app as app_module
@@ -663,14 +666,14 @@ def main():
               resp.status_code == 200 and body.get('multi') is True,
               f"got: {resp.status_code} {body}")
         check("summary: counts only books with a detected language",
-              body.get('total_books') == 4 and body.get('languages') == {'de': 2, 'en': 2},
+              body.get('total_books') == 5 and body.get('languages') == {'de': 2, 'en': 2, 'fr': 1},
               f"got: {body}")
         check("summary: exposes preferred language and dismissed flag",
               body.get('preferred_language') == 'en' and body.get('dismissed') is False)
 
         # Single language == preferred -> not multi
         conn = db.get_db(db_path=str(onb_db))
-        conn.execute("DELETE FROM books WHERE path LIKE '%b-de%'")
+        conn.execute("DELETE FROM books WHERE path LIKE '%b-de%' OR path LIKE '%b-fr%'")
         conn.commit()
         conn.close()
         resp = client.get('/api/language-summary')
