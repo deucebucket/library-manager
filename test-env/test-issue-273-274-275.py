@@ -77,7 +77,7 @@ def test_build_profile_propagates_api_language_and_asin():
         "source": "bookdb",
         "author": "Andrzej Sapkowski",
         "title": "The Last Wish",
-        "asin": "B00XXX",
+        "asin": "B003ZW6GR8",
         "language": "en",
     }]
     profile = build_profile_from_sources(
@@ -87,7 +87,7 @@ def test_build_profile_propagates_api_language_and_asin():
         audio_result=None,
         fingerprint_data=None,
     )
-    assert profile.book_id == "B00XXX", f"expected B00XXX, got {profile.book_id}"
+    assert profile.book_id == "B003ZW6GR8", f"expected B003ZW6GR8, got {profile.book_id}"
     assert profile.language.value == "en", f"expected en, got {profile.language.value}"
     assert "bookdb" in profile.language.sources
     print("[PASS] build_profile_from_sources propagates API language and ASIN")
@@ -110,17 +110,26 @@ def test_build_profile_propagates_audio_language():
 
 def test_build_audible_url_uses_detected_language():
     """German detected language must route to audible.de."""
-    url = _build_audible_url("B00XXX", "de")
+    url = _build_audible_url("B003ZW6GR8", "de")
     assert "audible.de" in url, url
-    assert url.endswith("/pd/B00XXX"), url
+    assert url.endswith("/pd/B003ZW6GR8"), url
     print("[PASS] _build_audible_url routes German to audible.de")
 
 
 def test_extract_book_id_prefers_asin():
     """ASIN must win over generic ids."""
-    candidate = {"id": "123", "asin": "B00XXX", "book_id": "456"}
-    assert _extract_book_id(candidate) == "B00XXX"
+    candidate = {"id": "123", "asin": "B003ZW6GR8", "book_id": "456"}
+    assert _extract_book_id(candidate) == "B003ZW6GR8"
     print("[PASS] _extract_book_id prefers asin")
+
+
+def test_build_audible_url_rejects_numeric_book_id():
+    """Numeric database ids must not produce broken Audible URLs."""
+    from library_manager.pipeline.layer_ai_queue import _build_audible_url as _build_audible_url_aiq
+    assert _build_audible_url("12345") is None
+    assert _build_audible_url(12345) is None
+    assert _build_audible_url_aiq("12345") is None
+    print("[PASS] _build_audible_url rejects numeric book ids")
 
 
 def test_embed_tags_writes_wwwaudiofile():
@@ -130,8 +139,8 @@ def test_embed_tags_writes_wwwaudiofile():
     metadata = build_metadata_for_embedding(
         author="Test Author",
         title="Test Book",
-        book_id="B00XXX",
-        audible_url="https://www.audible.de/pd/B00XXX",
+        book_id="B003ZW6GR8",
+        audible_url="https://www.audible.de/pd/B003ZW6GR8",
     )
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -144,7 +153,7 @@ def test_embed_tags_writes_wwwaudiofile():
         from mutagen.mp3 import MP3
         tags = MP3(str(mp3_path))
         assert "TXXX:WWWAUDIOFILE" in tags
-        assert str(tags["TXXX:WWWAUDIOFILE"]) == "https://www.audible.de/pd/B00XXX"
+        assert str(tags["TXXX:WWWAUDIOFILE"]) == "https://www.audible.de/pd/B003ZW6GR8"
 
         # MP4 via freeform atom
         m4b_path = tmp_path / "test.m4b"
@@ -154,7 +163,7 @@ def test_embed_tags_writes_wwwaudiofile():
         mp4_tags = MP4(str(m4b_path))
         key = "----:com.apple.iTunes:WWWAUDIOFILE"
         assert key in mp4_tags
-        assert mp4_tags[key][0].decode("utf-8") == "https://www.audible.de/pd/B00XXX"
+        assert mp4_tags[key][0].decode("utf-8") == "https://www.audible.de/pd/B003ZW6GR8"
 
     print("[PASS] embed_tags writes WWWAUDIOFILE for MP3 and MP4")
 
@@ -166,6 +175,7 @@ def main():
     test_build_profile_propagates_audio_language()
     test_build_audible_url_uses_detected_language()
     test_extract_book_id_prefers_asin()
+    test_build_audible_url_rejects_numeric_book_id()
     test_embed_tags_writes_wwwaudiofile()
     print("\nAll issue #273/#274/#275 regression tests passed.")
 

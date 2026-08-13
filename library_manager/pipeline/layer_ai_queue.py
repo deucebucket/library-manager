@@ -15,7 +15,8 @@ from typing import Callable, Dict, List, Optional, Set, Tuple, Type
 
 from library_manager.database import insert_history_entry
 from library_manager.utils.validation import (
-    is_valid_author_for_recommendation, is_valid_title_for_recommendation
+    is_valid_author_for_recommendation, is_valid_title_for_recommendation,
+    looks_like_asin,
 )
 from library_manager.worker import set_current_provider
 
@@ -53,6 +54,10 @@ def _build_audible_url(book_id, language_code=None):
 
     book_id_value = str(book_id).strip()
     if not book_id_value:
+        return None
+
+    # Only build Audible URLs for actual ASINs, not numeric database ids.
+    if not looks_like_asin(book_id_value):
         return None
 
     normalized_lang = (str(language_code).strip().lower().split('-')[0] if language_code else 'en')

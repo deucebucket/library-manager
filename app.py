@@ -65,7 +65,7 @@ from library_manager.utils import (
     calculate_title_similarity, extract_series_from_title, clean_search_title,
     standardize_initials, clean_author_name, extract_author_title,
     # validation
-    is_unsearchable_query, is_garbage_author_match, is_garbage_match, is_placeholder_author, is_drastic_author_change,
+    is_unsearchable_query, is_garbage_author_match, is_garbage_match, is_placeholder_author, is_drastic_author_change, looks_like_asin,
     # audio
     AUDIO_EXTENSIONS, EBOOK_EXTENSIONS,
     get_first_audio_file, extract_audio_sample, extract_audio_sample_from_middle,
@@ -1004,6 +1004,10 @@ def _build_audible_url(book_id, language_code=None):
     if not book_id_value:
         return None
 
+    # Only build Audible URLs for actual ASINs, not numeric database ids.
+    if not looks_like_asin(book_id_value):
+        return None
+
     normalized_lang = (str(language_code).strip().lower().split('-')[0] if language_code else 'en')
     region = get_audible_region_for_language(normalized_lang or 'en')
 
@@ -1313,7 +1317,7 @@ def gather_all_api_candidates(title, author=None, config=None):
     seen_asins = set()
     for candidate in list(candidates):
         asin = _extract_book_id(candidate)
-        if asin and asin not in seen_asins:
+        if asin and asin not in seen_asins and looks_like_asin(asin):
             seen_asins.add(asin)
             try:
                 enriched = lookup_audnexus_by_asin(asin, region=audible_region)
