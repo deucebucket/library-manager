@@ -99,8 +99,10 @@ DEFAULT_CONFIG = {
     # Multi-language naming - how to name books based on their detected language
     "multilang_naming_mode": "native",      # "native" = book's language, "preferred" = user's language, "tagged" = preferred + tag
     "language_tag_enabled": False,          # Add language tag to folder names (e.g., "Title (Russian)")
-    "language_tag_format": "bracket_full",  # "code" (_pl), "full" (Polish), "bracket_code" ([pl]), "bracket_full" ((Polish))
-    "language_tag_position": "after_title", # "after_title", "before_title", "subfolder"
+    "language_tag_format": "bracket_full",  # "code" (_pl), "full" (Polish), "bracket_code" ([pl]), "bracket_full" ((Polish)), "emoji_flag" (🇵🇱)
+    "language_tag_position": "after_title", # "after_title", "before_title", "subfolder", "top_folder"
+    "language_code_format": "iso639-1",     # "iso639-1" (pl) or "iso639-2" (pol) for code-based tags and {lang_code}
+    "multilang_onboarding_dismissed": False,  # Hide the multi-language onboarding prompt on the dashboard (Issue #284)
     # Trust the Process mode - fully automatic verification chain
     "trust_the_process": False,  # Auto-verify drastic changes, use audio analysis as tie-breaker, only flag truly unidentifiable
     # Book Profile System settings - progressive verification with confidence scoring

@@ -24,7 +24,7 @@ from library_manager.providers.rate_limiter import (
     API_RATE_LIMITS,
     API_CIRCUIT_BREAKER,
 )
-from library_manager.providers.audnexus import search_audnexus
+from library_manager.providers.audnexus import search_audnexus, lookup_audnexus_by_asin
 from library_manager.providers.openlibrary import search_openlibrary
 from library_manager.providers.googlebooks import search_google_books
 from library_manager.providers.hardcover import search_hardcover
@@ -95,6 +95,7 @@ __all__ = [
     'API_CIRCUIT_BREAKER',
     # API providers
     'search_audnexus',
+    'lookup_audnexus_by_asin',
     'search_openlibrary',
     'search_google_books',
     'search_hardcover',

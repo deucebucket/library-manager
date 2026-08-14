@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.156-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.157-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 
@@ -486,6 +486,12 @@ See [docs/DOCKER.md](docs/DOCKER.md) for detailed setup guides.
 
 # Rebuild 2GB test library first
 ./test-env/run-integration-tests.sh --rebuild
+
+# Offline/no-network mode (disable API/AI layers)
+./test-env/run-integration-tests.sh --offline --local --rebuild
+
+# If your runtime is docker (not podman):
+CONTAINER_RUNTIME=docker ./test-env/run-integration-tests.sh --offline --local
 ```
 
 ### Local Development

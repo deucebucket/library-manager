@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama, OpenAI-compatible APIs)
 """
 
-APP_VERSION = "0.9.0-beta.156"
+APP_VERSION = "0.9.0-beta.157"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -53,7 +53,11 @@ from library_manager.database import (
     init_db, get_db, set_db_path, cleanup_garbage_entries,
     cleanup_duplicate_history_entries, insert_history_entry,
     should_requeue_book,
-    watch_folder_is_processed, watch_folder_mark_processed
+    watch_folder_is_processed, watch_folder_mark_processed,
+    set_series_language_override, get_all_series_language_overrides,
+    delete_series_language_override,
+    set_book_languages, get_book_languages,
+    get_language_distribution
 )
 from library_manager.models.book_profile import (
     SOURCE_WEIGHTS, FIELD_WEIGHTS, FieldValue, BookProfile,
@@ -65,7 +69,7 @@ from library_manager.utils import (
     calculate_title_similarity, extract_series_from_title, clean_search_title,
     standardize_initials, clean_author_name, extract_author_title,
     # validation
-    is_unsearchable_query, is_garbage_author_match, is_garbage_match, is_placeholder_author, is_drastic_author_change,
+    is_unsearchable_query, is_garbage_author_match, is_garbage_match, is_placeholder_author, is_drastic_author_change, looks_like_asin,
     # audio
     AUDIO_EXTENSIONS, EBOOK_EXTENSIONS,
     get_first_audio_file, extract_audio_sample, extract_audio_sample_from_middle,
@@ -77,7 +81,7 @@ from library_manager.providers import (
     rate_limit_wait, is_circuit_open, record_api_failure, record_api_success,
     handle_rate_limit_response,
     API_RATE_LIMITS, API_CIRCUIT_BREAKER,
-    search_audnexus, search_openlibrary, search_google_books, search_hardcover,
+    search_audnexus, lookup_audnexus_by_asin, search_openlibrary, search_google_books, search_hardcover,
     BOOKDB_API_URL, BOOKDB_PUBLIC_KEY, get_signed_headers,
     search_bookdb as _search_bookdb_raw, identify_audio_with_bookdb,
     call_ollama as _call_ollama_raw, call_ollama_simple as _call_ollama_simple_raw,
@@ -974,6 +978,127 @@ def get_audible_region_for_language(lang_code):
     return region_map.get(lang_code, 'us')
 
 
+def _extract_book_id(result):
+    """Extract a best-effort book identifier from payload or persisted profile JSON."""
+    if not result:
+        return None
+
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except json.JSONDecodeError:
+            return None
+    elif isinstance(result, dict):
+        parsed = result
+    else:
+        return None
+
+    for key in ('asin', 'audible_id', 'book_id', 'id', 'bookdb_id', 'audio_id'):
+        value = parsed.get(key)
+        if value:
+            value = str(value).strip()
+            if value:
+                return value
+    return None
+
+
+def _build_audible_url(book_id, language_code=None):
+    """Build an Audible URL from a book id and preferred language."""
+    if not book_id:
+        return None
+
+    book_id_value = str(book_id).strip()
+    if not book_id_value:
+        return None
+
+    # Only build Audible URLs for actual ASINs, not numeric database ids.
+    if not looks_like_asin(book_id_value):
+        return None
+
+    normalized_lang = (str(language_code).strip().lower().split('-')[0] if language_code else 'en')
+    region = get_audible_region_for_language(normalized_lang or 'en')
+
+    region_to_domain = {
+        'us': 'audible.com',
+        'de': 'audible.de',
+        'fr': 'audible.fr',
+        'it': 'audible.it',
+        'es': 'audible.es',
+        'jp': 'audible.co.jp',
+        'au': 'audible.com.au',
+        'uk': 'audible.co.uk',
+        'in': 'audible.in',
+        'ca': 'audible.ca',
+    }
+    domain = region_to_domain.get(region, AUDIBLE_LANGUAGE_ENDPOINTS.get('en', 'audible.com'))
+
+    return f"https://www.{domain}/pd/{book_id_value}"
+
+
+def _extract_detected_language(result):
+    """Extract a previously detected language code from payload or persisted profile JSON.
+
+    Handles both plain top-level values (legacy/ebook paths) and serialized
+    BookProfile FieldValue dicts where language is stored as
+    {'value': 'de', 'confidence': 95, ...}.
+    """
+    if not result:
+        return None
+
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except json.JSONDecodeError:
+            return None
+    elif isinstance(result, dict):
+        parsed = result
+    else:
+        return None
+
+    for key in ('detected_language', 'language'):
+        language = parsed.get(key)
+        if language and isinstance(language, dict):
+            language = language.get('value')
+        if language:
+            language = str(language).strip().lower()
+            # Map ISO 639-2 three-letter codes (eng, ger from Skaldleita) to 639-1
+            if len(language) == 3:
+                from library_manager.utils.path_safety import ISO_639_2_TO_1
+                language = ISO_639_2_TO_1.get(language, language)
+            if language:
+                return language
+    return None
+
+
+def _extract_languages(result):
+    """Extract the full language list (primary first) from payload or profile JSON.
+
+    Issue #280: reads the serialized BookProfile 'languages' list; falls back
+    to the single detected language for older profiles.
+    """
+    if not result:
+        return []
+
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except json.JSONDecodeError:
+            return []
+    elif isinstance(result, dict):
+        parsed = result
+    else:
+        return []
+
+    languages = parsed.get('languages')
+    if isinstance(languages, list):
+        cleaned = [str(c).strip().lower() for c in languages if c]
+        if cleaned:
+            return cleaned
+
+    primary = _extract_detected_language(parsed)
+    return [primary] if primary else []
+
+
 # ISO 639-1 language code to full name mapping
 LANGUAGE_NAMES = {
     'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish',
@@ -1235,6 +1360,25 @@ def gather_all_api_candidates(title, author=None, config=None):
                         candidates.append(result_no_author)
         except Exception as e:
             logger.debug(f"Error searching {api_name}: {e}")
+
+    # Issue #273/#274: Audnexus title search was removed by the Audnexus API,
+    # but ASIN lookup still works. Enrich any candidate that already has an ASIN
+    # (from BookDB, OpenLibrary, etc.) with Audnexus metadata so the ASIN is
+    # confirmed and Audible-region-aware fields are populated.
+    seen_asins = set()
+    for candidate in list(candidates):
+        asin = _extract_book_id(candidate)
+        if asin and asin not in seen_asins and looks_like_asin(asin):
+            seen_asins.add(asin)
+            try:
+                enriched = lookup_audnexus_by_asin(asin, region=audible_region)
+                if enriched and enriched.get('title'):
+                    enriched['source'] = 'audnexus'
+                    enriched['search_query'] = candidate.get('search_query') or f"{author} - {clean_title}" if author else clean_title
+                    candidates.append(enriched)
+                    logger.info(f"[LAYER 1] Audnexus enriched ASIN {asin}: {enriched.get('author')} - {enriched.get('title')}")
+            except Exception as e:
+                logger.debug(f"[LAYER 1] Audnexus enrichment failed for {asin}: {e}")
 
     # Deduplicate by author+title
     seen = set()
@@ -1874,7 +2018,11 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
                 retry_delay = 10  # Start with 10 seconds
 
                 for attempt in range(max_retries):
-                    result = identify_audio_with_bookdb(audio_file)
+                    result = identify_audio_with_bookdb(
+                        audio_file,
+                        bookdb_url=merged_config.get('bookdb_url'),
+                        api_key=merged_config.get('bookdb_api_key')
+                    )
                     if result and result.get('title'):
                         logger.info(f"[AUDIO CHAIN] Success with bookdb: {result.get('author')} - {result.get('title')}")
                         # Contribute fingerprint - BookDB Whisper ID is different from fingerprint
@@ -6051,6 +6199,7 @@ def process_layer_1_audio(config, limit=None):
         load_config=load_config,
         build_new_path=build_new_path,
         update_processing_status=update_status,
+        detect_audio_language=detect_audio_language,
         set_current_book=set_book,
         limit=limit
     )
@@ -6150,20 +6299,36 @@ def apply_fix(history_id):
     # Issue #69: Handle history entries with missing paths
     # Some older code paths created history entries without old_path/new_path
     book_id = fix['book_id']
+    c.execute('SELECT path, source_type, profile FROM books WHERE id = ?', (book_id,))
+    book_row = c.fetchone()
 
     # Get old_path - fall back to books table if None
     if fix['old_path']:
         old_path = Path(fix['old_path'])
     else:
-        c.execute('SELECT path FROM books WHERE id = ?', (book_id,))
-        book_row = c.fetchone()
         if not book_row or not book_row['path']:
             c.execute("UPDATE history SET status = 'pending_fix' WHERE id = ?", (history_id,))
             conn.commit()
             conn.close()
             return False, "Cannot determine source path - book not found"
         old_path = Path(book_row['path'])
-        logger.info(f"[APPLY FIX] old_path was None, using book path: {old_path}")
+        logger.info(f"[APPLY FIX] old_path was None, using book row path: {old_path}")
+
+    # Issue #49: Check if this is a watch folder item
+    source_type = book_row['source_type'] if book_row and book_row['source_type'] else 'library'
+    is_watch_folder_item = (source_type == 'watch_folder')
+
+    # Resolve optional metadata enrichment fields from persisted profile
+    metadata_book_id = _extract_book_id(book_row['profile']) if book_row else None
+
+    # Resolve language for path + audible URL enrichment
+    # Prefer audio-detected language stored in the profile (#274), fall back to title detection
+    fix_title = fix['new_title'] or fix['old_title']
+    fix_lang = _extract_detected_language(book_row['profile']) if book_row else None
+    fix_languages = _extract_languages(book_row['profile']) if book_row else []
+    if not fix_lang and fix_title:
+        fix_lang = detect_title_language(fix_title)
+    audible_url = _build_audible_url(metadata_book_id, fix_lang)
 
     # Get new_path - compute from metadata if None
     if fix['new_path']:
@@ -6178,9 +6343,7 @@ def apply_fix(history_id):
             return False, "Cannot determine destination - no library paths configured"
 
         # Build new path from fix metadata
-        # Detect language from title for multi-language naming
-        fix_title = fix['new_title'] or fix['old_title']
-        lang_code = detect_title_language(fix_title) if fix_title else None
+        # Detect language for multi-language naming
         new_path = build_new_path(
             Path(library_paths[0]),
             fix['new_author'] or fix['old_author'],
@@ -6191,7 +6354,8 @@ def apply_fix(history_id):
             year=fix['new_year'] if fix['new_year'] else None,
             edition=fix['new_edition'] if fix['new_edition'] else None,
             variant=fix['new_variant'] if fix['new_variant'] else None,
-            language_code=lang_code,
+            language_code=fix_lang,
+            languages=fix_languages or None,
             config=config
         )
         if not new_path:
@@ -6201,12 +6365,6 @@ def apply_fix(history_id):
             return False, "Cannot build destination path - invalid author/title"
         new_path = Path(new_path)
         logger.info(f"[APPLY FIX] new_path was None, computed: {new_path}")
-
-    # Issue #49: Check if this is a watch folder item
-    c.execute('SELECT source_type FROM books WHERE id = ?', (book_id,))
-    book_row = c.fetchone()
-    source_type = book_row['source_type'] if book_row and book_row['source_type'] else 'library'
-    is_watch_folder_item = (source_type == 'watch_folder')
 
     # CRITICAL SAFETY: Validate paths before any file operations
     config = load_config()
@@ -6386,7 +6544,9 @@ def apply_fix(history_id):
                     narrator=fix['new_narrator'] if fix['new_narrator'] else None,
                     year=fix['new_year'] if fix['new_year'] else None,
                     edition=fix['new_edition'] if fix['new_edition'] else None,
-                    variant=fix['new_variant'] if fix['new_variant'] else None
+                    variant=fix['new_variant'] if fix['new_variant'] else None,
+                    book_id=metadata_book_id,
+                    audible_url=audible_url
                 )
                 embed_result = embed_tags_for_path(
                     new_path,
@@ -7363,6 +7523,7 @@ def settings_page():
         config['language_tag_enabled'] = 'language_tag_enabled' in request.form
         config['language_tag_format'] = request.form.get('language_tag_format', 'bracket_full')
         config['language_tag_position'] = request.form.get('language_tag_position', 'after_title')
+        config['language_code_format'] = request.form.get('language_code_format', 'iso639-1')
         # google_books_api_key is now stored in secrets only (security fix)
         config['update_channel'] = request.form.get('update_channel', 'stable')
         config['naming_format'] = request.form.get('naming_format', 'author/title')
@@ -7460,7 +7621,164 @@ def settings_page():
     return render_template('settings.html', config=config, version=APP_VERSION,
                            pipeline_layers=pipeline_layers,
                            pipeline_order=pipeline_order,
-                           pipeline_default_order=pipeline_default_order)
+                           pipeline_default_order=pipeline_default_order,
+                           language_names=LANGUAGE_NAMES)
+
+
+# ============== SERIES LANGUAGE OVERRIDES (Issue #281) ==============
+
+@app.route('/api/series-language-overrides', methods=['GET'])
+def api_series_language_overrides_list():
+    """List all per-series language overrides."""
+    return jsonify({'success': True, 'overrides': get_all_series_language_overrides()})
+
+
+@app.route('/api/series-language-overrides', methods=['POST'])
+def api_series_language_overrides_set():
+    """Add or update a per-series language override.
+
+    POST body: {"series_name": "Mistborn", "language_code": "de"}
+    language_code 'auto' (or empty) removes the override instead.
+    """
+    data = request.get_json() or {}
+    series_name = (data.get('series_name') or '').strip()
+    language_code = (data.get('language_code') or '').strip().lower()
+
+    if not series_name:
+        return jsonify({'success': False, 'error': 'series_name is required'}), 400
+
+    if language_code in ('', 'auto'):
+        delete_series_language_override(series_name)
+        return jsonify({'success': True})
+
+    try:
+        set_series_language_override(series_name, language_code)
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+
+    log_action('series_language_override', detail=f"{series_name} -> {language_code}", result='success')
+    return jsonify({'success': True})
+
+
+@app.route('/api/series-language-overrides', methods=['DELETE'])
+def api_series_language_overrides_delete():
+    """Remove a per-series language override.
+
+    DELETE body: {"series_name": "Mistborn"}
+    """
+    data = request.get_json() or {}
+    series_name = (data.get('series_name') or '').strip()
+    if not series_name:
+        return jsonify({'success': False, 'error': 'series_name is required'}), 400
+
+    removed = delete_series_language_override(series_name)
+    return jsonify({'success': True, 'removed': removed})
+
+
+# ============== BOOK LANGUAGES (Issue #280) ==============
+
+@app.route('/api/books/<int:book_id>/languages', methods=['GET'])
+def api_book_languages_get(book_id):
+    """Return the ordered language list for a book (primary first)."""
+    conn = get_db()
+    try:
+        row = conn.execute('SELECT id FROM books WHERE id = ?', (book_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({'success': False, 'error': 'Book not found'}), 404
+    return jsonify({'success': True, 'languages': get_book_languages(book_id)})
+
+
+@app.route('/api/books/<int:book_id>/languages', methods=['POST'])
+def api_book_languages_set(book_id):
+    """Set the secondary languages for a book (Issue #280).
+
+    POST body: {"languages": ["de", "en"]}
+    Ordered list of ISO 639-1 codes, first = primary. An empty list clears
+    the list (book falls back to single-language behavior).
+    """
+    data = request.get_json() or {}
+    languages = data.get('languages', [])
+
+    if not isinstance(languages, list):
+        return jsonify({'success': False, 'error': 'languages must be a list of ISO 639-1 codes'}), 400
+
+    conn = get_db()
+    try:
+        row = conn.execute('SELECT id FROM books WHERE id = ?', (book_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({'success': False, 'error': 'Book not found'}), 404
+
+    try:
+        set_book_languages(book_id, languages)
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+
+    cleaned = get_book_languages(book_id)
+    log_action('book_languages', detail=f"book {book_id} -> {','.join(cleaned) or '(cleared)'}", result='success')
+    return jsonify({'success': True, 'languages': cleaned})
+
+
+# ============== MULTI-LANGUAGE ONBOARDING (Issue #284) ==============
+
+@app.route('/api/language-summary', methods=['GET'])
+def api_language_summary():
+    """Language distribution across processed books + onboarding prompt state."""
+    config = load_config()
+    languages = get_language_distribution()
+    preferred = config.get('preferred_language', 'en')
+    # Multi-language library: 2+ distinct languages, or a detected language
+    # that differs from the preferred one. Only books with a detected
+    # language are counted.
+    multi = len(languages) >= 2 or any(code != preferred for code in languages)
+    return jsonify({
+        'success': True,
+        'languages': languages,
+        'total_books': sum(languages.values()),
+        'preferred_language': preferred,
+        'multi': multi,
+        'dismissed': bool(config.get('multilang_onboarding_dismissed', False)),
+        'language_names': LANGUAGE_NAMES,
+    })
+
+
+@app.route('/api/language-onboarding', methods=['POST'])
+def api_language_onboarding():
+    """Apply a naming preference from the onboarding prompt, or dismiss it.
+
+    POST body: {"action": "apply", "choice": "native"|"tagged"|"top_folder"}
+            or {"action": "dismiss"}
+    """
+    data = request.get_json() or {}
+    action = (data.get('action') or '').strip().lower()
+    if action not in ('apply', 'dismiss'):
+        return jsonify({'success': False, 'error': "action must be 'apply' or 'dismiss'"}), 400
+
+    config = load_config()
+    if action == 'apply':
+        choice = (data.get('choice') or '').strip().lower()
+        if choice == 'native':
+            config['multilang_naming_mode'] = 'native'
+            config['language_tag_enabled'] = False
+        elif choice == 'tagged':
+            config['multilang_naming_mode'] = 'tagged'
+            config['language_tag_enabled'] = True  # keeps existing position/format
+        elif choice == 'top_folder':
+            config['language_tag_enabled'] = True
+            config['language_tag_position'] = 'top_folder'
+        else:
+            return jsonify({'success': False, 'error': "choice must be 'native', 'tagged', or 'top_folder'"}), 400
+
+    # Applying a choice counts as handling the prompt too
+    config['multilang_onboarding_dismissed'] = True
+    save_config(config)
+
+    detail = f"choice={data.get('choice')}" if action == 'apply' else 'dismissed'
+    log_action('language_onboarding', detail=detail, result='success')
+    return jsonify({'success': True, 'action': action})
 
 
 # ============== PATH DIAGNOSTIC ==============
@@ -8040,8 +8358,9 @@ def api_process():
     # Update status to show we're processing
     update_processing_status('active', True)
 
-    if process_all:
-        # Process entire queue in batches
+    if process_all or config.get('use_modular_pipeline', False):
+        # Process entire queue in batches; when modular pipeline is enabled,
+        # process_all_queue runs the configured pipeline_order (audio-first by default).
         processed, fixed = process_all_queue(config)
     else:
         # Use layered processing even for limited batches

@@ -345,6 +345,18 @@ def is_valid_title_for_recommendation(title: str) -> bool:
     return True
 
 
+def looks_like_asin(value) -> bool:
+    """Return True if value looks like an Amazon ASIN (10 alphanumeric chars).
+
+    Used to avoid treating numeric database ids or other identifiers as ASINs
+    when building Audible URLs or calling Audnexus.
+    """
+    if not value:
+        return False
+    s = str(value).strip().upper()
+    return len(s) == 10 and s.isalnum()
+
+
 __all__ = [
     'is_unsearchable_query',
     'is_garbage_author_match',
@@ -353,4 +365,5 @@ __all__ = [
     'is_drastic_author_change',
     'is_valid_author_for_recommendation',
     'is_valid_title_for_recommendation',
+    'looks_like_asin',
 ]

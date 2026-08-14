@@ -80,6 +80,18 @@ def _sanitize_api_response(data, context='bookdb'):
     return sanitized
 
 
+def _first_book_field(books, *keys):
+    """Return the first non-empty value for any of *keys* across a list of books."""
+    if not books:
+        return None
+    for book in books:
+        for key in keys:
+            value = book.get(key)
+            if value:
+                return value
+    return None
+
+
 # Skaldleita API endpoint (our metadata service, legacy name: BookDB)
 BOOKDB_API_URL = "https://bookdb.deucebucket.com"  # URL unchanged for backwards compatibility
 # Public API key for Library Manager users (no config needed)
@@ -276,6 +288,18 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
         if best_book:
             best_book = _sanitize_api_response(best_book)
 
+        # Issue #273/#274: Capture ASIN/book_id and language from Skaldleita text match
+        # so it can be persisted into the book profile and used for Audible region URLs.
+        # ASIN and language may be spread across multiple edition records.
+        asin = (data.get('asin')
+                or _first_book_field(books, 'asin', 'audible_asin')
+                or (best_book.get('asin') if best_book else None)
+                or (best_book.get('audible_asin') if best_book else None))
+        book_id = data.get('book_id') or (best_book.get('id') if best_book else None)
+        language = (data.get('language')
+                    or _first_book_field(books, 'language')
+                    or (best_book.get('language') if best_book else None))
+
         # Build result - handle standalone books (no series) and series books
         result = {
             'title': best_book.get('title') if best_book else (series.get('name') if series else None),
@@ -285,6 +309,9 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
             'series_num': best_book.get('series_position') if best_book else None,
             'variant': series.get('variant') if series else None,
             'edition': best_book.get('edition') if best_book else None,
+            'asin': asin,
+            'book_id': book_id,
+            'language': language,
             'source': 'bookdb',
             'confidence': data.get('confidence', 0)
         }
@@ -325,7 +352,7 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
         return None
 
 
-def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
+def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None, api_key=None):
     """
     Use Skaldleita's GPU-powered Whisper API to identify a book from audio.
 
@@ -344,11 +371,13 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
         audio_file: Path to the audio file
         extract_seconds: How many seconds to extract (default 90)
         bookdb_url: Custom Skaldleita URL (uses BOOKDB_URL env var or default if not provided)
+        api_key: Skaldleita API key (defaults to BOOKDB_PUBLIC_KEY)
 
     Returns:
         dict with author, title, narrator, series, etc. or None
     """
     url = bookdb_url or os.environ.get('BOOKDB_URL', BOOKDB_API_URL)
+    api_key = api_key or BOOKDB_PUBLIC_KEY
     logger.info(f"[SKALDLEITA] Starting identification for: {audio_file}")
     logger.debug(f"[SKALDLEITA] Using API URL: {url}")
 
@@ -394,7 +423,7 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                 logger.debug("[SKALDLEITA] Extracting voice embedding from clip...")
                 voice_embedding = extract_voice_embedding_from_clip(tmp_path)
                 if voice_embedding:
-                    logger.info(f"[SKALDLEITA] Voice embedding extracted (256-dim)")
+                    logger.info("[SKALDLEITA] Voice embedding extracted (256-dim)")
                 else:
                     logger.debug("[SKALDLEITA] Voice embedding extraction failed (non-fatal)")
 
@@ -410,11 +439,13 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                     data['voice_embedding'] = json.dumps(voice_embedding)
                     logger.debug("[SKALDLEITA] Including voice embedding in request")
 
+                headers = get_signed_headers()
+                headers["X-API-Key"] = api_key
                 response = requests.post(
                     f"{url}/api/identify_audio",
                     files=files,
                     data=data,
-                    headers=get_signed_headers(),
+                    headers=headers,
                     timeout=30  # Just submitting, should be fast
                 )
 
@@ -433,7 +464,7 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                                             f"from {current_delay}s to {retry_secs}s per Retry-After header")
                     except (ValueError, TypeError):
                         pass
-                logger.warning(f"[SKALDLEITA] Rate limited (429) on audio identify")
+                logger.warning("[SKALDLEITA] Rate limited (429) on audio identify")
                 return None
 
             if response.status_code != 200:
@@ -478,7 +509,9 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                     waited += poll_interval
 
                     try:
-                        poll_response = requests.get(poll_url, headers=get_signed_headers(), timeout=10)
+                        poll_headers = get_signed_headers()
+                        poll_headers["X-API-Key"] = api_key
+                        poll_response = requests.get(poll_url, headers=poll_headers, timeout=10)
                         if poll_response.status_code != 200:
                             continue
 
@@ -492,12 +525,12 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                             last_position = new_position
 
                         if status == 'processing':
-                            logger.info(f"[SKALDLEITA] Processing audio...")
+                            logger.info("[SKALDLEITA] Processing audio...")
 
                         elif status == 'complete':
                             # Got result!
                             data = status_data.get('result', {})
-                            logger.info(f"[SKALDLEITA] Complete! Processing result...")
+                            logger.info("[SKALDLEITA] Complete! Processing result...")
 
                             # Issue #253: Check server_notice in the poll result
                             notice = status_data.get('server_notice')
@@ -555,6 +588,10 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                 logger.warning(f"[SKALDLEITA] API error: {data['error']}")
                 return None
 
+            # Use the top match for author/title/series. ASIN and language are
+            # extracted independently from the matched_books list so we can pick
+            # an ASIN from one record and a language from another when Skaldleita
+            # returns multiple editions (common with OpenLibrary/audible data).
             best_match = matched_books[0] if matched_books else None
 
             # Phase 2: Capture source and requeue_suggested from SL response
@@ -570,12 +607,26 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
             }
             mapped_source = source_map.get(sl_source, 'bookdb_audio')
 
+            # Issue #273/#274: Preserve ASIN and language from Skaldleita response.
+            # Skaldleita may spread these across several matched_books entries.
+            asin = (data.get('asin')
+                    or _first_book_field(matched_books, 'asin', 'audible_asin')
+                    or (best_match.get('asin') if best_match else None)
+                    or (best_match.get('audible_asin') if best_match else None))
+            book_id = data.get('book_id') or (best_match.get('id') if best_match else None)
+            language = (data.get('language')
+                        or _first_book_field(matched_books, 'language')
+                        or (best_match.get('language') if best_match else None))
+
             result = {
                 'author': data.get('author') or (best_match.get('author_name') if best_match else None),
                 'title': data.get('title') or (best_match.get('title') if best_match else None),
                 'narrator': data.get('narrator'),
                 'series': best_match.get('series_name') if best_match else None,
                 'series_num': best_match.get('series_position') if best_match else None,
+                'book_id': book_id,
+                'asin': asin,
+                'language': language,
                 'source': mapped_source,
                 'sl_source': sl_source,  # Where SL got the data: 'database', 'audio', or 'live_scrape'
                 'requeue_suggested': requeue_suggested,  # True if LM should retry later
@@ -593,7 +644,7 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None):
                 logger.info(f"[SKALDLEITA] No match but got transcript ({len(transcript)} chars) - returning for AI fallback")
                 return {'transcript': transcript, 'source': mapped_source}
 
-            logger.warning(f"[SKALDLEITA] No identification and no transcript returned")
+            logger.warning("[SKALDLEITA] No identification and no transcript returned")
             return None
 
         finally:

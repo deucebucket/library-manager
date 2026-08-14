@@ -41,6 +41,7 @@ HINTS = {
     'standardize_initials': 'Normalizes author initials to a consistent format (e.g., "JRR Tolkien" and "J.R.R. Tolkien" both become "J. R. R. Tolkien"). Prevents duplicate author folders.',
     'strip_unabridged': 'Removes "(Unabridged)", "[Unabridged]", and similar markers from book titles during rename.',
     'multilang_naming': 'Controls how non-English books are named. Native keeps the original language title. Preferred translates to your language. Tagged adds a language indicator.',
+    'series_language_override': 'Locks a series to a fixed language, skipping audio/title language detection for its books. Useful when a series is consistently misdetected. Leave on Auto to detect each book normally.',
 
     # === Settings - Watch Folder ===
     'watch_folder': 'Monitors a folder for new audiobooks and automatically organizes them into your library. Great for processing downloads or imports.',

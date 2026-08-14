@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
 from library_manager.config import use_skaldleita_for_audio
-from library_manager.database import insert_history_entry
+from library_manager.database import insert_history_entry, get_series_language_override
+from library_manager.utils.path_safety import ISO_639_2_TO_1
 from library_manager.utils.validation import (
     is_garbage_author_match, is_placeholder_author,
     is_valid_author_for_recommendation, is_valid_title_for_recommendation
@@ -39,6 +40,84 @@ def _detect_title_language(text):
         return detect(text)
     except Exception:
         return None
+
+
+def _normalize_language_code(language_code):
+    """Normalize a language identifier to the region map format used by the app.
+
+    Returns ISO 639-1 two-letter codes. Three-letter ISO 639-2 codes
+    (e.g. 'eng', 'ger' from Skaldleita) are mapped to their 639-1 equivalent
+    so downstream lookups (LANGUAGE_NAMES, region maps, tag formats) work.
+    """
+    if not language_code:
+        return None
+    normalized = str(language_code).lower().strip()
+    if not normalized:
+        return None
+    # Keep ISO-639-1 values in 2-letter form where possible
+    if '-' in normalized:
+        normalized = normalized.split('-')[0].strip()
+    if normalized in ('', 'none', 'null', 'und'):
+        return None
+    # Map ISO 639-2 three-letter codes (eng, ger, ...) to ISO 639-1
+    if len(normalized) == 3 and normalized in ISO_639_2_TO_1:
+        normalized = ISO_639_2_TO_1[normalized]
+    return normalized
+
+
+def _extract_book_id(result: Dict) -> Optional[str]:
+    """Extract a best-effort book identifier from an identification payload."""
+    if not isinstance(result, Dict):
+        return None
+
+    for key in ('asin', 'audible_id', 'book_id', 'id', 'bookdb_id', 'audio_id'):
+        value = result.get(key)
+        if value:
+            value_str = str(value).strip()
+            if value_str:
+                return value_str
+
+    return None
+
+
+def _resolve_metadata_language(
+    audio_file: Optional[Path],
+    title: Optional[str],
+    config: Dict,
+    detect_audio_language_fn=None,
+    language_hint: Optional[str] = None,
+    series_name: Optional[str] = None
+):
+    """Resolve metadata language using an explicit hint, configured audio detection, or title fallback."""
+    # Issue #281: A series language lock is a hard override - skip detection entirely
+    if series_name:
+        override = get_series_language_override(series_name)
+        if override:
+            logger.info(f"[LANG] Series '{series_name}' locked to language '{override}' - skipping detection")
+            return override
+
+    if language_hint:
+        hinted = _normalize_language_code(language_hint)
+        if hinted:
+            logger.debug(f"Using provided language hint '{hinted}' for metadata language")
+            return hinted
+
+    if audio_file and config.get('detect_language_from_audio') and detect_audio_language_fn:
+        try:
+            detection = detect_audio_language_fn(str(audio_file), config)
+        except Exception:
+            detection = None
+
+        if detection and detection.get('language'):
+            audio_language = _normalize_language_code(detection['language'])
+            if audio_language:
+                logger.debug(f"Audio language detected as '{audio_language}' from '{audio_file.name}'")
+                return audio_language
+
+    if title:
+        return _detect_title_language(title)
+
+    return None
 
 logger = logging.getLogger(__name__)
 
@@ -226,10 +305,10 @@ def _complete_result_from_path(result: Dict, folder_hint: str, book_path: str) -
         if not shorter or not longer:
             return False
         s = shorter.strip()
-        l = longer.strip()
-        if len(s) < 4 or len(s) >= len(l):
+        lng = longer.strip()
+        if len(s) < 4 or len(s) >= len(lng):
             return False
-        return l.lower().startswith(s.lower())
+        return lng.lower().startswith(s.lower())
 
     completed_any = False
 
@@ -331,6 +410,7 @@ def process_layer_1_audio(
     build_new_path: Callable,
     update_processing_status: Optional[Callable] = None,
     set_current_book: Optional[Callable] = None,
+    detect_audio_language: Optional[Callable] = None,
     limit: Optional[int] = None
 ) -> Tuple[int, int]:
     """
@@ -352,6 +432,7 @@ def process_layer_1_audio(
         load_config: Function to load config (for path building)
         build_new_path: Function to build new paths
         update_processing_status: Optional function to update processing status
+        detect_audio_language: Optional language detector for metadata language
         limit: Maximum batch size (overrides config)
 
     Returns:
@@ -417,6 +498,7 @@ def process_layer_1_audio(
                 title = ebook_result.get('title')
                 confidence = ebook_result.get('confidence', 'medium')
                 source = ebook_result.get('source', 'bookdb')
+                ebook_book_id = _extract_book_id(ebook_result)
 
                 logger.info(f"[EBOOK] Identified via {source}: {author} - {title} ({confidence})")
 
@@ -432,6 +514,8 @@ def process_layer_1_audio(
                         'author': {'value': author, 'source': source, 'confidence': 80 if confidence == 'high' else 50},
                         'title': {'value': title, 'source': source, 'confidence': 80 if confidence == 'high' else 50},
                     }
+                    if ebook_book_id:
+                        profile['book_id'] = ebook_book_id
                     if ebook_result.get('series'):
                         profile['series'] = {'value': ebook_result['series'], 'source': source, 'confidence': 70}
                     if ebook_result.get('series_num'):
@@ -459,7 +543,16 @@ def process_layer_1_audio(
                             except Exception as e:
                                 logger.debug(f"Watch folder path check failed: {e}")
                         # Detect language for multi-language naming
-                        lang_code = _detect_title_language(title)
+                        lang_code = _resolve_metadata_language(
+                            audio_file,
+                            title,
+                            current_config,
+                            detect_audio_language_fn=detect_audio_language,
+                            language_hint=ebook_result.get('language'),
+                            series_name=ebook_result.get('series')
+                        )
+                        if lang_code:
+                            profile['detected_language'] = lang_code
                         computed_path = build_new_path(
                             dest_path, author, title,
                             series=ebook_result.get('series'),
@@ -548,7 +641,11 @@ def process_layer_1_audio(
             # Show status: Using Skaldleita (free, GPU Whisper)
             set_current_provider("Skaldleita", "Transcribing audio with GPU Whisper...", is_free=True)
             api_start = time.time()
-            bookdb_result = identify_audio_with_bookdb(audio_file)
+            bookdb_result = identify_audio_with_bookdb(
+                audio_file,
+                bookdb_url=config.get('bookdb_url'),
+                api_key=config.get('bookdb_api_key')
+            )
             set_api_latency(int((time.time() - api_start) * 1000))
 
             # Phase 5: Handle requeue_suggested from SL (Skaldleita backbone)
@@ -558,6 +655,7 @@ def process_layer_1_audio(
                 sl_source = bookdb_result.get('sl_source', 'unknown')
                 sl_author = bookdb_result.get('author')
                 sl_title = bookdb_result.get('title')
+                sl_book_id = _extract_book_id(bookdb_result)
 
                 if sl_author and sl_title:
                     # SL found author/title - trust it but schedule requeue for nightly merge
@@ -567,6 +665,7 @@ def process_layer_1_audio(
                     result = {
                         'author': sl_author,
                         'title': sl_title,
+                        'book_id': sl_book_id,
                         'narrator': bookdb_result.get('narrator'),
                         'series': bookdb_result.get('series'),
                         'series_num': bookdb_result.get('series_num'),
@@ -667,6 +766,7 @@ def process_layer_1_audio(
             series = result.get('series')
             series_num = result.get('series_num')
             confidence = result.get('confidence', 'medium')
+            result_book_id = _extract_book_id(result)
 
             logger.info(f"[LAYER 1/AUDIO] Identified from audio: {author} - {title} ({confidence})")
 
@@ -723,6 +823,8 @@ def process_layer_1_audio(
                     'author': {'value': author, 'source': profile_source, 'confidence': base_confidence},
                     'title': {'value': title, 'source': profile_source, 'confidence': base_confidence},
                 }
+                if result_book_id:
+                    profile['book_id'] = result_book_id
                 if narrator:
                     profile['narrator'] = {'value': narrator, 'source': profile_source, 'confidence': 80}
                 if series:
@@ -749,12 +851,12 @@ def process_layer_1_audio(
                     logger.info(f"[LAYER 1/AUDIO] Scheduled SL requeue for {tomorrow_6am.strftime('%Y-%m-%d %H:%M')}: {author} - {title}")
 
                 c.execute('''UPDATE books SET
-                            current_author = ?, current_title = ?,
-                            status = 'pending_fix', verification_layer = 3,
-                            profile = ?, confidence = ?
-                            WHERE id = ?''',
-                         (author, title, json.dumps(profile),
-                          85 if confidence == 'high' else 70, row['book_id']))
+                        current_author = ?, current_title = ?,
+                        status = 'pending_fix', verification_layer = 3,
+                        profile = ?, confidence = ?
+                        WHERE id = ?''',
+                     (author, title, json.dumps(profile),
+                      85 if confidence == 'high' else 70, row['book_id']))
 
                 # Compute paths for history entry (Issue #64: prevent stale path errors)
                 old_path_str = book_path
@@ -773,7 +875,19 @@ def process_layer_1_audio(
                         except Exception:
                             pass
                     # Detect language for multi-language naming
-                    lang_code = _detect_title_language(title)
+                    lang_code = _resolve_metadata_language(
+                        audio_file,
+                        title,
+                        audio_config,
+                        detect_audio_language_fn=detect_audio_language,
+                        language_hint=result.get('detected_language') or result.get('language'),
+                        series_name=series
+                    )
+                    if lang_code:
+                        profile['detected_language'] = lang_code
+                        # Issue #275: Persist detected language back to the stored profile
+                        c.execute('UPDATE books SET profile = ? WHERE id = ?',
+                                  (json.dumps(profile), row['book_id']))
                     computed_path = build_new_path(
                         dest_path, author, title,
                         series=series, series_num=series_num, narrator=narrator,

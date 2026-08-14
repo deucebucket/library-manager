@@ -87,6 +87,30 @@
 </div>
 {% endif %}
 
+<!-- Multi-language onboarding prompt (Issue #284) - shown by JS when a
+     multi-language library is detected and the prompt is not dismissed -->
+<div class="row mb-3 d-none" id="multilang-banner-row">
+    <div class="col-12">
+        <div class="alert alert-info py-2 mb-0" role="alert">
+            <div class="d-flex align-items-center">
+                <i class="bi bi-translate me-2"></i>
+                <small>
+                    <strong>{{ _('We found books in multiple languages:') }}</strong>
+                    <span id="multilang-banner-langs"></span>.
+                    {{ _('Choose how Library Manager should name them:') }}
+                </small>
+                <button type="button" class="btn-close ms-auto" id="multilang-dismiss" aria-label="{{ _('Dismiss') }}"></button>
+            </div>
+            <div class="mt-2">
+                <button type="button" class="btn btn-sm btn-outline-primary me-1" data-multilang-choice="native">{{ _('Keep native naming') }}</button>
+                <button type="button" class="btn btn-sm btn-outline-primary me-1" data-multilang-choice="tagged">{{ _('Tag non-preferred titles') }}</button>
+                <button type="button" class="btn btn-sm btn-outline-primary me-1" data-multilang-choice="top_folder">{{ _('Sort into language folders') }}</button>
+                <a href="/settings" class="btn btn-sm btn-link">{{ _('Language settings') }}</a>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Toast container for action feedback -->
 <div class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 1080;">
     <div id="action-toast" class="toast align-items-center border-0" role="alert" aria-live="assertive" aria-atomic="true">
@@ -282,6 +306,51 @@
 
 {% block scripts %}
 <script>
+// Issue #284: multi-language onboarding prompt
+function initMultilangOnboarding() {
+    fetch('/api/language-summary')
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success || !data.multi || data.dismissed) return;
+            const names = data.language_names || {};
+            const langs = Object.entries(data.languages)
+                .sort((a, b) => b[1] - a[1])
+                .map(([code, count]) => `${names[code] || code.toUpperCase()} (${count})`)
+                .join(', ');
+            // textContent, not innerHTML: language codes come from book profiles
+            document.getElementById('multilang-banner-langs').textContent = langs;
+            document.getElementById('multilang-banner-row').classList.remove('d-none');
+
+            document.querySelectorAll('[data-multilang-choice]').forEach(btn => {
+                btn.addEventListener('click', () => multilangOnboarding('apply', btn.dataset.multilangChoice));
+            });
+            document.getElementById('multilang-dismiss').addEventListener('click', () => multilangOnboarding('dismiss'));
+        })
+        .catch(() => {});
+}
+
+function multilangOnboarding(action, choice) {
+    const body = {action: action};
+    if (choice) body.choice = choice;
+    fetch('/api/language-onboarding', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) return;
+            if (action === 'apply') {
+                location.reload();
+            } else {
+                document.getElementById('multilang-banner-row').classList.add('d-none');
+            }
+        })
+        .catch(() => {});
+}
+
+document.addEventListener('DOMContentLoaded', initMultilangOnboarding);
+
 function triggerScan() {
     const btn = document.getElementById('scan-btn');
     btn.disabled = true;
