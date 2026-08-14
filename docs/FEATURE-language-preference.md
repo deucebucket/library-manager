@@ -151,6 +151,7 @@ def get_localized_metadata(book_info, target_language):
 - Gemini: Excellent multilingual (100+ languages)
 - GPT-4/OpenRouter: Strong multilingual support
 - Ollama (local): Depends on model, Llama 3 has decent multilingual
+- llama.cpp/OpenAI-compatible: Depends on the model loaded by the user's server
 
 ### Audio Language Detection
 
@@ -200,7 +201,7 @@ Use cases:
 - Audio detection uses existing Gemini integration (no new dependencies)
 - Language codes follow ISO 639-1 standard
 - Default behavior unchanged for existing users (`en`, preserve=true)
-- **AI Translation Strategy**: All AI providers (Gemini, OpenRouter, Ollama) support multilingual prompts
+- **AI Translation Strategy**: All configured AI paths (Gemini, OpenRouter, Ollama, and OpenAI-compatible servers) accept multilingual prompts; result quality depends on the selected model
   - Add language instruction to existing prompts: "Respond in {language}"
   - Titles returned should match user's preferred language when official translations exist
   - AI handles translation automatically - no external translation API needed

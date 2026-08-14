@@ -6,7 +6,7 @@ Provides contextual help text for UI tooltips and hover explanations.
 HINTS = {
     # === Identification Layers ===
     'layer_1': 'Database Lookups: Searches Skaldleita, Audnexus, OpenLibrary, Google Books, and Hardcover for metadata matches. Free, fast, no API key needed.',
-    'layer_2': 'AI Verification: When databases return uncertain matches, AI (Gemini, OpenRouter, or Ollama) cross-checks the results. Uses your configured AI provider.',
+    'layer_2': 'AI Verification: When databases return uncertain matches, your configured provider (Gemini, OpenRouter, Ollama, or an OpenAI-compatible server) cross-checks the results.',
     'layer_3': 'Audio Analysis: Extracts the first 90 seconds of audio to identify the book from narrator intros and title announcements. Can use Skaldleita GPU or your own Gemini API.',
     'layer_4': 'Content Analysis: Last resort. Transcribes story text with Whisper and sends it to AI to identify the book. Slowest but catches edge cases other layers miss.',
 
@@ -15,6 +15,7 @@ HINTS = {
     'gemini': 'Google Gemini AI. Free tier offers 14,400 calls/day with Gemma 3 models. Handles both text verification and native audio analysis.',
     'openrouter': 'API gateway to multiple AI models. Free models available (Llama, Gemma). Used as fallback when Gemini is unavailable or for Layer 4 content analysis.',
     'ollama': 'Self-hosted AI. Run models locally with no API costs or rate limits. Requires separate Ollama installation.',
+    'openai_compatible': 'User-configured local or remote AI server with OpenAI-compatible model and chat-completions endpoints, including llama.cpp, LM Studio, vLLM, and LocalAI.',
 
     # === Confidence & Verification ===
     'confidence_threshold': 'Minimum confidence percentage before a book is considered identified. Higher values mean more certainty but slower processing. Lower values accept weaker matches faster.',
@@ -57,7 +58,10 @@ HINTS = {
     # === Settings - AI Setup Tab ===
     'gemini_api_key': 'Free API key from Google AI Studio (aistudio.google.com). Enables Gemini AI for text verification and audio analysis. 14,400 free calls per day.',
     'openrouter_api_key': 'API key from openrouter.ai. Provides access to free AI models as fallback, and enables Layer 4 content analysis.',
-    'bookdb_api_key': 'Optional Skaldleita API key. Increases your rate limit from 500 to 1000 requests per hour. Free to register.',
+    'openai_compatible_api_key': 'Optional bearer token for a user-configured OpenAI-compatible AI server.',
+    'openai_compatible_url': 'API base URL for llama.cpp, LM Studio, vLLM, LocalAI, or another OpenAI-compatible server.',
+    'openai_compatible_model': 'Model ID loaded from the configured server. Manual model IDs are also accepted.',
+    'bookdb_api_key': 'Optional personal Skaldleita API key. When empty, Library Manager uses its bundled shared credential for authenticated metadata and audio requests.',
     'google_books_api_key': 'Optional Google Books API key for higher rate limits on book lookups.',
     'ai_provider': 'Which AI to try first for text verification. Falls back to other configured providers automatically if the primary fails.',
     'provider_chain': 'Order in which providers are tried. If the first one fails or is unavailable, the next one is used automatically.',

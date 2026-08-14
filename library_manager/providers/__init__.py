@@ -12,6 +12,7 @@ And AI providers for book identification:
 - Gemini
 - OpenRouter
 - Ollama
+- OpenAI-compatible local APIs (llama.cpp, LM Studio, vLLM, LocalAI)
 """
 
 from library_manager.providers.rate_limiter import (
@@ -48,6 +49,14 @@ from library_manager.providers.openrouter import (
     call_openrouter_simple,
     identify_book_from_transcript,
     test_openrouter_connection,
+)
+from library_manager.providers.openai_compatible import (
+    DEFAULT_OPENAI_COMPATIBLE_URL,
+    normalize_openai_compatible_url,
+    call_openai_compatible,
+    call_openai_compatible_simple,
+    get_openai_compatible_models,
+    test_openai_compatible_connection,
 )
 from library_manager.providers.gemini import (
     GEMINI_API_URL,
@@ -109,6 +118,13 @@ __all__ = [
     'call_openrouter_simple',
     'identify_book_from_transcript',
     'test_openrouter_connection',
+    # Generic OpenAI-compatible APIs
+    'DEFAULT_OPENAI_COMPATIBLE_URL',
+    'normalize_openai_compatible_url',
+    'call_openai_compatible',
+    'call_openai_compatible_simple',
+    'get_openai_compatible_models',
+    'test_openai_compatible_connection',
     # Gemini
     'GEMINI_API_URL',
     '_call_gemini_simple',

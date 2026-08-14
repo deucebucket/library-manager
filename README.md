@@ -4,9 +4,9 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.153-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.157-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
-[![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 
 *Automatically fix messy audiobook folders using real book databases + AI intelligence*
 
@@ -15,6 +15,15 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.156** - **MIT License and Documentation Sync**
+> - Restored the project's MIT license and aligned contribution terms.
+> - Synchronized provider, Skaldleita credential, multilingual model, and request-rate guidance with current behavior.
+
+> **beta.155** - **Local AI Is Provider-Agnostic**
+> - Added llama.cpp and generic OpenAI-compatible API support with live `/v1/models` discovery.
+> - Removed hardcoded Ollama model fallbacks and fixed `undefined` model entries across API response shapes.
+> - Skaldleita transcripts now continue into the selected AI fallback instead of stopping early.
 
 > **beta.150** - **Fix: Hosted AI Model Picker Uses Live Provider Models** (Issue #216)
 > - Replaced stale hardcoded Gemini/OpenRouter model dropdowns with editable model fields backed by live provider model lists.
@@ -419,6 +428,14 @@ See [docs/DOCKER.md](docs/DOCKER.md) for detailed setup guides.
 - Multiple model options
 - Free tier available
 
+**Ollama**
+- Self-hosted with live model discovery from the user's server
+- No hardcoded model requirement
+
+**llama.cpp / OpenAI-compatible**
+- Works with llama.cpp, LM Studio, vLLM, LocalAI, and compatible `/v1` APIs
+- Live model discovery and optional API-key authentication
+
 ---
 
 ## API Reference
@@ -567,7 +584,7 @@ The idea for **Skaldleita** (audio fingerprinting + narrator voice identificatio
 ## Contributing
 
 Pull requests welcome! Ideas:
-- [ ] Ollama/local LLM support
+- [x] Ollama and generic local LLM support
 - [ ] Cover art fetching
 - [x] Metadata embedding (added in v0.9.0-beta.20)
 - [ ] Movie/music library support
@@ -583,9 +600,9 @@ Pull requests welcome! Ideas:
 
 ## License
 
-AGPL-3.0 License - See [LICENSE](LICENSE) for details.
+MIT License - See [LICENSE](LICENSE) for details.
 
 **What this means:**
-- Free to use, modify, and distribute
-- If you modify and run this as a service, you must release your source code
-- Commercial use requires either open-sourcing your changes OR obtaining a commercial license
+- Free to use, modify, distribute, sublicense, and sell
+- Private and commercial modifications are permitted
+- The copyright and license notice must be retained

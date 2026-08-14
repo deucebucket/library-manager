@@ -341,6 +341,8 @@ def process_queue(
     ai_provider = config.get('ai_provider', 'gemini')
     is_free = ai_provider == 'ollama'  # Ollama is local/free
     provider_name = ai_provider.title()
+    if ai_provider == 'openai_compatible':
+        provider_name = 'llama.cpp / Compatible API'
     if ai_provider == 'gemini':
         model = (config.get('gemini_model') or 'not configured').strip()
         # Gemma models are free

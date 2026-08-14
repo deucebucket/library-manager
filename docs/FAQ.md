@@ -4,9 +4,11 @@
 
 ### Is this free?
 
-Yes! The app is free and open source. You just need an API key:
+Yes. The app is free and open source. Hosted AI providers use API keys:
 - **Gemini** - Free, 14,400 calls/day
 - **OpenRouter** - Free tier available
+
+Ollama and user-configured llama.cpp/OpenAI-compatible servers can run locally without an API key.
 
 ### Does it work with Audiobookshelf?
 
@@ -31,10 +33,7 @@ Just renames folders. Files inside stay exactly where they are - only the folder
 
 ### What APIs does it use?
 
-1. Audnexus (Audible data)
-2. OpenLibrary (Internet Archive)
-3. Google Books
-4. Hardcover
+Metadata can come from Skaldleita, Audnexus, OpenLibrary, Google Books, and Hardcover. Optional AI verification uses the configured Gemini, OpenRouter, Ollama, or OpenAI-compatible provider.
 
 ### Why Gemini over GPT-4?
 
@@ -42,7 +41,7 @@ Gemini offers 14,400 free API calls per day, which is plenty for most libraries.
 
 ### Can I use a local LLM?
 
-Not yet, but Ollama support is on the roadmap.
+Yes. Select Ollama or llama.cpp/OpenAI-compatible in Settings. Library Manager loads the model list from the selected server and also accepts a manually entered model ID.
 
 ### How does it know what's correct?
 

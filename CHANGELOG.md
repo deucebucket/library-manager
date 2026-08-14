@@ -6,10 +6,6 @@ All notable changes to Library Manager will be documented in this file.
 
 ### Added
 - **#284: Multi-language library onboarding prompt** — After scanning, LM now detects multi-language libraries from the language distribution of processed books (ISO 639-2 normalized) and shows a dashboard banner with one-click naming preferences: keep native naming, tag non-preferred titles, or sort into top-level language folders. New `/api/language-summary` and `/api/language-onboarding` endpoints; the prompt can be dismissed via the new `multilang_onboarding_dismissed` config flag.
-
-## [0.9.0-beta.156] - 2026-08-13
-
-### Added
 - **#278: Language as top-level folder** — New `top_folder` option for `language_tag_position` builds `Language/Author/[Series/]Title` for every book with a known language (preferred language included), wrapping all naming formats including custom templates.
 - **#282: Emoji flag language tags** — New `emoji_flag` tag format and `{lang_flag}` custom template tag with an ISO 639-1 to flag emoji mapping; unmapped codes fall back to the bracketed name.
 - **#279: ISO 639-2 code output** — New `language_code_format` setting (`iso639-1`/`iso639-2`, bibliographic codes to match Skaldleita) applied to code-based tags and `{lang_code}`.
@@ -18,13 +14,28 @@ All notable changes to Library Manager will be documented in this file.
 
 ### Fixed
 - **ISO 639-2 normalization** — Three-letter codes from Skaldleita (`eng`, `ger`) are now mapped to ISO 639-1 in `_normalize_language_code`, all three `_extract_detected_language` copies, and defensively in `build_new_path`. Previously they produced `ENG/` top folders and wrongly tagged preferred-language books.
-
-## [0.9.0-beta.155] - 2026-08-12
-
-### Fixed
 - **#273: ASIN persistence** — The ASIN from an Audnexus/Skaldleita match is now persisted to `book_id` on the book profile instead of being dropped after identification.
 - **#275: "Detect language from audio" setting** — The setting now actually drives language detection during processing; detected languages are persisted as `detected_language` on the profile.
 - **#274: Per-book Audible region hint** — `WWWAUDIOFILE` (Audible region URL built from the audio-detected language) is embedded into MP3/MP4 tags when fixes are applied, so downstream tools like beets-audible can pick the right marketplace per book.
+
+## [0.9.0-beta.156] - 2026-07-15
+
+### Changed
+- **License restored to MIT** - Replaced AGPL-3.0 with the project's original MIT license and updated README and contribution terms to match.
+
+### Documentation
+- Synchronized the published version, provider lists, Skaldleita credential guidance, multilingual-provider notes, and configured request-rate defaults with current behavior.
+
+## [0.9.0-beta.155] - 2026-07-15
+
+### Added
+- **Generic local AI provider** - Added a user-configured OpenAI-compatible provider for llama.cpp, LM Studio, vLLM, LocalAI, and similar servers. Library Manager discovers live model IDs from `/v1/models`, supports optional bearer authentication, and uses `/v1/chat/completions` across text verification, localization, and transcript identification.
+
+### Fixed
+- **Ollama model selection is no longer locked to a hardcoded model** - Removed runtime and UI fallbacks to specific Ollama model names. Model discovery now accepts `name`, `model`, and string response shapes, excludes embedding-only entries, keeps the model field editable, and auto-selects only when the server exposes exactly one model. Native Ollama requests use bounded structured output, including an explicit array schema for multi-book batches, and both local-provider paths prevent runaway responses.
+- **Skaldleita transcripts now reach AI fallbacks** - When Skaldleita transcribes audio but cannot identify the book, the transcript continues through the configured provider chain instead of ending the audio-identification attempt early.
+- **Provider selection configures working fallback chains** - Setup and Settings automatically place the selected AI provider into the text and audio fallback chains while preserving Skaldleita as the first hosted audio-identification service.
+- **Provider secrets stay server-side** - New and updated `secrets.json` files enforce `0600` permissions, provider keys remain excluded from `config.json`, and Settings receives only configured/not-configured state instead of raw stored tokens.
 
 ## [0.9.0-beta.154] - 2026-07-14
 
