@@ -19,6 +19,13 @@ All notable changes to Library Manager will be documented in this file.
 ### Fixed
 - **ISO 639-2 normalization** — Three-letter codes from Skaldleita (`eng`, `ger`) are now mapped to ISO 639-1 in `_normalize_language_code`, all three `_extract_detected_language` copies, and defensively in `build_new_path`. Previously they produced `ENG/` top folders and wrongly tagged preferred-language books.
 
+## [0.9.0-beta.155] - 2026-08-12
+
+### Fixed
+- **#273: ASIN persistence** — The ASIN from an Audnexus/Skaldleita match is now persisted to `book_id` on the book profile instead of being dropped after identification.
+- **#275: "Detect language from audio" setting** — The setting now actually drives language detection during processing; detected languages are persisted as `detected_language` on the profile.
+- **#274: Per-book Audible region hint** — `WWWAUDIOFILE` (Audible region URL built from the audio-detected language) is embedded into MP3/MP4 tags when fixes are applied, so downstream tools like beets-audible can pick the right marketplace per book.
+
 ## [0.9.0-beta.154] - 2026-07-14
 
 ### Fixed
