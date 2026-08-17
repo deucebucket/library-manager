@@ -2,10 +2,15 @@
 
 All notable changes to Library Manager will be documented in this file.
 
-## [0.9.0-beta.158] - 2026-08-17
+## [0.9.0-beta.159] - 2026-08-17
 
 ### Fixed
 - **#215: Watch-folder worker 'database is locked' contention** — `watch_folder_mark_processed()` now accepts the watch worker's existing connection (`conn=`) instead of opening a second writer per call, and all three call sites in `process_watch_folder()` use it. Exception paths in the watch worker now roll back, so a failed books insert no longer leaves the worker's write transaction open to stall later items.
+
+## [0.9.0-beta.158] - 2026-08-17
+
+### Fixed
+- **#291: Summary books matched instead of actual titles** — Third-party summary/derivative editions (IRB Media, Start Publishing Notes, Instaread, Trivion Books, etc.) no longer win matches against primary audiobooks. New `is_summary_match()` filter rejects summary titles ("Summary of…", "Study Guide", "Key Takeaways", …) and known summary-mill authors in `gather_all_api_candidates()`, the single-result `validate_result()` path, and `search_bookdb_api()` — unless the source filename itself says "summary". The AI verification prompt now also explicitly disallows summary/derivative books.
 
 ## [0.9.0-beta.157] - 2026-08-13
 

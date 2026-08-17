@@ -16,6 +16,7 @@ from app import (
     extract_series_from_title,
     build_new_path,
     is_garbage_match,
+    is_summary_match,
     is_placeholder_author,
     detect_multibook_vs_chapters,
     sanitize_path_component,
@@ -1453,6 +1454,57 @@ def main():
             passed += 1
         else:
             failed += 1
+
+    # ==========================================
+    # Issue #291: Third-party summary/derivative matches
+    # ==========================================
+    print("\n--- Issue #291: Summary/derivative books rejected ---")
+
+    # Summaries must be rejected when the source is the primary book
+    summary_cases = [
+        ("Atomic Habits", "Summary of Atomic Habits", "IRB Media"),
+        ("Atomic Habits", "Summary: Atomic Habits: An Easy & Proven Way to Build Good Habits", "Start Publishing Notes"),
+        ("Project Hail Mary", "Summary of Project Hail Mary", "Instaread"),
+        ("Dune", "Study Guide: Dune", "Trivion Books"),
+        ("Atomic Habits", "Atomic Habits: Key Takeaways & Analysis", None),
+        # Summary-mill author alone is enough even without a title signal
+        ("Atomic Habits", "Atomic Habits (Unofficial)", "IRB Media"),
+    ]
+
+    for query, cand_title, cand_author in summary_cases:
+        result = is_summary_match(query, cand_title, cand_author)
+        if test_result(f"Reject summary: '{cand_title}' by {cand_author}",
+                       result is True,
+                       "Expected rejection, got accepted"):
+            passed += 1
+        else:
+            failed += 1
+
+    # Legit books must NOT be rejected
+    legit_cases = [
+        ("Atomic Habits", "Atomic Habits", "James Clear"),
+        ("Project Hail Mary", "Project Hail Mary", "Andy Weir"),
+        # Words like "analysis" inside a real title are fine if not a summary pattern
+        ("The Summary Justice", "The Summary Justice", None),  # query itself says summary -> exempt
+    ]
+
+    for query, cand_title, cand_author in legit_cases:
+        result = is_summary_match(query, cand_title, cand_author)
+        if test_result(f"Keep legit: '{cand_title}' by {cand_author}",
+                       result is False,
+                       "Expected acceptance, got rejected"):
+            passed += 1
+        else:
+            failed += 1
+
+    # Exemption: user genuinely owns the summary audiobook
+    result = is_summary_match("Summary of Atomic Habits", "Summary of Atomic Habits", "IRB Media")
+    if test_result("Exempt when query itself is a summary",
+                   result is False,
+                   "Expected acceptance when source title contains 'summary'"):
+        passed += 1
+    else:
+        failed += 1
 
     # ==========================================
     # Summary

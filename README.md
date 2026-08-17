@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.157-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.159-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 
@@ -15,6 +15,15 @@
 ---
 
 ## Recent Changes (stable)
+
+> **beta.159** - **Fix: Watch-Folder 'database is locked' Contention** (Issue #215)
+> - Watch-folder dedup writes now ride the worker's own DB connection instead of opening a second writer per call, ending the 30-second lock stalls while a library scan is running.
+> - Watch worker exception paths now roll back, so a failed insert no longer leaves an open transaction stalling every later item.
+
+> **beta.158** - **Fix: Summary Books No Longer Matched as Real Titles** (Issue #291)
+> - Third-party summary/derivative editions (IRB Media, Start Publishing Notes, Instaread, etc.) are now filtered out of every candidate-acceptance path, so "Summary of Atomic Habits" can't win over the actual book.
+> - Users who genuinely own a summary audiobook are exempt — if the filename says "summary", the match is allowed.
+> - AI verification prompts now explicitly disallow summary/derivative books.
 
 > **beta.156** - **MIT License and Documentation Sync**
 > - Restored the project's MIT license and aligned contribution terms.
