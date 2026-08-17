@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama, OpenAI-compatible APIs)
 """
 
-APP_VERSION = "0.9.0-beta.158"
+APP_VERSION = "0.9.0-beta.159"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -7062,7 +7062,7 @@ def process_watch_folder(config: dict) -> int:
             if server_abort:
                 abort_msg = server_abort.get('message', 'Skaldleita requested task abort')
                 logger.warning(f"Watch folder: Aborting '{item.name}' per Skaldleita server notice")
-                watch_folder_mark_processed(item_path, 'aborted_by_server', abort_msg)
+                watch_folder_mark_processed(item_path, 'aborted_by_server', abort_msg, conn=conn)
                 continue
 
             # Issue #57: Verify drastic author changes before accepting
@@ -7117,7 +7117,7 @@ def process_watch_folder(config: dict) -> int:
 
             if success:
                 logger.info(f"Watch folder: Moved to {new_path}")
-                watch_folder_mark_processed(item_path, 'moved')
+                watch_folder_mark_processed(item_path, 'moved', conn=conn)
                 processed += 1
 
                 # Add to books table
@@ -7148,12 +7148,15 @@ def process_watch_folder(config: dict) -> int:
                     conn.commit()
                 except Exception as e:
                     # Issue #211: was logger.debug which hid the real exception.
+                    # Issue #215: roll back so a failed books insert doesn't leave
+                    # the worker connection's write transaction open.
                     logger.warning(f"Watch folder: Could not add to books table: {e}", exc_info=True)
+                    conn.rollback()
             else:
                 logger.error(f"Watch folder: Failed to move {item.name}: {error}")
                 # Issue #49: Track failed items in the database so user can see and fix them
                 # Issue #208: persist dedup so the retry loop dies across restarts too
-                watch_folder_mark_processed(item_path, 'move_failed', error)
+                watch_folder_mark_processed(item_path, 'move_failed', error, conn=conn)
                 try:
                     # Check if this item is already tracked
                     c.execute('SELECT id FROM books WHERE path = ?', (item_path,))
@@ -7174,10 +7177,18 @@ def process_watch_folder(config: dict) -> int:
                 except Exception as db_err:
                     # Issue #211: was logger.debug which hid the real exception; raise level
                     # so failures surface in normal operation instead of rotting silently.
+                    # Issue #215: roll back so the failed write doesn't keep the
+                    # worker connection's transaction open for later items.
                     logger.warning(f"Watch folder: Could not track failure in DB: {db_err}", exc_info=True)
+                    conn.rollback()
 
         except Exception as e:
             logger.error(f"Watch folder: Error processing {item_path}: {e}")
+            # Issue #215: never carry an open transaction into the next item
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
     conn.close()
     watch_folder_last_scan = time.time()

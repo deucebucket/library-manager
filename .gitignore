@@ -57,6 +57,7 @@ test-env/test-audiobooks/
 test-env/fresh-deploy/
 test-env/chaos-test-library/
 test-env/test-secrets.json
+test-env/local-e2e/
 test-library/
 
 # Runtime / local state
