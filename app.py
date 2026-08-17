@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama, OpenAI-compatible APIs)
 """
 
-APP_VERSION = "0.9.0-beta.157"
+APP_VERSION = "0.9.0-beta.158"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -69,7 +69,7 @@ from library_manager.utils import (
     calculate_title_similarity, extract_series_from_title, clean_search_title,
     standardize_initials, clean_author_name, extract_author_title,
     # validation
-    is_unsearchable_query, is_garbage_author_match, is_garbage_match, is_placeholder_author, is_drastic_author_change, looks_like_asin,
+    is_unsearchable_query, is_garbage_author_match, is_garbage_match, is_summary_match, is_placeholder_author, is_drastic_author_change, looks_like_asin,
     # audio
     AUDIO_EXTENSIONS, EBOOK_EXTENSIONS,
     get_first_audio_file, extract_audio_sample, extract_audio_sample_from_middle,
@@ -1253,12 +1253,16 @@ def lookup_book_metadata(messy_name, config, folder_path=None):
         logger.debug(f"Looking up metadata for: {clean_title}")
 
     def validate_result(result, original_title):
-        """Check if API result is a garbage match."""
+        """Check if API result is a garbage or summary/derivative match."""
         if not result:
             return None
         suggested_title = result.get('title', '')
         if is_garbage_match(original_title, suggested_title):
             logger.info(f"REJECTED garbage match: '{original_title}' -> '{suggested_title}'")
+            return None
+        # Issue #291: reject third-party summary/derivative editions
+        if is_summary_match(original_title, suggested_title, result.get('author')):
+            logger.info(f"REJECTED summary/derivative match: '{original_title}' -> '{suggested_title}'")
             return None
         return result
 
@@ -1336,6 +1340,9 @@ def gather_all_api_candidates(title, author=None, config=None):
                     logger.info(f"[LAYER 1] REJECTED garbage title from {api_name}: '{clean_title}' -> '{suggested_title}'")
                 elif author and is_garbage_author_match(author, suggested_author):
                     logger.info(f"[LAYER 1] REJECTED garbage author from {api_name}: '{author}' -> '{suggested_author}'")
+                elif is_summary_match(clean_title, suggested_title, suggested_author):
+                    # Issue #291: third-party summary/derivative edition
+                    logger.info(f"[LAYER 1] REJECTED summary/derivative from {api_name}: '{clean_title}' -> '{suggested_title}' ({suggested_author})")
                 else:
                     # Ensure source attribution for Book Profile system
                     result['source'] = api_name.lower()
@@ -1353,6 +1360,9 @@ def gather_all_api_candidates(title, author=None, config=None):
                         logger.debug(f"REJECTED garbage title from {api_name}: '{clean_title}' -> '{suggested_title}'")
                     elif is_garbage_author_match(author, suggested_author):
                         logger.debug(f"REJECTED garbage author from {api_name}: '{author}' -> '{suggested_author}'")
+                    elif is_summary_match(clean_title, suggested_title, suggested_author):
+                        # Issue #291: third-party summary/derivative edition
+                        logger.debug(f"REJECTED summary/derivative from {api_name}: '{clean_title}' -> '{suggested_title}' ({suggested_author})")
                     elif result_no_author.get('author') != (result.get('author') if result else None):
                         # Ensure source attribution for Book Profile system
                         result_no_author['source'] = api_name.lower()
@@ -1467,6 +1477,14 @@ The API sometimes returns COMPLETELY UNRELATED books that share one word. These 
 - "Mr. Murder" -> "Frankenstein" = WRONG (no title overlap at all!)
 - "Mortal Coils" -> "The Life and Letters of Thomas Huxley" = WRONG (completely different book)
 - "Expeditionary Force Book 14 - Match Game" -> "Doc Raymond - Match Game" = WRONG (DIFFERENT SERIES!)
+
+CRITICAL RULE - REJECT SUMMARY/DERIVATIVE BOOKS (Issue #291):
+Third-party "summary" editions are NEVER the correct match for a primary audiobook:
+- "Atomic Habits" -> "Summary of Atomic Habits" by "IRB Media" = WRONG (summary mill!)
+- "Atomic Habits" -> "Summary: Atomic Habits" by "Start Publishing Notes" = WRONG (summary mill!)
+- Any candidate with "Summary", "Study Guide", "Analysis of", or "Key Takeaways" in the title is WRONG
+  unless the original input itself explicitly says it is a summary.
+- Authors like "IRB Media", "Instaread", "Trivion Books", "Start Publishing" are summary mills, not real authors.
 
 If the proposed title shares LESS THAN HALF of its significant words with the original title, it is WRONG.
 If the original has SERIES INFO and the proposed book is from a DIFFERENT series, it is WRONG.
@@ -3351,6 +3369,11 @@ def search_bookdb_api(title, author=None, retry_count=0):
                         logger.debug(f"BookDB API: Rejected garbage match '{search_title}' -> '{suggested_title}'")
                         continue
 
+                    # Issue #291: reject third-party summary/derivative editions
+                    if is_summary_match(search_title, suggested_title, item.get('author_name')):
+                        logger.debug(f"BookDB API: Rejected summary/derivative '{search_title}' -> '{suggested_title}'")
+                        continue
+
                     result_author = item.get('author_name', '')
 
                     # TRUST EXISTING AUTHORS: If we have a valid (non-placeholder) author,
@@ -3389,6 +3412,10 @@ def search_bookdb_api(title, author=None, retry_count=0):
 
                     # Filter garbage matches
                     if is_garbage_match(search_title, suggested_title):
+                        continue
+
+                    # Issue #291: reject third-party summary/derivative editions
+                    if is_summary_match(search_title, suggested_title, item.get('author_name')):
                         continue
 
                     result_author = item.get('author_name', '')
