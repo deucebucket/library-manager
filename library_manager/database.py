@@ -237,26 +237,35 @@ def watch_folder_is_processed(path, db_path=None):
         conn.close()
 
 
-def watch_folder_mark_processed(path, outcome, error_message=None, db_path=None):
+def watch_folder_mark_processed(path, outcome, error_message=None, db_path=None, conn=None):
     """Record that a watch-folder path has been handled.
 
     outcome: 'moved' | 'move_failed' | 'unknown_author' | 'aborted_by_server'
     Issue #208.
+
+    Issue #215: pass the watch worker's own connection as ``conn`` so the
+    write rides the worker's transaction instead of opening a second
+    connection that stalls for the full busy_timeout against either the
+    scan worker's write lock or the worker's own uncommitted transaction.
+    When ``conn`` is given we commit on it; the worker owns transaction
+    lifetime for its item either way.
     """
+    sql = '''INSERT OR REPLACE INTO watch_folder_processed
+             (path, processed_at, outcome, error_message)
+             VALUES (?, CURRENT_TIMESTAMP, ?, ?)'''
+    if conn is not None:
+        conn.execute(sql, (path, outcome, error_message))
+        conn.commit()
+        return
     p = db_path or _db_path
     if not p:
         return
-    conn = sqlite3.connect(p, timeout=30)
+    own_conn = sqlite3.connect(p, timeout=30)
     try:
-        conn.execute(
-            '''INSERT OR REPLACE INTO watch_folder_processed
-               (path, processed_at, outcome, error_message)
-               VALUES (?, CURRENT_TIMESTAMP, ?, ?)''',
-            (path, outcome, error_message)
-        )
-        conn.commit()
+        own_conn.execute(sql, (path, outcome, error_message))
+        own_conn.commit()
     finally:
-        conn.close()
+        own_conn.close()
 
 
 def cleanup_garbage_entries(db_path=None):

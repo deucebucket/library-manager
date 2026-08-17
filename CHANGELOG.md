@@ -2,6 +2,11 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **#215: Watch-folder worker 'database is locked' contention** — `watch_folder_mark_processed()` now accepts the watch worker's existing connection (`conn=`) instead of opening a second writer per call, and all three call sites in `process_watch_folder()` use it. Exception paths in the watch worker now roll back, so a failed books insert no longer leaves the worker's write transaction open to stall later items.
+
 ## [0.9.0-beta.157] - 2026-08-13
 
 ### Added
