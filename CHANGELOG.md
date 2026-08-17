@@ -2,7 +2,7 @@
 
 All notable changes to Library Manager will be documented in this file.
 
-## [Unreleased]
+## [0.9.0-beta.158] - 2026-08-17
 
 ### Fixed
 - **#291: Summary books matched instead of actual titles** — Third-party summary/derivative editions (IRB Media, Start Publishing Notes, Instaread, Trivion Books, etc.) no longer win matches against primary audiobooks. New `is_summary_match()` filter rejects summary titles ("Summary of…", "Study Guide", "Key Takeaways", …) and known summary-mill authors in `gather_all_api_candidates()`, the single-result `validate_result()` path, and `search_bookdb_api()` — unless the source filename itself says "summary". The AI verification prompt now also explicitly disallows summary/derivative books.
