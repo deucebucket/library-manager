@@ -175,6 +175,61 @@ def is_garbage_match(original_title, suggested_title, threshold=0.3):
     return False
 
 
+# Issue #291: Third-party summary/derivative publishers ("summary mills").
+# Candidates from these are almost never the primary audiobook the user has.
+SUMMARY_MILL_AUTHORS = {
+    'irb media', 'start publishing notes', 'start publishing llc',
+    'instaread', 'instaread summaries', 'trivion books', 'summareads',
+    'summareads media', 'zip reads', 'readtrepreneur publishing',
+    'executive book summaries', 'getabstract', 'book analysis',
+    'concise reading', 'quickreads', 'quick reads',
+}
+
+# Title phrases that mark a derivative summary/study-aid edition.
+SUMMARY_TITLE_PATTERNS = [
+    r'\bsummary\b',
+    r'\bsummarized\b',
+    r'\bstudy\s+guide\b',
+    r'\banalysis\s+of\b',
+    r'\bkey\s+takeaways\b',
+    r'\bchapter\s+by\s+chapter\b',
+]
+
+
+def is_summary_match(original_title, candidate_title, candidate_author=None):
+    """
+    Check if a candidate is a third-party summary/derivative of the real book
+    (Issue #291). Returns True if the candidate should be rejected/penalized.
+
+    Examples that should be rejected (querying "Atomic Habits"):
+    - "Summary of Atomic Habits" by "IRB Media"
+    - "Summary: Atomic Habits: An Easy & Proven Way..." by "Start Publishing Notes"
+
+    Returns False (allow) if the user's own title explicitly says "summary" -
+    some users genuinely own summary audiobooks and search for them by name.
+    """
+    if not candidate_title and not candidate_author:
+        return False
+
+    orig = (original_title or '').lower()
+    # If the source material itself is a summary, matching one is correct.
+    if any(re.search(p, orig) for p in SUMMARY_TITLE_PATTERNS):
+        return False
+
+    cand_title = (candidate_title or '').lower()
+    cand_author = (candidate_author or '').lower().strip()
+
+    if any(re.search(p, cand_title) for p in SUMMARY_TITLE_PATTERNS):
+        logger.info(f"Summary/derivative match rejected: '{original_title}' -> '{candidate_title}'")
+        return True
+
+    if cand_author and cand_author in SUMMARY_MILL_AUTHORS:
+        logger.info(f"Summary-mill author rejected: '{candidate_author}' for '{candidate_title}'")
+        return True
+
+    return False
+
+
 def is_placeholder_author(name):
     """Check if an author name is a placeholder/system name that should be replaced."""
     if not name:
@@ -361,6 +416,9 @@ __all__ = [
     'is_unsearchable_query',
     'is_garbage_author_match',
     'is_garbage_match',
+    'is_summary_match',
+    'SUMMARY_MILL_AUTHORS',
+    'SUMMARY_TITLE_PATTERNS',
     'is_placeholder_author',
     'is_drastic_author_change',
     'is_valid_author_for_recommendation',
