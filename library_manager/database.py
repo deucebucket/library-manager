@@ -205,6 +205,14 @@ def init_db(db_path=None):
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
 
+    # Issue #289: indexes for hot query paths (dashboard counts, queue lookups,
+    # layer pipeline fetches). books.path is already indexed via UNIQUE.
+    c.execute('CREATE INDEX IF NOT EXISTS idx_history_status ON history(status)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_history_book_id ON history(book_id)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_queue_book_id ON queue(book_id)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_books_verification_layer ON books(verification_layer)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_books_status ON books(status)')
+
     conn.commit()
     conn.close()
 

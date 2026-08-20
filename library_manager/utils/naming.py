@@ -88,8 +88,39 @@ def extract_series_from_title(title):
     return None, None, title
 
 
-def clean_search_title(messy_name):
-    """Clean up a messy filename to extract searchable title."""
+def extract_ripper_tag(name, tags):
+    """Strip a configured trailing ripper/release tag from a folder/file name.
+
+    Issue #295: Only tags from the user-configured list are stripped, so
+    legitimate hyphenated titles stay untouched. Matches "-Tag" or "- Tag"
+    at the end of the name, case-insensitively.
+
+    Args:
+        name: Folder or file name (e.g. "The Final Empire -H2OKing")
+        tags: Iterable of configured ripper/release tags (e.g. ["H2OKing"])
+
+    Returns:
+        (cleaned_name, ripper_tag or None)
+    """
+    if not name or not tags:
+        return name, None
+    for tag in tags:
+        tag = str(tag).strip().lstrip('-').strip()
+        if not tag:
+            continue
+        match = re.search(r'\s*-\s*' + re.escape(tag) + r'\s*$', name, re.IGNORECASE)
+        if match:
+            cleaned = name[:match.start()].rstrip(' -')
+            return cleaned, tag
+    return name, None
+
+
+def clean_search_title(messy_name, ripper_tags=None):
+    """Clean up a messy filename to extract searchable title.
+
+    Issue #295: when ripper_tags (configured release tags) are given, a
+    trailing ripper tag is stripped too so it can't pollute search queries.
+    """
     # Remove common junk patterns
     clean = messy_name
 
@@ -128,6 +159,9 @@ def clean_search_title(messy_name):
     # Also handles "02 Night" (number + space, no separator) which is common in downloads
     # These are common in audiobook folders but mess up search
     clean = re.sub(r'^(?:track\s*)?\d+\s*[-–—:.]?\s+', '', clean, flags=re.IGNORECASE)
+
+    # Issue #295: Strip configured ripper/release tags (e.g. "-H2OKing")
+    clean, _ = extract_ripper_tag(clean, ripper_tags)
 
     # Remove extra whitespace
     clean = re.sub(r'\s+', ' ', clean)
@@ -331,6 +365,7 @@ def extract_author_title(messy_name, clean_author=True):
 __all__ = [
     'calculate_title_similarity',
     'extract_series_from_title',
+    'extract_ripper_tag',
     'clean_search_title',
     'strip_encoding_junk',
     'standardize_initials',

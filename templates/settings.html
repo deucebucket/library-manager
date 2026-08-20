@@ -126,7 +126,8 @@
                                            name="custom_naming_template" id="custom_naming_template"
                                            value="{{ config.custom_naming_template or '{author}/{title}' }}"
                                            placeholder="{author}/{title}"
-                                           oninput="updateNamingPreview()">
+                                           oninput="updateNamingPreview()"
+                                           onfocus="activeTemplateInputId = this.id">
                                     <button type="button" class="btn btn-outline-secondary" onclick="clearNamingTemplate()">
                                         <i class="bi bi-x-lg"></i>
                                     </button>
@@ -145,6 +146,8 @@
                                         <button type="button" class="btn btn-sm btn-outline-warning naming-tag" onclick="insertTag('{series_num.pad(2)}')" title="Zero-pad to 2 digits: 1→01, 10→10">{series_num.pad(2)}</button>
                                         <button type="button" class="btn btn-sm btn-outline-success naming-tag" onclick="insertTag('{narrator}')">{narrator}</button>
                                         <button type="button" class="btn btn-sm btn-outline-secondary naming-tag" onclick="insertTag('{year}')">{year}</button>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary naming-tag" onclick="insertTag('{asin}')" title="Audible ASIN (empty if none): B002V0QCYU">{asin}</button>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary naming-tag" onclick="insertTag('{ripper}')" title="Preserved ripper/release tag (empty if none): -H2OKing">{ripper}</button>
                                         <button type="button" class="btn btn-sm btn-outline-primary naming-tag" onclick="insertTag('{language}')" title="Full language name: English, Russian, Polish">{language}</button>
                                         <button type="button" class="btn btn-sm btn-outline-primary naming-tag" onclick="insertTag('{lang_code}')" title="ISO code: en, ru, pl (or eng, rus, pol with ISO 639-2 code format)">{lang_code}</button>
                                         <button type="button" class="btn btn-sm btn-outline-primary naming-tag" onclick="insertTag('{lang_flag}')" title="Flag emoji: 🇬🇧, 🇷🇺, 🇵🇱">{lang_flag}</button>
@@ -155,6 +158,36 @@
 
                                 <div class="alert alert-dark small py-2 mb-0">
                                     <strong>Preview:</strong> <code id="preview-output">Brandon Sanderson/The Final Empire</code>
+                                </div>
+
+                                <!-- Issue #200: Separate template for standalone (non-series) books -->
+                                <div class="mt-3">
+                                    <label class="form-label">Standalone Book Template <small class="text-muted">(optional)</small></label>
+                                    <div class="input-group mb-2">
+                                        <input type="text" class="form-control bg-dark text-light font-monospace"
+                                               name="custom_naming_template_standalone" id="custom_naming_template_standalone"
+                                               value="{{ config.custom_naming_template_standalone or '' }}"
+                                               placeholder="Leave empty to use the main template for all books"
+                                               oninput="updateNamingPreview()"
+                                               onfocus="activeTemplateInputId = this.id">
+                                        <button type="button" class="btn btn-outline-secondary" onclick="clearNamingTemplate()">
+                                            <i class="bi bi-x-lg"></i>
+                                        </button>
+                                    </div>
+                                    <small class="text-muted d-block mb-1"><i class="bi bi-info-circle"></i> Used for books <strong>without</strong> a series. If empty, the main template applies to all books.</small>
+                                    <div class="alert alert-dark small py-2 mb-0">
+                                        <strong>Preview (no series):</strong> <code id="preview-output-standalone">Brandon Sanderson/The Final Empire</code>
+                                    </div>
+                                </div>
+
+                                <!-- Issue #295: Ripper/release tag preservation -->
+                                <div class="mt-3">
+                                    <label class="form-label">Ripper/Release Tags <small class="text-muted">(optional)</small></label>
+                                    <input type="text" class="form-control bg-dark text-light font-monospace"
+                                           name="ripper_tags" id="ripper_tags"
+                                           value="{{ config.ripper_tags or '' }}"
+                                           placeholder="H2OKing, SomeOtherGroup">
+                                    <small class="text-muted d-block mt-1"><i class="bi bi-info-circle"></i> Comma-separated list. A matching trailing <code>-Tag</code> on the original folder is preserved and available as <code>{ripper}</code> instead of being lost during renaming.</small>
                                 </div>
                             </div>
 
@@ -2169,7 +2202,9 @@ const sampleData = {
     series: 'Mistborn',
     series_num: '1',
     narrator: 'Michael Kramer',
-    year: '2006'
+    year: '2006',
+    asin: 'B002V0QCYU',
+    ripper: 'H2OKing'
 };
 
 function toggleCustomNaming() {
@@ -2180,8 +2215,12 @@ function toggleCustomNaming() {
     }
 }
 
+// Issue #200: tag buttons insert into whichever template input was focused last
+let activeTemplateInputId = 'custom_naming_template';
+const sampleDataStandalone = Object.assign({}, sampleData, {series: '', series_num: ''});
+
 function insertTag(tag) {
-    const input = document.getElementById('custom_naming_template');
+    const input = document.getElementById(activeTemplateInputId) || document.getElementById('custom_naming_template');
     const start = input.selectionStart;
     input.value = input.value.substring(0, start) + tag + input.value.substring(input.selectionEnd);
     input.focus();
@@ -2190,20 +2229,32 @@ function insertTag(tag) {
 }
 
 function clearNamingTemplate() {
-    document.getElementById('custom_naming_template').value = '';
+    const input = document.getElementById(activeTemplateInputId) || document.getElementById('custom_naming_template');
+    input.value = '';
     updateNamingPreview();
 }
 
-function updateNamingPreview() {
-    let preview = document.getElementById('custom_naming_template').value || '{author}/{title}';
+function renderTemplatePreview(inputId, outputId, data, fallback) {
+    const input = document.getElementById(inputId);
+    const output = document.getElementById(outputId);
+    if (!input || !output) return;
+    let preview = input.value || fallback;
     // Issue #80: Handle .pad(N) modifier for series_num
     preview = preview.replace(/\{series_num\.pad\((\d+)\)\}/g, (match, width) => {
-        const num = parseInt(sampleData.series_num || '0');
+        if (!data.series_num) return '';
+        const num = parseInt(data.series_num);
         return String(num).padStart(parseInt(width), '0');
     });
-    Object.keys(sampleData).forEach(key => { preview = preview.replace(new RegExp(`\\{${key}\\}`, 'g'), sampleData[key] || ''); });
-    preview = preview.replace(/\(\s*\)/g, '').replace(/\/+/g, '/').replace(/\s{2,}/g, ' ').trim();
-    document.getElementById('preview-output').textContent = preview || '(empty)';
+    Object.keys(data).forEach(key => { preview = preview.replace(new RegExp(`\\{${key}\\}`, 'g'), data[key] || ''); });
+    preview = preview.replace(/\(\s*\)/g, '').replace(/\[\s*\]/g, '').replace(/\/+/g, '/').replace(/\s{2,}/g, ' ').trim();
+    output.textContent = preview || '(empty)';
+}
+
+function updateNamingPreview() {
+    renderTemplatePreview('custom_naming_template', 'preview-output', sampleData, '{author}/{title}');
+    // Standalone preview: empty standalone template falls back to the main template
+    const mainTemplate = document.getElementById('custom_naming_template').value || '{author}/{title}';
+    renderTemplatePreview('custom_naming_template_standalone', 'preview-output-standalone', sampleDataStandalone, mainTemplate);
 }
 
 // Logs

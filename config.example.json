@@ -16,6 +16,8 @@
   "update_channel": "stable",
   "naming_format": "author/title",
   "custom_naming_template": "{author}/{title}",
+  "custom_naming_template_standalone": "",
+  "ripper_tags": "",
   "series_grouping": true,
   "ebook_management": false,
   "ebook_library_mode": "merge",
