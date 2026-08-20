@@ -62,6 +62,8 @@ test-library/
 
 # Runtime / local state
 .TODO.md
+.PLUGIN-SYSTEM.md
+.SESSIONS.md
 CLAUDE.md
 .nodeterm/
 .playwright-mcp/

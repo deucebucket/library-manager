@@ -82,6 +82,8 @@ DEFAULT_CONFIG = {
     "update_channel": "beta",  # "stable", "beta", or "nightly"
     "naming_format": "author/title",  # "author/title", "author - title", "custom"
     "custom_naming_template": "{author}/{title}",  # Custom template with {author}, {title}, {series}, etc.
+    "custom_naming_template_standalone": "",  # Issue #200: optional separate template for non-series books; empty = use main template
+    "ripper_tags": "",  # Issue #295: comma-separated ripper/release tags to preserve (e.g. "H2OKing, SomeGroup"); empty = detection off
     "standardize_author_initials": True,  # Normalize initials: "James S A Corey" -> "James S. A. Corey" (Issue #54)
     # Metadata embedding settings
     "metadata_embedding_enabled": False,  # Embed tags into audio files when fixes are applied

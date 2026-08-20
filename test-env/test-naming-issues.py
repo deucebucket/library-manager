@@ -14,6 +14,7 @@ from pathlib import Path
 from app import (
     clean_search_title,
     extract_series_from_title,
+    extract_ripper_tag,
     build_new_path,
     is_garbage_match,
     is_summary_match,
@@ -137,6 +138,226 @@ def main():
         path_str = str(result)
         if test_result("With series = proper format",
                        "Mistborn" in path_str and "1 - " in path_str,
+                       f"Got path: {path_str}"):
+            passed += 1
+        else:
+            failed += 1
+    else:
+        failed += 1
+        print(f"[FAIL] build_new_path returned None")
+
+    # ==========================================
+    # Issue #294: {asin} template variable
+    # ==========================================
+    print("\n--- Issue #294: {asin} template variable ---")
+
+    asin_config = {
+        'naming_format': 'custom',
+        'custom_naming_template': '{author}/{series}/{series_num.pad(2)} - {title} [{asin}]',
+        'series_grouping': True
+    }
+
+    # Valid ASIN - included in path
+    result = build_new_path(lib_path, "Brandon Sanderson", "The Final Empire",
+                           series="Mistborn", series_num="1",
+                           asin="B002V0QCYU", config=asin_config)
+    if result:
+        path_str = str(result)
+        if test_result("Valid ASIN included",
+                       "01 - The Final Empire [B002V0QCYU]" in path_str,
+                       f"Got path: {path_str}"):
+            passed += 1
+        else:
+            failed += 1
+    else:
+        failed += 1
+        print(f"[FAIL] build_new_path returned None")
+
+    # No ASIN - brackets cleaned up, no empty []
+    result = build_new_path(lib_path, "Brandon Sanderson", "The Final Empire",
+                           series="Mistborn", series_num="1",
+                           asin=None, config=asin_config)
+    if result:
+        path_str = str(result)
+        if test_result("Missing ASIN = no empty brackets",
+                       "[]" not in path_str and "The Final Empire" in path_str,
+                       f"Got path: {path_str}"):
+            passed += 1
+        else:
+            failed += 1
+    else:
+        failed += 1
+        print(f"[FAIL] build_new_path returned None")
+
+    # ISBN or internal ID - rejected, resolves to empty
+    result = build_new_path(lib_path, "Brandon Sanderson", "The Final Empire",
+                           series="Mistborn", series_num="1",
+                           asin="9780765350381",  # 13-digit ISBN, not an ASIN
+                           config=asin_config)
+    if result:
+        path_str = str(result)
+        if test_result("ISBN rejected from {asin}",
+                       "9780765350381" not in path_str and "[]" not in path_str,
+                       f"Got path: {path_str}"):
+            passed += 1
+        else:
+            failed += 1
+    else:
+        failed += 1
+        print(f"[FAIL] build_new_path returned None")
+
+    # ==========================================
+    # Issue #200: Separate standalone (no-series) template
+    # ==========================================
+    print("\n--- Issue #200: Standalone vs series templates ---")
+
+    dual_config = {
+        'naming_format': 'custom',
+        'custom_naming_template': '{author}/{series}/{series_num.pad(2)} - {title}',
+        'custom_naming_template_standalone': '{author}/{title} ({year})',
+        'series_grouping': True
+    }
+
+    # Book with series uses the main template
+    result = build_new_path(lib_path, "Brandon Sanderson", "The Final Empire",
+                           series="Mistborn", series_num="1", year="2006",
+                           config=dual_config)
+    if result:
+        path_str = str(result)
+        if test_result("Series book uses main template",
+                       "Mistborn/01 - The Final Empire" in path_str and "(2006)" not in path_str,
+                       f"Got path: {path_str}"):
+            passed += 1
+        else:
+            failed += 1
+    else:
+        failed += 1
+        print(f"[FAIL] build_new_path returned None")
+
+    # Standalone book uses the standalone template
+    result = build_new_path(lib_path, "Andy Weir", "Project Hail Mary",
+                           series=None, series_num=None, year="2021",
+                           config=dual_config)
+    if result:
+        path_str = str(result)
+        if test_result("Standalone book uses standalone template",
+                       "Andy Weir/Project Hail Mary (2021)" in path_str,
+                       f"Got path: {path_str}"):
+            passed += 1
+        else:
+            failed += 1
+    else:
+        failed += 1
+        print(f"[FAIL] build_new_path returned None")
+
+    # Empty standalone template falls back to the main template
+    fallback_config = dict(dual_config)
+    fallback_config['custom_naming_template_standalone'] = ''
+    result = build_new_path(lib_path, "Andy Weir", "Project Hail Mary",
+                           series=None, series_num=None, config=fallback_config)
+    if result:
+        path_str = str(result)
+        if test_result("Empty standalone template falls back to main",
+                       "Andy Weir/Project Hail Mary" in path_str,
+                       f"Got path: {path_str}"):
+            passed += 1
+        else:
+            failed += 1
+    else:
+        failed += 1
+        print(f"[FAIL] build_new_path returned None")
+
+    # ==========================================
+    # Issue #295: Preserve ripper/release tags
+    # ==========================================
+    print("\n--- Issue #295: Ripper/release tag preservation ---")
+
+    ripper_tags = ['H2OKing', 'SomeGroup']
+
+    # Detection: configured trailing tags are stripped and returned
+    detection_cases = [
+        ("The Final Empire -H2OKing", "The Final Empire", "H2OKing"),
+        ("Columbus Day-H2OKing", "Columbus Day", "H2OKing"),
+        ("Dungeon Crawler Carl - H2OKing", "Dungeon Crawler Carl", "H2OKing"),
+        ("The Final Empire -h2oking", "The Final Empire", "H2OKing"),  # case-insensitive match, canonical config casing
+        ("The Final Empire", "The Final Empire", None),  # no tag
+        ("The Final Empire -UnknownGroup", "The Final Empire -UnknownGroup", None),  # unconfigured tag untouched
+        ("Book - Title With Hyphen", "Book - Title With Hyphen", None),  # legit hyphen untouched
+    ]
+    for folder, expected_clean, expected_tag in detection_cases:
+        cleaned, tag = extract_ripper_tag(folder, ripper_tags)
+        if test_result(f"extract_ripper_tag('{folder}')",
+                       cleaned == expected_clean and tag == (expected_tag or None),
+                       f"Got cleaned='{cleaned}' tag={tag}"):
+            passed += 1
+        else:
+            failed += 1
+
+    # No configured tags = detection off
+    cleaned, tag = extract_ripper_tag("The Final Empire -H2OKing", [])
+    if test_result("Empty tag list = detection off",
+                   cleaned == "The Final Empire -H2OKing" and tag is None,
+                   f"Got cleaned='{cleaned}' tag={tag}"):
+        passed += 1
+    else:
+        failed += 1
+
+    # clean_search_title strips configured ripper tags
+    result = clean_search_title("The Final Empire -H2OKing", ripper_tags=ripper_tags)
+    if test_result("clean_search_title strips ripper tag",
+                   "h2oking" not in result.lower() and "final empire" in result.lower(),
+                   f"Got '{result}'"):
+        passed += 1
+    else:
+        failed += 1
+
+    # {ripper} template variable
+    ripper_config = {
+        'naming_format': 'custom',
+        'custom_naming_template': '{author}/{title} -{ripper}',
+        'ripper_tags': 'H2OKing, SomeGroup'
+    }
+    result = build_new_path(lib_path, "Brandon Sanderson", "The Final Empire",
+                           ripper="H2OKing", config=ripper_config)
+    if result:
+        path_str = str(result)
+        if test_result("{ripper} included when present",
+                       "The Final Empire -H2OKing" in path_str,
+                       f"Got path: {path_str}"):
+            passed += 1
+        else:
+            failed += 1
+    else:
+        failed += 1
+        print(f"[FAIL] build_new_path returned None")
+
+    result = build_new_path(lib_path, "Brandon Sanderson", "The Final Empire",
+                           ripper=None, config=ripper_config)
+    if result:
+        path_str = str(result)
+        if test_result("{ripper} empty = no dangling dash",
+                       path_str.endswith("The Final Empire"),
+                       f"Got path: {path_str}"):
+            passed += 1
+        else:
+            failed += 1
+    else:
+        failed += 1
+        print(f"[FAIL] build_new_path returned None")
+
+    # Combined with {asin} (Issue #294 example from #295)
+    combo_config = {
+        'naming_format': 'custom',
+        'custom_naming_template': '{author}/{series}/{series_num.pad(2)} - {title} [{asin}] -{ripper}',
+        'series_grouping': True
+    }
+    result = build_new_path(lib_path, "Brandon Sanderson", "The Final Empire",
+                           series="Mistborn", series_num="1",
+                           asin="B002V0QCYU", ripper="H2OKing", config=combo_config)
+    if result:
+        path_str = str(result)
+        if test_result("{asin} + {ripper} combined",
+                       "01 - The Final Empire [B002V0QCYU] -H2OKing" in path_str,
                        f"Got path: {path_str}"):
             passed += 1
         else:

@@ -5,6 +5,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Optional, Tuple
 from library_manager.utils.naming import strip_encoding_junk, standardize_initials
+from library_manager.utils.validation import looks_like_asin
 
 logger = logging.getLogger(__name__)
 
@@ -522,7 +523,8 @@ def find_existing_author_folder(lib_path, target_author) -> Optional[str]:
 
 
 def build_new_path(lib_path, author, title, series=None, series_num=None, narrator=None, year=None,
-                   edition=None, variant=None, language=None, language_code=None, languages=None, config=None):
+                   edition=None, variant=None, language=None, language_code=None, languages=None,
+                   asin=None, ripper=None, config=None):
     """Build a new path based on the naming format configuration.
 
     Audiobookshelf-compatible format (when series_grouping enabled):
@@ -548,6 +550,11 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
         languages: Ordered list of ISO 639-1 codes, primary first (optional,
             Issue #280). When multiple languages are present and tagging
             applies, the tag shows all of them (e.g. "(German, English)").
+        asin: Audible ASIN (optional, Issue #294). Only used in custom
+            templates via {asin}, and only when it passes ASIN validation -
+            ISBNs or internal IDs resolve to empty.
+        ripper: Preserved ripper/release tag (optional, Issue #295). Only
+            used in custom templates via {ripper}; empty when none detected.
         config: Configuration dict
 
     SAFETY: Returns None if path would be invalid/dangerous.
@@ -679,6 +686,11 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
     if naming_format == 'custom':
         # Custom template: parse and replace tags
         custom_template = config.get('custom_naming_template', '{author}/{title}') if config else '{author}/{title}'
+        # Issue #200: separate template for standalone (non-series) books.
+        # Empty/unset falls back to the main template.
+        standalone_template = (config.get('custom_naming_template_standalone', '') or '').strip() if config else ''
+        if standalone_template and not safe_series:
+            custom_template = standalone_template
 
         # Prepare all available data for replacement
         safe_narrator = sanitize_path_component(narrator) if narrator else ''
@@ -746,6 +758,13 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
         path_str = path_str.replace('{lang_code}', lang_code_for_display(language_code, tpl_code_format) if language_code else '')
         # Issue #282: {lang_flag} - flag emoji for the book's language
         path_str = path_str.replace('{lang_flag}', LANGUAGE_FLAGS.get(language_code, '') if language_code else '')
+        # Issue #294: {asin} - validated ASIN only; anything else (ISBN,
+        # internal IDs) resolves to empty and cleanup removes empty brackets
+        safe_asin = str(asin).strip().upper() if asin and looks_like_asin(asin) else ''
+        path_str = path_str.replace('{asin}', safe_asin)
+        # Issue #295: {ripper} - preserved ripper/release tag, empty when none
+        safe_ripper = sanitize_path_component(ripper) if ripper else ''
+        path_str = path_str.replace('{ripper}', safe_ripper or '')
 
         # Clean up empty brackets/parens from missing optional data
         path_str = re.sub(r'\(\s*\)', '', path_str)  # Empty ()
@@ -756,6 +775,7 @@ def build_new_path(lib_path, author, title, series=None, series_num=None, narrat
         path_str = re.sub(r'^-\s+', '', path_str)  # Leading "- " at start
         path_str = re.sub(r'^\s*-\s+', '', path_str)  # Leading " - " at start (with space)
         path_str = re.sub(r'\s+-$', '', path_str)  # Trailing " -" at end
+        path_str = re.sub(r'(?<=\S)-$', '', path_str)  # Trailing "-" at end (Issue #295: "{title}-{ripper}" with no ripper)
         path_str = re.sub(r'/+', '/', path_str)  # Multiple slashes
         path_str = re.sub(r'\s{2,}', ' ', path_str)  # Multiple spaces
         path_str = path_str.strip(' /')

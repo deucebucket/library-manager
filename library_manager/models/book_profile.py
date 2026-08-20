@@ -253,6 +253,7 @@ class BookProfile:
     book_id: Optional[str] = None                # Book ID (ISBN, ASIN, internal)
     version_id: Optional[str] = None             # Unique recording version ID
     voice_cluster_id: Optional[str] = None       # Voice cluster for unknown narrators
+    ripper: Optional[str] = None                 # Issue #295: preserved ripper/release tag from original folder
 
     def add_author(self, source: str, author: str, weight: int = None):
         """Add author source with validation to prevent garbage recommendations.
@@ -476,6 +477,7 @@ class BookProfile:
         result['book_id'] = self.book_id
         result['version_id'] = self.version_id
         result['voice_cluster_id'] = self.voice_cluster_id
+        result['ripper'] = self.ripper
         return result
 
     @classmethod
@@ -504,6 +506,7 @@ class BookProfile:
         profile.book_id = data.get('book_id')
         profile.version_id = data.get('version_id')
         profile.voice_cluster_id = data.get('voice_cluster_id')
+        profile.ripper = data.get('ripper')
         return profile
 
 

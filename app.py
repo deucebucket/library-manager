@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama, OpenAI-compatible APIs)
 """
 
-APP_VERSION = "0.9.0-beta.159"
+APP_VERSION = "0.9.0-beta.160"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -68,6 +68,7 @@ from library_manager.utils import (
     # naming
     calculate_title_similarity, extract_series_from_title, clean_search_title,
     standardize_initials, clean_author_name, extract_author_title,
+    extract_ripper_tag,
     # validation
     is_unsearchable_query, is_garbage_author_match, is_garbage_match, is_summary_match, is_placeholder_author, is_drastic_author_change, looks_like_asin,
     # audio
@@ -999,6 +1000,40 @@ def _extract_book_id(result):
             value = str(value).strip()
             if value:
                 return value
+    return None
+
+
+def _parse_ripper_tags(config):
+    """Issue #295: parse the configured ripper/release tag list.
+
+    Stored as a comma- or newline-separated string in config.json.
+    """
+    raw = (config or {}).get('ripper_tags', '') or ''
+    return [t.strip() for t in re.split(r'[,\n]+', raw) if t.strip()]
+
+
+def _resolve_ripper_tag(old_path, profile, config):
+    """Issue #295: ripper tag from the persisted profile, falling back to
+    extracting it from the original folder name using the configured tag list.
+
+    Args:
+        old_path: Original book folder path (basename is inspected).
+        profile: Persisted profile (JSON string or dict), may be None.
+        config: App configuration dict.
+
+    Returns:
+        The ripper tag string, or None.
+    """
+    if profile:
+        try:
+            parsed = json.loads(profile) if isinstance(profile, str) else profile
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+        if isinstance(parsed, dict) and parsed.get('ripper'):
+            return parsed['ripper']
+    if old_path:
+        _, ripper = extract_ripper_tag(Path(str(old_path)).name, _parse_ripper_tags(config))
+        return ripper
     return None
 
 
@@ -2985,6 +3020,39 @@ def find_orphan_audio_files(lib_path, config=None):
                 })
 
     return orphans
+
+
+# Issue #290: Orphan scan cache. find_orphan_audio_files() walks every author
+# dir on disk, which is painful on network drives when /api/library is polled.
+# Cache the result for 5 minutes; force a rescan when the user is actually
+# viewing the orphan tab or after an organize operation changes the disk state.
+_ORPHAN_CACHE = {'items': [], 'timestamp': 0.0}
+_ORPHAN_CACHE_TTL = 300  # seconds
+
+
+def get_cached_orphans(config, force_refresh=False):
+    """Return orphan audio files, scanning disk at most once per TTL.
+
+    Args:
+        config: App configuration dict.
+        force_refresh: Bypass the cache (e.g. viewing the orphan tab).
+    """
+    now = time.time()
+    if not force_refresh and (now - _ORPHAN_CACHE['timestamp']) < _ORPHAN_CACHE_TTL:
+        return list(_ORPHAN_CACHE['items'])
+
+    orphan_list = []
+    for lib_path in config.get('library_paths', []):
+        orphan_list.extend(find_orphan_audio_files(lib_path, config=config))
+
+    _ORPHAN_CACHE['items'] = orphan_list
+    _ORPHAN_CACHE['timestamp'] = now
+    return list(orphan_list)
+
+
+def invalidate_orphan_cache():
+    """Force the next get_cached_orphans() call to rescan (e.g. after organizing)."""
+    _ORPHAN_CACHE['timestamp'] = 0.0
 
 
 def organize_orphan_files(author_path, book_title, files, config=None):
@@ -6371,6 +6439,20 @@ def apply_fix(history_id):
 
         # Build new path from fix metadata
         # Detect language for multi-language naming
+        # Issue #295: preserve ripper/release tag from profile or original folder
+        ripper_tag = _resolve_ripper_tag(str(old_path), book_row['profile'] if book_row else None, config)
+        if ripper_tag:
+            # Persist so the tag survives rescans and future renames
+            try:
+                _profile = json.loads(book_row['profile']) if book_row and book_row['profile'] else {}
+                if isinstance(_profile, dict) and _profile.get('ripper') != ripper_tag:
+                    _profile['ripper'] = ripper_tag
+                    c.execute('UPDATE books SET profile = ? WHERE id = ?',
+                              (json.dumps(_profile), book_id))
+                    conn.commit()
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.debug(f"[APPLY FIX] Could not persist ripper tag: {e}")
+
         new_path = build_new_path(
             Path(library_paths[0]),
             fix['new_author'] or fix['old_author'],
@@ -6383,6 +6465,8 @@ def apply_fix(history_id):
             variant=fix['new_variant'] if fix['new_variant'] else None,
             language_code=fix_lang,
             languages=fix_languages or None,
+            asin=metadata_book_id,
+            ripper=ripper_tag,
             config=config
         )
         if not new_path:
@@ -7566,6 +7650,10 @@ def settings_page():
         config['update_channel'] = request.form.get('update_channel', 'stable')
         config['naming_format'] = request.form.get('naming_format', 'author/title')
         config['custom_naming_template'] = request.form.get('custom_naming_template', '{author}/{title}').strip()
+        # Issue #200: optional separate template for standalone (non-series) books
+        config['custom_naming_template_standalone'] = request.form.get('custom_naming_template_standalone', '').strip()
+        # Issue #295: comma-separated ripper/release tags to preserve
+        config['ripper_tags'] = request.form.get('ripper_tags', '').strip()
         # Watch folder settings
         config['watch_mode'] = 'watch_mode' in request.form
         config['watch_folder'] = request.form.get('watch_folder', '').strip()
@@ -9955,11 +10043,8 @@ def api_recent_activity():
 def api_orphans():
     """Find orphan audio files (files sitting directly in author folders)."""
     config = load_config()
-    orphans = []
-
-    for lib_path in config.get('library_paths', []):
-        lib_orphans = find_orphan_audio_files(lib_path, config)
-        orphans.extend(lib_orphans)
+    # Explicit orphan view: bypass the cache for fresh disk state (Issue #290)
+    orphans = get_cached_orphans(config, force_refresh=True)
 
     return jsonify({
         'count': len(orphans),
@@ -9980,6 +10065,8 @@ def api_organize_orphan():
 
     config = load_config()
     success, message = organize_orphan_files(author_path, book_title, files, config)
+    if success:
+        invalidate_orphan_cache()  # Issue #290: disk state changed
 
     return jsonify({
         'success': success,
@@ -9993,9 +10080,10 @@ def api_organize_all_orphans():
     config = load_config()
     results = {'organized': 0, 'errors': 0, 'details': []}
 
-    for lib_path in config.get('library_paths', []):
-        orphans = find_orphan_audio_files(lib_path, config)
-
+    # Fresh scan of current disk state, then invalidate since organizing
+    # changes what's on disk (Issue #290)
+    orphans = get_cached_orphans(config, force_refresh=True)
+    try:
         for orphan in orphans:
             if orphan['detected_title'] == 'Unknown Album':
                 results['errors'] += 1
@@ -10015,6 +10103,8 @@ def api_organize_all_orphans():
             else:
                 results['errors'] += 1
                 results['details'].append(f"Error: {orphan['author']}: {message}")
+    finally:
+        invalidate_orphan_cache()
 
     # Issue #57: Auto-scan after organizing to pick up newly created book folders
     # This ensures the database reflects the new folder structure
@@ -10152,10 +10242,9 @@ def api_library():
     c.execute("SELECT COUNT(*) FROM books WHERE validation_status = 'invalid'")
     counts['validation_failed'] = c.fetchone()[0]
 
-    # Count orphans (detected on-the-fly)
-    orphan_list = []
-    for lib_path in config.get('library_paths', []):
-        orphan_list.extend(find_orphan_audio_files(lib_path))
+    # Count orphans (Issue #290: cached disk scan - rescan when viewing the
+    # orphan tab or when the cache is stale)
+    orphan_list = get_cached_orphans(config, force_refresh=(status_filter == 'orphan'))
     counts['orphan'] = len(orphan_list)
 
     # Update 'all' count to include orphans
@@ -12584,11 +12673,22 @@ def api_manual_match():
         # Detect language from title for multi-language naming
         lang_code = detect_title_language(new_title) if new_title else None
 
+        # Issue #294: ASIN for the {asin} template variable - prefer the
+        # selected BookDB result, fall back to the persisted profile
+        c.execute('SELECT profile FROM books WHERE id = ?', (book_id,))
+        _profile_row = c.fetchone()
+        _profile_json = _profile_row['profile'] if _profile_row else None
+        asin_for_path = _extract_book_id(bookdb_result) or _extract_book_id(_profile_json)
+
+        # Issue #295: preserve ripper/release tag from profile or original folder
+        ripper_tag = _resolve_ripper_tag(str(old_path), _profile_json, config)
+
         # Build the new path
         new_path = build_new_path(lib_path, new_author, new_title,
                                   series=new_series, series_num=new_series_num,
                                   narrator=new_narrator, year=new_year,
-                                  language_code=lang_code, config=config)
+                                  language_code=lang_code, asin=asin_for_path,
+                                  ripper=ripper_tag, config=config)
 
         if new_path is None:
             conn.close()
@@ -12758,11 +12858,22 @@ def api_edit_book():
         # Detect language from title for multi-language naming
         lang_code = detect_title_language(new_title) if new_title else None
 
+        # Issue #294: ASIN for the {asin} template variable - prefer the
+        # selected BookDB result, fall back to the persisted profile
+        c.execute('SELECT profile FROM books WHERE id = ?', (book_id,))
+        _profile_row = c.fetchone()
+        _profile_json = _profile_row['profile'] if _profile_row else None
+        asin_for_path = _extract_book_id(bookdb_result) or _extract_book_id(_profile_json)
+
+        # Issue #295: preserve ripper/release tag from profile or original folder
+        ripper_tag = _resolve_ripper_tag(str(old_path), _profile_json, config)
+
         # Build the new path
         new_path = build_new_path(lib_path, new_author, new_title,
                                   series=new_series, series_num=new_series_num,
                                   narrator=new_narrator, year=new_year,
-                                  language_code=lang_code, config=config)
+                                  language_code=lang_code, asin=asin_for_path,
+                                  ripper=ripper_tag, config=config)
 
         if new_path is None:
             conn.close()

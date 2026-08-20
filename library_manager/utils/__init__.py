@@ -3,6 +3,7 @@
 from library_manager.utils.naming import (
     calculate_title_similarity,
     extract_series_from_title,
+    extract_ripper_tag,
     clean_search_title,
     standardize_initials,
     clean_author_name,

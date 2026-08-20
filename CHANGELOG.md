@@ -2,6 +2,17 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.160] - 2026-08-20
+
+### Added
+- **#294: `{asin}` custom naming template variable** — The book's Audible ASIN can now be used in custom naming templates (e.g. `{author}/{series}/{series_num.pad(2)} - {title} [{asin}]`). The value comes from the persisted book profile and is only emitted when it passes ASIN validation (`looks_like_asin`), so ISBNs and internal IDs never land in folder names. Empty when no valid ASIN is known; existing cleanup removes leftover empty brackets. Added to the clickable variable list and live preview in Settings.
+- **#200: Separate template for standalone books** — New optional `custom_naming_template_standalone` setting. When set, books without a series use it instead of the main custom template; empty keeps the previous behavior. Settings UI shows a second input with its own no-series live preview, and the tag buttons insert into whichever template field was focused last.
+- **#295: Preserve ripper/release tags** — New `ripper_tags` setting (comma-separated list). A matching trailing `-Tag` on the original folder is detected case-insensitively, kept out of search/matching titles (`clean_search_title` strips it), persisted on the book profile (`BookProfile.ripper`, survives rescans and renames), and exposed as the `{ripper}` custom template variable. Unlisted trailing words are never treated as ripper tags, so legitimate hyphenated titles are untouched.
+
+### Performance
+- **#289: Database indexes** — Added indexes for hot query paths: `history(status)`, `history(book_id)`, `queue(book_id)`, `books(verification_layer)`, `books(status)`. Eliminates full-table scans on dashboard counts, queue lookups, and layer pipeline fetches.
+- **#290: Orphan files cache** — `/api/library` no longer walks every author directory on disk per request. Orphan scan results are cached for 5 minutes; viewing the orphan tab or running organize forces a fresh scan, and organizing invalidates the cache. Especially noticeable on network drives.
+
 ## [0.9.0-beta.159] - 2026-08-17
 
 ### Fixed
