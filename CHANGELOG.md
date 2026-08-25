@@ -2,6 +2,16 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.161] - 2026-08-25
+
+### Fixed
+- **#300: Verified, rollback-safe apply-fix transfers** — Applying a fix no longer leaves files at the destination when the critical `books`, `history`, or `queue` database transaction fails. Known `books.path` collisions are rejected before the move; other post-move failures compensate back to the exact source without overwriting either side. Folder and loose-file moves are both covered, empty destinations are restored, fallback source paths are revalidated against configured roots, and undo uses the receipt's exact moved object for loose files.
+
+### Added
+- **SHA-256 transfer receipts** — Every apply-fix handoff now persists a complete source inventory before the move, including relative paths, entry types, sizes, and per-file SHA-256 hashes. The destination must match that receipt exactly before the database transaction commits. Rollbacks are inventoried and verified again; unresolved states retain exact source/destination paths and require manual recovery.
+- **Interrupted-operation recovery** — Startup reconciles durable `applying` operations. Verified restorations return safely to Pending; ambiguous paths or inventory mismatches are marked for manual recovery instead of being guessed.
+- **History receipt viewer** — Applied and rolled-back History entries show their receipt state and expose source, destination, and rollback inventories through a new modal and `/api/file-operation-receipt/<id>` endpoint.
+
 ## [0.9.0-beta.160] - 2026-08-20
 
 ### Added

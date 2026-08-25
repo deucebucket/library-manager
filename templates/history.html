@@ -129,12 +129,22 @@
                         {% else %}
                         <span class="badge bg-secondary">{{ h.status }}</span>
                         {% endif %}
+                        {% if h.receipt_status %}
+                        <br><span class="badge bg-dark border border-info mt-1" title="SHA-256 transfer receipt: {{ h.receipt_status }}">
+                            <i class="bi bi-shield-check"></i> {{ h.receipt_status|replace('_', ' ')|title }}
+                        </span>
+                        {% endif %}
                     </td>
                     <td>
                         <!-- Edit button - always available -->
                         <button class="btn btn-sm btn-outline-primary me-1" onclick="editItem({{ h.id }}, {{ h.book_id }}, '{{ (h.new_author or h.old_author) | e }}', '{{ (h.new_title or h.old_title) | e }}')" title="Edit metadata">
                             <i class="bi bi-pencil"></i>
                         </button>
+                        {% if h.operation_id %}
+                        <button class="btn btn-sm btn-outline-info me-1" onclick="viewTransferReceipt({{ h.operation_id }})" title="View transfer receipt">
+                            <i class="bi bi-receipt"></i>
+                        </button>
+                        {% endif %}
                         {% if h.user_locked %}
                         <button class="btn btn-sm btn-outline-warning me-1" onclick="unlockBook({{ h.book_id }})" title="Unlock - allow system to re-process this book">
                             <i class="bi bi-unlock"></i>
@@ -175,6 +185,38 @@
                 {% endfor %}
             </tbody>
         </table>
+    </div>
+</div>
+
+<div class="modal fade" id="transferReceiptModal" tabindex="-1" aria-labelledby="transferReceiptTitle" aria-hidden="true" style="z-index: 2000;">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content" style="background: var(--theme-bg-secondary); color: var(--theme-text-primary);">
+            <div class="modal-header">
+                <h5 class="modal-title" id="transferReceiptTitle"><i class="bi bi-shield-check"></i> Verified Transfer Receipt</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="transferReceiptSummary" class="mb-3"></div>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                        <thead>
+                            <tr>
+                                <th>Phase</th>
+                                <th>Path</th>
+                                <th>Type</th>
+                                <th>Size</th>
+                                <th>SHA-256</th>
+                                <th>Verified</th>
+                            </tr>
+                        </thead>
+                        <tbody id="transferReceiptInventory"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -259,7 +301,7 @@
                             <i class="bi bi-search"></i> Search
                         </button>
                     </div>
-                    <small class="text-muted">Search Skaldleita's 50M+ book database to find the correct match</small>
+                    <small class="text-muted">Search Skaldleita's live book database to find the correct match</small>
                 </div>
 
                 <!-- Search Results -->
@@ -500,6 +542,49 @@ function unlockBook(bookId) {
 // escapeHtml provided by common.js
 
 // ===== EXISTING FUNCTIONS =====
+function viewTransferReceipt(operationId) {
+    const modalElement = document.getElementById('transferReceiptModal');
+    // Keep Bootstrap's modal above the backdrop even though page content is
+    // rendered inside the main container's theme stacking context.
+    if (modalElement.parentElement !== document.body) document.body.appendChild(modalElement);
+    const summary = document.getElementById('transferReceiptSummary');
+    const inventoryBody = document.getElementById('transferReceiptInventory');
+    summary.innerHTML = '<div class="text-muted">Loading receipt...</div>';
+    inventoryBody.innerHTML = '';
+    bootstrap.Modal.getOrCreateInstance(modalElement).show();
+
+    fetch(`/api/file-operation-receipt/${operationId}`)
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) throw new Error(data.error || 'Receipt unavailable');
+            const op = data.operation;
+            const statusClass = op.status === 'committed' || op.status === 'rolled_back'
+                ? 'text-success' : 'text-warning';
+            summary.innerHTML = `
+                <div class="row g-3">
+                    <div class="col-md-2"><small class="text-muted d-block">Receipt</small><strong>#${op.id}</strong></div>
+                    <div class="col-md-2"><small class="text-muted d-block">Status</small><strong class="${statusClass}">${escapeHtml(op.status.replaceAll('_', ' '))}</strong></div>
+                    <div class="col-md-4"><small class="text-muted d-block">Source</small><code>${escapeHtml(op.source_path)}</code></div>
+                    <div class="col-md-4"><small class="text-muted d-block">Destination</small><code>${escapeHtml(op.destination_path)}</code></div>
+                    <div class="col-md-4"><small class="text-muted d-block">Source inventory digest</small><code class="text-info text-break">${escapeHtml(op.source_digest || 'Not available')}</code></div>
+                    <div class="col-md-4"><small class="text-muted d-block">Destination inventory digest</small><code class="text-info text-break">${escapeHtml(op.destination_digest || 'Not available')}</code></div>
+                    <div class="col-md-4"><small class="text-muted d-block">Rollback inventory digest</small><code class="text-info text-break">${escapeHtml(op.rollback_digest || 'Not applicable')}</code></div>
+                </div>`;
+            inventoryBody.innerHTML = data.inventory.map(item => `
+                <tr>
+                    <td><span class="badge bg-secondary">${escapeHtml(item.phase)}</span></td>
+                    <td><code>${escapeHtml(item.relative_path)}</code></td>
+                    <td>${escapeHtml(item.entry_type)}</td>
+                    <td>${Number(item.size).toLocaleString()}</td>
+                    <td><code title="${escapeHtml(item.sha256 || '')}">${escapeHtml(item.sha256 ? item.sha256.slice(0, 16) + '…' : '—')}</code></td>
+                    <td>${item.verified ? '<span class="text-success"><i class="bi bi-check-circle-fill"></i> Yes</span>' : '<span class="text-danger"><i class="bi bi-x-circle-fill"></i> No</span>'}</td>
+                </tr>`).join('');
+        })
+        .catch(error => {
+            summary.innerHTML = `<div class="alert alert-danger mb-0">${escapeHtml(error.message)}</div>`;
+        });
+}
+
 function applyFix(historyId) {
     if (!confirm('Apply this fix? The folder will be renamed.')) return;
 

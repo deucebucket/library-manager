@@ -88,6 +88,42 @@ def init_db(db_path=None):
         FOREIGN KEY (book_id) REFERENCES books(id)
     )''')
 
+    # Issue #300: durable handoff receipts for apply-fix filesystem moves.
+    # A receipt is committed before the move and retains every source,
+    # destination, and rollback inventory entry with its SHA-256 digest.
+    c.execute('''CREATE TABLE IF NOT EXISTS file_operations (
+        id INTEGER PRIMARY KEY,
+        history_id INTEGER,
+        book_id INTEGER,
+        operation_type TEXT NOT NULL,
+        source_path TEXT NOT NULL,
+        destination_path TEXT NOT NULL,
+        database_destination TEXT NOT NULL,
+        source_digest TEXT,
+        destination_digest TEXT,
+        rollback_digest TEXT,
+        status TEXT NOT NULL DEFAULT 'preparing',
+        destination_existed INTEGER DEFAULT 0,
+        error_message TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        verified_at TIMESTAMP,
+        FOREIGN KEY (history_id) REFERENCES history(id),
+        FOREIGN KEY (book_id) REFERENCES books(id)
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS file_operation_inventory (
+        id INTEGER PRIMARY KEY,
+        operation_id INTEGER NOT NULL,
+        phase TEXT NOT NULL,
+        relative_path TEXT NOT NULL,
+        entry_type TEXT NOT NULL,
+        size INTEGER NOT NULL DEFAULT 0,
+        sha256 TEXT,
+        verified INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (operation_id) REFERENCES file_operations(id),
+        UNIQUE(operation_id, phase, relative_path)
+    )''')
+
     # Add status and error_message columns if they don't exist (migration)
     try:
         c.execute("ALTER TABLE history ADD COLUMN status TEXT DEFAULT 'pending_fix'")
@@ -107,7 +143,9 @@ def init_db(db_path=None):
         'new_edition TEXT',
         'new_variant TEXT',
         'embed_status TEXT',
-        'embed_error TEXT'
+        'embed_error TEXT',
+        'move_destination TEXT',
+        'move_destination_existed INTEGER DEFAULT 0'
     ]
     for col_def in metadata_columns:
         try:
@@ -212,6 +250,9 @@ def init_db(db_path=None):
     c.execute('CREATE INDEX IF NOT EXISTS idx_queue_book_id ON queue(book_id)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_books_verification_layer ON books(verification_layer)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_books_status ON books(status)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_file_operations_history_id ON file_operations(history_id)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_file_operations_status ON file_operations(status)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_file_inventory_operation_phase ON file_operation_inventory(operation_id, phase)')
 
     conn.commit()
     conn.close()
