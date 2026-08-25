@@ -31,12 +31,13 @@ def build_limited_ffmpeg_command(args, memory_limit_mb=None):
 
     The small Python launcher applies RLIMIT_AS and then replaces itself with
     ffmpeg, so threaded callers avoid the unsafe ``preexec_fn`` path. Windows
-    keeps the stream-safety flags but relies on its container/service limits.
+    keeps the per-allocation cap but relies on its container/service limits.
     """
     limit_mb = memory_limit_mb or FFMPEG_MEMORY_LIMIT_MB
     ffmpeg_command = [
         'ffmpeg', '-nostdin', '-hide_banner',
         '-max_alloc', str(FFMPEG_MAX_SINGLE_ALLOCATION_BYTES),
+        '-threads', '2', '-filter_threads', '2', '-filter_complex_threads', '2',
         *args,
     ]
     if os.name != 'posix':

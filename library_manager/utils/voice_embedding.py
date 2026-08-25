@@ -18,6 +18,8 @@ import tempfile
 import threading
 from pathlib import Path
 
+from library_manager.utils.audio import build_limited_ffmpeg_command
+
 logger = logging.getLogger(__name__)
 
 # Model configuration
@@ -122,15 +124,16 @@ def _compute_fbank(audio_path: str, num_mel_bins: int = 80, sample_rate: int = 1
         tmp_raw = tmp.name
 
     try:
-        cmd = [
-            'ffmpeg', '-y', '-i', audio_path,
+        cmd = build_limited_ffmpeg_command([
+            '-y', '-i', audio_path,
+            '-map', '0:a:0', '-vn', '-sn', '-dn',
             '-ar', str(sample_rate),
             '-ac', '1',
             '-f', 's16le',
             '-acodec', 'pcm_s16le',
             '-loglevel', 'error',
             tmp_raw
-        ]
+        ])
         result = subprocess.run(cmd, capture_output=True, timeout=30)
         if result.returncode != 0:
             return None
@@ -228,16 +231,17 @@ def extract_voice_embedding(audio_path: str, start_sec: int = 0, duration_sec: i
             tmp_wav = tmp.name
 
         try:
-            cmd = [
-                'ffmpeg', '-y', '-i', audio_path,
+            cmd = build_limited_ffmpeg_command([
+                '-y', '-i', audio_path,
                 '-ss', str(start_sec),
                 '-t', str(duration_sec),
+                '-map', '0:a:0', '-vn', '-sn', '-dn',
                 '-ar', '16000',
                 '-ac', '1',
                 '-f', 'wav',
                 '-loglevel', 'error',
                 tmp_wav
-            ]
+            ])
 
             result = subprocess.run(cmd, capture_output=True, timeout=30)
             if result.returncode != 0:

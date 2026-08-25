@@ -2,6 +2,7 @@
 """Regression coverage for Issue #303 ffmpeg memory containment."""
 
 import os
+import re
 import subprocess
 import sys
 import unittest
@@ -15,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from library_manager import resource_limited_exec  # noqa: E402
+from library_manager.file_validation import can_seek_to_end  # noqa: E402
 from library_manager.utils.audio import (  # noqa: E402
     FFMPEG_MAX_SINGLE_ALLOCATION_BYTES,
     build_limited_ffmpeg_command,
@@ -33,6 +35,9 @@ class TestFfmpegMemoryContainment(unittest.TestCase):
             "ffmpeg", "-nostdin", "-hide_banner", "-max_alloc",
             str(FFMPEG_MAX_SINGLE_ALLOCATION_BYTES),
         ])
+        self.assertEqual(command[11:17], [
+            "-threads", "2", "-filter_threads", "2", "-filter_complex_threads", "2",
+        ])
         self.assertEqual(command[-1], "-version")
 
     def test_sample_extraction_selects_audio_only(self):
@@ -49,6 +54,37 @@ class TestFfmpegMemoryContainment(unittest.TestCase):
         self.assertIn("-map", ffmpeg_command)
         self.assertEqual(ffmpeg_command[ffmpeg_command.index("-map") + 1], "0:a:0")
         self.assertEqual(run.call_args.kwargs["timeout"], 60)
+
+    def test_end_seek_validation_is_limited_and_audio_only(self):
+        succeeded = SimpleNamespace(returncode=0)
+        with mock.patch(
+            "library_manager.file_validation.subprocess.run",
+            return_value=succeeded,
+        ) as run:
+            self.assertTrue(can_seek_to_end("pathological.m4b"))
+
+        command = run.call_args.args[0]
+        ffmpeg_index = command.index("ffmpeg")
+        ffmpeg_command = command[ffmpeg_index:]
+        self.assertIn("-max_alloc", ffmpeg_command)
+        self.assertIn("-sseof", ffmpeg_command)
+        self.assertIn("-map", ffmpeg_command)
+        self.assertEqual(ffmpeg_command[ffmpeg_command.index("-map") + 1], "0:a:0")
+        self.assertIn("-vn", ffmpeg_command)
+        self.assertIn("-sn", ffmpeg_command)
+        self.assertIn("-dn", ffmpeg_command)
+
+    def test_no_production_code_bypasses_ffmpeg_limiter(self):
+        direct_ffmpeg = re.compile(r"[\"']ffmpeg[\"']\s*,")
+        bypasses = []
+        for source_path in [REPO_ROOT / "app.py", *(REPO_ROOT / "library_manager").rglob("*.py")]:
+            if source_path.name == "audio.py":
+                continue
+            for line_number, line in enumerate(source_path.read_text().splitlines(), 1):
+                if direct_ffmpeg.search(line):
+                    bypasses.append(f"{source_path.relative_to(REPO_ROOT)}:{line_number}")
+
+        self.assertEqual(bypasses, [], f"direct ffmpeg commands bypass limiter: {bypasses}")
 
     def test_launcher_applies_limit_before_exec(self):
         with (

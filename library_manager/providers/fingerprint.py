@@ -20,6 +20,7 @@ import requests
 
 from library_manager.providers.bookdb import _sanitize_api_response
 from library_manager.providers.rate_limiter import handle_rate_limit_response
+from library_manager.utils.audio import build_limited_ffmpeg_command
 
 logger = logging.getLogger(__name__)
 
@@ -451,9 +452,6 @@ def extract_voice_embedding(
     Returns:
         numpy array of 256-dim embedding, or None on failure
     """
-    import subprocess
-    import tempfile
-
     _, inference = _get_voice_model()
     if inference is None:
         return None
@@ -463,14 +461,15 @@ def extract_voice_embedding(
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
             wav_path = tmp.name
 
-        cmd = [
-            'ffmpeg', '-y', '-i', audio_path,
+        cmd = build_limited_ffmpeg_command([
+            '-y', '-i', audio_path,
             '-ss', str(start_sec),
             '-t', str(duration_sec),
+            '-map', '0:a:0', '-vn', '-sn', '-dn',
             '-ar', '16000', '-ac', '1',
             '-loglevel', 'error',
             wav_path
-        ]
+        ])
         result = subprocess.run(cmd, capture_output=True, timeout=60)
 
         if result.returncode != 0:

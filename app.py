@@ -3878,12 +3878,13 @@ def transcribe_audio_clip(file_path, duration_seconds=30):
                 tmp_path = tmp.name
 
             # Extract 30 seconds starting at 60 seconds in (skip intro)
-            subprocess.run([
-                'ffmpeg', '-y', '-i', str(file_path),
+            subprocess.run(build_limited_ffmpeg_command([
+                '-y', '-i', str(file_path),
                 '-ss', '60', '-t', str(duration_seconds),
+                '-map', '0:a:0', '-vn', '-sn', '-dn',
                 '-acodec', 'libmp3lame', '-ar', '16000',
                 tmp_path
-            ], capture_output=True, timeout=30)
+            ]), capture_output=True, timeout=30)
 
             # Send to Whisper API
             with open(tmp_path, 'rb') as audio_file:

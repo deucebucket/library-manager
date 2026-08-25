@@ -34,6 +34,7 @@ from library_manager.utils.voice_embedding import (
     is_voice_embedding_available,
     extract_voice_embedding_from_clip,
 )
+from library_manager.utils.audio import build_limited_ffmpeg_command
 
 logger = logging.getLogger(__name__)
 
@@ -394,16 +395,16 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None, 
         try:
             # Use ffmpeg to extract the intro - use fast seek for large files
             logger.debug(f"[SKALDLEITA] Extracting {extract_seconds}s from {audio_path.name}")
-            cmd = [
-                'ffmpeg', '-y',
+            cmd = build_limited_ffmpeg_command([
+                '-y',
                 '-ss', '0',  # Fast input seek
                 '-i', str(audio_path),
                 '-t', str(extract_seconds),
-                '-vn',  # No video (faster)
+                '-map', '0:a:0', '-vn', '-sn', '-dn',
                 '-acodec', 'libmp3lame', '-q:a', '5',
                 '-loglevel', 'error',
                 tmp_path
-            ]
+            ])
             result = subprocess.run(cmd, capture_output=True, timeout=60)
 
             if result.returncode != 0:
