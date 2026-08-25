@@ -4,10 +4,15 @@
 import os
 import shutil
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
 from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
 from library_manager import database
 import library_manager.presort as presort_module
