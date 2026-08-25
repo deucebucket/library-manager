@@ -1,10 +1,10 @@
 # Configuration
 
-All settings are configured through the web UI at **Settings**.
+All settings are configured through the web UI at **Settings**. The current UI groups options into **Library**, **Engine**, **Pipeline**, and **Integrations** tabs.
 
 ## Settings Tabs
 
-### General Tab
+### Library tab
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -17,7 +17,7 @@ All settings are configured through the web UI at **Settings**.
 | Metadata Embedding | `false` | Write tags into audio files on fix |
 | Scan Interval | `6 hours` | How often to auto-scan |
 
-### AI Setup Tab
+### Engine tab
 
 | Setting | Description |
 |---------|-------------|
@@ -34,7 +34,7 @@ Ollama model IDs are loaded from its `/api/tags` endpoint. Other local servers u
 
 For Docker installs, the API base URL must be reachable from inside the Library Manager container. `localhost` refers to the container itself.
 
-### Advanced Tab
+### Pipeline and Integrations tabs
 
 - Danger Zone (reset database, clear history)
 - Bug report generator
@@ -46,6 +46,8 @@ For Docker installs, the API base URL must be reachable from inside the Library 
 |--------|---------|
 | `author/title` | `Brandon Sanderson/Mistborn/` |
 | `author - title` | `Brandon Sanderson - Mistborn/` |
+
+Custom templates support `{author}`, `{author_first}`, `{author_last}`, `{author_lf}`, `{author_fl}`, `{title}`, `{series}`, `{series_num}`, `{series_num.pad(N)}`, `{narrator}`, `{year}`, `{edition}`, `{variant}`, `{language}`, `{lang_code}`, `{lang_flag}`, `{asin}`, and `{ripper}`. `{asin}` is emitted only for a validated Audible ASIN; `{ripper}` is emitted only when an enabled ripper/release tag matches the original name. Missing optional fields are cleaned up.
 
 ## Series Grouping
 
@@ -128,13 +130,13 @@ When "Backup Tags" is enabled, original tags are saved to `.library-manager.tags
 
 ## Rate Limits
 
-| Provider | Free Tier |
-|----------|-----------|
-| Gemini | 14,400 calls/day |
-| OpenRouter | Varies by model |
-| Ollama / local compatible API | Self-hosted |
+| Provider | Limits |
+|----------|--------|
+| Gemini | Provider/account limit varies; check Google AI Studio |
+| OpenRouter | Provider/account/model terms vary |
+| Ollama / local compatible API | Determined by the self-hosted server |
 
-Library Manager defaults to 200 requests/hour and allows a configured range of 10-500 requests/hour. Provider-specific backoff and circuit breakers apply when a service returns rate-limit responses.
+Library Manager defaults to 200 requests/hour and clamps the Settings value to 10–500 requests/hour. Provider-specific backoff and circuit breakers apply when a service returns rate-limit responses.
 
 ## Config Files
 
@@ -144,3 +146,11 @@ Settings are stored in:
 - `library.db` - Database
 
 For Docker, these are stored in the `/data` volume.
+
+## Transfer receipts (beta.161 develop)
+
+Apply-fix operations record a complete source inventory, destination handoff, and rollback inventory in SQLite. File entries include sizes, types, and SHA-256 hashes. The destination must match the source inventory before the database path/history/queue transaction commits. History shows a receipt badge and an inventory modal for operations with receipts; interrupted operations are verified on startup when recovery is possible. Receipts improve auditability but are not a substitute for filesystem or hardware backups.
+
+![History transfer receipts](images/transfer-receipts-history.png)
+![Committed transfer receipt](images/transfer-receipt-committed.png)
+![Rollback transfer receipt](images/transfer-receipt-rollback.png)

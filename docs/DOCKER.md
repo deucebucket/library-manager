@@ -42,7 +42,7 @@ volumes:
 ### 3. Start the Container
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 ### 4. Access the Web UI
@@ -53,7 +53,7 @@ Open **http://your-server-ip:5757** in your browser.
 
 1. Go to **Settings**
 2. Set library path to: `/audiobooks` (this is the path INSIDE the container)
-3. Add your API key (Gemini recommended)
+3. Configure the selected hosted or local AI provider
 4. Save and start scanning!
 
 ---
@@ -296,8 +296,9 @@ Then in **Settings**, add all paths (one per line):
 # Find your user/group IDs
 id
 
-# Make sure audiobook folder is accessible
-chmod -R 755 /path/to/audiobooks
+# Grant the container's configured user access to the intended directory.
+# Use targeted chown/chmod appropriate to your host; do not recursively
+# change permissions on an entire filesystem or library without review.
 ```
 
 **Fix for UnRaid:** Files should be accessible by default. Check share permissions.
@@ -310,7 +311,7 @@ docker logs library-manager
 ```
 
 **Common issues:**
-- Port 5757 already in use → Change to `5061:5757`
+- Port 5757 already in use → Change the host side, for example `5758:5757`
 - Volume path doesn't exist → Create the directory first
 - Syntax error in compose file → Validate YAML
 
@@ -328,8 +329,8 @@ docker logs library-manager
 **Fix:** Make sure `./data:/data` is in your volumes and the `data` folder exists:
 ```bash
 mkdir -p data
-docker-compose down
-docker-compose up -d
+docker compose down
+docker compose up -d
 ```
 
 ### Container Can't See New Files
@@ -345,7 +346,7 @@ Docker doesn't auto-refresh mounts. If you add new audiobooks:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TZ` | `UTC` | Timezone (e.g., `America/New_York`) |
+| `TZ` | compose example: `America/Chicago` | Timezone (change to yours) |
 | `DATA_DIR` | `/data` | Where config/database are stored |
 
 ---
@@ -355,8 +356,8 @@ Docker doesn't auto-refresh mounts. If you add new audiobooks:
 ```bash
 cd library-manager
 git pull
-docker-compose build --no-cache
-docker-compose up -d
+docker compose build --no-cache
+docker compose up -d
 ```
 
 Or with Dockge/Portainer, redeploy the stack.

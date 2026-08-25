@@ -4,9 +4,7 @@
 
 ### Is this free?
 
-Yes. The app is free and open source. Hosted AI providers use API keys:
-- **Gemini** - Free, 14,400 calls/day
-- **OpenRouter** - Free tier available
+Yes. The app is free and open source. Hosted AI providers may require credentials and impose their own account/model limits. Check each provider for current terms.
 
 Ollama and user-configured llama.cpp/OpenAI-compatible servers can run locally without an API key.
 
@@ -27,7 +25,7 @@ The app is designed to be safe:
 
 ### Does it move files or just rename folders?
 
-Just renames folders. Files inside stay exactly where they are - only the folder path changes.
+It can move a complete book folder or a loose media file into a generated destination. It does not merge a non-empty destination folder; that is treated as a possible different version/narrator and is blocked.
 
 ## Technical
 
@@ -35,9 +33,9 @@ Just renames folders. Files inside stay exactly where they are - only the folder
 
 Metadata can come from Skaldleita, Audnexus, OpenLibrary, Google Books, and Hardcover. Optional AI verification uses the configured Gemini, OpenRouter, Ollama, or OpenAI-compatible provider.
 
-### Why Gemini over GPT-4?
+### What are the provider limits?
 
-Gemini offers 14,400 free API calls per day, which is plenty for most libraries. GPT-4 would cost money for this volume.
+Hosted provider limits vary by account and model; check the provider's current documentation. Library Manager also applies its own configurable request limiter (default 200/hour, Settings clamp 10–500/hour).
 
 ### Can I use a local LLM?
 
@@ -46,6 +44,10 @@ Yes. Select Ollama or llama.cpp/OpenAI-compatible in Settings. Library Manager l
 ### How does it know what's correct?
 
 It cross-references multiple book databases, then uses AI to verify the best match. If there's uncertainty, it asks for human review.
+
+### What is a transfer receipt?
+
+Beta.161 develop builds create a durable source inventory with file sizes/types and SHA-256 hashes, verify the destination inventory, and record rollback status. History exposes the receipt and inventory modal. This improves auditability but is not a replacement for independent filesystem and hardware backups.
 
 ## Docker
 

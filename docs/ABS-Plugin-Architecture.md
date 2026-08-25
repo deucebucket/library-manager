@@ -1,10 +1,10 @@
-# Audiobookshelf Plugin Architecture for Library Manager
+# Audiobookshelf Metadata Provider Proposal
 
 ## Overview
 
-Library Manager as a metadata provider plugin for Audiobookshelf (ABS). When ABS needs to identify or enrich audiobook metadata, it queries Library Manager, which leverages the full Skaldleita pipeline: GPU Whisper transcription, 50M+ book database matching, multi-source API lookups, and AI-powered consensus verification.
+This document is a proposal for exposing Library Manager as a metadata provider plugin for Audiobookshelf (ABS). It is not a shipped provider contract.
 
-**Current state:** LM has an `abs_client.py` that pulls data FROM ABS (listening progress, library items, user management). This document covers the reverse direction — making LM available TO ABS as a metadata agent.
+**Current state:** LM has an `abs_client.py` and `/api/abs/*` dashboard endpoints that pull data FROM ABS (libraries, progress, users, and organization rules). The reverse direction described here — making LM available TO ABS as a metadata provider — remains unimplemented. The endpoint shapes and field mappings below are design notes, not supported public APIs.
 
 ---
 
@@ -19,7 +19,7 @@ Audiobookshelf                Library Manager              Skaldleita (BookDB)
      │                              │  2. Audio → Whisper queue    │
      │                              │  ─────────────────────────>  │
      │                              │                              │
-     │                              │  3. Metadata match (50M DB)  │
+     │                              │  3. Metadata match            │
      │                              │  <─────────────────────────  │
      │                              │                              │
      │                              │  4. API enrichment           │
@@ -39,7 +39,7 @@ Audiobookshelf                Library Manager              Skaldleita (BookDB)
 
 ## Architecture Options
 
-### Option A: LM as ABS Metadata Provider (Recommended)
+### Option A: LM as ABS Metadata Provider (Proposed)
 
 ABS has a metadata provider plugin system. LM registers as a provider that ABS queries during its "Match" and "Quick Match" flows.
 
@@ -86,7 +86,7 @@ Register as metadata provider AND run background enrichment. Provider handles ne
 
 ---
 
-## Recommended Approach: Option A (Metadata Provider)
+## Proposed Approach: Option A (Metadata Provider)
 
 ### ABS Metadata Provider Contract
 

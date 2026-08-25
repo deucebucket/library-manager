@@ -548,7 +548,7 @@
                                     </option>
                                 </select>
                                 <small class="text-muted d-block mt-1">
-                                    Full Trust: Skaldleita GPU Whisper + 50M book database is usually accurate. Use AI only when needed.
+                                    Full Trust: accept high-confidence Skaldleita GPU Whisper/database matches. Use AI only when needed.
                                 </small>
                             </div>
 
@@ -635,7 +635,7 @@
                                     <i class="bi bi-cloud-arrow-up text-primary"></i> Use Skaldleita for Audio ID
                                     <span class="badge bg-success">Recommended</span>
                                     <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.skaldleita }}</span></span>
-                                    <br><small class="text-muted">GPU Whisper + 50M book database. Requires a Skaldleita API key. Disable to use your own AI/Whisper.</small>
+                                    <br><small class="text-muted">GPU Whisper with Skaldleita's live metadata index. Requires a Skaldleita API key. Disable to use your own AI/Whisper.</small>
                                 </label>
                             </div>
 
@@ -810,7 +810,7 @@
                                     </button>
                                     {% endif %}
                                 </div>
-                                <small class="text-muted">Free at <a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a> - 14,400 calls/day</small>
+                                <small class="text-muted">Configure at <a href="https://aistudio.google.com" target="_blank" rel="noopener noreferrer">aistudio.google.com</a>; account and model limits vary.</small>
                             </div>
 
                             <!-- OpenRouter API Key -->
@@ -1161,7 +1161,7 @@
                                         <input type="checkbox" class="form-check-input me-2" checked data-chain="text" value="{{ provider }}">
                                         <span class="me-auto">
                                             {% if provider == 'gemini' %}
-                                            <strong>Gemini/Gemma</strong> <small class="text-success">(Free tier)</small>
+                                            <strong>Gemini/Gemma</strong> <small class="text-muted">(hosted)</small>
                                             {% elif provider == 'openrouter' %}
                                             <strong>OpenRouter</strong> <small class="text-info">(Free models)</small>
                                             {% elif provider == 'ollama' %}
@@ -1178,7 +1178,7 @@
                                         <input type="checkbox" class="form-check-input me-2" data-chain="text" value="{{ provider }}">
                                         <span class="me-auto">
                                             {% if provider == 'gemini' %}
-                                            <strong>Gemini/Gemma</strong> <small class="text-success">(Free tier)</small>
+                                            <strong>Gemini/Gemma</strong> <small class="text-muted">(hosted)</small>
                                             {% elif provider == 'openrouter' %}
                                             <strong>OpenRouter</strong> <small class="text-info">(Free models)</small>
                                             {% elif provider == 'ollama' %}

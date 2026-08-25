@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.159-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.161-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 
@@ -14,7 +14,19 @@
 
 ---
 
-## Recent Changes (stable)
+## Recent Changes (develop / beta)
+
+> **beta.161** - **#300: Verified apply-fix transfer receipts**
+> - Builds a complete pre-move inventory with file sizes, entry types, and SHA-256 hashes.
+> - Verifies the destination inventory before committing the database path/history/queue update.
+> - Records source, destination, and rollback handoffs in SQLite and exposes them from History.
+> - Recovers interrupted applies on startup when rollback can be verified; otherwise marks the operation for manual recovery.
+> - This is beta behavior and is not a substitute for filesystem or hardware backups.
+
+> **beta.160** - **Naming template and performance updates**
+> - Added `{asin}`, `{ripper}`, `{author_fl}`, and `{series_num.pad(N)}` support alongside existing author, title, series, language, narrator, year, edition, and variant fields.
+> - Added standalone-book templates and opt-in ripper/release-tag preservation.
+> - Added database indexes and orphan-scan caching for common dashboard/library paths.
 
 > **beta.159** - **Fix: Watch-Folder 'database is locked' Contention** (Issue #215)
 > - Watch-folder dedup writes now ride the worker's own DB connection instead of opening a second writer per call, ending the 30-second lock stalls while a library scan is running.
@@ -25,201 +37,7 @@
 > - Users who genuinely own a summary audiobook are exempt — if the filename says "summary", the match is allowed.
 > - AI verification prompts now explicitly disallow summary/derivative books.
 
-> **beta.156** - **MIT License and Documentation Sync**
-> - Restored the project's MIT license and aligned contribution terms.
-> - Synchronized provider, Skaldleita credential, multilingual model, and request-rate guidance with current behavior.
-
-> **beta.155** - **Local AI Is Provider-Agnostic**
-> - Added llama.cpp and generic OpenAI-compatible API support with live `/v1/models` discovery.
-> - Removed hardcoded Ollama model fallbacks and fixed `undefined` model entries across API response shapes.
-> - Skaldleita transcripts now continue into the selected AI fallback instead of stopping early.
-
-> **beta.150** - **Fix: Hosted AI Model Picker Uses Live Provider Models** (Issue #216)
-> - Replaced stale hardcoded Gemini/OpenRouter model dropdowns with editable model fields backed by live provider model lists.
-> - Gemini models load from the configured Gemini key; OpenRouter models load from OpenRouter's `/models` endpoint.
-> - Removed old hosted-model fallback IDs so misconfiguration fails clearly instead of silently retrying retired models.
-
-> **beta.149** - **Fix: Watch-Folder Move Failures Now Appear in the UI** (Issue #211)
-> - Three `INSERT` statements in the watch-folder worker referenced a phantom `added_at` column on the `books` table (the real column is `created_at`). Every insert silently raised `OperationalError`, caught by a `logger.debug` that hid the error. Result: watch-folder move failures never produced a `watch_folder_error` row — the UI never showed the failure, users only saw it in logs.
-> - Fixed the column name and raised the swallow-except log level to `warning` with full traceback so future DB errors don't rot silently.
-
-> **beta.148** - **Fix: Watch-Folder Retry Loop Across Restarts + Skaldleita server_notice** (Issue #208)
-> - **Persistent watch-folder dedup** - `watch_folder_processed` is now a SQLite table instead of an in-memory `set()`. Restarts no longer wipe it, killing the retry loop that had one LM instance hammering Skaldleita's `/match` every 30 seconds on the same file for days.
-> - **Honors Skaldleita's abort signal** - When the server detects a retry loop it sends a `server_notice` in the response. LM now logs it (with an upgrade URL) and, on `action=abort_task`, stops retrying that file immediately.
-
-> **beta.147** - **Critical Fix: Hard Link Safety** (Issue #209)
-> - **Stop silent copy+delete** - When "Use hard links" was enabled and the watch folder / library sat on different filesystems, LM used to copy every file and delete the originals. That broke torrent seeding and doubled disk use. Now LM fails fast with a clear error and leaves source files untouched.
-> - **Pre-check filesystem compatibility** - Verifies `st_dev` match before any file operations when hard links are enabled.
-
-> **beta.140** - **Feature: Custom Layer Builder** (Issue #186)
-> - **Plugins tab** - New settings tab with 4-step wizard to add custom HTTP API metadata sources
-> - **No-code API integration** - Configure URL templates, authentication, JSONPath response mapping, and confidence weights
-> - **Live testing** - Test API calls with sample book data before saving, with mapped field preview
-
-> **beta.134** - **Hotfix: Settings Page Crash** (Issue #173)
-> - Jinja2 template recursion bug in hooks_settings.html caused blank settings page for all users on beta.133
-
-> **beta.133** - **Fix: Stop Re-Searching Unresolved Books** (Issue #168)
-> - Books marked `needs_attention` no longer re-queued every scan cycle (was causing 642K+ wasted API requests)
-> - Added retry tracking with exponential backoff and configurable max retries
-
-> **beta.132** - **Feature: Post-Processing Hooks** (Issue #166)
-> - **Run commands or webhooks after renames** - Trigger external scripts (m4binder, ABS scan, Discord notifications) when a book is successfully renamed
-> - **Template variables** - Use `{{author}}`, `{{title}}`, `{{new_path}}`, etc. in commands with automatic shell escaping
-> - **Settings UI** - New Post-Processing tab with hook management, test button, and execution log
-
-> **beta.130** - **Fix: Rate-Limited Batches No Longer Trigger False Exhaustion** (Issue #160)
-> - **Rate-limited batches skipped** - When AI providers are rate-limited, batches are no longer counted toward the 3-strike "all processing layers exhausted" rule
-> - **Circuit breaker awareness** - Layer 4 now waits for providers to recover instead of permanently marking identifiable books as failed
-> - **Distinct signal for rate limiting** - `process_queue` returns `-1` (rate-limited) vs `0` (genuinely empty) so the worker can react correctly
-
-> **beta.129** - **UI: Feedback Widget Moved to Nav Bar** (Issue #159)
-> - **Bug icon in nav bar** - Feedback/bug report button moved from floating bottom-right circle to a consistent bug icon in the top navigation bar
-> - **No more overlapping buttons** - Eliminates confusing dual floating buttons on the dashboard page
-
-> **beta.125** - **Bug Fixes: Badge Counts, Author Matching, Pipeline Filters** (Issues #150, #152)
-> - **Badge count fix** - Dashboard and library page queue counts now match actual processable items
-> - **Author initial matching** - "C Alanson" now correctly matches "Craig Alanson", "JRR Tolkien" matches "J R R Tolkien"
-> - **Pipeline consistency** - All processing layers now skip `needs_attention` books instead of wasting cycles
-
-> **beta.114** - 🔐 **Secure API Key Registration** (Issue #117)
-> - **Email-Only Delivery** - API keys no longer shown on screen, sent to email only
-> - **Prevents Key Theft** - Someone who knows your email can't see your key
-> - **Auto-Applied** - Key is still saved automatically, just not displayed
-
-> **beta.113** - 🔑 **In-App Skaldleita Registration** (Issue #115)
-> - **Register from Settings** - Get your API key directly in Library Manager
-> - **Instance ID** - Unique `SKALD-XXXXXX` identifier for your installation
-> - **Key Validation** - Verify your key works with one click
-> - **Rate Limits** - 1000 req/hr with key, 500 without
-
-> **beta.112** - ✅ **File Validation Module** (Issue #110)
-> - **Pre-rename Checks** - Validates files before attempting renames
-> - **Path Safety** - Checks for invalid characters, path length limits
-> - **Better Errors** - Clear messages when files can't be renamed
-
-> **beta.110** - 📊 **Enhanced Status Bar** (transparency for users)
-> - **Know Your APIs** - Status bar shows exactly which API is processing your books
-> - **FREE Badge** - Green badge shows when using free APIs (Skaldleita, Ollama) vs your quota
-> - **Current Step** - See "Transcribing audio...", "Querying database...", "Verifying with AI..."
-> - **Provider Icons** - Soundwave for Skaldleita, stars for Gemini, PC for Ollama
-> - **Crash Fix** - Truncated author names like "James S. A" no longer crash `{author_last}` template
-
-> **beta.109** - 🛡️ **AI Hallucination Prevention** (Issue #79)
-> - **Generic Title Protection** - Titles like "Match Game", "The Game", "Home" no longer get fake authors
-> - AI prompts now warn about ambiguous titles and require reasoning
-> - Validation flags "generic title + no author" as low confidence
-> - Better to return null than invent "Doc Raymond" for a Craig Alanson book
-
-> **beta.108** - 🎯 **Author Format & Duplicate History Fix** (Issues #96, #88, #79)
-> - **Author Name Templates** - New `{author_lf}` (LastName, FirstName), `{author_last}`, `{author_first}` for custom naming
-> - **Database Cleanup Button** - Settings → Advanced now has button to remove @eaDir, #recycle entries
-> - **Duplicate History Fix** - Centralized insert function prevents same book appearing 15x in history
-> - All 16 INSERT paths now use deduplication helper - finally kills the duplicate bug
-
-> **beta.107** - 🔧 **Series Path Fix** (Issue #94)
-> - **Series Number Without Name** - Custom naming templates no longer create broken paths
-> - Template `{author}/{series}/{series_num} - {title}` now falls back correctly when series is missing
-> - Previously created paths like `Author/01 - Title`, now properly omits orphan numbers
-
-> **beta.106** - 🧹 **Title Cleanup** (Issue #92)
-> - **Strip "Unabridged" Toggle** - New option removes `(Unabridged)` from titles
-> - **Garbage Prevention** - Validation rejects bad author/title suggestions before saving
-
-> **beta.105** - 📚 **ISBN Lookup** (Issue #67)
-> - **Ebook ISBN Extraction** - Extracts ISBN from EPUB, PDF, MOBI metadata for better matching
-> - New BookDB endpoint for direct ISBN lookup
-
-> **beta.104** - 🔧 **Synology @eaDir Fix** (Issue #88)
-> - **Accurate Dashboard Counts** - Pending/fixed/error counts now match actual items
-> - **No More Duplicate History** - Fixed entries no longer accumulate duplicates
-> - **Request Tracking** - API requests now identify Library Manager version
-
-> **beta.102** - 🎨 **UI Theming System & Bug Fixes** (Issue #86)
-> - **Theme Selector** - Switch between Default and Skaldleita (Norse-inspired) themes
-> - **Theme Persistence** - Theme no longer resets when navigating between pages
-> - **Pyannote Fix** - No more "No module named 'pyannote'" warnings at startup
-> - **Worker Crash Fix** - Queue processing no longer crashes on malformed AI responses
-
-> **beta.101** - 🌍 **Multi-Language Audiobook Naming** (Issue #81)
-> - **Three Naming Modes** - Native (keep original language), Preferred (translate all), Tagged (add language labels)
-> - **Flexible Tagging** - Four formats `(Polish)`, `[pl]`, `Polish`, `_pl` + three positions (after/before title, subfolder)
-> - **Custom Templates** - New `{language}` and `{lang_code}` tags for full control
-> - **Polish Language Fix** - Strict language matching now works correctly for all 28 supported languages
-
-> **beta.100** - 📊 **Dashboard Activity Log & Skaldleita IDs**
-> - **Real-time Activity Log** - See processed books with full metadata on dashboard
-> - **Skaldleita IDs** - Audio fingerprints and narrator IDs embedded in files
-> - **Extended Metadata** - Enables instant identification when files are shared/moved
-
-> **beta.99** - 👁️ **Live Status Bar** - See what's happening in real-time!
-> - **Persistent Status Bar** - Always visible below navbar on every page
-> - **Current Book Display** - Shows author/title of book being processed
-> - **Layer Indicator** - See which processing stage is active (Audio, AI, API, Fallback)
-
-> **beta.97** - 🔍 **Series Mismatch Detection & SearXNG Fallback** (Issues #76, #77)
-> - **Series Mismatch Fix** - Books with series info now correctly reject wrong matches
-> - **SearXNG Fallback** - New web search provider when APIs fail (Amazon, Audible, Goodreads parsing)
-> - **Whisper Setting Fix** - Speech-to-Text model selection now saves correctly
-
-> **beta.96** - 🐛 **Watch Folder Duplicates Fix** (Issue #76)
-> - **Atomic Directory Move** - Prevents partial moves creating "Version B" folders
-> - **Partial Move Detection** - Completes interrupted moves instead of duplicating
-
-> **beta.95** - 🔧 **Major Code Refactoring**
-> - **32% Code Reduction** - `app.py` reduced from 15,491 to 10,519 lines
-> - **Modular Architecture** - New `library_manager/` package with organized modules
-
-> **beta.94** - 🐛 **Bug Fixes** (Issues #64, #71, #74)
-> - **Queue Hanging Fix** - Circuit breaker now properly advances queue when providers fail (#74)
-> - **Community Toggle** - "Contribute to Community" setting now saves correctly (#71)
-> - **Whisper Install** - Docker permission error fixed (#63)
-> - **API Key Visibility** - Keys now shown in settings (hidden by default, eye toggle reveals)
-> - **Apply All Fix** - History entries now store paths to prevent "Source no longer exists" errors
-> - **Dashboard Counts** - Fixed inflated counts by excluding series folders from totals
-> - **Title Cleaning** - Strips torrent naming junk (bitrates, timestamps, editor names, year prefixes)
-
-> **beta.93** - 🌐 **P2P Cache & Resilience** (Issue #62)
-> - **P2P Book Cache** - Optional decentralized cache shares BookDB results with other users
-> - **Helps During Outages** - Get results from P2P network when BookDB is temporarily down
-> - **Opt-in & Private** - Disabled by default, only metadata shared (no file paths)
-> - **BookDB Retry Logic** - 5 retries with backoff when no fallback configured
-> - **Data Validation** - Rejects malformed/malicious P2P cache entries
-
-> **beta.92** - 🔒 **Security & Stability**
-> - **Confidence Threshold** - Books only marked "verified" when confidence ≥40%, prevents false positives
-> - **API Keys Hidden** - Keys no longer exposed in HTML source, shows "Key configured" instead
-> - **Issue #59 Complete Fix** - Placeholder authors ("Unknown Author") now detected during scan
-> - **Issue #63 Fix** - Docker Whisper install permission error resolved
-> - **BookDB Stability** - Circuit breaker for rate limiting, improved multi-user fairness
-> - **Layer 2 Recovery** - Stuck items now properly advanced when Layer 2 disabled
-
-> **beta.92** - 🎧 **Audio-First Identification** (Major Feature)
-> - **Revolutionary Approach** - Now identifies books from narrator introductions FIRST
-> - **52% Identification Rate** - Half of books identified from audio alone in Layer 1
-> - **4-Layer Pipeline** - Audio transcription → AI parsing → API enrichment → Folder fallback
-> - **faster-whisper Integration** - Local, free speech-to-text via Python venv
-> - **Known Narrator Detection** - Prevents AI from confusing narrators with authors
-
-> **beta.90** - 🎯 **Layer 4 Content Analysis** (Major Feature)
-> - **The Final Layer** - Transcribes actual story content to identify books when all else fails
-> - **Whisper + OpenRouter Fallback** - Local transcription + free AI when Gemini unavailable
-> - **No GPU Required** - faster-whisper runs on CPU, model downloads automatically
-
-> **beta.89** - Watch Folder Reliability (Issue #57)
-> - Track number stripping, local BookDB support, confidence threshold fix
-
-> **beta.87-88** - Watch Folder Verification & Scan Locking (Issues #57, #59-61)
-> - API result verification, parent folder hints, concurrent scan fix, password toggles
-
-> **beta.84-86** - Status & Output Fixes (Issues #57, #59)
-> - Placeholder author detection, output folder routing, author initials standardization
-
-> **beta.78-83** - SQLite Locking, Setup Wizard, Orphan Organization
-> - 3-phase processing, first-run wizard, duplicate detection fix
-
-> **beta.72-77** - Multi-Edit, Media Filters, Author Initials
-> - Edit all queue items, media type filter, "J R R Tolkien" → "J. R. R. Tolkien"
+> Earlier release details are kept in the changelog so this page stays focused on current behavior.
 
 [Full Changelog](CHANGELOG.md)
 
@@ -243,7 +61,7 @@ Your Library (Before):
 
 ## The Solution
 
-Library Manager combines **real book databases** (50M+ books) with **AI verification** to fix your library:
+Library Manager combines real book databases with AI verification to fix your library:
 
 ```
 Your Library (After):
@@ -261,35 +79,32 @@ Your Library (After):
 
 ### Smart Path Analysis
 - Works backwards from audio files to understand folder structure
-- Database-backed author/series detection (50M+ books)
+- Database-backed author/series detection across multiple metadata sources
 - Fuzzy matching ("Dark Tower" finds "The Dark Tower")
 - AI fallback for ambiguous cases
 - **Safe fallback** - connection failures don't cause misclassification
 
-### 4-Layer Identification Pipeline (Audio-First)
+### Configurable Identification Pipeline (Audio-First)
 ```
-Layer 1: Audio Transcription + AI Parsing (Most Reliable)
-         Transcribes 45-second intro → AI extracts author/title/narrator
-         ✓ 52% of books identified from audio alone
-
-Layer 2: AI Audio Analysis (Deeper Analysis)
-         Sends audio directly to Gemini for unclear transcripts
-
-Layer 3: API Enrichment (Add Metadata)
-         BookDB → Audnexus → OpenLibrary → Google Books → Hardcover
-
-Layer 4: Folder Name Fallback (Last Resort)
-         Uses folder structure when audio identification fails
-         Works even when file has zero metadata or intro credits
+Audio identification → audio credits → Skaldleita requeue/verification
+→ API metadata lookup → AI verification → folder/name fallback when needed
 ```
-Each layer only runs if the previous layer couldn't confidently identify the book.
+
+Audio and text provider chains are configurable. Metadata can come from BookDB/Skaldleita, Audnexus, OpenLibrary, Google Books, and Hardcover; AI providers include Gemini, OpenRouter, Ollama, and OpenAI-compatible servers. Exact results depend on enabled providers and library content.
 
 ### Safety First
 - **Drastic changes require approval** - author swaps need manual review
-- **Garbage match filtering** - rejects unrelated results (<30% similarity)
-- **Undo any fix** - every rename can be reverted
+- **Garbage match filtering** - rejects unrelated, placeholder, and derivative-summary matches
+- **Undo any fix** - every completed move can be reverted when both paths pass safety checks
+- **Transfer receipts** - beta.161 records and verifies source/destination/rollback inventories with SHA-256 file hashes
 - **Structure reversal detection** - catches Metro 2033/Author patterns
 - **System folders ignored** - skips `metadata`, `cache`, `@eaDir`, etc.
+
+Receipt examples from the current UI:
+
+![History transfer receipts](docs/images/transfer-receipts-history.png)
+![Committed transfer receipt](docs/images/transfer-receipt-committed.png)
+![Rollback transfer receipt](docs/images/transfer-receipt-rollback.png)
 
 ### Series Grouping (Audiobookshelf-Compatible)
 ```
@@ -306,7 +121,12 @@ Build your own folder structure:
 {author} - {title} ({narrator})           → Brandon Sanderson - The Final Empire (Kramer)/
 {author}/{language}/{title}               → Dmitry Glukhovsky/Russian/Metro 2033/
 {author}/{title} [{lang_code}]            → Antoine de Saint-Exupéry/Le Petit Prince [fr]/
+{author_fl}/{title} [{asin}]               → Brandon Sanderson/The Final Empire [B002V0QCYU]/
+{author}/{series_num.pad(2)} - {title}     → Brandon Sanderson/01 - The Final Empire/
+{title}-{ripper}                           → The Final Empire-H2OKing/
 ```
+
+Available custom fields include `{author}`, `{author_first}`, `{author_last}`, `{author_lf}`, `{author_fl}`, `{title}`, `{series}`, `{series_num}`, `{series_num.pad(N)}`, `{narrator}`, `{year}`, `{edition}`, `{variant}`, `{language}`, `{lang_code}`, `{lang_flag}`, `{asin}`, and `{ripper}`. Missing optional values are removed before the path is sanitized.
 
 ### Language Support
 - **28 languages** - German, French, Spanish, Italian, Portuguese, Dutch, Swedish, Norwegian, Danish, Finnish, Polish, Russian, Japanese, Chinese, Korean, Arabic, Hebrew, Hindi, Turkish, Czech, Hungarian, Greek, Thai, Vietnamese, Ukrainian, Romanian, Indonesian
@@ -322,7 +142,7 @@ Build your own folder structure:
 ### Additional Features
 - **Web dashboard** with dark theme
 - **Watch folder mode** - monitor downloads folder, auto-organize new audiobooks
-- **Manual book matching** - search 50M+ database directly
+- **Manual book matching** - search the configured metadata sources directly
 - **Edit & lock metadata** - correct wrong matches, lock to prevent overwriting
 - **Library search** - find any book by author or title
 - **Loose file detection** - auto-creates folders for dumped files
@@ -373,7 +193,7 @@ volumes:
 ```bash
 git clone https://github.com/deucebucket/library-manager.git
 cd library-manager
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 python app.py
 ```
 
@@ -382,7 +202,7 @@ python app.py
 1. Open **http://localhost:5757**
 2. Go to **Settings**
 3. Add library path (`/audiobooks` for Docker, or your actual path)
-4. Add AI API key (Gemini recommended - 14,400 free calls/day)
+4. Configure the selected provider. Hosted providers may require their own credentials; Ollama and OpenAI-compatible local servers can run without a hosted key.
 5. **Save** and **Scan Library**
 
 ---
@@ -412,6 +232,8 @@ Use `/audiobooks` (container path) in Settings.
 
 See [docs/DOCKER.md](docs/DOCKER.md) for detailed setup guides.
 
+See [docs/Release-and-PR-Workflow.md](docs/Release-and-PR-Workflow.md) for the required documentation, wiki, browser-verification, and screenshot update flow.
+
 ---
 
 ## Configuration
@@ -429,13 +251,13 @@ See [docs/DOCKER.md](docs/DOCKER.md) for detailed setup guides.
 
 ### AI Providers
 
-**Google Gemini** (Recommended)
-- 14,400 free API calls/day
+**Google Gemini**
+- Hosted provider quotas vary; check Google AI Studio for the current limits.
 - Get key at [aistudio.google.com](https://aistudio.google.com)
 
 **OpenRouter**
 - Multiple model options
-- Free tier available
+- Model availability and account terms vary; check OpenRouter's current catalog.
 
 **Ollama**
 - Self-hosted with live model discovery from the user's server
@@ -458,6 +280,7 @@ See [docs/DOCKER.md](docs/DOCKER.md) for detailed setup guides.
 | `/api/library` | GET | Get library with filters |
 | `/api/stats` | GET | Dashboard stats |
 | `/api/apply_fix/{id}` | POST | Apply pending fix |
+| `/api/file-operation-receipt/{id}` | GET | Inspect a transfer receipt and inventory |
 | `/api/reject_fix/{id}` | POST | Reject suggestion |
 | `/api/undo/{id}` | POST | Revert applied fix |
 | `/api/edit_book` | POST | Edit & lock book metadata |
@@ -475,7 +298,7 @@ See [docs/DOCKER.md](docs/DOCKER.md) for detailed setup guides.
 → Go to History → Click Undo (↩)
 
 **Series not detected?**
-→ Enable Series Grouping in Settings → General
+→ Enable Series Grouping in Settings → Library
 
 **Docker can't see files?**
 → Check volume mounts in docker-compose.yml
@@ -513,60 +336,23 @@ python app.py  # Runs on http://localhost:5757
 
 ## Testing
 
-We take testing seriously. Every release is validated against real-world chaos scenarios.
-
-### Chaos Library Testing
-
-Before every release, we test against a **500-book "chaos library"** - a nightmare collection designed to break the app:
-
-| Chaos Type | Example | What We're Testing |
-|------------|---------|-------------------|
-| **Wrong Author** | `Stephen King - The Martian` | Can we detect misattribution? |
-| **Narrator as Author** | `Ray Porter - Project Hail Mary` | Common audiobook mistake |
-| **Swapped Fields** | `The Final Empire - Brandon Sanderson` | Structure reversal detection |
-| **Foreign Characters** | `Nick Offerman - 罪と罰` | Unicode handling |
-| **Heavy Typos** | `Nil Gaiman - Annsi Boys` | Fuzzy matching resilience |
-| **Torrent Prefixes** | `[MAM] Dean Koontz - Watchers (2021)` | Junk stripping |
-| **Missing Info** | `Audiobook_574` | Identification from nothing |
-| **Wrong Series Number** | `Mistborn Book 15 - The Final Empire` | Series validation |
-| **Mixed Languages** | `Харуки Мураками - Dune` | Cross-language chaos |
-
-The chaos library uses **symlinks to real audiobook files** (166GB represented, ~0 disk usage), so we're testing with actual audio content - not just filename patterns.
-
-### Regression Testing
-
-**Every GitHub issue becomes a test case.** When users report bugs, we:
-
-1. **Reproduce** the exact scenario
-2. **Fix** the underlying issue
-3. **Add a test** that catches this specific case
-4. **Run tests before every commit** to ensure we never revert fixes
-
-Our test suite (`test-env/test-naming-issues.py`) currently validates **184+ edge cases** derived from real user issues:
+Run checks in proportion to the change:
 
 ```bash
-# Run naming/path edge case tests
+ruff check .
 python test-env/test-naming-issues.py
-
-# Example output:
-# --- Issue #57: Watch folder verification ---
-# [PASS] Watch folder verifies drastic author changes
-# [PASS] Watch folder detects same-title-different-author
-# --- Issue #60: Password visibility toggles ---
-# [PASS] templates/settings.html has togglePasswordVisibility
-# ...
-# RESULTS: 184 passed, 0 failed
+python test-env/test-apply-fix-atomicity.py
+./test-env/run-integration-tests.sh --local --offline
+docker build -t library-manager .
 ```
 
-### Pre-Push Verification
+UI/workflow changes must also be exercised through the actual browser UI. The transfer-receipt browser test boots a disposable app, SQLite database, and fake audiobook library, drives the History Apply and receipt flows, forces a database failure, verifies the restored SHA-256 inventory, and refreshes the documentation screenshots:
 
-Before pushing any changes, we run:
+```bash
+python test-env/e2e-apply-fix-receipt.py
+```
 
-1. **Syntax check** - `python -m py_compile app.py`
-2. **Regression tests** - All 184+ edge cases
-3. **Code review** - Adversarial review of changes
-4. **Security audit** - Check for common vulnerabilities
-5. **Chaos library scan** - Full 500-book identification test
+A local Playwright installation and Chromium browser are required for that script. See [docs/Release-and-PR-Workflow.md](docs/Release-and-PR-Workflow.md) and [CONTRIBUTING.md](CONTRIBUTING.md) for the complete verification and documentation checklist.
 
 ---
 

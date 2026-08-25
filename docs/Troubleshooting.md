@@ -1,93 +1,51 @@
 # Troubleshooting
 
-## Common Issues
+## Path does not exist (Docker)
 
-### "Path doesn't exist" (Docker)
+Use the container side of the volume mount in Settings:
 
-**Cause:** You entered your host path in Settings instead of the container path.
-
-**Fix:**
-1. Check your docker-compose.yml volume mount: `- /host/path:/audiobooks`
-2. In Settings, use `/audiobooks` (the right side of the `:`)
-
-### Wrong author detected
-
-**Fix:**
-1. Go to **Pending** or **History**
-2. Find the incorrect suggestion
-3. Click **✗ Reject** to delete it
-4. Book will be marked as "verified OK"
-
-### Want to undo a fix
-
-**Fix:**
-1. Go to **History**
-2. Find the change
-3. Click **↩ Undo**
-4. Folder renames back to original
-
-### Error entry for file that doesn't exist
-
-**Fix:**
-1. Go to **History**
-2. Find the error entry
-3. Click **🗑 Dismiss**
-
-### Series not detected
-
-1. Make sure **Series Grouping** is enabled in Settings
-2. The title pattern must be recognizable
-3. Try a deep rescan - Dashboard → Deep Re-scan
-
-### Rate limit reached
-
-The app has a self-imposed rate limit to avoid hitting API limits. Wait an hour or adjust the limit in Settings → Advanced.
-
-### Database locked errors
-
-Usually happens when multiple operations run simultaneously. The app handles this automatically with timeouts. If persistent, restart the app.
-
-### Books being skipped
-
-Some folders are intentionally skipped:
-- **System folders** (`metadata/`, `tmp/`, `cache/`)
-- **Series folders** (folders containing multiple book subfolders)
-- **Complete collections** (`Complete Series`, `Box Set`, etc.)
-
-### Permission denied
-
-**Docker:** Make sure the container can read/write your audiobook folder.
-
-**Linux:** Check folder permissions:
-```bash
-chmod -R 755 /path/to/audiobooks
+```yaml
+- /host/path:/audiobooks
 ```
 
-## Getting More Help
+Enter `/audiobooks`, not `/host/path`. The container cannot access unmounted host paths.
 
-### Check Logs
+## Permission denied
 
-**Direct install:**
+The process needs read/write access to the library, destination, data directory, and database. For Docker, check host ownership or set matching `PUID`/`PGID`. Use targeted permissions for the intended directories; do not run broad recursive permission changes on a library or filesystem.
+
+## Wrong match or series not detected
+
+Leave uncertain suggestions pending or reject them. Adjust language/provider/safety settings, edit the book manually, or run a deep rescan. Enable series grouping and ensure the chosen template includes the series fields you need.
+
+## Apply operation blocked
+
+Common reasons are an existing non-empty destination, a destination already assigned to another book, a path outside configured roots, or a missing source. Correct the path/destination and retry; the app deliberately refuses ambiguous merges and overwrites.
+
+## Interrupted apply or rollback
+
+Beta.161 develop builds recover interrupted `applying` operations on startup. If the source inventory can be restored and verified, the item returns to pending; otherwise it is marked for manual recovery. Inspect History's receipt and do not delete either side until the paths and inventory records are understood.
+
+## Undo
+
+Use **History → Undo**. Undo is blocked if both sides exist or either path leaves a configured root. Resolve the ambiguity manually instead of overwriting data.
+
+## Provider errors or rate limits
+
+Check provider credentials, model ID, endpoint reachability, and Docker networking. The local request limiter defaults to 200/hour and clamps to 10–500/hour; wait for provider backoff/circuit-breaker recovery before repeatedly retrying.
+
+## Database locked or worker stuck
+
+Stop overlapping scans/process requests and allow the current worker to finish. Restart if the lock persists, then inspect the first error in the logs. Keep one active worker per data directory.
+
+## Watch-folder items do not move
+
+Check watch mode, source/output paths, file age delay, and permissions. Hard links require source and destination to share a filesystem; if they do not, the app fails without deleting the source.
+
+## Logs and bug reports
+
 ```bash
-tail -f app.log
+docker compose logs -f library-manager
 ```
 
-**Docker:**
-```bash
-docker logs library-manager
-```
-
-### Bug Reports
-
-Go to **Settings** → **Advanced** → **Generate Bug Report**
-
-This creates a report with:
-- App version
-- Configuration (no secrets)
-- Recent errors
-- System info
-
-### Still Stuck?
-
-- [GitHub Issues](https://github.com/deucebucket/library-manager/issues)
-- [GitHub Discussions](https://github.com/deucebucket/library-manager/discussions)
+Settings can generate a bug report containing version, sanitized configuration, recent errors, and system information. Do not post API keys, secrets, database files, or complete private library paths publicly.

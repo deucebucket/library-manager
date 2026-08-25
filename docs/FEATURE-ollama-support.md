@@ -7,7 +7,7 @@ Library Manager supports Ollama as a self-hosted AI provider for book identifica
 
 ## Configuration
 
-In **Settings > AI Setup**, select **Ollama (Self-hosted)** and enter the Ollama server URL. Library Manager requests the server's live model list from `/api/tags`. The model field stays editable for servers or proxies where discovery is unavailable.
+In **Settings > Engine**, select **Ollama (Self-hosted)** and enter the Ollama server URL. Library Manager requests the server's live model list from `/api/tags`. The model field stays editable for servers or proxies where discovery is unavailable.
 
 No model name is built into Library Manager. If Ollama returns exactly one model, it is selected automatically. If it returns multiple models, select one from the list.
 

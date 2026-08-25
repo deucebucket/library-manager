@@ -2,7 +2,7 @@
 
 This module provides access to Skaldleita (formerly BookDB), our metadata service with:
 - Fuzzy matching via Qdrant vectors (great for messy filenames)
-- 50M+ book database
+- Large, live book metadata index
 - GPU-powered Whisper audio identification
 - Series info including book position
 - Local/P2P cache support
@@ -364,7 +364,7 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None, 
     This is PREFERRED over local transcription + Gemini because:
     1. Skaldleita has a GTX 1080 running Whisper (faster)
     2. No Gemini rate limits
-    3. Skaldleita cross-references against its 50M+ book database
+    3. Skaldleita cross-references against its live metadata index
     4. Fair multi-user access via round-robin queue
 
     Args:
