@@ -17,12 +17,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from library_manager.video.organize import PlaybackObservation  # noqa: E402
 from video_organization_service import (  # noqa: E402
     REQUEST_SCHEMA,
+    VERIFY_REQUEST_SCHEMA,
     ServiceConfig,
     ThreadingHTTPServer,
     VideoOrganizationService,
     capability_signature,
     make_handler,
     plan_from_payload,
+    verification_from_payload,
 )
 
 
@@ -41,6 +43,11 @@ PAYLOAD = {
 }
 
 
+def verification_payload(operation_id: str) -> dict:
+    return {**PAYLOAD, "schema": VERIFY_REQUEST_SCHEMA,
+            "operation_id": operation_id}
+
+
 class Catalogue:
     def __init__(self):
         self.root = "/media/Movies"
@@ -56,8 +63,12 @@ class Catalogue:
 
 
 class Visibility:
+    def __init__(self):
+        self.visible = True
+
     async def visible_in(self, provider, provider_id, library_ref):
-        return (provider, provider_id, library_ref) == ("tmdb", "123", "jf-docs")
+        return (self.visible and (provider, provider_id, library_ref)
+                == ("tmdb", "123", "jf-docs"))
 
 
 async def idle():
@@ -86,15 +97,23 @@ def test_plan_and_capability_boundary():
         assert plan.approved and plan.movie_length
 
         catalogue = Catalogue()
+        visibility = Visibility()
         service = VideoOrganizationService(
-            cfg, catalogue=catalogue, visibility=Visibility(), idle_probe=idle)
+            cfg, catalogue=catalogue, visibility=visibility, idle_probe=idle)
         status, result = asyncio.run(service.apply(PAYLOAD, "sha256=wrong"))
         assert status == 401 and result["error_code"] == "capability_invalid"
+        assert catalogue.calls == [] and not cfg.database.exists()
+
+        absent = verification_payload("vm_" + "0" * 32)
+        status, result = asyncio.run(service.verify(
+            absent, capability_signature(absent, SECRET)))
+        assert status == 409 and result["error_code"] == "move_receipt_absent"
         assert catalogue.calls == [] and not cfg.database.exists()
 
         signature = capability_signature(PAYLOAD, SECRET)
         status, result = asyncio.run(service.apply(PAYLOAD, signature))
         assert status == 200 and result["status"] == "committed"
+        operation_id = result["operation_id"]
         assert catalogue.calls == [("7", "/media/Documentaries", True)]
         assert cfg.database.stat().st_mode & 0o777 == 0o600
         receipt_db = sqlite3.connect(cfg.database)
@@ -109,6 +128,51 @@ def test_plan_and_capability_boundary():
         status, result = asyncio.run(service.apply(PAYLOAD, signature))
         assert status == 409 and result["error_code"] == "move_receipt_exists"
         assert len(catalogue.calls) == 1
+        verify_payload = verification_payload(operation_id)
+        parsed_operation, parsed_plan = verification_from_payload(verify_payload, cfg)
+        assert parsed_operation == operation_id and parsed_plan == plan
+        status, result = asyncio.run(service.verify(verify_payload, "sha256=wrong"))
+        assert status == 401 and result["error_code"] == "capability_invalid"
+        before_verify = cfg.database.read_bytes()
+        status, result = asyncio.run(service.verify(
+            verify_payload, capability_signature(verify_payload, SECRET)))
+        assert status == 200 and result == {
+            "schema": "video.move.verification.v1",
+            "operation_id": operation_id,
+            "status": "verified",
+            "destination_verified": True,
+            "library_verified": True,
+        }
+        assert cfg.database.read_bytes() == before_verify
+
+        mismatched = {**verify_payload, "provider_id": "124"}
+        status, result = asyncio.run(service.verify(
+            mismatched, capability_signature(mismatched, SECRET)))
+        assert status == 409 and result["error_code"] == "move_receipt_mismatch"
+        catalogue.root = "/media/Movies"
+        status, result = asyncio.run(service.verify(
+            verify_payload, capability_signature(verify_payload, SECRET)))
+        assert status == 409 and result["error_code"] == "destination_not_verified"
+        assert result["destination_verified"] is False
+        assert result["library_verified"] is True
+        catalogue.root = "/media/Documentaries"
+        visibility.visible = False
+        status, result = asyncio.run(service.verify(
+            verify_payload, capability_signature(verify_payload, SECRET)))
+        assert status == 409
+        assert result["error_code"] == "library_identity_not_verified"
+        assert result["destination_verified"] is True
+        assert result["library_verified"] is False
+        receipt_db = sqlite3.connect(cfg.database)
+        receipt_db.execute(
+            "UPDATE video_move_receipts SET status = 'rolled_back' WHERE operation_id = ?",
+            (operation_id,))
+        receipt_db.commit()
+        receipt_db.close()
+        visibility.visible = True
+        status, result = asyncio.run(service.verify(
+            verify_payload, capability_signature(verify_payload, SECRET)))
+        assert status == 409 and result["error_code"] == "move_not_committed"
     print("[PASS] exact capability is one-use and receipts remain path/title-free")
 
 
@@ -132,6 +196,16 @@ def test_http_surface():
             result = json.load(urlopen(request))
             assert result["schema"] == "video.move.result.v1"
             assert result["status"] == "committed"
+            verify_body = verification_payload(result["operation_id"])
+            encoded_verify = json.dumps(
+                verify_body, sort_keys=True, separators=(",", ":")).encode()
+            verified = json.load(urlopen(Request(
+                base + "/api/v1/video/move/verify", data=encoded_verify,
+                headers={"Content-Type": "application/json",
+                         "X-LM-Video-Capability": capability_signature(
+                             verify_body, SECRET)})))
+            assert verified["schema"] == "video.move.verification.v1"
+            assert verified["status"] == "verified"
             for method in ("PUT", "PATCH", "DELETE"):
                 try:
                     urlopen(Request(base + "/api/v1/video/move", data=b"{}",
@@ -143,7 +217,7 @@ def test_http_surface():
             server.shutdown()
             thread.join(timeout=2)
             server.server_close()
-    print("[PASS] loopback HTTP surface exposes health plus one signed POST only")
+    print("[PASS] loopback HTTP surface exposes health plus exact signed apply/verify POSTs")
 
 
 if __name__ == "__main__":

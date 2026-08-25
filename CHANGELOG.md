@@ -2,6 +2,29 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.167] - 2026-08-25
+
+### Added
+- **#306: Independent video move verification** — The loopback organization service
+  accepts a separately signed, non-mutating verification request bound to the exact
+  operation, approval, catalogue/provider identity, configured roots, and destination
+  library. It proves the binding against the digest-only committed receipt, then freshly
+  re-reads the exact Radarr destination and Jellyfin provider identity so an external
+  policy gate does not need to trust the mutation response.
+
+### Safety
+- Verification cannot create a receipt, move files, accept a different plan for an
+  existing operation, or expose configured paths, titles, credentials, and adapter
+  errors. Missing, mismatched, non-committed, drifted, or unavailable evidence fails
+  closed with a bounded code.
+
+### Fixed
+- **#307: Truthful offline integration probes** — The Docker harness now queries SQLite
+  through the Python runtime present in the production image, rejects execution and
+  non-numeric failures instead of treating them as zero, waits on persisted scan output
+  in offline mode, and does not demand online identity outcomes from deliberately
+  disabled provider layers.
+
 ## [0.9.0-beta.166] - 2026-08-25
 
 ### Fixed

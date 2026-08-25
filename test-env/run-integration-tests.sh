@@ -166,10 +166,18 @@ EOF
     # Wait for scan to actually complete (queue should have items)
     log_info "Waiting for scan to complete..."
     for i in {1..60}; do
-        queue_count=$(curl -s "http://localhost:$TEST_PORT/api/queue" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['count'])" 2>/dev/null || echo "0")
-        if [[ "$queue_count" -gt 3 ]]; then
-            log_info "Scan populated queue with $queue_count items"
-            break
+        if [[ "$OFFLINE_MODE" -eq 1 ]]; then
+            book_count=$(curl -s "http://localhost:$TEST_PORT/api/stats" | python3 -c "import json,sys; print(json.load(sys.stdin).get('total_books', 0))" 2>/dev/null || echo "0")
+            if [[ "$book_count" -gt 3 ]]; then
+                log_info "Offline scan indexed $book_count books"
+                break
+            fi
+        else
+            queue_count=$(curl -s "http://localhost:$TEST_PORT/api/queue" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['count'])" 2>/dev/null || echo "0")
+            if [[ "$queue_count" -gt 3 ]]; then
+                log_info "Scan populated queue with $queue_count items"
+                break
+            fi
         fi
         sleep 1
     done
@@ -227,6 +235,15 @@ test_queue_endpoint() {
 
 test_scan_detected_issues() {
     log_info "Test: Scanner detected expected issues"
+    if [[ "$OFFLINE_MODE" -eq 1 ]]; then
+        total=$(curl -s "http://localhost:$TEST_PORT/api/stats" | python3 -c "import json,sys; print(json.load(sys.stdin).get('total_books', 0))" 2>/dev/null || echo "0")
+        if [[ "$total" -gt 0 ]]; then
+            log_pass "Offline scan indexed $total books; network-driven issue routing is out of scope"
+        else
+            log_fail "Offline scan produced no durable inventory"
+        fi
+        return
+    fi
     response=$(curl -s "http://localhost:$TEST_PORT/api/queue")
 
     # NOTE: Reversed structure detection was removed in beta.69 (Issue #52 - false positives)
@@ -335,15 +352,18 @@ test_queue_items_not_stuck() {
     log_info "Test: Queue items are not stuck at invalid verification layers"
     # Items should not be stuck at layer 4 in the queue (that's the bug this test catches)
 
-    # This requires DB access - skip if we can't access it
-    if ! command -v sqlite3 &> /dev/null; then
-        log_info "sqlite3 not available, skipping DB check"
+    # The production image intentionally contains Python rather than the
+    # sqlite3 shell. Use the runtime already required by the application, and
+    # never turn an exec/import/query failure into the truthful number zero.
+    if ! stuck=$(container_exec exec "$CONTAINER_NAME" python3 -c \
+        "import sqlite3; c=sqlite3.connect('/data/library.db'); print(c.execute(\"SELECT COUNT(*) FROM queue q JOIN books b ON q.book_id = b.id WHERE b.verification_layer = 4\").fetchone()[0])" 2>/dev/null); then
+        log_fail "Could not query the container database for invalid queue layers"
         return
     fi
-
-    # Check for stuck items (in queue but at layer 4 with no handler)
-    stuck=$(container_exec exec "$CONTAINER_NAME" sqlite3 /data/library.db \
-        "SELECT COUNT(*) FROM queue q JOIN books b ON q.book_id = b.id WHERE b.verification_layer = 4" 2>/dev/null || echo "0")
+    if [[ ! "$stuck" =~ ^[0-9]+$ ]]; then
+        log_fail "Container database query returned a non-numeric result"
+        return
+    fi
 
     if [[ "$stuck" -eq 0 ]]; then
         log_pass "No items stuck at layer 4"
@@ -365,7 +385,22 @@ test_book_verification() {
         return
     fi
 
-    # Run the verification test against the test database
+    if [[ "$OFFLINE_MODE" -eq 1 ]]; then
+        # Offline mode deliberately disables the lookup and AI layers that
+        # produce the fixture's expected identities. Its honest contract is a
+        # readable, non-empty persisted scan, not online verification labels.
+        if result=$(python3 -c \
+            "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); ok=c.execute('PRAGMA quick_check').fetchone()[0]; count=c.execute('SELECT COUNT(*) FROM books').fetchone()[0]; print(f'{ok}:{count}')" \
+            "$TEST_DIR/fresh-deploy/data/library.db" 2>/dev/null) \
+                && [[ "$result" =~ ^ok:[1-9][0-9]*$ ]]; then
+            log_pass "Offline database is valid with ${result#ok:} indexed books; online identity labels are out of scope"
+        else
+            log_fail "Offline scan database is absent, corrupt, or empty"
+        fi
+        return
+    fi
+
+    # Run the online verification test against the test database
     if python3 "$TEST_DIR/test-book-verification.py" "$TEST_DIR/fresh-deploy/data/library.db" >/dev/null 2>&1; then
         log_pass "Book identification verification passed"
     else

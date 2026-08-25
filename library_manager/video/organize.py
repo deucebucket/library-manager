@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -220,7 +221,68 @@ async def execute_move(plan: VideoMovePlan, *, conn: sqlite3.Connection,
                 "error_code": error_code}
 
 
+async def verify_committed_move(operation_id: str, plan: VideoMovePlan, *,
+                                conn: sqlite3.Connection,
+                                catalogue: CatalogueAdapter,
+                                visibility: VisibilityAdapter) -> dict:
+    """Re-observe one exact committed move without acquiring a mutation verb.
+
+    The apply response is evidence from the executor, not a physical gate.  A
+    later caller therefore binds the same approved plan to its opaque operation
+    id, proves that binding against the digest-only receipt, and asks the
+    injected read adapters for current Radarr and Jellyfin truth again.
+    """
+    _validate(plan)
+    row = conn.execute(
+        "SELECT * FROM video_move_receipts WHERE operation_id = ?",
+        (operation_id,),
+    ).fetchone()
+    if row is None:
+        raise OrganizationRefused("move_receipt_absent")
+    values = dict(row)
+    expected = {
+        "approval_digest": _digest({"approval_ref": plan.approval_ref}),
+        "subject_digest": _digest({"subject_id": plan.subject_id}),
+        "identity_digest": _digest({
+            "provider": plan.provider, "provider_id": plan.provider_id}),
+        "source_root_digest": _digest({"root_ref": plan.source_root_ref}),
+        "destination_root_digest": _digest({
+            "root_ref": plan.destination_root_ref}),
+        "destination_library_digest": _digest({
+            "library_ref": plan.destination_library_ref}),
+    }
+    if (any(not secrets.compare_digest(str(values.get(key) or ""), digest)
+            for key, digest in expected.items())
+            or values.get("media_kind") != plan.media_kind
+            or int(values.get("move_files") or 0) != 1
+            or int(values.get("idle_observed") or 0) != 1
+            or int(values.get("destination_verified") or 0) != 1
+            or int(values.get("library_verified") or 0) != 1
+            or int(values.get("rollback_verified") or 0) != 0):
+        raise OrganizationRefused("move_receipt_mismatch")
+    if values.get("status") != "committed":
+        raise OrganizationRefused("move_not_committed")
+
+    destination_verified = bool(await catalogue.root_is(
+        plan.subject_id, plan.destination_root_ref))
+    library_verified = bool(await visibility.visible_in(
+        plan.provider, plan.provider_id, plan.destination_library_ref))
+    error_code = (None if destination_verified and library_verified else
+                  "destination_not_verified" if not destination_verified else
+                  "library_identity_not_verified")
+    result = {
+        "operation_id": operation_id,
+        "status": "verified" if error_code is None else "unverified",
+        "destination_verified": destination_verified,
+        "library_verified": library_verified,
+    }
+    if error_code is not None:
+        result["error_code"] = error_code
+    return result
+
+
 __all__ = [
     "CatalogueAdapter", "OrganizationRefused", "PlaybackObservation",
     "VideoMovePlan", "VisibilityAdapter", "ensure_schema", "execute_move",
+    "verify_committed_move",
 ]
