@@ -2,7 +2,7 @@
 
 All notable changes to Library Manager will be documented in this file.
 
-## Unreleased
+## [0.9.0-beta.164] - 2026-08-25
 
 ### Added
 - **Video organization coordinator** — Approved movie-length movie moves now have a
