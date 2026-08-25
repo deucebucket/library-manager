@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.161-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.162-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 
@@ -15,6 +15,12 @@
 ---
 
 ## Recent Changes (develop / beta)
+
+> **beta.162** - **#292/#298: Verified watch-folder pre-sort**
+> - Detects multi-book bundles, multipart sibling folders, and redundant nesting before normal ingestion.
+> - Stores an exact source/destination inventory with sizes and SHA-256 hashes before moving anything, then verifies every destination.
+> - Adds a review UI with Apply, Reject, complete receipts, verified rollback, startup recovery, and Undo.
+> - Remains opt-in; only fully assigned high-confidence plans can auto-apply. Multipart merge does not convert audio to M4B.
 
 > **beta.161** - **#300: Verified apply-fix transfer receipts**
 > - Builds a complete pre-move inventory with file sizes, entry types, and SHA-256 hashes.
@@ -105,6 +111,16 @@ Receipt examples from the current UI:
 ![History transfer receipts](docs/images/transfer-receipts-history.png)
 ![Committed transfer receipt](docs/images/transfer-receipt-committed.png)
 ![Rollback transfer receipt](docs/images/transfer-receipt-rollback.png)
+
+### Verified Watch-Folder Pre-sort (Beta)
+
+Before the normal watch-folder pipeline runs, the opt-in pre-sort stage can split an explicit multi-book bundle, merge `CD1`/`CD2` or `Part 1`/`Part 2` sibling folders into one folder, and flatten redundant nested folders. It never silently assigns shared files or follows symlinks. Ambiguous plans wait for review unless Skaldleita fingerprints assign every audio file across at least two books; files sharing the same identity stay together.
+
+Each plan is a literal handoff inventory: exact source and destination paths, byte sizes, SHA-256 hashes, aggregate digest, and verification state. Apply re-hashes every source, refuses collisions, writes the receipt before the first move, verifies every destination, and performs a verified rollback on failure. Undo is available while the outputs remain unchanged and have not moved into downstream ingestion; a successful Undo returns the restored bundle to Pending review instead of releasing it to the watcher.
+
+![Pre-sort plan review](docs/images/presort-review.png)
+![Committed pre-sort receipt](docs/images/presort-committed-receipt.png)
+![Verified pre-sort rollback](docs/images/presort-rollback-receipt.png)
 
 ### Series Grouping (Audiobookshelf-Compatible)
 ```

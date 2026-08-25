@@ -346,7 +346,7 @@
                                     <br><small class="text-muted">Auto-organize new audiobooks from a folder</small>
                                 </label>
                             </div>
-                            <div id="watch-options" class="mt-3" style="display: {% if config.watch_mode %}block{% else %}none{% endif %};">
+                            <div id="watch-options" class="mt-3" style="display: {% if config.watch_mode or config.presort_enabled %}block{% else %}none{% endif %};">
                                 <div class="mb-2">
                                     <label class="form-label small mb-1">Input Folder</label>
                                     <input type="text" class="form-control form-control-sm bg-dark text-light"
@@ -386,6 +386,46 @@
                                     <input class="form-check-input" type="checkbox" name="watch_delete_empty_folders" id="watch_delete_empty_folders"
                                            {% if config.watch_delete_empty_folders is not defined or config.watch_delete_empty_folders %}checked{% endif %}>
                                     <label class="form-check-label small" for="watch_delete_empty_folders">Delete empty folders after moving</label>
+                                </div>
+                                <hr class="my-3">
+                                <div class="form-check form-switch mb-2">
+                                    <input class="form-check-input" type="checkbox" name="presort_enabled" id="presort_enabled"
+                                           {% if config.presort_enabled %}checked{% endif %} onchange="togglePresortOptions()">
+                                    <label class="form-check-label" for="presort_enabled">
+                                        <strong>Verified Pre-sort</strong>
+                                        <span class="badge bg-info text-dark">BETA</span>
+                                        <br><small class="text-muted">Plan multi-book splits, multipart folder merges, and nested-folder flattening before ingestion.</small>
+                                    </label>
+                                </div>
+                                <div id="presort-options" class="ms-4" style="display: {% if config.presort_enabled %}block{% else %}none{% endif %};">
+                                    <div class="form-check form-switch mb-2">
+                                        <input class="form-check-input" type="checkbox" name="presort_auto_apply" id="presort_auto_apply"
+                                               {% if config.presort_auto_apply %}checked{% endif %}>
+                                        <label class="form-check-label small" for="presort_auto_apply">
+                                            Auto-apply high-confidence plans
+                                            <br><span class="text-muted">Medium-confidence and unassigned files always wait for review.</span>
+                                        </label>
+                                    </div>
+                                    <div class="form-check form-switch mb-2">
+                                        <input class="form-check-input" type="checkbox" name="presort_use_fingerprints" id="presort_use_fingerprints"
+                                               {% if config.presort_use_fingerprints is not defined or config.presort_use_fingerprints %}checked{% endif %}>
+                                        <label class="form-check-label small" for="presort_use_fingerprints">
+                                            Identify ambiguous files with Skaldleita fingerprints
+                                            <br><span class="text-muted">Exact fingerprint matches can promote a distinctly named bundle to high confidence without AI tokens.</span>
+                                        </label>
+                                    </div>
+                                    <div class="mb-2">
+                                        <label class="form-label small mb-1" for="presort_settle_seconds">Settle time</label>
+                                        <div class="input-group input-group-sm">
+                                            <input type="number" class="form-control bg-dark text-light" name="presort_settle_seconds"
+                                                   id="presort_settle_seconds" value="{{ config.presort_settle_seconds or 300 }}" min="30" max="86400">
+                                            <span class="input-group-text bg-dark text-light">sec</span>
+                                        </div>
+                                        <small class="text-muted">Every source must remain unchanged for this long before a plan is created.</small>
+                                    </div>
+                                    <a class="btn btn-sm btn-outline-info" href="/presort">
+                                        <i class="bi bi-diagram-3"></i> Review Pre-sort Plans
+                                    </a>
                                 </div>
                             </div>
                         </div>
@@ -2067,7 +2107,14 @@ function toggleEmbeddingOptions() {
 }
 
 function toggleWatchOptions() {
-    document.getElementById('watch-options').style.display = document.getElementById('watch_mode').checked ? 'block' : 'none';
+    const watchEnabled = document.getElementById('watch_mode').checked;
+    const presortEnabled = document.getElementById('presort_enabled').checked;
+    document.getElementById('watch-options').style.display = watchEnabled || presortEnabled ? 'block' : 'none';
+}
+
+function togglePresortOptions() {
+    document.getElementById('presort-options').style.display = document.getElementById('presort_enabled').checked ? 'block' : 'none';
+    toggleWatchOptions();
 }
 
 function applyTheme(themeName) {

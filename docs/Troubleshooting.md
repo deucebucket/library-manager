@@ -42,6 +42,18 @@ Stop overlapping scans/process requests and allow the current worker to finish. 
 
 Check watch mode, source/output paths, file age delay, and permissions. Hard links require source and destination to share a filesystem; if they do not, the app fails without deleting the source.
 
+## Pre-sort plan is pending or cannot apply
+
+Open **Pre-sort** and expand the inventory. Medium-confidence plans require manual Apply. Any unassigned companion file, symlink, destination collision, unsupported nested content, or changed source blocks the operation. Multipart sibling folders are deferred as a group until every part satisfies the pre-sort settle time.
+
+## Pre-sort Undo is unavailable
+
+Undo requires every recorded destination file to remain unchanged and every original source path to remain absent. It refuses to overwrite or guess if both sides exist, neither side exists, hashes changed, or the normal watch pipeline already consumed the output. A successful Undo returns the plan to Pending; Apply it again or select **Treat as One Book** to release the restored source to normal ingestion. Inspect the retained receipt before manually changing either side.
+
+## Pre-sort reports manual recovery
+
+Do not delete either path. Compare the receipt's exact source/destination mapping, sizes, and SHA-256 hashes with the filesystem. Manual recovery means startup or rollback found an ambiguous state and intentionally stopped rather than risking an overwrite.
+
 ## Logs and bug reports
 
 ```bash

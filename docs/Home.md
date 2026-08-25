@@ -41,9 +41,12 @@ Library Manager automatically fixes messy audiobook folder names using real book
 - Series grouping (Audiobookshelf-compatible)
 - Smart narrator preservation
 - Undo any fix and inspect transfer receipts in History
+- Verified watch-folder pre-sort for multi-book splits, multipart folder merges, and redundant nesting
 - Web dashboard
 
-The develop branch currently reports beta.161. Its #300 apply-fix flow records complete source, destination, and rollback inventories with SHA-256 file hashes, verifies the handoff before the database commit, and recovers interrupted operations when possible. This improves auditability but is not a substitute for filesystem or hardware backups.
+The develop branch currently reports beta.162. Its #292/#298 pre-sort flow records exact source/destination mappings, byte sizes, and SHA-256 hashes before moving files; verifies the result; and records verified rollback or Undo. The beta.161 #300 apply-fix receipts remain in place for later library moves. These controls improve auditability but are not a substitute for filesystem or hardware backups.
+
+![Verified pre-sort review](images/presort-review.png)
 
 ## Getting Help
 

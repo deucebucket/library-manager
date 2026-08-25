@@ -33,6 +33,7 @@ jobs:
           python -m py_compile library_manager/pipeline/layer_ai_queue.py
           python -m py_compile library_manager/pipeline/layer_api.py
           python -m py_compile library_manager/utils/validation.py
+          python -m py_compile library_manager/presort.py
           echo "✓ All critical files compile successfully"
 
   test:
@@ -54,6 +55,7 @@ jobs:
         run: |
           python test-env/test-naming-issues.py
           python test-env/test-apply-fix-atomicity.py
+          python test-env/test-presort.py
           python test-env/test-ai-providers.py
           python test-env/test-ai-provider-integration.py
 

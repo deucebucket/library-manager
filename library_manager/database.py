@@ -124,6 +124,72 @@ def init_db(db_path=None):
         UNIQUE(operation_id, phase, relative_path)
     )''')
 
+    # Issues #292/#298: reviewable watch-folder pre-sort plans and durable,
+    # per-file handoff receipts. Plans never change files; applying a plan
+    # creates an operation row before the first move so startup can recover it.
+    c.execute('''CREATE TABLE IF NOT EXISTS presort_plans (
+        id INTEGER PRIMARY KEY,
+        plan_key TEXT UNIQUE NOT NULL,
+        watch_root TEXT NOT NULL,
+        action TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        source_paths TEXT NOT NULL,
+        confidence TEXT NOT NULL,
+        reason TEXT,
+        applicable INTEGER NOT NULL DEFAULT 0,
+        auto_applicable INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        operation_id INTEGER,
+        error_message TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        applied_at TIMESTAMP
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS presort_plan_items (
+        id INTEGER PRIMARY KEY,
+        plan_id INTEGER NOT NULL,
+        position INTEGER NOT NULL,
+        source_path TEXT NOT NULL,
+        destination_path TEXT,
+        entry_type TEXT NOT NULL DEFAULT 'file',
+        size INTEGER NOT NULL DEFAULT 0,
+        sha256 TEXT,
+        note TEXT,
+        FOREIGN KEY (plan_id) REFERENCES presort_plans(id),
+        UNIQUE(plan_id, position)
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS presort_operations (
+        id INTEGER PRIMARY KEY,
+        plan_id INTEGER NOT NULL,
+        operation_type TEXT NOT NULL,
+        watch_root TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'applying',
+        source_digest TEXT,
+        destination_digest TEXT,
+        rollback_digest TEXT,
+        error_message TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        verified_at TIMESTAMP,
+        FOREIGN KEY (plan_id) REFERENCES presort_plans(id)
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS presort_operation_items (
+        id INTEGER PRIMARY KEY,
+        operation_id INTEGER NOT NULL,
+        position INTEGER NOT NULL,
+        source_path TEXT NOT NULL,
+        destination_path TEXT NOT NULL,
+        entry_type TEXT NOT NULL DEFAULT 'file',
+        size INTEGER NOT NULL DEFAULT 0,
+        sha256 TEXT NOT NULL,
+        source_verified INTEGER NOT NULL DEFAULT 0,
+        moved INTEGER NOT NULL DEFAULT 0,
+        destination_verified INTEGER NOT NULL DEFAULT 0,
+        rollback_verified INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (operation_id) REFERENCES presort_operations(id),
+        UNIQUE(operation_id, position)
+    )''')
+
     # Add status and error_message columns if they don't exist (migration)
     try:
         c.execute("ALTER TABLE history ADD COLUMN status TEXT DEFAULT 'pending_fix'")
@@ -253,6 +319,11 @@ def init_db(db_path=None):
     c.execute('CREATE INDEX IF NOT EXISTS idx_file_operations_history_id ON file_operations(history_id)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_file_operations_status ON file_operations(status)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_file_inventory_operation_phase ON file_operation_inventory(operation_id, phase)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_presort_plans_status ON presort_plans(status)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_presort_plan_items_plan ON presort_plan_items(plan_id)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_presort_operations_plan ON presort_operations(plan_id)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_presort_operations_status ON presort_operations(status)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_presort_operation_items_operation ON presort_operation_items(operation_id)')
 
     conn.commit()
     conn.close()

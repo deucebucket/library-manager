@@ -25,7 +25,7 @@ The app is designed to be safe:
 
 ### Does it move files or just rename folders?
 
-It can move a complete book folder or a loose media file into a generated destination. It does not merge a non-empty destination folder; that is treated as a possible different version/narrator and is blocked.
+It can move a complete book folder or a loose media file into a generated destination. The opt-in watch pre-sort can also combine recognized `CD`/`Disc`/`Part` sibling folders into a new unsuffixed folder before ingestion. That merge changes folder layout only; it does not join tracks or create an M4B. Existing destinations and ambiguous content remain blocked.
 
 ## Technical
 
@@ -48,6 +48,14 @@ It cross-references multiple book databases, then uses AI to verify the best mat
 ### What is a transfer receipt?
 
 Beta.161 develop builds create a durable source inventory with file sizes/types and SHA-256 hashes, verify the destination inventory, and record rollback status. History exposes the receipt and inventory modal. This improves auditability but is not a replacement for independent filesystem and hardware backups.
+
+### How does verified pre-sort avoid losing files?
+
+Beta.162 creates a literal inventory and destination mapping before the first move. It re-hashes each source immediately before apply, verifies every destination, records progress after each file, and verifies rollback after failures. It never overwrites an existing path and refuses ambiguous recovery. This protects the application handoff, but hardware failure, external edits, and storage corruption still require independent backups.
+
+### Will pre-sort split chapter files into separate books?
+
+Not automatically. Chapter-like files are treated as one audiobook. Explicit book/volume markers can produce a high-confidence split; generic distinct titles require review unless Skaldleita fingerprints identify them as different books. Shared or unassigned files block apply.
 
 ## Docker
 

@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama, OpenAI-compatible APIs)
 """
 
-APP_VERSION = "0.9.0-beta.161"
+APP_VERSION = "0.9.0-beta.162"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -85,6 +85,7 @@ from library_manager.providers import (
     search_audnexus, lookup_audnexus_by_asin, search_openlibrary, search_google_books, search_hardcover,
     BOOKDB_API_URL, BOOKDB_PUBLIC_KEY, get_signed_headers,
     search_bookdb as _search_bookdb_raw, identify_audio_with_bookdb,
+    identify_by_fingerprint,
     call_ollama as _call_ollama_raw, call_ollama_simple as _call_ollama_simple_raw,
     get_ollama_models, test_ollama_connection,
     call_openrouter, call_openrouter_simple, identify_book_from_transcript,
@@ -136,6 +137,18 @@ from library_manager.file_transactions import (
     recover_interrupted_apply_fixes,
     rollback_filesystem_move,
     store_inventory,
+)
+from library_manager.presort import (
+    active_presort_source_roots,
+    apply_auto_presort_plans,
+    apply_presort_plan,
+    get_presort_receipt,
+    list_presort_plans,
+    presort_path_is_settled,
+    recover_interrupted_presort_operations,
+    reject_presort_plan,
+    scan_presort_plans,
+    undo_presort_operation,
 )
 from library_manager.hints import get_all_hints
 from library_manager.hooks import hooks_bp, run_hooks, build_hook_context
@@ -7157,6 +7170,19 @@ def move_to_output_folder(source_path: str, output_folder: str, author: str, tit
         return False, None, str(e)
 
 
+def _scan_watch_presort(config):
+    """Plan watch-folder pre-sort work with optional Skaldleita fingerprints."""
+    identifier = None
+    if config.get('presort_use_fingerprints', True):
+        secrets = load_secrets()
+        api_key = secrets.get('bookdb_api_key') or None
+
+        def identifier(audio_path):
+            return identify_by_fingerprint(audio_path, api_key=api_key)
+
+    return scan_presort_plans(get_db, config, identify_audio=identifier)
+
+
 def process_watch_folder(config: dict) -> int:
     """
     Process items in the watch folder.
@@ -7183,7 +7209,36 @@ def process_watch_folder(config: dict) -> int:
 
     logger.info(f"=== WATCH FOLDER SCAN: {watch_folder} ===")
 
+    # Issues #292/#298: pre-sort is a separate, receipt-backed handoff before
+    # metadata lookup. Planning is read-only. Only explicitly enabled,
+    # high-confidence plans may auto-apply, and new outputs wait until the next
+    # watch cycle so the completed operation remains immediately undoable.
+    presort_deferred_paths = set()
+    if config.get('presort_enabled', False):
+        try:
+            scan_summary = _scan_watch_presort(config)
+            presort_deferred_paths.update(scan_summary.get('deferred_paths', []))
+            auto_summary = apply_auto_presort_plans(get_db, config)
+            if scan_summary['created']:
+                logger.info(f"Pre-sort: Created {scan_summary['created']} review plan(s)")
+            if auto_summary['applied']:
+                logger.info(f"Pre-sort: Applied {auto_summary['applied']} verified plan(s); deferring downstream ingestion to next cycle")
+                watch_folder_last_scan = time.time()
+                return 0
+            if auto_summary['errors']:
+                logger.warning(f"Pre-sort: {auto_summary['errors']} automatic plan(s) failed safely")
+        except Exception as exc:
+            logger.error(f"Pre-sort scan failed without changing watch files: {exc}", exc_info=True)
+
     items = get_watch_folder_items(watch_folder, min_age)
+    if config.get('presort_enabled', False) and items:
+        reserved = set(active_presort_source_roots(get_db))
+        reserved.update(presort_deferred_paths)
+        items = [
+            item for item in items
+            if str(Path(item).resolve()) not in reserved
+            and presort_path_is_settled(item, config)
+        ]
     if not items:
         logger.debug("Watch folder: No new items to process")
         return 0
@@ -7533,6 +7588,9 @@ def dashboard():
                  WHERE h.status = 'pending_fix' ''')
     pending_fixes = c.fetchone()['count']
 
+    c.execute("SELECT COUNT(*) as count FROM presort_plans WHERE status = 'pending'")
+    presort_pending = c.fetchone()['count']
+
     # Issue #110: Count validation failures
     c.execute("SELECT COUNT(*) as count FROM books WHERE validation_status = 'invalid'")
     validation_failed_count = c.fetchone()['count']
@@ -7563,6 +7621,7 @@ def dashboard():
                           fixed_count=fixed_count,
                           verified_count=verified_count,
                           pending_fixes=pending_fixes,
+                          presort_pending=presort_pending,
                           validation_failed_count=validation_failed_count,
                           triage_counts=triage_counts,
                           recent_history=recent_history,
@@ -7674,6 +7733,19 @@ def queue_page():
     conn.close()
 
     return render_template('queue.html', queue_items=queue_items)
+
+
+@app.route('/presort')
+def presort_page():
+    """Review split, folder-merge, and flatten plans before ingestion."""
+    config = load_config()
+    plans = list_presort_plans(get_db)
+    counts = {
+        'pending': sum(plan['status'] == 'pending' for plan in plans),
+        'applied': sum(plan['status'] == 'applied' for plan in plans),
+        'errors': sum(plan['status'] == 'error' for plan in plans),
+    }
+    return render_template('presort.html', plans=plans, counts=counts, config=config)
 
 @app.route('/history')
 def history_page():
@@ -7862,6 +7934,11 @@ def settings_page():
         config['watch_interval_seconds'] = int(request.form.get('watch_interval_seconds', 60))
         config['watch_delete_empty_folders'] = 'watch_delete_empty_folders' in request.form
         config['watch_min_file_age_seconds'] = int(request.form.get('watch_min_file_age_seconds', 30))
+        config['presort_enabled'] = 'presort_enabled' in request.form
+        config['presort_auto_apply'] = 'presort_auto_apply' in request.form
+        config['presort_use_fingerprints'] = 'presort_use_fingerprints' in request.form
+        presort_settle = int(request.form.get('presort_settle_seconds', 300))
+        config['presort_settle_seconds'] = max(30, min(presort_settle, 86400))
         # Author initials setting (Issue #54)
         config['standardize_author_initials'] = 'standardize_author_initials' in request.form
         # Strip "Unabridged" from titles (Issue #92)
@@ -9009,6 +9086,56 @@ def api_file_operation_receipt(operation_id):
         'operation': dict(operation),
         'inventory': inventory,
     })
+
+
+@app.route('/api/presort/scan', methods=['POST'])
+def api_presort_scan():
+    """Create pre-sort plans without changing any watch-folder files."""
+    try:
+        summary = _scan_watch_presort(load_config())
+        log_action('presort_scan', detail=f"created={summary['created']} deferred={summary['deferred']}", result='success')
+        return jsonify({'success': True, **summary})
+    except Exception as exc:
+        logger.error(f'Pre-sort scan failed: {exc}', exc_info=True)
+        log_action('presort_scan', detail=str(exc), result='error')
+        return jsonify({'success': False, 'error': str(exc)}), 400
+
+
+@app.route('/api/presort/plan/<int:plan_id>/apply', methods=['POST'])
+def api_presort_apply(plan_id):
+    """Apply one reviewed plan through the durable handoff transaction."""
+    success, message, operation_id = apply_presort_plan(get_db, load_config(), plan_id)
+    log_action('presort_apply', detail=f'plan_id={plan_id} operation_id={operation_id}', result='success' if success else 'error')
+    return jsonify({
+        'success': success,
+        'message': message,
+        'operation_id': operation_id,
+    }), 200 if success else 409
+
+
+@app.route('/api/presort/plan/<int:plan_id>/reject', methods=['POST'])
+def api_presort_reject(plan_id):
+    """Reject a plan without changing files."""
+    success, message = reject_presort_plan(get_db, plan_id)
+    log_action('presort_reject', detail=f'plan_id={plan_id}', result='success' if success else 'error')
+    return jsonify({'success': success, 'message': message}), 200 if success else 409
+
+
+@app.route('/api/presort/operation/<int:operation_id>/undo', methods=['POST'])
+def api_presort_undo(operation_id):
+    """Undo a committed pre-sort operation and verify every source hash."""
+    success, message = undo_presort_operation(get_db, load_config(), operation_id)
+    log_action('presort_undo', detail=f'operation_id={operation_id}', result='success' if success else 'error')
+    return jsonify({'success': success, 'message': message}), 200 if success else 409
+
+
+@app.route('/api/presort/receipt/<int:operation_id>')
+def api_presort_receipt(operation_id):
+    """Return the complete per-file pre-sort handoff receipt."""
+    receipt = get_presort_receipt(get_db, operation_id)
+    if not receipt:
+        return jsonify({'success': False, 'error': 'Pre-sort receipt not found'}), 404
+    return jsonify({'success': True, **receipt})
 
 @app.route('/api/reject_fix/<int:history_id>', methods=['POST'])
 def api_reject_fix(history_id):
@@ -13340,6 +13467,7 @@ if __name__ == '__main__':
     init_config()  # Create config files if they don't exist
     init_db()
     recover_interrupted_apply_fixes(get_db, load_config())
+    recover_interrupted_presort_operations(get_db, load_config())
     cleanup_garbage_entries()  # Remove @eaDir, #recycle, etc. from database (Issue #88)
     cleanup_duplicate_history_entries()  # Remove duplicate history entries (Issue #79)
 
