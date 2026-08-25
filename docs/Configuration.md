@@ -16,6 +16,10 @@ All settings are configured through the web UI at **Settings**. The current UI g
 | Ebook Management | `false` | Organize ebooks alongside audiobooks |
 | Metadata Embedding | `false` | Write tags into audio files on fix |
 | Scan Interval | `6 hours` | How often to auto-scan |
+| Verified Pre-sort | `false` | Plan watch-folder splits, multipart folder merges, and redundant-folder flattening before ingestion |
+| Pre-sort Auto-apply | `false` | Apply only fully assigned high-confidence plans without review |
+| Pre-sort Fingerprints | `true` | Use Skaldleita fingerprints to resolve ambiguous multi-book bundles |
+| Pre-sort Settle Time | `300 seconds` | Require every source in a plan to remain unchanged before planning |
 
 ### Engine tab
 
@@ -154,3 +158,13 @@ Apply-fix operations record a complete source inventory, destination handoff, an
 ![History transfer receipts](images/transfer-receipts-history.png)
 ![Committed transfer receipt](images/transfer-receipt-committed.png)
 ![Rollback transfer receipt](images/transfer-receipt-rollback.png)
+
+## Verified pre-sort (beta.162 develop)
+
+Verified Pre-sort is under **Settings → Library → Watch Folder** and is opt-in. It operates on direct children of `watch_folder` before normal watch ingestion. Pending plans reserve their sources so the ordinary watcher cannot consume half of a proposed handoff; a multipart group waits until every sibling part is settled.
+
+`presort_auto_apply` is deliberately narrower than general auto-fix: it applies only high-confidence plans with every inventory item assigned. Medium-confidence bundles, shared companion files, symlinks, collisions, or incomplete fingerprint results always wait or remain blocked. The Pre-sort page shows the exact source/destination mapping and retained receipt.
+
+![Pre-sort review](images/presort-review.png)
+![Committed pre-sort receipt](images/presort-committed-receipt.png)
+![Rolled-back pre-sort receipt](images/presort-rollback-receipt.png)

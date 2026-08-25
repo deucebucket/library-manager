@@ -3,10 +3,28 @@
 ## User workflow
 
 ```text
-Scan → identify candidates → review queue → apply selected fixes → verify in History
+Watch pre-sort → scan → identify candidates → review queue → apply selected fixes → verify in History
 ```
 
 The scanner examines configured roots, skips known system/collection structures, validates eligible media, and creates or updates book records. Processing can be started from the Dashboard or run on the configured interval.
+
+## Verified watch pre-sort (beta.162 develop)
+
+Pre-sort is disabled by default. When enabled, it examines direct children of the configured watch folder after every file has remained unchanged for the configured settle time. It creates reviewable plans for:
+
+- explicit multi-book bundles such as `Book 1 - Title.mp3` and `Book 2 - Title.mp3`;
+- multipart sibling folders such as `Title CD1` and `Title CD2`, merged into an unsuffixed folder with collision-safe part-prefixed filenames; and
+- redundant nested folders whose files can be flattened without overwriting names.
+
+Three or more distinctly named non-chapter audio files are medium confidence and require review. When enabled, Skaldleita fingerprint matches can promote an ambiguous bundle only when every audio file is assigned and at least two book identities are present; files with the same identity are grouped together, while a same-book consensus cancels the false-positive split. Shared companion files, symlinks, unsupported nested content, collisions, or unsettled multipart siblings are visible and block apply.
+
+Apply stores a durable operation and complete source inventory before moving the first file. It re-hashes all sources, moves only the recorded mapping, verifies every destination hash, and retains the receipt. A failure triggers verified rollback; startup reconciles interrupted operations. Undo is refused when both sides, neither side, or changed content makes the handoff ambiguous. A successful Undo returns the restored plan to Pending review so normal watch ingestion cannot mistake the bundle for one book.
+
+![Pre-sort plan inventory](images/presort-review.png)
+![Committed pre-sort receipt](images/presort-committed-receipt.png)
+![Verified pre-sort rollback](images/presort-rollback-receipt.png)
+
+Multipart merge is a folder-layout operation only. It does not join tracks or convert audio to M4B. Once the normal watch pipeline changes a pre-sort destination, Undo may no longer be available.
 
 ## Identification pipeline
 

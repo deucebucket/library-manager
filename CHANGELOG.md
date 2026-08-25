@@ -2,6 +2,17 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.162] - 2026-08-25
+
+### Added
+- **#292/#298: Verified watch-folder pre-sort** — An opt-in stage now detects multi-book bundles, multipart sibling folders, and redundant nested folders before normal watch-folder ingestion. Explicit book/volume markers and safe multipart/flatten layouts produce high-confidence plans; ambiguous bundles stay pending unless Skaldleita fingerprints assign every audio file across at least two book identities. Multiple chapter files with the same identity stay grouped together. Shared companion files, symlinks, collisions, and partially identified content block unattended apply.
+- **Complete pre-sort handoff receipts** — Every regular source file is SHA-256 hashed before an operation begins. SQLite stores the exact source/destination mapping, byte size, hash, aggregate digest, verification state, and rollback state. Sources are re-hashed immediately before moving, every destination is verified, and no existing path is overwritten.
+- **Pre-sort review UI** — The new Pre-sort page exposes pending/applied/rejected plans, full inventories, confidence and safety reasoning, Apply, Reject, receipt inspection, and verified Undo. The Dashboard links directly to pending handoffs and Settings controls the opt-in feature, high-confidence auto-apply, fingerprint lookup, and settle time.
+
+### Safety
+- **Rollback and interrupted-operation recovery** — A receipt is committed before the first move and updated after each file. Failures trigger a verified compensating rollback; startup reconciles interrupted operations and refuses to guess when both sides, neither side, or mismatched content make recovery ambiguous.
+- **Scope boundary** — Multipart merge combines folders into one collision-safe folder; it does not concatenate or convert audio into M4B. Pre-sort receipts improve transfer accuracy but do not replace independent filesystem or hardware backups.
+
 ## [0.9.0-beta.161] - 2026-08-25
 
 ### Fixed

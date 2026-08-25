@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+{% block title %}Pre-sort - Library Manager{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+    <div>
+        <h2 class="mb-1"><i class="bi bi-diagram-3"></i> Verified Pre-sort</h2>
+        <p class="text-muted mb-0">Review every proposed file handoff before watch-folder ingestion.</p>
+    </div>
+    <button class="btn btn-primary" id="scan-presort-btn" onclick="scanPresort()" {% if not config.presort_enabled %}disabled{% endif %}>
+        <i class="bi bi-search"></i> Scan Watch Folder
+    </button>
+</div>
+
+{% if not config.presort_enabled %}
+<div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle"></i>
+    Verified Pre-sort is disabled. Enable it under <a href="/settings" class="alert-link">Settings → Library → Watch Folder</a>.
+</div>
+{% endif %}
+
+<div class="row g-3 mb-4">
+    <div class="col-md-4">
+        <div class="card h-100"><div class="card-body py-3">
+            <div class="text-muted small">Awaiting review</div>
+            <div class="fs-3 text-warning" id="pending-count">{{ counts.pending }}</div>
+        </div></div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100"><div class="card-body py-3">
+            <div class="text-muted small">Applied and verified</div>
+            <div class="fs-3 text-success">{{ counts.applied }}</div>
+        </div></div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100"><div class="card-body py-3">
+            <div class="text-muted small">Manual recovery</div>
+            <div class="fs-3 text-danger">{{ counts.errors }}</div>
+        </div></div>
+    </div>
+</div>
+
+<div class="alert alert-info py-2">
+    <i class="bi bi-shield-check"></i>
+    Applying a plan re-hashes every source, refuses collisions, records every source/destination path, and verifies the destination before committing. Failed operations roll back without overwriting either side.
+</div>
+
+<div id="presort-plans">
+{% if plans %}
+    {% for plan in plans %}
+    <div class="card mb-3 presort-plan" data-plan-id="{{ plan.id }}" data-testid="presort-plan-{{ plan.id }}">
+        <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <div>
+                <span class="badge {% if plan.action == 'split' %}bg-primary{% elif plan.action == 'merge' %}bg-success{% else %}bg-info text-dark{% endif %}">
+                    {{ plan.action|title }}
+                </span>
+                <strong class="ms-2">{{ plan.display_name }}</strong>
+                <span class="badge ms-2 {% if plan.confidence == 'high' %}bg-success{% else %}bg-warning text-dark{% endif %}">
+                    {{ plan.confidence|title }} confidence
+                </span>
+            </div>
+            <span class="badge {% if plan.status == 'pending' %}bg-warning text-dark{% elif plan.status == 'applied' %}bg-success{% elif plan.status == 'error' %}bg-danger{% elif plan.status == 'undone' %}bg-secondary{% else %}bg-dark{% endif %}">
+                {{ plan.status|replace('_', ' ')|title }}
+            </span>
+        </div>
+        <div class="card-body">
+            <p class="mb-2">{{ plan.reason }}</p>
+            {% if plan.error_message %}
+            <div class="alert alert-danger py-2 small">{{ plan.error_message }}</div>
+            {% endif %}
+            <div class="small text-muted mb-2">
+                <strong>Sources:</strong>
+                {% for source in plan.source_paths_list %}<code class="d-block text-break">{{ source }}</code>{% endfor %}
+            </div>
+            <button class="btn btn-sm btn-outline-secondary mb-2" type="button" data-bs-toggle="collapse" data-bs-target="#plan-items-{{ plan.id }}">
+                <i class="bi bi-list-check"></i> {{ plan['items']|length }} inventory item{{ '' if plan['items']|length == 1 else 's' }}
+            </button>
+            <div class="collapse" id="plan-items-{{ plan.id }}">
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle mb-3">
+                        <thead><tr><th>Source</th><th>Destination</th><th>Size</th><th>SHA-256</th></tr></thead>
+                        <tbody>
+                        {% for item in plan['items'] %}
+                        <tr class="{% if not item.destination_path %}table-danger{% endif %}">
+                            <td class="text-break"><code>{{ item.source_path }}</code><br><small class="text-muted">{{ item.note }}</small></td>
+                            <td class="text-break">{% if item.destination_path %}<code>{{ item.destination_path }}</code>{% else %}<span class="text-danger">Unassigned — manual correction required</span>{% endif %}</td>
+                            <td>{{ item.size }}</td>
+                            <td><code>{{ item.sha256[:16] ~ '…' if item.sha256 else '—' }}</code></td>
+                        </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+                {% if plan.status == 'pending' and plan.applicable and config.presort_enabled %}
+                <button class="btn btn-sm btn-success" title="Apply verified pre-sort plan" onclick="applyPresort({{ plan.id }})">
+                    <i class="bi bi-check-circle"></i> Apply Plan
+                </button>
+                {% elif plan.status == 'pending' and plan.applicable %}
+                <button class="btn btn-sm btn-outline-secondary" disabled title="Enable Verified Pre-sort in Settings before applying">
+                    <i class="bi bi-lock"></i> Pre-sort Disabled
+                </button>
+                {% elif plan.status == 'pending' %}
+                <button class="btn btn-sm btn-outline-danger" disabled title="Resolve unassigned files manually, then scan again">
+                    <i class="bi bi-hand-index"></i> Manual Correction Needed
+                </button>
+                {% endif %}
+                {% if plan.status == 'pending' %}
+                <button class="btn btn-sm btn-outline-secondary" title="Reject plan without changing files" onclick="rejectPresort({{ plan.id }})">
+                    <i class="bi bi-x-circle"></i> Treat as One Book
+                </button>
+                {% endif %}
+                {% if plan.latest_operation_id %}
+                <button class="btn btn-sm btn-outline-info" title="View pre-sort receipt" onclick="viewPresortReceipt({{ plan.latest_operation_id }})">
+                    <i class="bi bi-receipt"></i> Receipt
+                </button>
+                {% endif %}
+                {% if plan.status == 'applied' and plan.operation_status == 'committed' %}
+                <button class="btn btn-sm btn-outline-warning" title="Undo pre-sort operation" onclick="undoPresort({{ plan.latest_operation_id }})">
+                    <i class="bi bi-arrow-counterclockwise"></i> Undo
+                </button>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+{% else %}
+    <div class="card" id="empty-presort">
+        <div class="card-body text-center py-5">
+            <i class="bi bi-inboxes fs-1 text-muted"></i>
+            <h4 class="mt-3">No pre-sort plans</h4>
+            <p class="text-muted mb-0">Scan the configured watch folder to preview split, merge, and flatten candidates.</p>
+        </div>
+    </div>
+{% endif %}
+</div>
+
+<div class="modal fade" id="presortReceiptModal" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content" style="background: var(--theme-bg-secondary); color: var(--theme-text-primary);">
+            <div class="modal-header" style="border-color: var(--theme-border-primary);">
+                <h5 class="modal-title"><i class="bi bi-shield-check"></i> Verified Pre-sort Receipt</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="presort-receipt-body">
+                <div class="text-muted">Loading receipt…</div>
+            </div>
+            <div class="modal-footer" style="border-color: var(--theme-border-primary);"><button class="btn btn-secondary" data-bs-dismiss="modal">Close</button></div>
+        </div>
+    </div>
+</div>
+
+<script>
+function presortRequest(url, confirmText) {
+    if (confirmText && !confirm(confirmText)) return;
+    fetch(url, {method: 'POST'})
+        .then(async response => ({ok: response.ok, data: await response.json()}))
+        .then(({ok, data}) => {
+            if (!ok || !data.success) throw new Error(data.error || data.message || 'Operation failed');
+            window.location.reload();
+        })
+        .catch(error => alert(error.message));
+}
+
+function scanPresort() {
+    const button = document.getElementById('scan-presort-btn');
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning…';
+    fetch('/api/presort/scan', {method: 'POST'})
+        .then(async response => ({ok: response.ok, data: await response.json()}))
+        .then(({ok, data}) => {
+            if (!ok || !data.success) throw new Error(data.error || 'Scan failed');
+            window.location.reload();
+        })
+        .catch(error => {
+            alert(error.message);
+            button.disabled = false;
+            button.innerHTML = '<i class="bi bi-search"></i> Scan Watch Folder';
+        });
+}
+
+function applyPresort(planId) {
+    presortRequest(`/api/presort/plan/${planId}/apply`, 'Apply this exact file plan? Every source will be re-hashed first.');
+}
+
+function rejectPresort(planId) {
+    presortRequest(`/api/presort/plan/${planId}/reject`, 'Treat this as one book? No files will be changed.');
+}
+
+function undoPresort(operationId) {
+    presortRequest(`/api/presort/operation/${operationId}/undo`, 'Undo this pre-sort handoff? Undo is blocked if downstream processing changed either side.');
+}
+
+function escapePresort(value) {
+    return String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+}
+
+function viewPresortReceipt(operationId) {
+    const body = document.getElementById('presort-receipt-body');
+    body.innerHTML = '<div class="text-muted">Loading receipt…</div>';
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('presortReceiptModal')).show();
+    fetch(`/api/presort/receipt/${operationId}`)
+        .then(response => response.json())
+        .then(data => {
+            if (!data.success) throw new Error(data.error || 'Receipt not found');
+            const op = data.operation;
+            const root = String(op.watch_root || '').replace(/[\\/]+$/, '');
+            const relativePath = value => {
+                const exact = String(value || '');
+                if (root && (exact.startsWith(root + '/') || exact.startsWith(root + '\\'))) {
+                    return exact.slice(root.length + 1);
+                }
+                return exact;
+            };
+            const rows = data.items.map(item => `
+                <tr>
+                    <td>${item.position + 1}</td>
+                    <td class="text-break"><code title="${escapePresort(item.source_path)}">${escapePresort(relativePath(item.source_path))}</code></td>
+                    <td class="text-break"><code title="${escapePresort(item.destination_path)}">${escapePresort(relativePath(item.destination_path))}</code></td>
+                    <td>${item.size}</td>
+                    <td><code title="${escapePresort(item.sha256)}">${escapePresort(String(item.sha256 || '').slice(0, 20))}…</code></td>
+                    <td>${item.source_verified ? '✓' : '—'} / ${item.destination_verified ? '✓' : '—'} / ${item.rollback_verified ? '✓' : '—'}</td>
+                </tr>`).join('');
+            body.innerHTML = `
+                <div class="row g-3 mb-3">
+                    <div class="col-md-2"><small class="text-muted d-block">Receipt</small><strong>#${op.id}</strong></div>
+                    <div class="col-md-2"><small class="text-muted d-block">Action</small><strong>${escapePresort(op.action)}</strong></div>
+                    <div class="col-md-2"><small class="text-muted d-block">Status</small><strong>${escapePresort(op.status)}</strong></div>
+                    <div class="col-md-6"><small class="text-muted d-block">Content digest</small><code class="text-break">${escapePresort(op.source_digest)}</code></div>
+                </div>
+                <div class="small mb-3"><span class="text-muted">Watch root:</span> <code>${escapePresort(root)}</code></div>
+                ${op.error_message ? `<div class="alert alert-danger py-2">${escapePresort(op.error_message)}</div>` : ''}
+                <div class="table-responsive"><table class="table table-sm align-middle" style="table-layout: fixed; font-size: 0.84rem;">
+                    <thead><tr><th style="width: 4%">#</th><th style="width: 25%">Source</th><th style="width: 25%">Destination</th><th style="width: 8%">Size</th><th style="width: 20%">SHA-256</th><th style="width: 18%">Source / Dest / Rollback</th></tr></thead>
+                    <tbody>${rows}</tbody>
+                </table></div>`;
+        })
+        .catch(error => { body.innerHTML = `<div class="alert alert-danger">${escapePresort(error.message)}</div>`; });
+}
+</script>
+{% endblock %}
