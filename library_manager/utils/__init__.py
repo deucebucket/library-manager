@@ -24,6 +24,7 @@ from library_manager.utils.audio import (
     get_first_audio_file,
     extract_audio_sample,
     extract_audio_sample_from_middle,
+    build_limited_ffmpeg_command,
     find_audio_files,
     find_ebook_files,
 )
@@ -54,6 +55,7 @@ __all__ = [
     'get_first_audio_file',
     'extract_audio_sample',
     'extract_audio_sample_from_middle',
+    'build_limited_ffmpeg_command',
     'find_audio_files',
     'find_ebook_files',
     # path_safety
