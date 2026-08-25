@@ -8,9 +8,8 @@ disk, so we can surface:
 
 This mirrors abs_client.py (the Audiobookshelf client) for the video side.
 
-Reads the LIVE database read-only with immutable=1 — SQLite serves concurrent
-readers in WAL mode, so we never copy (copying a live WAL db corrupts the
-snapshot) and never write.
+Reads the live database in SQLite read-only/query-only mode.  The reader stays aware of
+the live WAL so it sees one consistent current snapshot without copying or writing it.
 """
 from __future__ import annotations
 import os
@@ -56,8 +55,10 @@ class PlexDB:
         self.db_path = db_path or _DEFAULT_DB
 
     def _connect(self):
-        uri = "file:" + urllib.parse.quote(self.db_path.replace("\\", "/")) + "?mode=ro&immutable=1"
-        return sqlite3.connect(uri, uri=True)
+        uri = "file:" + urllib.parse.quote(self.db_path.replace("\\", "/")) + "?mode=ro"
+        connection = sqlite3.connect(uri, uri=True)
+        connection.execute("PRAGMA query_only=ON")
+        return connection
 
     def available(self) -> bool:
         if not os.path.exists(self.db_path):

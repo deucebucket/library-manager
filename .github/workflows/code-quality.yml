@@ -64,6 +64,7 @@ jobs:
           python test-env/test-video-organize.py
           python test-env/test-video-adapters.py
           python test-env/test-video-organization-service.py
+          python test-env/test-video-api.py
           python test-env/test-music-inspection.py
           python test-env/test-read-only-service.py
 

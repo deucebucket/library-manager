@@ -54,6 +54,15 @@ check("stranded.count", len(r.stranded), 1)
 check("stranded.is_e03", os.path.normcase(paths[3]) in r.stranded, True)
 check("phantom.count", len(r.phantom), 1)
 
+# A live Plex database uses WAL. Keep the writer open after commit so the new row
+# remains in the WAL; the read-only client must see that current snapshot.
+writer = sqlite3.connect(dbp)
+writer.execute("PRAGMA journal_mode=WAL")
+writer.execute("INSERT INTO library_sections VALUES (3,'Movies',1)")
+writer.commit()
+check("live_wal_visible", sorted(section.id for section in db.sections()), [2, 3])
+writer.close()
+
 # cleanup
 import shutil
 shutil.rmtree(tmp, ignore_errors=True)

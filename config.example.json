@@ -1,5 +1,8 @@
 {
   "library_paths": ["/path/to/your/audiobooks"],
+  "movie_manager_enabled": false,
+  "tv_manager_enabled": false,
+  "plex_db_path": "",
   "ai_provider": "gemini",
   "gemini_model": "",
   "openrouter_model": "",

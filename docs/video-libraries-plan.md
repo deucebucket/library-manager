@@ -47,11 +47,15 @@ identify → verify → rename/approve → undo → history) and automation API.
    apply service accepts only a canonical HMAC-bound, one-use approval plan using configured
    opaque root/library IDs; see `docs/video-organization-api.md`. Live adapter acceptance
    remains to complete this phase.
-5. **Modular UI + API** — toggleable TV/Movie tabs; `/api/plex/*` mirroring the
-   `/api/abs/*` set; per-manager trust settings in config.
+5. **Modular UI + API** — the first review-only slice is implemented as a separate Flask
+   blueprint: independently toggleable Movie/TV managers, `/api/plex/status`, enabled
+   sections, exact-section reconciliation, and a responsive dashboard. Findings are
+   bounded and relative to their configured Plex section; the blueprint receives neither
+   the organization capability secret nor a move verb. Review/apply handoff and
+   per-manager progressive trust remain.
 
 ## Status
 - Branch: `feature/video-libraries`
 - Done: phase 1 (naming) + phase 2 (TMDb identify, ffprobe, identify orchestration) + phase 3 (Plex reconcile, file-level).
-- Next: finish phase 4 live adapter acceptance, then phase 5 (modular UI
-  tabs + `/api/plex/*`).
+- Next: finish phase 4 live adapter acceptance, then bind reviewed plans to the phase-5
+  one-use approval handoff and add per-manager progressive trust.

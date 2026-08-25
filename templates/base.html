@@ -58,6 +58,13 @@
                             <i class="bi bi-headphones"></i> {{ _('ABS') }}
                         </a>
                     </li>
+                    {% if config.movie_manager_enabled or config.tv_manager_enabled %}
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.path == '/video' %}active{% endif %}" href="/video">
+                            <i class="bi bi-film"></i> {{ _('Video') }}
+                        </a>
+                    </li>
+                    {% endif %}
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/settings' %}active{% endif %}" href="/settings">
                             <i class="bi bi-gear"></i> {{ _('Settings') }}

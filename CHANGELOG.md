@@ -2,6 +2,17 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.165] - 2026-08-25
+
+### Added
+- **Modular Video dashboard** — Movies and TV are independently opt-in. A separate Flask
+  blueprint lists only enabled Plex sections and renders responsive stranded/phantom
+  reconciliation without receiving the organization service's signing secret or a file
+  mutation verb.
+- **Read-only Plex reconciliation API** — Versioned status, section, and exact-section
+  result endpoints expose bounded relative findings instead of configured host roots.
+  Disabled managers cannot query their section type and mutation methods remain absent.
+
 ## [0.9.0-beta.164] - 2026-08-25
 
 ### Added

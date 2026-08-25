@@ -471,6 +471,31 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Video Managers -->
+                    <div class="card mb-3">
+                        <div class="card-header py-2">
+                            <i class="bi bi-film"></i> Video Libraries
+                            <span class="badge bg-info float-end">BETA</span>
+                        </div>
+                        <div class="card-body">
+                            <p class="small text-muted">Enable only the managers you use. This surface reconciles Plex with disk and has no file-move capability.</p>
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" name="movie_manager_enabled" id="movie_manager_enabled"
+                                       {% if config.movie_manager_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="movie_manager_enabled"><strong>Enable Movies</strong></label>
+                            </div>
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" name="tv_manager_enabled" id="tv_manager_enabled"
+                                       {% if config.tv_manager_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="tv_manager_enabled"><strong>Enable TV</strong></label>
+                            </div>
+                            <label class="form-label" for="plex_db_path">Plex database path</label>
+                            <input class="form-control bg-dark text-light font-monospace" type="text" name="plex_db_path" id="plex_db_path"
+                                   value="{{ config.plex_db_path or '' }}" placeholder="/path/to/com.plexapp.plugins.library.db">
+                            <small class="text-muted">Absolute path; opened read-only. Configure the container mount before enabling a manager.</small>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

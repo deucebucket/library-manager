@@ -81,6 +81,7 @@ test-output/
 # Generated UI screenshots at repo root
 *-full.png
 *-mobile.png
+!docs/images/*-mobile.png
 wizard-step*.png
 abs-full.png
 plugins-*.png
