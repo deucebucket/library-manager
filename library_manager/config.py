@@ -61,6 +61,10 @@ SECRETS_PATH = DATA_DIR / 'secrets.json'
 
 DEFAULT_CONFIG = {
     "library_paths": [],  # Empty by default - user configures via Settings
+    "music_library_roots": [],  # [{"id": opaque stable name, "path": configured root}]
+    "movie_manager_enabled": False,  # Show the read-only Movie reconciliation manager
+    "tv_manager_enabled": False,  # Show the read-only TV reconciliation manager
+    "plex_db_path": "",  # Absolute path to a read-only Plex SQLite catalogue
     "ai_provider": "gemini",  # Primary text AI provider
     "openrouter_model": "",  # Populated from OpenRouter's live model list in Settings
     "gemini_model": "",  # Populated from Gemini's live model list in Settings

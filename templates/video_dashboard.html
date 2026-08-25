@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Video Libraries - Library Manager{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+    <div>
+        <h2 class="mb-1"><i class="bi bi-film"></i> Video Libraries</h2>
+        <p class="text-muted mb-0">Read-only Plex reconciliation for enabled managers.</p>
+    </div>
+    <span id="video-status" class="badge bg-secondary">Checking Plex…</span>
+</div>
+
+{% if not managers.movies and not managers.tv %}
+<div class="alert alert-info">
+    <h5><i class="bi bi-toggles"></i> Video managers are off</h5>
+    <p class="mb-2">Enable Movies or TV in Settings, then configure a read-only Plex database path.</p>
+    <a class="btn btn-sm btn-outline-info" href="/settings"><i class="bi bi-gear"></i> Open Settings</a>
+</div>
+{% else %}
+<div class="alert alert-dark border-info">
+    <strong><i class="bi bi-shield-lock"></i> Review only.</strong>
+    This dashboard can compare Plex with disk. It has no move capability and never receives the organization signing secret.
+</div>
+
+<ul class="nav nav-tabs mb-3" id="video-manager-tabs" role="tablist">
+    {% if managers.movies %}
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" type="button" data-manager="movie">
+            <i class="bi bi-camera-reels"></i> Movies
+        </button>
+    </li>
+    {% endif %}
+    {% if managers.tv %}
+    <li class="nav-item" role="presentation">
+        <button class="nav-link {% if not managers.movies %}active{% endif %}" type="button" data-manager="show">
+            <i class="bi bi-tv"></i> TV
+        </button>
+    </li>
+    {% endif %}
+</ul>
+
+<div class="row g-3">
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-collection-play"></i> Plex sections</div>
+            <div class="card-body">
+                <div id="video-sections" class="list-group list-group-flush">
+                    <span class="text-muted">Loading configured sections…</span>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-8">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-clipboard-data"></i> Reconciliation</span>
+                <span id="video-section-kind" class="badge bg-secondary">No section selected</span>
+            </div>
+            <div class="card-body" id="video-results">
+                <p class="text-muted mb-0">Choose a section to compare Plex's index with disk.</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if managers.movies or managers.tv %}
+<script>
+(function () {
+    'use strict';
+    var activeType = document.querySelector('#video-manager-tabs .nav-link.active').dataset.manager;
+    var sections = [];
+
+    function textElement(tag, className, value) {
+        var node = document.createElement(tag);
+        node.className = className;
+        node.textContent = value;
+        return node;
+    }
+
+    function setStatus(ready, message) {
+        var badge = document.getElementById('video-status');
+        badge.className = 'badge ' + (ready ? 'bg-success' : 'bg-warning text-dark');
+        badge.textContent = message;
+    }
+
+    function renderSections() {
+        var host = document.getElementById('video-sections');
+        host.replaceChildren();
+        var visible = sections.filter(function (item) { return item.type === activeType; });
+        if (!visible.length) {
+            host.appendChild(textElement('span', 'text-muted', 'No enabled Plex section of this type.'));
+            return;
+        }
+        visible.forEach(function (item) {
+            var button = textElement('button', 'list-group-item list-group-item-action bg-transparent text-light', item.name);
+            button.type = 'button';
+            button.addEventListener('click', function () { reconcile(item); });
+            host.appendChild(button);
+        });
+    }
+
+    function findingColumn(title, count, values, badgeClass) {
+        var col = document.createElement('div');
+        col.className = 'col-md-6';
+        var heading = textElement('h5', '', title + ' ');
+        heading.appendChild(textElement('span', 'badge ' + badgeClass, String(count)));
+        col.appendChild(heading);
+        var list = document.createElement('ul');
+        list.className = 'list-group list-group-flush small';
+        if (!values.length) list.appendChild(textElement('li', 'list-group-item bg-transparent text-muted', 'None'));
+        values.forEach(function (value) {
+            list.appendChild(textElement('li', 'list-group-item bg-transparent text-light font-monospace', value));
+        });
+        col.appendChild(list);
+        return col;
+    }
+
+    function reconcile(section) {
+        var host = document.getElementById('video-results');
+        host.replaceChildren(textElement('p', 'text-muted mb-0', 'Scanning section…'));
+        fetch('/api/plex/reconcile/' + encodeURIComponent(section.id))
+            .then(function (response) { return response.json().then(function (body) { return [response.ok, body]; }); })
+            .then(function (result) {
+                if (!result[0]) throw new Error(result[1].error_code || 'reconciliation_unavailable');
+                var body = result[1];
+                document.getElementById('video-section-kind').textContent = body.section.type === 'movie' ? 'Movies' : 'TV';
+                host.replaceChildren();
+                var summary = textElement('p', 'mb-3', 'Plex indexed ' + body.counts.indexed + ' files; disk contains ' + body.counts.on_disk + '.');
+                host.appendChild(summary);
+                var row = document.createElement('div');
+                row.className = 'row g-3';
+                row.appendChild(findingColumn('Stranded', body.counts.stranded, body.findings.stranded, 'bg-warning text-dark'));
+                row.appendChild(findingColumn('Phantom', body.counts.phantom, body.findings.phantom, 'bg-danger'));
+                host.appendChild(row);
+                if (body.truncated) host.appendChild(textElement('p', 'text-warning mt-3 mb-0', 'Showing the first 500 findings in each category.'));
+            })
+            .catch(function (error) {
+                host.replaceChildren(textElement('div', 'alert alert-warning mb-0', 'Reconciliation unavailable: ' + error.message));
+            });
+    }
+
+    document.querySelectorAll('#video-manager-tabs .nav-link').forEach(function (tab) {
+        tab.addEventListener('click', function () {
+            document.querySelectorAll('#video-manager-tabs .nav-link').forEach(function (item) { item.classList.remove('active'); });
+            tab.classList.add('active');
+            activeType = tab.dataset.manager;
+            renderSections();
+        });
+    });
+
+    fetch('/api/plex/status').then(function (response) { return response.json(); }).then(function (status) {
+        setStatus(status.database_available, status.database_available ? 'Plex ready' : 'Plex unavailable');
+    }).catch(function () { setStatus(false, 'Plex unavailable'); });
+    fetch('/api/plex/sections').then(function (response) { return response.json().then(function (body) { return [response.ok, body]; }); }).then(function (result) {
+        if (!result[0]) throw new Error(result[1].error_code || 'sections_unavailable');
+        sections = result[1].sections;
+        renderSections();
+    }).catch(function (error) {
+        document.getElementById('video-sections').replaceChildren(textElement('div', 'alert alert-warning mb-0', 'Sections unavailable: ' + error.message));
+    });
+}());
+</script>
+{% endif %}
+{% endblock %}

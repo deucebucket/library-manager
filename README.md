@@ -122,6 +122,19 @@ Each plan is a literal handoff inventory: exact source and destination paths, by
 ![Committed pre-sort receipt](docs/images/presort-committed-receipt.png)
 ![Verified pre-sort rollback](docs/images/presort-rollback-receipt.png)
 
+### Video Reconciliation (Beta)
+
+Movies and TV can be enabled independently. The read-only Video dashboard compares an
+existing Plex SQLite catalogue with disk and reports stranded files (on disk but not
+indexed) and phantom files (indexed but absent). Browser results use section-relative
+paths; this dashboard has no move capability and never receives the separate organization
+service's signing secret.
+
+Synthetic fixture shown at desktop and mobile widths:
+
+![Video reconciliation desktop](docs/images/video-reconciliation-web.png)
+![Video reconciliation mobile](docs/images/video-reconciliation-mobile.png)
+
 ### Series Grouping (Audiobookshelf-Compatible)
 ```
 Brandon Sanderson/Mistborn/1 - The Final Empire/

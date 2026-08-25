@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama, OpenAI-compatible APIs)
 """
 
-APP_VERSION = "0.9.0-beta.163"
+APP_VERSION = "0.9.0-beta.166"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -39,6 +39,8 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file, session
+from library_manager.music.api import music_api_bp
+from library_manager.video.api import video_api_bp
 from flask_babel import Babel, gettext as _, lazy_gettext as _l
 from audio_tagging import embed_tags_for_path, build_metadata_for_embedding
 
@@ -595,6 +597,9 @@ app = Flask(__name__)
 app.secret_key = 'library-manager-secret-key-2024'
 app.register_blueprint(hooks_bp)
 app.register_blueprint(plugins_bp)
+app.register_blueprint(music_api_bp)
+app.register_blueprint(video_api_bp)
+app.extensions["video_worker_status"] = lambda: is_worker_running()
 
 # ============== INTERNATIONALIZATION (i18n) ==============
 # Flask-Babel for UI translations - book metadata (author/title) is NOT translated
@@ -7887,6 +7892,13 @@ def settings_page():
         config['series_grouping'] = 'series_grouping' in request.form
         config['ebook_management'] = 'ebook_management' in request.form
         config['ebook_library_mode'] = request.form.get('ebook_library_mode', 'merge')
+        config['movie_manager_enabled'] = 'movie_manager_enabled' in request.form
+        config['tv_manager_enabled'] = 'tv_manager_enabled' in request.form
+        plex_db_path = request.form.get('plex_db_path', '').strip()
+        if not plex_db_path or os.path.isabs(plex_db_path):
+            config['plex_db_path'] = plex_db_path
+        else:
+            logger.warning("Ignoring relative Plex database path from Settings")
         # Verification layer settings (added beta.43)
         config['enable_api_lookups'] = 'enable_api_lookups' in request.form
         config['enable_isbn_lookup'] = 'enable_isbn_lookup' in request.form

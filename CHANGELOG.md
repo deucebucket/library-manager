@@ -2,6 +2,47 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.166] - 2026-08-25
+
+### Fixed
+- **Runtime ffprobe discovery** — A missing executable is no longer cached permanently;
+  long-running installs detect ffprobe after a package install or tool-volume mount while
+  continuing to cache a discovered path.
+- **Neutral out-of-section finding** — Plex reconciliation uses `[path unavailable]` for
+  any finding outside its configured section roots and never confirms a host-root
+  relationship to the browser.
+
+## [0.9.0-beta.165] - 2026-08-25
+
+### Added
+- **Modular Video dashboard** — Movies and TV are independently opt-in. A separate Flask
+  blueprint lists only enabled Plex sections and renders responsive stranded/phantom
+  reconciliation without receiving the organization service's signing secret or a file
+  mutation verb.
+- **Read-only Plex reconciliation API** — Versioned status, section, and exact-section
+  result endpoints expose bounded relative findings instead of configured host roots.
+  Disabled managers cannot query their section type and mutation methods remain absent.
+
+## [0.9.0-beta.164] - 2026-08-25
+
+### Added
+- **Video organization coordinator** — Approved movie-length movie moves now have a
+  provider-neutral phase-4 core that requires authoritative idle evidence, requests file
+  movement through the catalogue adapter, independently verifies the destination and
+  exact media-server identity, records a title/path-free receipt, blocks duplicate active
+  operations and approval reuse, and performs a verified provider rollback on failed
+  postconditions.
+- **Capability-bound video adapters** — Narrow Radarr/Jellyfin adapters and a loopback-only
+  service accept one canonical HMAC-signed plan using configured opaque root/library IDs.
+  Radarr receives `moveFiles=true`; commit requires exact root/file readback plus one exact
+  provider identity in the intended Jellyfin library. Credentials and adapter exception
+  prose never enter the mode-0600 digest-only receipt. Live adapter acceptance remains.
+
+### Fixed
+- **Bounded Docker build context** — Production image builds exclude `test-env/`, so the
+  integration harness's generated multi-gigabyte chaos library is mounted only at runtime
+  instead of being copied into the build context.
+
 ## [0.9.0-beta.163] - 2026-08-25
 
 ### Fixed

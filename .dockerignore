@@ -56,6 +56,7 @@ secrets.example.json
 Thumbs.db
 
 # Test files
+test-env/
 tests/
 test_*.py
 *_test.py
