@@ -76,6 +76,7 @@ with tempfile.TemporaryDirectory(prefix="lm-video-api-") as directory:
     }
     encoded = json.dumps(body)
     assert directory not in encoded
+    assert video_api._relative_path("/another/root/private.mkv", ["/media"]) == "[path unavailable]"
 
     assert client.get("/api/plex/reconcile/2").status_code == 409
     assert client.post("/api/plex/reconcile/1").status_code == 405

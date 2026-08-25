@@ -2,6 +2,16 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.166] - 2026-08-25
+
+### Fixed
+- **Runtime ffprobe discovery** — A missing executable is no longer cached permanently;
+  long-running installs detect ffprobe after a package install or tool-volume mount while
+  continuing to cache a discovered path.
+- **Neutral out-of-section finding** — Plex reconciliation uses `[path unavailable]` for
+  any finding outside its configured section roots and never confirms a host-root
+  relationship to the browser.
+
 ## [0.9.0-beta.165] - 2026-08-25
 
 ### Added

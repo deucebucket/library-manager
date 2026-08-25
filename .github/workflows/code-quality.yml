@@ -60,6 +60,7 @@ jobs:
           python test-env/test-ai-provider-integration.py
           python test-env/test-video-naming.py
           python test-env/test-video-identify.py
+          python test-env/test-video-ffprobe-path.py
           python test-env/test-plex-client.py
           python test-env/test-video-organize.py
           python test-env/test-video-adapters.py

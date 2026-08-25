@@ -47,7 +47,7 @@ def _relative_path(path: str, roots: list[str]) -> str:
             continue
         if relative != os.pardir and not relative.startswith(os.pardir + os.sep):
             return Path(relative).as_posix()
-    return "[outside configured section]"
+    return "[path unavailable]"
 
 
 def _error(code: str, status: int):

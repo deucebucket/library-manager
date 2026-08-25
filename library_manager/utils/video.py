@@ -33,8 +33,12 @@ def ffprobe_path() -> Optional[str]:
             if os.path.exists(p):
                 cand = p
                 break
-    _FFPROBE = cand or ""
-    return _FFPROBE or None
+    # Cache only a discovered executable. A long-running install can gain ffprobe
+    # later (package install or remounted tool volume); a negative probe must not
+    # make that absence permanent until process restart.
+    if cand:
+        _FFPROBE = cand
+    return cand
 
 
 def _res_label(h: int, w: int) -> Optional[str]:

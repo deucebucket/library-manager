@@ -69,7 +69,7 @@ with tempfile.TemporaryDirectory(prefix="lm-video-e2e-") as directory:
 
     @app.get("/api/version")
     def version():
-        return jsonify({"version": "0.9.0-beta.165"})
+        return jsonify({"version": "0.9.0-beta.166"})
 
     @app.get("/api/check_update")
     def check_update():
