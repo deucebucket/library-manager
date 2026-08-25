@@ -2,6 +2,14 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.163] - 2026-08-25
+
+### Fixed
+- **#303: Bounded ffmpeg audio probes** — Audio validation, intro extraction, fingerprinting, and voice-embedding ffmpeg commands now run with a 2 GiB per-process address-space ceiling on POSIX hosts, cap individual ffmpeg allocations, disable non-audio streams, and explicitly select the first audio stream. Pathological media now fails the probe instead of exhausting host memory.
+
+### Operations
+- **Systemd memory containment** — The documented service and checked-in drop-in apply `MemoryHigh=2G`, `MemoryMax=4G`, `MemorySwapMax=1G`, and `OOMPolicy=continue`, containing oversized audio children while keeping the web process available. Operators using deliberately large local models can raise the values explicitly.
+
 ## [0.9.0-beta.162] - 2026-08-25
 
 ### Added

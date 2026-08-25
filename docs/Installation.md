@@ -64,12 +64,25 @@ ExecStart=/usr/bin/python3 app.py
 Restart=always
 RestartSec=10
 
+# Bound the app and all ffmpeg children. Raise these values if an explicitly
+# configured local model needs more memory.
+MemoryHigh=2G
+MemoryMax=4G
+MemorySwapMax=1G
+OOMPolicy=continue
+
 [Install]
 WantedBy=multi-user.target
 EOF
 
 sudo systemctl enable --now library-manager
 ```
+
+The same memory settings are available as the checked-in
+`systemd/library-manager-memory.conf` drop-in. Audio probes also default to a
+2 GiB per-process address-space ceiling. Set
+`LIBRARY_MANAGER_FFMPEG_MEMORY_MB` in the service environment only when a
+verified workload requires a different value.
 
 ### Check Status
 

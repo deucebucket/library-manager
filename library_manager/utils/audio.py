@@ -3,6 +3,7 @@ import os
 import re
 import glob
 import subprocess
+import sys
 import tempfile
 import logging
 
@@ -11,6 +12,40 @@ logger = logging.getLogger(__name__)
 # File extension constants
 AUDIO_EXTENSIONS = {'.m4b', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.wma', '.aac'}
 EBOOK_EXTENSIONS = {'.epub', '.pdf', '.mobi', '.azw3'}
+
+try:
+    FFMPEG_MEMORY_LIMIT_MB = max(
+        256,
+        int(os.environ.get('LIBRARY_MANAGER_FFMPEG_MEMORY_MB', '2048')),
+    )
+except ValueError:
+    logger.warning(
+        "Invalid LIBRARY_MANAGER_FFMPEG_MEMORY_MB; using the 2048 MiB default"
+    )
+    FFMPEG_MEMORY_LIMIT_MB = 2048
+FFMPEG_MAX_SINGLE_ALLOCATION_BYTES = 256 * 1024 * 1024
+
+
+def build_limited_ffmpeg_command(args, memory_limit_mb=None):
+    """Build an ffmpeg command with a process memory ceiling.
+
+    The small Python launcher applies RLIMIT_AS and then replaces itself with
+    ffmpeg, so threaded callers avoid the unsafe ``preexec_fn`` path. Windows
+    keeps the per-allocation cap but relies on its container/service limits.
+    """
+    limit_mb = memory_limit_mb or FFMPEG_MEMORY_LIMIT_MB
+    ffmpeg_command = [
+        'ffmpeg', '-nostdin', '-hide_banner',
+        '-max_alloc', str(FFMPEG_MAX_SINGLE_ALLOCATION_BYTES),
+        '-threads', '2', '-filter_threads', '2', '-filter_complex_threads', '2',
+        *args,
+    ]
+    if os.name != 'posix':
+        return ffmpeg_command
+    return [
+        sys.executable, '-m', 'library_manager.resource_limited_exec',
+        '--memory-mb', str(limit_mb), '--', *ffmpeg_command,
+    ]
 
 
 def get_first_audio_file(folder_path):
@@ -50,17 +85,19 @@ def extract_audio_sample(audio_file, duration_seconds=90, output_format='mp3'):
         temp_file.close()
 
         # Use ffmpeg to extract sample
-        cmd = [
-            'ffmpeg', '-y',
+        cmd = build_limited_ffmpeg_command([
+            '-y',
             '-i', audio_file,
             '-t', str(duration_seconds),  # Duration
             '-vn',  # No video
+            '-sn', '-dn',
+            '-map', '0:a:0',
             '-acodec', 'libmp3lame' if output_format == 'mp3' else 'aac',
             '-b:a', '64k',  # Low bitrate for smaller file
             '-ar', '16000',  # 16kHz sample rate (good for speech)
             '-ac', '1',  # Mono
             temp_path
-        ]
+        ])
 
         result = subprocess.run(cmd, capture_output=True, timeout=60)
 
@@ -114,18 +151,20 @@ def extract_audio_sample_from_middle(audio_file, duration_seconds=60, output_for
         temp_file.close()
 
         # Extract sample from middle
-        cmd = [
-            'ffmpeg', '-y',
+        cmd = build_limited_ffmpeg_command([
+            '-y',
             '-ss', str(start_time),  # Start position
             '-i', audio_file,
             '-t', str(duration_seconds),  # Duration
             '-vn',  # No video
+            '-sn', '-dn',
+            '-map', '0:a:0',
             '-acodec', 'libmp3lame' if output_format == 'mp3' else 'aac',
             '-b:a', '64k',  # Low bitrate for smaller file
             '-ar', '16000',  # 16kHz sample rate
             '-ac', '1',  # Mono
             temp_path
-        ]
+        ])
 
         result = subprocess.run(cmd, capture_output=True, timeout=60)
 
@@ -173,6 +212,7 @@ __all__ = [
     'get_first_audio_file',
     'extract_audio_sample',
     'extract_audio_sample_from_middle',
+    'build_limited_ffmpeg_command',
     'find_audio_files',
     'find_ebook_files',
 ]

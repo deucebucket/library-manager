@@ -12,6 +12,8 @@ import logging
 from pathlib import Path
 from typing import Tuple, Optional, Dict, Any, List, Callable
 
+from library_manager.utils.audio import build_limited_ffmpeg_command
+
 logger = logging.getLogger(__name__)
 
 # Minimum requirements for a valid audiobook
@@ -162,12 +164,13 @@ def can_seek_to_end(path: str) -> bool:
     """Check if we can read the last 10 seconds of the file."""
     try:
         result = subprocess.run(
-            [
-                'ffmpeg', '-v', 'error',
+            build_limited_ffmpeg_command([
+                '-v', 'error',
                 '-sseof', '-10',  # Seek to 10 seconds before end
                 '-i', path,
+                '-map', '0:a:0', '-vn', '-sn', '-dn',
                 '-f', 'null', '-'
-            ],
+            ]),
             capture_output=True,
             timeout=FFPROBE_TIMEOUT
         )

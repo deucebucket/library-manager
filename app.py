@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama, OpenAI-compatible APIs)
 """
 
-APP_VERSION = "0.9.0-beta.162"
+APP_VERSION = "0.9.0-beta.163"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -74,7 +74,7 @@ from library_manager.utils import (
     # audio
     AUDIO_EXTENSIONS, EBOOK_EXTENSIONS,
     get_first_audio_file, extract_audio_sample, extract_audio_sample_from_middle,
-    find_audio_files, find_ebook_files,
+    find_audio_files, find_ebook_files, build_limited_ffmpeg_command,
     # path_safety
     sanitize_path_component, build_new_path,
 )
@@ -3878,12 +3878,13 @@ def transcribe_audio_clip(file_path, duration_seconds=30):
                 tmp_path = tmp.name
 
             # Extract 30 seconds starting at 60 seconds in (skip intro)
-            subprocess.run([
-                'ffmpeg', '-y', '-i', str(file_path),
+            subprocess.run(build_limited_ffmpeg_command([
+                '-y', '-i', str(file_path),
                 '-ss', '60', '-t', str(duration_seconds),
+                '-map', '0:a:0', '-vn', '-sn', '-dn',
                 '-acodec', 'libmp3lame', '-ar', '16000',
                 tmp_path
-            ], capture_output=True, timeout=30)
+            ]), capture_output=True, timeout=30)
 
             # Send to Whisper API
             with open(tmp_path, 'rb') as audio_file:
@@ -6047,14 +6048,15 @@ def transcribe_audio_intro(file_path, duration_seconds=45):
 
             # Use -ss BEFORE -i for fast input seeking
             # Keep 22050Hz stereo for better quality than 16kHz mono
-            result = subprocess.run([
-                'ffmpeg', '-y',
+            result = subprocess.run(build_limited_ffmpeg_command([
+                '-y',
                 '-ss', '0',  # Fast seek to start
                 '-i', str(file_path),
                 '-t', str(duration_seconds),  # Extract only this duration
+                '-map', '0:a:0', '-vn', '-sn', '-dn',
                 '-acodec', 'libmp3lame', '-ar', '22050', '-ab', '128k',
                 tmp_path
-            ], capture_output=True, timeout=120)  # 120s for large m4b files with moov at end
+            ]), capture_output=True, timeout=120)  # 120s for large m4b files with moov at end
 
             if result.returncode == 0:
                 # Build initial prompt from folder hints to help with proper noun spelling
@@ -6118,14 +6120,15 @@ def transcribe_audio_intro(file_path, duration_seconds=45):
                 tmp_path = tmp.name
 
             # Use -ss BEFORE -i for fast input seeking
-            subprocess.run([
-                'ffmpeg', '-y',
+            subprocess.run(build_limited_ffmpeg_command([
+                '-y',
                 '-ss', '0',
                 '-i', str(file_path),
                 '-t', str(duration_seconds),
+                '-map', '0:a:0', '-vn', '-sn', '-dn',
                 '-acodec', 'libmp3lame', '-ar', '16000', '-ac', '1',
                 tmp_path
-            ], capture_output=True, timeout=120)  # 120s for large m4b files
+            ]), capture_output=True, timeout=120)  # 120s for large m4b files
 
             with open(tmp_path, 'rb') as audio_file:
                 response = requests.post(
@@ -6154,14 +6157,15 @@ def transcribe_audio_intro(file_path, duration_seconds=45):
                 tmp_path = tmp.name
 
             # Use -ss BEFORE -i for fast input seeking
-            result = subprocess.run([
-                'ffmpeg', '-y',
+            result = subprocess.run(build_limited_ffmpeg_command([
+                '-y',
                 '-ss', '0',
                 '-i', str(file_path),
                 '-t', str(duration_seconds),
+                '-map', '0:a:0', '-vn', '-sn', '-dn',
                 '-acodec', 'libmp3lame', '-ar', '16000', '-ac', '1',
                 tmp_path
-            ], capture_output=True, timeout=120)  # 120s for large m4b files
+            ]), capture_output=True, timeout=120)  # 120s for large m4b files
 
             if result.returncode == 0 and os.path.exists(tmp_path):
                 # Read audio file and encode as base64
