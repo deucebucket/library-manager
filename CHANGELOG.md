@@ -2,6 +2,21 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## Unreleased
+
+### Added
+- **Video organization coordinator** — Approved movie-length movie moves now have a
+  provider-neutral phase-4 core that requires authoritative idle evidence, requests file
+  movement through the catalogue adapter, independently verifies the destination and
+  exact media-server identity, records a title/path-free receipt, blocks duplicate active
+  operations, and performs a verified provider rollback on failed postconditions. Product
+  adapters and the review/apply API remain separate follow-up work.
+
+### Fixed
+- **Bounded Docker build context** — Production image builds exclude `test-env/`, so the
+  integration harness's generated multi-gigabyte chaos library is mounted only at runtime
+  instead of being copied into the build context.
+
 ## [0.9.0-beta.163] - 2026-08-25
 
 ### Fixed

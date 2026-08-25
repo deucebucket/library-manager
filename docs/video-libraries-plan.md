@@ -37,11 +37,17 @@ identify → verify → rename/approve → undo → history) and automation API.
 3. **Reconcile** — `plex_client.py` (read Plex SQLite → file index) + disk index;
    surface stranded/phantom/split/orphan as scan findings with the audit logic.
 4. **Organize** — rename/move into the chosen server preset, through the existing
-   approval/undo/history + drastic-change gate; per-media-type trust setting.
+   approval/undo/history + drastic-change gate; per-media-type trust setting. The
+   provider-neutral root-move coordinator is implemented in `video/organize.py`: it
+   requires authoritative idle evidence and approval, sets `move_files=true`, verifies
+   the catalogue destination plus exact media-server identity, records no titles/paths,
+   and performs a verified provider rollback on a failed postcondition. Product adapters
+   and the review/apply API remain to complete this phase.
 5. **Modular UI + API** — toggleable TV/Movie tabs; `/api/plex/*` mirroring the
    `/api/abs/*` set; per-manager trust settings in config.
 
 ## Status
 - Branch: `feature/video-libraries`
 - Done: phase 1 (naming) + phase 2 (TMDb identify, ffprobe, identify orchestration) + phase 3 (Plex reconcile, file-level).
-- Next: phase 4 (organize/rename via approval+undo) then phase 5 (modular UI tabs + /api/plex/*).
+- Next: finish phase 4 product adapters and review/apply API, then phase 5 (modular UI
+  tabs + `/api/plex/*`).
