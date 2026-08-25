@@ -66,8 +66,8 @@ services:
 # 5. In Settings, set your library path to: /audiobooks
 #    (This is the path INSIDE the container, not your host path!)
 #
-# 6. Add your API key (Gemini recommended - free 14,400 calls/day)
-#    Get one at: https://aistudio.google.com
+# 6. Configure your selected AI provider in Settings.
+#    Hosted-provider credentials and limits vary by provider/account.
 #
 # =============================================================
 #  MULTIPLE LIBRARIES? Add more volume mounts:

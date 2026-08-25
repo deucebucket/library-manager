@@ -8,7 +8,7 @@ git clone https://github.com/deucebucket/library-manager.git
 cd library-manager
 
 # Install dependencies
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 
 # Run
 python app.py
@@ -25,24 +25,24 @@ git clone https://github.com/deucebucket/library-manager.git
 cd library-manager
 
 # Edit docker-compose.yml with your audiobook path
-docker-compose up -d
+docker compose up -d
 ```
 
 ## Requirements
 
-- Python 3.8+ (for direct install)
+- Python 3.9+ (for direct install; the current Docker image uses Python 3.11)
 - Docker (for containerized install)
-- For hosted AI, an API key from either:
-  - [Google AI Studio](https://aistudio.google.com) (Gemini - recommended, 14,400 free calls/day)
+- For hosted AI, credentials for the selected provider when required:
+  - [Google AI Studio](https://aistudio.google.com) (Gemini)
   - [OpenRouter](https://openrouter.ai) (multiple models available)
-- Or a reachable Ollama, llama.cpp, or OpenAI-compatible server (no key required unless you configured one)
+- Or a reachable Ollama, llama.cpp, or OpenAI-compatible server (local providers can run without a hosted key)
 
 ## First Run
 
 1. Open http://localhost:5757
 2. Go to **Settings**
 3. Add your **library path** (e.g., `/mnt/audiobooks`)
-4. Add your **API key**
+4. Configure the selected provider, model, endpoint, and credentials as applicable
 5. Click **Save Settings**
 6. Go to **Dashboard** → **Scan Library**
 

@@ -1,80 +1,54 @@
 # How It Works
 
-## The Pipeline
+## User workflow
 
-```
-Your Messy Folder → Scan → Search APIs → AI Verify → Rename
-```
-
-### Step 1: Scan
-
-The scanner looks for issues like:
-- Year in author name (`The Expanse 2019`)
-- Author/title swapped (`Mistborn/Brandon Sanderson`)
-- Missing first name (`Boyett/The Hollow Man`)
-- Junk in filename (`[site.to] Author - Book`)
-- Placeholder author (`Unknown/Book Title`)
-
-### Step 2: Search APIs
-
-Books are searched across multiple databases:
-
-1. **Audnexus** - Audible's audiobook database (best for audiobooks)
-2. **OpenLibrary** - Internet Archive's massive book DB
-3. **Google Books** - Wide coverage, good series info
-4. **Hardcover** - Modern and indie titles
-
-### Step 3: AI Verification
-
-When metadata is found, AI verifies it makes sense:
-
-| Scenario | Action |
-|----------|--------|
-| Minor change (e.g., "Boyett" → "Steven Boyett") | Auto-applied |
-| Drastic change (e.g., "Golden" → "Sussman") | Requires approval |
-| Garbage match (< 30% word overlap) | Rejected |
-| Uncertain | Held for review |
-
-### Step 4: Rename
-
-If approved (automatically or manually), the folder is renamed.
-
-## Garbage Match Filtering
-
-APIs sometimes return completely wrong books. The app uses **Jaccard similarity** to detect these:
-
-```
-✗ "Chapter 19" → "College Accounting" (only "chapter" matches)
-✗ "Death Genesis" → "The Darkborn Genesis" (only "genesis" matches)
+```text
+Scan → identify candidates → review queue → apply selected fixes → verify in History
 ```
 
-Matches with less than 30% word overlap are automatically rejected.
+The scanner examines configured roots, skips known system/collection structures, validates eligible media, and creates or updates book records. Processing can be started from the Dashboard or run on the configured interval.
 
-## Series Detection
+## Identification pipeline
 
-Series info is extracted from:
+The default modular order is:
 
-1. **API metadata** - Google Books, Audnexus provide series info
-2. **Folder names** - Parses patterns like:
-   - `Series Name, Book 8: Title`
-   - `Mistborn Book 1: The Final Empire`
-   - `The Expanse #3 - Abaddon's Gate`
-3. **Author folder** - If folder contains "Series", "Saga", etc.
+1. Audio identification (Skaldleita/BookDB or configured fallbacks)
+2. Audio credits and narrator information
+3. Skaldleita requeue/verification when applicable
+4. API metadata lookup
+5. AI verification
 
-## Narrator Preservation
+Folder and filename hints remain a fallback for items that earlier layers cannot identify. Provider chains and pipeline order are configurable.
 
-Different audiobook versions are kept separate:
+Metadata can come from Skaldleita/BookDB, Audnexus, OpenLibrary, Google Books, and Hardcover. AI choices are Gemini, OpenRouter, Ollama, and llama.cpp/OpenAI-compatible servers.
 
-```
-The Hellbound Heart (Kafer)/   ← Narrator 1
-The Hellbound Heart (Barker)/  ← Narrator 2
-```
+## Candidate checks
 
-The app detects narrator names in parentheses and preserves them.
+Results are compared with title, author, language, and series hints. Garbage title/author matches, placeholder authors, and third-party summary/derivative matches are rejected unless the source filename clearly indicates a summary. Uncertain or drastic changes are held for review according to safety settings.
 
-## Safety Features
+## Naming and moves
 
-- **Drastic changes always require approval**
-- **Every fix can be undone**
-- **History tracks all changes**
-- **Garbage matches are filtered out**
+After approval, the app builds a sanitized destination inside a configured library/watch root. It can move a complete book folder or a loose media file into a generated book folder. The database path, history, and queue are updated as one critical transaction; optional metadata embedding and post-processing hooks run afterward.
+
+## Apply-fix transfer receipts (beta.161 develop)
+
+The #300 safety flow:
+
+1. Preflight rejects unsafe roots, existing file collisions, and known database path collisions.
+2. A durable operation row and complete source inventory are stored before the filesystem changes.
+3. Every relative path, entry type, size, and file SHA-256 hash is recorded; symlink targets are recorded without following them.
+4. The destination inventory must exactly match the source inventory before the database transaction commits.
+5. Verification or commit failures trigger a compensating move without overwriting either side, followed by source-inventory verification.
+6. Startup recovery checks interrupted `applying` operations and either verifies rollback or marks manual recovery.
+
+History displays the receipt status and opens a modal containing source/destination/rollback inventory entries, hashes, and verification flags.
+
+![History transfer receipts](images/transfer-receipts-history.png)
+![Committed transfer receipt](images/transfer-receipt-committed.png)
+![Rollback transfer receipt](images/transfer-receipt-rollback.png)
+
+This improves evidence of a handoff but cannot protect against hardware failure, permissions changed outside the app, or manual changes during a transfer. Keep independent backups.
+
+## Undo and history
+
+History retains original/new paths, status, errors, and optional metadata-embedding results. Undo validates both paths against configured roots and refuses ambiguous states rather than overwriting either side.

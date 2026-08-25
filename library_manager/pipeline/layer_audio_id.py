@@ -617,7 +617,7 @@ def process_layer_1_audio(
             processed += 1
             continue
 
-        # === TRY SKALDLEITA API FIRST (GPU Whisper + 50M book database) ===
+        # === TRY SKALDLEITA API FIRST (GPU Whisper + live metadata index) ===
         # This avoids Gemini rate limits and is faster
         result = None
         transcript = None

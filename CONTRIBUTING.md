@@ -4,20 +4,7 @@ Thanks for your interest in contributing! We're building this together.
 
 ## Looking for Something to Work On?
 
-Check our [open PRs](https://github.com/deucebucket/library-manager/pulls) - these have design docs ready for implementation:
-
-| PR | Feature | What's Needed |
-|----|---------|---------------|
-| [#24](https://github.com/deucebucket/library-manager/pull/24) | Language Preference | Python implementation, UI settings |
-| [#25](https://github.com/deucebucket/library-manager/pull/25) | Ollama Support | AI provider integration |
-
-To help with an existing feature:
-```bash
-git checkout feature/language-preference  # or feature/ollama-support
-# Read the design doc in docs/FEATURE-*.md
-# Implement and push to your fork
-# Open PR against the feature branch
-```
+Check the current [open issues](https://github.com/deucebucket/library-manager/issues) and [open pull requests](https://github.com/deucebucket/library-manager/pulls). Older feature-branch references and issue-specific design plans may no longer describe active work; verify the current branch and source before implementing one.
 
 ---
 
@@ -49,7 +36,8 @@ feature/ = your feature branches
    ```
 4. Make your changes
 5. Test thoroughly (see below)
-6. Push and create PR to `develop`
+6. Update README/docs/wiki and release notes when behavior or user-facing UI changes
+7. Push and create PR to `develop`
 
 ## Staying Updated
 
@@ -64,7 +52,7 @@ git rebase upstream/develop
 ```bash
 git clone https://github.com/YOUR_USERNAME/library-manager.git
 cd library-manager
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 python app.py
 ```
 
@@ -73,26 +61,38 @@ python app.py
 Before submitting:
 ```bash
 # Run integration tests
-./test-env/run-integration-tests.sh
+./test-env/run-integration-tests.sh --local
 
-# Manual testing
+# Browser/UI verification against the running app
 # 1. Web UI loads at http://localhost:5757
-# 2. Settings page saves correctly
+# 2. Setup/settings page saves correctly
 # 3. Library scan finds audiobooks
-# 4. Apply fix moves files correctly
-# 5. Undo restores original location
+# 4. Queue review and apply fix move files correctly
+# 5. History shows the transfer receipt and inventory modal
+# 6. Undo restores the original location
+# 7. Failure/interruption paths leave a verified rollback or explicit manual-recovery state
+
+# Static checks
+ruff check .
+python test-env/test-naming-issues.py
+docker build -t library-manager .
 ```
+
+Use the actual browser UI for workflow verification; API-only checks do not replace the user-facing flow. For file-operation changes, test source/destination hashes, non-empty destination refusal, database failure rollback, startup recovery, and receipt display.
 
 ## PR Guidelines
 
 - Keep PRs focused - one feature/fix per PR
 - Update CHANGELOG.md with your changes
 - If adding new config options, update config.example.json
+- Update README.md and relevant docs when behavior, configuration, provider support, or UI changes
+- Audit the GitHub wiki in an isolated clone and include the verification result in the PR
+- Add fresh screenshots for UI changes; receipt changes require History, committed receipt, and rollback/manual-recovery views
 - Test with Docker: `docker build -t library-manager .`
 
 ## Code Style
 
-- Python 3.8+ compatible
+- Python 3.9+ compatible
 - Use existing patterns in the codebase
 - Comments for non-obvious logic
 - Meaningful variable names
@@ -124,6 +124,7 @@ All PRs are reviewed for security before merge.
 - All file writes MUST stay within configured `library_paths`
 - Metadata changes MUST preserve originals in backup
 - Rollback MUST actually restore original state
+- Apply-fix moves MUST preserve and verify the source/destination/rollback inventory receipt; ambiguous or unverifiable states require manual recovery
 - Never trust paths without validation
 
 This isn't about distrust - it's about protecting users' libraries. Open source means anyone can contribute, which is great, but it also means we verify everything.

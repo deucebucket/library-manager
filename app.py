@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama, OpenAI-compatible APIs)
 """
 
-APP_VERSION = "0.9.0-beta.160"
+APP_VERSION = "0.9.0-beta.161"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -128,6 +128,15 @@ from library_manager.feedback import (
 )
 from library_manager.folder_triage import triage_folder, triage_book_path, should_use_path_hints, confidence_modifier
 from library_manager.file_validation import validate_audio_file, check_ffmpeg_available
+from library_manager.file_transactions import (
+    InventoryError,
+    build_file_inventory,
+    inventories_match,
+    inventory_digest,
+    recover_interrupted_apply_fixes,
+    rollback_filesystem_move,
+    store_inventory,
+)
 from library_manager.hints import get_all_hints
 from library_manager.hooks import hooks_bp, run_hooks, build_hook_context
 from library_manager.plugins import plugins_bp
@@ -3375,7 +3384,7 @@ def group_loose_files(files):
 def search_bookdb_api(title, author=None, retry_count=0):
     """
     Search the Skaldleita API for a book.
-    Uses Qdrant vector search - fast even with 50M books.
+    Uses Qdrant vector search across Skaldleita's live metadata index.
     Returns dict with author, title, series if found.
     Filters garbage matches using title similarity.
     If author is provided, uses it to validate/preserve existing author.
@@ -4031,7 +4040,7 @@ def handle_chaos_library(lib_path, config=None):
 
         # Level 2: Search by detected title/filename
         elif title:
-            # Try BookBucket API first (50M books, public endpoint, fast)
+            # Try the Skaldleita/BookDB API first (public endpoint, fast)
             search_progress.set_status(f"Searching BookDB for '{title[:30]}...'")
             api_result = search_bookdb_api(title)
             if api_result and api_result.get('author'):
@@ -6374,6 +6383,15 @@ def process_layer_3_audio(config, limit=None, verification_layer=3):
 # process_layer_4_content moved to library_manager/pipeline/layer_content.py
 
 
+def _path_is_within(path, root):
+    """Return whether path resolves inside root."""
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def apply_fix(history_id):
     """Apply a pending fix from history."""
     conn = get_db()
@@ -6557,6 +6575,22 @@ def apply_fix(history_id):
         if current_book and current_book['path'] and Path(current_book['path']).exists():
             fallback_path = Path(current_book['path'])
             if fallback_path != old_path:
+                fallback_in_library = any(
+                    _path_is_within(fallback_path, lib) for lib in library_paths
+                )
+                fallback_in_watch = (
+                    is_watch_folder_item
+                    and bool(watch_folder)
+                    and _path_is_within(fallback_path, Path(watch_folder).resolve())
+                )
+                if not fallback_in_library and not fallback_in_watch:
+                    error_msg = f"SAFETY BLOCK: Fallback source is outside configured roots: {fallback_path}"
+                    logger.error(error_msg)
+                    c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
+                              ('error', error_msg, history_id))
+                    conn.commit()
+                    conn.close()
+                    return False, error_msg
                 logger.warning(f"[APPLY FIX] old_path {old_path} missing, using current book path: {fallback_path}")
                 old_path = fallback_path
                 # Update history with the correct old_path for future reference
@@ -6571,145 +6605,296 @@ def apply_fix(history_id):
             conn.close()
             return False, error_msg
 
-    try:
-        import shutil
-
-        # Check if we're moving a file (ebook/loose file/single m4b) vs a folder
-        is_file_move = old_path.is_file()
-
-        # If moving a single file, ensure new_path includes the filename with extension
-        # (build_new_path returns a folder path, but for single files we need to include the filename)
-        if is_file_move:
-            # Check if new_path looks like a folder (no extension or doesn't match audio extension)
-            audio_extensions = {'.m4b', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.wma', '.aac'}
-            if new_path.suffix.lower() not in audio_extensions:
-                # new_path is a folder, we need to create folder and put file inside
-                file_dest = new_path / old_path.name
-                logger.info(f"Single file move: {old_path.name} -> {file_dest}")
-            else:
-                file_dest = new_path
-
-            if file_dest.exists():
-                error_msg = f"Destination file already exists: {file_dest.name}"
-                c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
-                         ('error', error_msg, history_id))
-                conn.commit()
-                conn.close()
-                return False, error_msg
-
-            # Create destination folder and move file
-            file_dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(old_path), str(file_dest))
-            # Update new_path to the folder for embedding later
-            new_path = file_dest.parent
-        elif new_path.exists():
-            # Moving a folder - check if destination has files
-            existing_files = list(new_path.iterdir())
-            if existing_files:
-                # DON'T MERGE - this is likely a different narrator version
-                error_msg = "Destination folder already exists with files - possible different narrator version"
-                c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
-                         ('error', error_msg, history_id))
-                conn.commit()
-                conn.close()
-                return False, error_msg
-            else:
-                # Destination is empty folder - safe to use it
-                shutil.move(str(old_path), str(new_path.parent / (new_path.name + "_temp")))
-                new_path.rmdir()
-                (new_path.parent / (new_path.name + "_temp")).rename(new_path)
-        else:
-            # Destination doesn't exist - create parent folders and move
-            new_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(old_path), str(new_path))
-
-        # Clean up empty parent
-        try:
-            if old_path.parent.exists() and not any(old_path.parent.iterdir()):
-                old_path.parent.rmdir()
-        except OSError:
-            pass
-
-        # Update book record
-        # Issue #49: For watch folder items, also update source_type to 'library' since it's now in the library
-        c.execute('''UPDATE books SET path = ?, current_author = ?, current_title = ?, status = ?, source_type = 'library'
-                     WHERE id = ?''',
-                 (str(new_path), fix['new_author'], fix['new_title'], 'fixed', fix['book_id']))
-
-        # Update history status
-        c.execute('UPDATE history SET status = ? WHERE id = ?', ('fixed', history_id))
-
-        # Issue #79: Remove from queue - this was missing, causing stuck queue items
-        c.execute('DELETE FROM queue WHERE book_id = ?', (fix['book_id'],))
-
-        # Embed metadata tags if enabled
-        embed_status = None
-        embed_error = None
-        if config.get('metadata_embedding_enabled', False):
-            try:
-                embed_metadata = build_metadata_for_embedding(
-                    author=fix['new_author'],
-                    title=fix['new_title'],
-                    series=fix['new_series'] if fix['new_series'] else None,
-                    series_num=fix['new_series_num'] if fix['new_series_num'] else None,
-                    narrator=fix['new_narrator'] if fix['new_narrator'] else None,
-                    year=fix['new_year'] if fix['new_year'] else None,
-                    edition=fix['new_edition'] if fix['new_edition'] else None,
-                    variant=fix['new_variant'] if fix['new_variant'] else None,
-                    book_id=metadata_book_id,
-                    audible_url=audible_url
-                )
-                embed_result = embed_tags_for_path(
-                    new_path,
-                    embed_metadata,
-                    create_backup=config.get('metadata_embedding_backup_sidecar', True),
-                    overwrite=config.get('metadata_embedding_overwrite_managed', True)
-                )
-                if embed_result['success']:
-                    embed_status = 'ok'
-                    logger.info(f"Embedded tags in {embed_result['files_processed']} files at {new_path}")
-                else:
-                    embed_status = 'error'
-                    embed_error = embed_result.get('error') or '; '.join(embed_result.get('errors', []))[:500]
-                    logger.warning(f"Tag embedding failed for {new_path}: {embed_error}")
-            except Exception as embed_e:
-                embed_status = 'error'
-                embed_error = str(embed_e)[:500]
-                logger.error(f"Tag embedding exception for {new_path}: {embed_e}")
-
-            # Update history with embed status
-            c.execute('UPDATE history SET embed_status = ?, embed_error = ? WHERE id = ?',
-                     (embed_status, embed_error, history_id))
-
-        conn.commit()
-        conn.close()
-
-        # Post-processing hooks (Issue #166)
-        try:
-            hook_context = build_hook_context(
-                book_id=book_id, history_id=history_id,
-                old_path=str(old_path), new_path=str(new_path),
-                old_author=fix['old_author'], old_title=fix['old_title'],
-                new_author=fix['new_author'], new_title=fix['new_title'],
-                new_narrator=fix['new_narrator'] if fix['new_narrator'] else '',
-                new_series=fix['new_series'] if fix['new_series'] else '',
-                new_series_num=fix['new_series_num'] if fix['new_series_num'] else '',
-                new_year=fix['new_year'] if fix['new_year'] else '',
-                media_type=source_type or 'audiobook',
-                event='fixed'
-            )
-            run_hooks(hook_context, config, get_db, load_secrets())
-        except Exception as hook_e:
-            logger.error(f"[POST-PROCESS] Hook orchestration error: {hook_e}")
-
-        return True, "Fix applied successfully"
-    except Exception as e:
-        error_msg = str(e)
+    protected_roots = list(library_paths)
+    if watch_folder:
+        protected_roots.append(Path(watch_folder).resolve())
+    watch_output_folder = config.get('watch_output_folder', '').strip()
+    if watch_output_folder:
+        protected_roots.append(Path(watch_output_folder).resolve())
+    if any(old_path.resolve() == root for root in protected_roots):
+        error_msg = f"SAFETY BLOCK: Refusing to move a configured root: {old_path}"
+        logger.error(error_msg)
         c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
-                 ('error', error_msg, history_id))
+                  ('error', error_msg, history_id))
         conn.commit()
         conn.close()
         return False, error_msg
+
+    # Track the exact moved object. For a loose file, books.path intentionally
+    # becomes the containing book folder while move_destination is the file.
+    is_file_move = old_path.is_file()
+    audio_extensions = {'.m4b', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.wma', '.aac'}
+    if is_file_move and new_path.suffix.lower() not in audio_extensions:
+        move_destination = new_path / old_path.name
+        database_destination = new_path
+        logger.info(f"Single file move: {old_path.name} -> {move_destination}")
+    elif is_file_move:
+        move_destination = new_path
+        database_destination = new_path.parent
+    else:
+        move_destination = new_path
+        database_destination = new_path
+
+    rollback_roots = list(library_paths)
+    if watch_folder:
+        rollback_roots.append(Path(watch_folder).resolve())
+    if watch_output_folder:
+        rollback_roots.append(Path(watch_output_folder).resolve())
+
+    if move_destination.exists() and is_file_move:
+        error_msg = f"Destination file already exists: {move_destination.name}"
+        c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
+                  ('error', error_msg, history_id))
+        conn.commit()
+        conn.close()
+        return False, error_msg
+
+    destination_existed_empty = False
+    if not is_file_move and move_destination.exists():
+        if not move_destination.is_dir() or any(move_destination.iterdir()):
+            error_msg = "Destination folder already exists with files - possible different narrator version"
+            c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
+                      ('error', error_msg, history_id))
+            conn.commit()
+            conn.close()
+            return False, error_msg
+        destination_existed_empty = True
+
+    # Reject known database collisions before touching the filesystem. The
+    # compensating rollback below still protects against races and other DB
+    # failures after this preflight.
+    c.execute('SELECT id FROM books WHERE path = ? COLLATE NOCASE AND id != ?',
+              (str(database_destination), book_id))
+    conflicting_book = c.fetchone()
+    if conflicting_book:
+        error_msg = f"Destination path is already assigned to book {conflicting_book['id']}"
+        c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
+                  ('error', error_msg, history_id))
+        conn.commit()
+        conn.close()
+        return False, error_msg
+
+    move_started = False
+    operation_id = None
+    receipt_persisted = False
+    source_inventory = None
+    source_digest = None
+    try:
+        # Build and persist a complete receipt before touching the filesystem.
+        # The source digest covers names, entry types, sizes, and SHA-256 hashes.
+        source_inventory = build_file_inventory(old_path, rollback_roots)
+        source_digest = inventory_digest(source_inventory)
+        c.execute('''INSERT INTO file_operations
+                     (history_id, book_id, operation_type, source_path,
+                      destination_path, database_destination, source_digest,
+                      status, destination_existed)
+                     VALUES (?, ?, 'apply_fix', ?, ?, ?, ?, 'prepared', ?)''',
+                  (history_id, book_id, str(old_path), str(move_destination),
+                   str(database_destination), source_digest,
+                   int(destination_existed_empty)))
+        operation_id = c.lastrowid
+        store_inventory(c, operation_id, 'source', source_inventory)
+
+        # Persist the exact move intent before the filesystem changes so startup
+        # recovery can safely reconcile an interrupted operation and its receipt.
+        c.execute('''UPDATE history
+                     SET old_path = ?, new_path = ?, move_destination = ?,
+                         move_destination_existed = ?, error_message = NULL
+                     WHERE id = ?''',
+                  (str(old_path), str(database_destination), str(move_destination),
+                   int(destination_existed_empty), history_id))
+        conn.commit()
+        receipt_persisted = True
+
+        c.execute("UPDATE file_operations SET status = 'moving', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                  (operation_id,))
+        conn.commit()
+
+        if destination_existed_empty:
+            move_destination.rmdir()
+        move_destination.parent.mkdir(parents=True, exist_ok=True)
+        move_started = True
+        shutil.move(str(old_path), str(move_destination))
+
+        # A handoff is not accepted until the complete destination inventory
+        # exactly matches the source receipt.
+        destination_inventory = build_file_inventory(move_destination, rollback_roots)
+        destination_digest = inventory_digest(destination_inventory)
+        destination_verified = inventories_match(source_inventory, destination_inventory)
+        store_inventory(c, operation_id, 'destination', destination_inventory,
+                        expected=source_inventory)
+        c.execute('''UPDATE file_operations
+                     SET destination_digest = ?, status = ?, error_message = ?,
+                         updated_at = CURRENT_TIMESTAMP,
+                         verified_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE verified_at END
+                     WHERE id = ?''',
+                  (destination_digest,
+                   'verified' if destination_verified else 'verification_failed',
+                   None if destination_verified else 'Destination inventory does not match source receipt',
+                   int(destination_verified), operation_id))
+        conn.commit()
+        if not destination_verified:
+            raise InventoryError("Destination inventory does not match source receipt")
+
+        # books, history, and queue are one critical transaction. Nothing that
+        # mutates audiobook contents runs until this commit succeeds.
+        c.execute('''UPDATE books SET path = ?, current_author = ?, current_title = ?, status = ?, source_type = 'library'
+                     WHERE id = ?''',
+                  (str(database_destination), fix['new_author'], fix['new_title'], 'fixed', book_id))
+        if c.rowcount != 1:
+            raise RuntimeError(f"Book {book_id} disappeared while applying fix")
+        c.execute('UPDATE history SET status = ?, error_message = NULL WHERE id = ?',
+                  ('fixed', history_id))
+        if c.rowcount != 1:
+            raise RuntimeError(f"History entry {history_id} disappeared while applying fix")
+        c.execute('DELETE FROM queue WHERE book_id = ?', (book_id,))
+        c.execute('''UPDATE file_operations
+                     SET status = 'committed', updated_at = CURRENT_TIMESTAMP
+                     WHERE id = ?''', (operation_id,))
+        if c.rowcount != 1:
+            raise RuntimeError(f"Transfer receipt {operation_id} disappeared while applying fix")
+        conn.commit()
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception as rollback_db_error:
+            logger.error(f"[APPLY FIX] Database rollback failed: {rollback_db_error}")
+
+        rollback_success = True
+        rollback_detail = "filesystem was not changed"
+        if move_started or (destination_existed_empty and not move_destination.exists()):
+            rollback_success, rollback_detail = rollback_filesystem_move(
+                old_path,
+                move_destination,
+                rollback_roots,
+                recreate_empty_destination=destination_existed_empty,
+            )
+
+        receipt_status = 'failed_before_move'
+        receipt_error = str(exc)
+        if rollback_success and source_inventory is not None:
+            try:
+                restored_inventory = build_file_inventory(old_path, rollback_roots)
+                restored_digest = inventory_digest(restored_inventory)
+                restored_verified = inventories_match(source_inventory, restored_inventory)
+                if receipt_persisted:
+                    store_inventory(c, operation_id, 'rollback', restored_inventory,
+                                    expected=source_inventory)
+                if restored_verified:
+                    receipt_status = 'rolled_back'
+                    rollback_detail = f"{rollback_detail}; original inventory verified"
+                else:
+                    rollback_success = False
+                    receipt_status = 'rollback_failed'
+                    rollback_detail = "rollback completed but original inventory verification failed"
+            except Exception as verify_error:
+                rollback_success = False
+                restored_digest = None
+                receipt_status = 'rollback_failed'
+                rollback_detail = f"rollback inventory could not be verified: {verify_error}"
+        else:
+            restored_digest = None
+            if move_started:
+                receipt_status = 'rollback_failed'
+
+        error_msg = f"Apply failed: {exc}. {rollback_detail}."
+        if not rollback_success:
+            error_msg += (
+                f" MANUAL RECOVERY REQUIRED: source={old_path}; "
+                f"destination={move_destination}"
+            )
+        logger.error(f"[APPLY FIX] {error_msg}")
+
+        try:
+            if receipt_persisted:
+                c.execute('''UPDATE file_operations
+                             SET rollback_digest = ?, status = ?, error_message = ?,
+                                 updated_at = CURRENT_TIMESTAMP
+                             WHERE id = ?''',
+                          (restored_digest, receipt_status, receipt_error, operation_id))
+            c.execute('UPDATE history SET status = ?, error_message = ? WHERE id = ?',
+                      ('error', error_msg, history_id))
+            conn.commit()
+        except Exception as status_error:
+            logger.error(f"[APPLY FIX] Could not record failure status: {status_error}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        conn.close()
+        return False, error_msg
+
+    # The path/database invariant is durable. Cleanup and metadata embedding are
+    # non-critical follow-up work and cannot trigger a filesystem rollback.
+    try:
+        if old_path.parent.exists() and not any(old_path.parent.iterdir()):
+            old_path.parent.rmdir()
+    except OSError:
+        pass
+
+    embed_status = None
+    embed_error = None
+    if config.get('metadata_embedding_enabled', False):
+        try:
+            embed_metadata = build_metadata_for_embedding(
+                author=fix['new_author'],
+                title=fix['new_title'],
+                series=fix['new_series'] if fix['new_series'] else None,
+                series_num=fix['new_series_num'] if fix['new_series_num'] else None,
+                narrator=fix['new_narrator'] if fix['new_narrator'] else None,
+                year=fix['new_year'] if fix['new_year'] else None,
+                edition=fix['new_edition'] if fix['new_edition'] else None,
+                variant=fix['new_variant'] if fix['new_variant'] else None,
+                book_id=metadata_book_id,
+                audible_url=audible_url
+            )
+            embed_result = embed_tags_for_path(
+                database_destination,
+                embed_metadata,
+                create_backup=config.get('metadata_embedding_backup_sidecar', True),
+                overwrite=config.get('metadata_embedding_overwrite_managed', True)
+            )
+            if embed_result['success']:
+                embed_status = 'ok'
+                logger.info(f"Embedded tags in {embed_result['files_processed']} files at {database_destination}")
+            else:
+                embed_status = 'error'
+                embed_error = embed_result.get('error') or '; '.join(embed_result.get('errors', []))[:500]
+                logger.warning(f"Tag embedding failed for {database_destination}: {embed_error}")
+        except Exception as embed_e:
+            embed_status = 'error'
+            embed_error = str(embed_e)[:500]
+            logger.error(f"Tag embedding exception for {database_destination}: {embed_e}")
+
+        try:
+            c.execute('UPDATE history SET embed_status = ?, embed_error = ? WHERE id = ?',
+                      (embed_status, embed_error, history_id))
+            conn.commit()
+        except Exception as status_error:
+            conn.rollback()
+            logger.error(f"[APPLY FIX] Could not record metadata embedding status: {status_error}")
+
+    conn.close()
+
+    # Post-processing hooks (Issue #166)
+    try:
+        hook_context = build_hook_context(
+            book_id=book_id, history_id=history_id,
+            old_path=str(old_path), new_path=str(database_destination),
+            old_author=fix['old_author'], old_title=fix['old_title'],
+            new_author=fix['new_author'], new_title=fix['new_title'],
+            new_narrator=fix['new_narrator'] if fix['new_narrator'] else '',
+            new_series=fix['new_series'] if fix['new_series'] else '',
+            new_series_num=fix['new_series_num'] if fix['new_series_num'] else '',
+            new_year=fix['new_year'] if fix['new_year'] else '',
+            media_type=source_type or 'audiobook',
+            event='fixed'
+        )
+        run_hooks(hook_context, config, get_db, load_secrets())
+    except Exception as hook_e:
+        logger.error(f"[POST-PROCESS] Hook orchestration error: {hook_e}")
+
+    return True, "Fix applied successfully"
 
 # ============== BACKGROUND WORKER ==============
 
@@ -7518,7 +7703,10 @@ def history_page():
     if status_filter == 'pending':
         c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'pending_fix'")
         total = c.fetchone()['count']
-        c.execute('''SELECT h.*, b.user_locked FROM history h
+        c.execute('''SELECT h.*, b.user_locked,
+                            (SELECT fo.id FROM file_operations fo WHERE fo.history_id = h.id ORDER BY fo.id DESC LIMIT 1) AS operation_id,
+                            (SELECT fo.status FROM file_operations fo WHERE fo.history_id = h.id ORDER BY fo.id DESC LIMIT 1) AS receipt_status
+                     FROM history h
                      LEFT JOIN books b ON h.book_id = b.id
                      WHERE h.status = 'pending_fix'
                      ORDER BY h.fixed_at DESC
@@ -7526,7 +7714,10 @@ def history_page():
     elif status_filter == 'duplicate':
         c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'duplicate'")
         total = c.fetchone()['count']
-        c.execute('''SELECT h.*, b.user_locked FROM history h
+        c.execute('''SELECT h.*, b.user_locked,
+                            (SELECT fo.id FROM file_operations fo WHERE fo.history_id = h.id ORDER BY fo.id DESC LIMIT 1) AS operation_id,
+                            (SELECT fo.status FROM file_operations fo WHERE fo.history_id = h.id ORDER BY fo.id DESC LIMIT 1) AS receipt_status
+                     FROM history h
                      LEFT JOIN books b ON h.book_id = b.id
                      WHERE h.status = 'duplicate'
                      ORDER BY h.fixed_at DESC
@@ -7534,7 +7725,10 @@ def history_page():
     elif status_filter == 'attention':
         c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'needs_attention'")
         total = c.fetchone()['count']
-        c.execute('''SELECT h.*, b.user_locked FROM history h
+        c.execute('''SELECT h.*, b.user_locked,
+                            (SELECT fo.id FROM file_operations fo WHERE fo.history_id = h.id ORDER BY fo.id DESC LIMIT 1) AS operation_id,
+                            (SELECT fo.status FROM file_operations fo WHERE fo.history_id = h.id ORDER BY fo.id DESC LIMIT 1) AS receipt_status
+                     FROM history h
                      LEFT JOIN books b ON h.book_id = b.id
                      WHERE h.status = 'needs_attention'
                      ORDER BY h.fixed_at DESC
@@ -7542,7 +7736,10 @@ def history_page():
     elif status_filter == 'error':
         c.execute("SELECT COUNT(*) as count FROM history WHERE status = 'error'")
         total = c.fetchone()['count']
-        c.execute('''SELECT h.*, b.user_locked FROM history h
+        c.execute('''SELECT h.*, b.user_locked,
+                            (SELECT fo.id FROM file_operations fo WHERE fo.history_id = h.id ORDER BY fo.id DESC LIMIT 1) AS operation_id,
+                            (SELECT fo.status FROM file_operations fo WHERE fo.history_id = h.id ORDER BY fo.id DESC LIMIT 1) AS receipt_status
+                     FROM history h
                      LEFT JOIN books b ON h.book_id = b.id
                      WHERE h.status = 'error'
                      ORDER BY h.fixed_at DESC
@@ -7550,7 +7747,10 @@ def history_page():
     else:
         c.execute('SELECT COUNT(*) as count FROM history')
         total = c.fetchone()['count']
-        c.execute('''SELECT h.*, b.user_locked FROM history h
+        c.execute('''SELECT h.*, b.user_locked,
+                            (SELECT fo.id FROM file_operations fo WHERE fo.history_id = h.id ORDER BY fo.id DESC LIMIT 1) AS operation_id,
+                            (SELECT fo.status FROM file_operations fo WHERE fo.history_id = h.id ORDER BY fo.id DESC LIMIT 1) AS receipt_status
+                     FROM history h
                      LEFT JOIN books b ON h.book_id = b.id
                      ORDER BY h.fixed_at DESC
                      LIMIT ? OFFSET ?''', (per_page, offset))
@@ -8785,6 +8985,31 @@ def api_apply_fix(history_id):
     log_action("apply_fix", detail=f"history_id={history_id}", result="success" if success else "error")
     return jsonify({'success': success, 'message': message})
 
+
+@app.route('/api/file-operation-receipt/<int:operation_id>')
+def api_file_operation_receipt(operation_id):
+    """Return a durable file handoff receipt and its inventories."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT * FROM file_operations WHERE id = ?', (operation_id,))
+    operation = c.fetchone()
+    if not operation:
+        conn.close()
+        return jsonify({'success': False, 'error': 'Transfer receipt not found'}), 404
+
+    c.execute('''SELECT phase, relative_path, entry_type, size, sha256, verified
+                 FROM file_operation_inventory
+                 WHERE operation_id = ?
+                 ORDER BY CASE phase WHEN 'source' THEN 1 WHEN 'destination' THEN 2 ELSE 3 END,
+                          relative_path''', (operation_id,))
+    inventory = [dict(row) for row in c.fetchall()]
+    conn.close()
+    return jsonify({
+        'success': True,
+        'operation': dict(operation),
+        'inventory': inventory,
+    })
+
 @app.route('/api/reject_fix/<int:history_id>', methods=['POST'])
 def api_reject_fix(history_id):
     """Reject a pending fix - delete it and mark book as OK."""
@@ -9161,6 +9386,19 @@ def api_undo(history_id):
 
     old_path = record['old_path']
     new_path = record['new_path']
+
+    # Apply-fix receipts retain the exact object that moved. This matters for a
+    # loose audiobook: books.path/history.new_path point at its containing book
+    # folder, while undo must move only the original file back.
+    c.execute('''SELECT source_path, destination_path
+                 FROM file_operations
+                 WHERE history_id = ? AND operation_type = 'apply_fix'
+                       AND status = 'committed'
+                 ORDER BY id DESC LIMIT 1''', (history_id,))
+    apply_receipt = c.fetchone()
+    if apply_receipt:
+        old_path = apply_receipt['source_path']
+        new_path = apply_receipt['destination_path']
 
     # Check if the new_path exists (current location)
     if not os.path.exists(new_path):
@@ -13101,6 +13339,7 @@ if __name__ == '__main__':
     migrate_legacy_config()  # Migrate from old location if needed (Issue #23)
     init_config()  # Create config files if they don't exist
     init_db()
+    recover_interrupted_apply_fixes(get_db, load_config())
     cleanup_garbage_entries()  # Remove @eaDir, #recycle, etc. from database (Issue #88)
     cleanup_duplicate_history_entries()  # Remove duplicate history entries (Issue #79)
 

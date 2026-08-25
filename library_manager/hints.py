@@ -5,15 +5,15 @@ Provides contextual help text for UI tooltips and hover explanations.
 
 HINTS = {
     # === Identification Layers ===
-    'layer_1': 'Database Lookups: Searches Skaldleita, Audnexus, OpenLibrary, Google Books, and Hardcover for metadata matches. Free, fast, no API key needed.',
+    'layer_1': 'Database Lookups: Searches enabled Skaldleita, Audnexus, OpenLibrary, Google Books, and Hardcover sources. Shared or user-supplied credentials are used where applicable.',
     'layer_2': 'AI Verification: When databases return uncertain matches, your configured provider (Gemini, OpenRouter, Ollama, or an OpenAI-compatible server) cross-checks the results.',
     'layer_3': 'Audio Analysis: Extracts the first 90 seconds of audio to identify the book from narrator intros and title announcements. Can use Skaldleita GPU or your own Gemini API.',
     'layer_4': 'Content Analysis: Last resort. Transcribes story text with Whisper and sends it to AI to identify the book. Slowest but catches edge cases other layers miss.',
 
     # === AI Providers ===
-    'skaldleita': 'Free GPU-powered audio identification service. Transcribes your audiobook intro and matches it against 50M+ books. Does not use your API quota.',
-    'gemini': 'Google Gemini AI. Free tier offers 14,400 calls/day with Gemma 3 models. Handles both text verification and native audio analysis.',
-    'openrouter': 'API gateway to multiple AI models. Free models available (Llama, Gemma). Used as fallback when Gemini is unavailable or for Layer 4 content analysis.',
+    'skaldleita': 'Hosted GPU-powered audio identification. Transcribes an audiobook intro and matches it against Skaldleita metadata; service/account limits apply.',
+    'gemini': 'Google Gemini for text verification and native audio analysis. Hosted account/model limits vary; check Google AI Studio for current terms.',
+    'openrouter': 'API gateway to multiple hosted AI models. Model availability and account terms vary. Can be used for verification and content-analysis fallbacks.',
     'ollama': 'Self-hosted AI. Run models locally with no API costs or rate limits. Requires separate Ollama installation.',
     'openai_compatible': 'User-configured local or remote AI server with OpenAI-compatible model and chat-completions endpoints, including llama.cpp, LM Studio, vLLM, and LocalAI.',
 
@@ -56,8 +56,8 @@ HINTS = {
     'max_requests_per_hour': 'Rate limit for API calls. Prevents hitting provider rate limits. Range: 10-500.',
 
     # === Settings - AI Setup Tab ===
-    'gemini_api_key': 'Free API key from Google AI Studio (aistudio.google.com). Enables Gemini AI for text verification and audio analysis. 14,400 free calls per day.',
-    'openrouter_api_key': 'API key from openrouter.ai. Provides access to free AI models as fallback, and enables Layer 4 content analysis.',
+    'gemini_api_key': 'API key from Google AI Studio (aistudio.google.com). Enables Gemini text verification and audio analysis; account/model limits vary.',
+    'openrouter_api_key': 'API key from openrouter.ai. Available models and account terms are determined by OpenRouter.',
     'openai_compatible_api_key': 'Optional bearer token for a user-configured OpenAI-compatible AI server.',
     'openai_compatible_url': 'API base URL for llama.cpp, LM Studio, vLLM, LocalAI, or another OpenAI-compatible server.',
     'openai_compatible_model': 'Model ID loaded from the configured server. Manual model IDs are also accepted.',
@@ -85,12 +85,12 @@ HINTS = {
     'deep_verification': 'Re-verifies your entire library against APIs, even books that look correctly named. Use when you suspect misattributed books in an imported collection.',
 
     # === Trust Mode ===
-    'sl_trust_full': 'Accepts Skaldleita matches at 80%+ confidence and skips AI verification. Recommended - GPU Whisper with 50M book database is usually accurate.',
+    'sl_trust_full': 'Accepts Skaldleita matches at 80%+ confidence and skips separate AI verification.',
     'sl_trust_boost': 'Uses Skaldleita results as a strong hint, then verifies with database APIs. Skips AI. Good middle ground.',
     'sl_trust_legacy': 'Uses AI to verify uncertain Skaldleita matches. Most thorough but uses more API quota.',
 
     # === Source Icons ===
-    'source_bookdb': 'Identified via Skaldleita - GPU-powered audio fingerprinting matched against 50M+ book database.',
+    'source_bookdb': 'Identified via Skaldleita GPU-powered audio matching and its live metadata index.',
     'source_audio': 'Identified from audio analysis - narrator intro or title announcement detected.',
     'source_ai': 'Verified by AI - an AI model confirmed the identification.',
     'source_id3': 'Metadata from embedded ID3/audio tags in the file itself.',

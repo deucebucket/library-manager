@@ -12,6 +12,7 @@ Welcome! This wiki contains detailed documentation for Library Manager.
 - [[How It Works]] - Understanding the metadata pipeline
 - [[Troubleshooting]] - Common issues and fixes
 - [[FAQ]] - Frequently asked questions
+- [[Release and PR Workflow]] - Documentation, screenshot, and verification requirements
 
 ## What Is This?
 
@@ -35,12 +36,14 @@ Library Manager automatically fixes messy audiobook folder names using real book
 
 ## Features
 
-- Multi-source metadata (Audnexus, OpenLibrary, Google Books, Hardcover)
+- Multi-source metadata (Skaldleita/BookDB, Audnexus, OpenLibrary, Google Books, Hardcover)
 - AI verification with Gemini, OpenRouter, Ollama, llama.cpp, or another OpenAI-compatible server
 - Series grouping (Audiobookshelf-compatible)
 - Smart narrator preservation
-- Undo any fix
+- Undo any fix and inspect transfer receipts in History
 - Web dashboard
+
+The develop branch currently reports beta.161. Its #300 apply-fix flow records complete source, destination, and rollback inventories with SHA-256 file hashes, verifies the handoff before the database commit, and recovers interrupted operations when possible. This improves auditability but is not a substitute for filesystem or hardware backups.
 
 ## Getting Help
 
