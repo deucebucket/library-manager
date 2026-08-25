@@ -128,7 +128,10 @@ Movies and TV can be enabled independently. The read-only Video dashboard compar
 existing Plex SQLite catalogue with disk and reports stranded files (on disk but not
 indexed) and phantom files (indexed but absent). Browser results use section-relative
 paths; this dashboard has no move capability and never receives the separate organization
-service's signing secret.
+service's signing secret. The loopback organization service exposes only canonical signed
+apply and read-only verification requests. Verification binds the exact digest-only
+committed receipt, then freshly re-reads the Radarr destination and Jellyfin provider
+identity; it cannot move files or inspect a different plan under an existing operation.
 
 Synthetic fixture shown at desktop and mobile widths:
 
