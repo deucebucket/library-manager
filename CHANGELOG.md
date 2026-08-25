@@ -9,8 +9,13 @@ All notable changes to Library Manager will be documented in this file.
   provider-neutral phase-4 core that requires authoritative idle evidence, requests file
   movement through the catalogue adapter, independently verifies the destination and
   exact media-server identity, records a title/path-free receipt, blocks duplicate active
-  operations, and performs a verified provider rollback on failed postconditions. Product
-  adapters and the review/apply API remain separate follow-up work.
+  operations and approval reuse, and performs a verified provider rollback on failed
+  postconditions.
+- **Capability-bound video adapters** — Narrow Radarr/Jellyfin adapters and a loopback-only
+  service accept one canonical HMAC-signed plan using configured opaque root/library IDs.
+  Radarr receives `moveFiles=true`; commit requires exact root/file readback plus one exact
+  provider identity in the intended Jellyfin library. Credentials and adapter exception
+  prose never enter the mode-0600 digest-only receipt. Live adapter acceptance remains.
 
 ### Fixed
 - **Bounded Docker build context** — Production image builds exclude `test-env/`, so the

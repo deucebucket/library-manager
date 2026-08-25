@@ -26,6 +26,7 @@ class PlaybackObservation:
 
 @dataclass(frozen=True)
 class VideoMovePlan:
+    approval_ref: str
     subject_id: str
     provider: str
     provider_id: str
@@ -57,6 +58,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute('''CREATE TABLE IF NOT EXISTS video_move_receipts (
         operation_id TEXT PRIMARY KEY,
         operation_key TEXT NOT NULL,
+        approval_digest TEXT NOT NULL,
         subject_digest TEXT NOT NULL,
         identity_digest TEXT NOT NULL,
         source_root_digest TEXT NOT NULL,
@@ -76,6 +78,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_video_move_active_key
                     ON video_move_receipts(operation_key)
                     WHERE status NOT IN ('rolled_back', 'failed_before_move')''')
+    conn.execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_video_move_active_approval
+                    ON video_move_receipts(approval_digest)
+                    WHERE status NOT IN ('rolled_back', 'failed_before_move')''')
     conn.commit()
 
 
@@ -89,7 +94,7 @@ def _validate(plan: VideoMovePlan) -> None:
         raise OrganizationRefused("owner_approval_required")
     if plan.media_kind != "movie" or not plan.movie_length:
         raise OrganizationRefused("movie_length_movies_only")
-    values = (plan.subject_id, plan.provider, plan.provider_id,
+    values = (plan.approval_ref, plan.subject_id, plan.provider, plan.provider_id,
               plan.source_root_ref, plan.destination_root_ref,
               plan.destination_library_ref)
     if not all(isinstance(value, str) and value.strip() for value in values):
@@ -102,6 +107,7 @@ def _insert_receipt(conn: sqlite3.Connection, operation_id: str,
                     plan: VideoMovePlan) -> None:
     operation_key = _digest({
         "subject_id": plan.subject_id,
+        "approval_ref": plan.approval_ref,
         "provider": plan.provider,
         "provider_id": plan.provider_id,
         "source_root_ref": plan.source_root_ref,
@@ -110,12 +116,13 @@ def _insert_receipt(conn: sqlite3.Connection, operation_id: str,
     try:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute('''INSERT INTO video_move_receipts (
-        operation_id, operation_key, subject_digest, identity_digest, source_root_digest,
+        operation_id, operation_key, approval_digest, subject_digest, identity_digest, source_root_digest,
         destination_root_digest, destination_library_digest, media_kind,
         move_files, idle_observed, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 'prepared')''', (
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 'prepared')''', (
         operation_id,
         operation_key,
+        _digest({"approval_ref": plan.approval_ref}),
         _digest({"subject_id": plan.subject_id}),
         _digest({"provider": plan.provider, "provider_id": plan.provider_id}),
         _digest({"root_ref": plan.source_root_ref}),

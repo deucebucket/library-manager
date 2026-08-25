@@ -19,6 +19,7 @@ from library_manager.video.organize import (  # noqa: E402
 
 
 PLAN = VideoMovePlan(
+    approval_ref="opaque-one-use-approval",
     subject_id="opaque-catalogue-item",
     provider="tmdb",
     provider_id="opaque-provider-id",
@@ -122,7 +123,7 @@ def test_committed_receipt_is_private():
     assert row["move_files"] == 1 and row["idle_observed"] == 1
     assert row["destination_verified"] == 1 and row["library_verified"] == 1
     serialized = repr(row)
-    for private in (PLAN.subject_id, PLAN.provider_id, PLAN.source_root_ref,
+    for private in (PLAN.approval_ref, PLAN.subject_id, PLAN.provider_id, PLAN.source_root_ref,
                     PLAN.destination_root_ref, PLAN.destination_library_ref):
         assert private not in serialized
     conn.close()
@@ -144,6 +145,16 @@ def test_duplicate_operation_is_idempotently_refused():
         assert str(exc) == "move_receipt_exists"
     assert len(catalogue.calls) == 1
     assert conn.execute("SELECT COUNT(*) FROM video_move_receipts").fetchone()[0] == 1
+    changed_destination = replace(
+        PLAN, destination_root_ref="another-documentary-root")
+    try:
+        asyncio.run(execute_move(
+            changed_destination, conn=conn, catalogue=catalogue,
+            visibility=Visibility(), idle_probe=idle))
+        raise AssertionError("one approval authorized two move plans")
+    except OrganizationRefused as exc:
+        assert str(exc) == "move_receipt_exists"
+    assert len(catalogue.calls) == 1
     conn.close()
     print("[PASS] one active/committed receipt prevents duplicate provider mutation")
 

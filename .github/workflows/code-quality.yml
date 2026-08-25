@@ -58,6 +58,14 @@ jobs:
           python test-env/test-presort.py
           python test-env/test-ai-providers.py
           python test-env/test-ai-provider-integration.py
+          python test-env/test-video-naming.py
+          python test-env/test-video-identify.py
+          python test-env/test-plex-client.py
+          python test-env/test-video-organize.py
+          python test-env/test-video-adapters.py
+          python test-env/test-video-organization-service.py
+          python test-env/test-music-inspection.py
+          python test-env/test-read-only-service.py
 
   version-check:
     runs-on: ubuntu-latest
