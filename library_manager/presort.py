@@ -476,6 +476,8 @@ def _flatten_plan(folder, watch_root):
         f"Found {len(nested_files)} files below {len(top_groups)} nested folder"
         f"{'s' if len(top_groups) != 1 else ''}; flatten without overwriting names"
     )
+    if len(top_groups) != 1:
+        reason += '; multiple nested audio groups may be separate books and require manual handling'
     existing = {
         str(path).casefold() for path in folder.iterdir()
         if path.is_file() or path.is_symlink()
@@ -498,7 +500,10 @@ def _flatten_plan(folder, watch_root):
             'Symlink or unsupported entry requires manual review',
         ))
 
-    applicable = bool(items) and not unsupported
+    # One redundant wrapper is safe to remove automatically. Multiple top-level
+    # audio folders may represent separate books, so never combine them into one
+    # watch-folder handoff even when their filenames do not collide.
+    applicable = bool(items) and not unsupported and len(top_groups) == 1
     return {
         'action': 'flatten',
         'display_name': folder.name,

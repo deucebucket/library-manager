@@ -260,6 +260,33 @@ def test_nested_folder_flatten_and_undo():
         temporary.cleanup()
 
 
+def test_multiple_nested_audio_groups_cannot_be_flattened_together():
+    temporary, watch, config = make_case()
+    try:
+        bundle = watch / 'Two Nested Books'
+        write_old(bundle / 'Book Alpha' / 'chapter.mp3', b'alpha chapter')
+        write_old(bundle / 'Book Beta' / 'chapter.mp3', b'beta chapter')
+
+        scan_presort_plans(database.get_db, config)
+        plan = one_plan('flatten')
+        assert plan['confidence'] == 'medium'
+        assert plan['applicable'] == 0
+        assert plan['auto_applicable'] == 0
+        assert 'may be separate books' in plan['reason']
+
+        success, message, operation_id = apply_presort_plan(
+            database.get_db, config, plan['id'],
+        )
+        assert not success and operation_id is None
+        assert 'requires manual correction' in message.lower()
+        assert (bundle / 'Book Alpha' / 'chapter.mp3').read_bytes() == b'alpha chapter'
+        assert (bundle / 'Book Beta' / 'chapter.mp3').read_bytes() == b'beta chapter'
+        assert not (bundle / 'chapter.mp3').exists()
+        print('[PASS] separate nested audio groups cannot be flattened into one book')
+    finally:
+        temporary.cleanup()
+
+
 def test_settle_window_and_source_mutation_block():
     temporary, watch, config = make_case()
     try:
@@ -763,6 +790,7 @@ def main():
     test_unassigned_companion_blocks_apply_without_losing_inventory()
     test_multipart_folder_merge_receipt_and_undo()
     test_nested_folder_flatten_and_undo()
+    test_multiple_nested_audio_groups_cannot_be_flattened_together()
     test_settle_window_and_source_mutation_block()
     test_mid_move_failure_rolls_back_and_verifies_every_source()
     test_startup_recovers_interrupted_operation()

@@ -76,10 +76,16 @@ def run_browser(base_url, db_path, watch_root):
 
         success_row = plan_row(page, 'Browser Split')
         failure_row = plan_row(page, 'Rollback Split')
+        unsafe_flatten_row = plan_row(page, 'Two Nested Books')
         success_row.wait_for()
         failure_row.wait_for()
+        unsafe_flatten_row.wait_for()
         assert success_row.get_by_text('High confidence').is_visible()
         assert success_row.get_by_text('2 inventory items').is_visible()
+        assert unsafe_flatten_row.get_by_text('Medium confidence').is_visible()
+        assert unsafe_flatten_row.get_by_text('may be separate books', exact=False).is_visible()
+        assert unsafe_flatten_row.locator('button[title="Apply verified pre-sort plan"]').count() == 0
+        assert unsafe_flatten_row.get_by_role('button', name='Manual Correction Needed').is_disabled()
         success_row.get_by_role('button', name='2 inventory items').click()
         success_row.locator('tbody tr').first.wait_for()
         page.wait_for_timeout(500)
@@ -88,7 +94,7 @@ def run_browser(base_url, db_path, watch_root):
             full_page=True,
         )
         page.goto(f'{base_url}/', wait_until='networkidle')
-        dashboard_notice = page.get_by_text('2 verified pre-sort plans waiting for review', exact=False)
+        dashboard_notice = page.get_by_text('3 verified pre-sort plans waiting for review', exact=False)
         assert dashboard_notice.is_visible()
         page.get_by_role('link', name='Review handoffs').click()
         page.wait_for_load_state('networkidle')
@@ -168,6 +174,8 @@ def run_browser(base_url, db_path, watch_root):
     assert (watch_root / 'Browser Split' / 'Book 2 - Beta.mp3').read_bytes() == b'beta browser'
     assert (watch_root / 'Rollback Split' / 'Book 1 - Gamma.mp3').read_bytes() == b'gamma rollback'
     assert (watch_root / 'Rollback Split' / 'Book 2 - Delta.mp3').read_bytes() == b'delta rollback'
+    assert (watch_root / 'Two Nested Books' / 'Book Alpha' / 'chapter.mp3').read_bytes() == b'alpha nested'
+    assert (watch_root / 'Two Nested Books' / 'Book Beta' / 'chapter.mp3').read_bytes() == b'beta nested'
     assert not (watch_root / 'Book 1 - Alpha').exists()
     assert not (watch_root / 'Book 1 - Gamma').exists()
     saved_config = json.loads((db_path.parent / 'config.json').read_text(encoding='utf-8'))
@@ -213,6 +221,8 @@ def main():
         write_old(watch_root / 'Browser Split' / 'Book 2 - Beta.mp3', b'beta browser')
         write_old(watch_root / 'Rollback Split' / 'Book 1 - Gamma.mp3', b'gamma rollback')
         write_old(watch_root / 'Rollback Split' / 'Book 2 - Delta.mp3', b'delta rollback')
+        write_old(watch_root / 'Two Nested Books' / 'Book Alpha' / 'chapter.mp3', b'alpha nested')
+        write_old(watch_root / 'Two Nested Books' / 'Book Beta' / 'chapter.mp3', b'beta nested')
 
         config = {
             'library_paths': [str(library_root)],

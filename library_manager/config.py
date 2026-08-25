@@ -148,7 +148,7 @@ DEFAULT_CONFIG = {
     "presort_enabled": False,              # Detect split/merge/flatten plans in the watch folder
     "presort_auto_apply": False,           # Auto-apply only high-confidence, fully assigned plans
     "presort_settle_seconds": 300,         # Require every source file to remain unchanged this long
-    "presort_use_fingerprints": True,       # Ask Skaldleita fingerprints to resolve ambiguous bundles
+    "presort_use_fingerprints": True,      # Ask Skaldleita fingerprints to resolve ambiguous bundles
     # Post-processing hooks - run commands/webhooks after a book is renamed (Issue #166)
     "post_processing_hooks": [],
     # Custom HTTP API layers - user-defined external API processing layers (Issue #185)
