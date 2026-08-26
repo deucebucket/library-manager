@@ -35,11 +35,13 @@ Library Manager continues to use Skaldleita for hosted metadata and audio identi
 ### Skaldleita access
 
 No signup is required for the default hosted service. If `bookdb_api_key` is empty,
-Library Manager selects its bundled shared key before each request; that tier is heavily
-rate-limited per source IP. A configured personal key is preferred and is never retried
-with the shared key after a rejection. Every protected Skaldleita route receives signed
-client/version headers, including metadata search, ISBN, fingerprint, narrator, voice,
-community contribution, and audio identification.
+Library Manager selects its bundled shared key before each request; that tier allows
+300 requests/hour per source IP. A configured personal key is preferred, allows 300
+requests/hour per key, and is never retried with the shared key after a rejection. Audio
+identification additionally allows 10 uploads/minute per source IP and 100 GPU jobs/hour
+per authenticated caller. Every protected Skaldleita route receives signed client/version
+headers, including metadata search, ISBN, fingerprint, narrator, voice, community
+contribution, and audio identification.
 
 The hosted service requires Library Manager `0.9.0-beta.168` or newer. Beta.168 is the
 first Docker/Unraid release that signs the real application version from its `python
@@ -49,11 +51,13 @@ denied with upgrade guidance.
 ![Optional personal key and no-signup shared access](images/skaldleita-shared-access-settings.png)
 
 Authentication responses are intentionally fail-closed: `401` and `403` stop the current
-task and suppress further Skaldleita traffic until Library Manager restarts or the user
-explicitly changes the credential. `429` is temporary and uses the server's
-`Retry-After` guidance. Server-side client blocks and minimum-version checks happen
-before key authorization, so an old or quarantined instance cannot bypass its denial by
-switching between personal and shared keys.
+task and suppress further protected metadata/audio workflow traffic until Library
+Manager restarts or the user explicitly replaces/removes the personal credential.
+Settings key validation reports a rejection without arming that workflow denial state.
+`429` is temporary and uses the server's `Retry-After` guidance. Server-side client
+blocks and minimum-version checks happen before key authorization, so an old or
+quarantined instance cannot bypass its denial by switching between personal and shared
+keys.
 
 Self-hosted compatible deployments can set `bookdb_url` in `config.json`; the default is
 `https://bookdb.deucebucket.com`.

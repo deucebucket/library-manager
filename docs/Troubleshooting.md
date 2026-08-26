@@ -40,10 +40,13 @@ Use Library Manager `0.9.0-beta.168` or newer. Older Docker and Unraid builds ca
 report an invalid client version and are intentionally rejected before metadata
 matching begins. A `401` means the selected credential was rejected; a `403`
 means the client, version, signature, or source address was denied. Both are
-terminal for the current process so a broken instance cannot keep looping or
-downgrade from a rejected personal key to the shared key.
+terminal for protected metadata/audio workflows so a broken instance cannot
+keep looping or downgrade from a rejected personal key to the shared key.
+Settings validation reports a rejected saved key without arming that terminal
+workflow state.
 
-Correct the key or update Library Manager, then restart the app. A `429` is
+Update Library Manager and restart the app, or explicitly replace/remove the
+saved personal key in Settings to clear the workflow denial state. A `429` is
 temporary: wait for the displayed `Retry-After` interval instead of repeatedly
 clicking Search or restarting.
 

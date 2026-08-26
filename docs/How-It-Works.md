@@ -44,8 +44,10 @@ Skaldleita requests select one credential before sending: a saved personal key,
 or the bundled shared key when no personal key exists. Every protected route is
 signed with the real Library Manager version. Server-side source blocks,
 minimum-version policy, and signature checks run before key authorization;
-`401`/`403` responses abort the current task and suppress further Skaldleita
-traffic for that process, while `429` remains recoverable after its retry delay.
+`401`/`403` responses abort the current task and suppress further protected
+metadata/audio workflow traffic until restart or explicit personal-key
+replacement/removal. Settings key validation reports rejection without arming
+that workflow state. `429` remains recoverable after its retry delay.
 
 ## Candidate checks
 

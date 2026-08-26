@@ -13,10 +13,11 @@ All notable changes to Library Manager will be documented in this file.
 
 ### Safety
 - **Terminal authentication denials** — A Skaldleita `401` or `403` aborts the current
-  watch task and suppresses every further Skaldleita request for the process lifetime.
-  A rejected personal key is never retried with the shared credential. Only a restart
-  or an explicit credential replacement/removal clears the local denial; `429` remains
-  temporary and honors normal rate-limit handling.
+  watch task and suppresses further protected metadata/audio workflow traffic until
+  restart or explicit personal-key replacement/removal. A rejected personal key is
+  never retried with the shared credential. Settings key validation reports a rejection
+  without arming the workflow denial state; `429` remains temporary and honors normal
+  rate-limit handling.
 - **Coordinated old-client gate** — Skaldleita checks IP bans, blocked/minimum Library
   Manager versions, and request signatures before authorizing either shared or personal
   keys. This keeps quarantined or looping old clients denied even when they know the

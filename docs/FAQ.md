@@ -37,8 +37,11 @@ Metadata can come from Skaldleita, Audnexus, OpenLibrary, Google Books, and Hard
 
 No. Library Manager `0.9.0-beta.168` and newer use a bundled Skaldleita key when
 no personal key is saved. Shared access is limited to 300 requests/hour per
-source IP. A personal key is optional and currently has the same hourly
-allowance, but gives you a dedicated credential and email-based recovery.
+source IP. A personal key is optional and currently permits 300 requests/hour
+per key, giving you a dedicated credential and email-based recovery. Audio
+identification additionally allows 10 uploads/minute per source IP and 100 GPU
+jobs/hour per authenticated caller; the general 300/hour allowance is not the
+only audio limit.
 
 Skaldleita still enforces IP blocks, signed-client verification, and its minimum
 Library Manager version before authorizing either credential. A rejected
