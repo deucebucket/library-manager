@@ -41,6 +41,11 @@ with the shared key after a rejection. Every protected Skaldleita route receives
 client/version headers, including metadata search, ISBN, fingerprint, narrator, voice,
 community contribution, and audio identification.
 
+The hosted service requires Library Manager `0.9.0-beta.168` or newer. Beta.168 is the
+first Docker/Unraid release that signs the real application version from its `python
+app.py` entrypoint; older containers report an invalid version and are intentionally
+denied with upgrade guidance.
+
 Authentication responses are intentionally fail-closed: `401` and `403` stop the current
 task and suppress further Skaldleita traffic until Library Manager restarts or the user
 explicitly changes the credential. `429` is temporary and uses the server's
