@@ -923,10 +923,10 @@
                                     <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('bookdb_api_key')" title="Show/hide key">
                                         <i class="bi bi-eye"></i>
                                     </button>
-                                    <button class="btn btn-outline-info" type="button" onclick="validateSkaldleitaKey()" title="Validate key">
+                                    {% if config.has_bookdb_api_key %}
+                                    <button class="btn btn-outline-info" type="button" onclick="validateSkaldleitaKey()" title="Validate saved personal key">
                                         <i class="bi bi-check-circle"></i>
                                     </button>
-                                    {% if config.has_bookdb_api_key %}
                                     <span class="input-group-text bg-success text-white"><i class="bi bi-check"></i></span>
                                     <button class="btn btn-outline-danger" type="button" onclick="clearApiKey('bookdb_api_key')" title="Remove key">
                                         <i class="bi bi-trash"></i>
@@ -944,7 +944,7 @@
                                     <div class="card-body">
                                         <p class="small text-muted mb-2">
                                             No signup is required: Library Manager uses a heavily rate-limited shared key by default.
-                                            Register a personal key for a higher allowance; it will be emailed to you and automatically applied.
+                                            Register a personal key for a dedicated credential and email-based recovery; it will be emailed to you and automatically applied.
                                         </p>
                                         <div class="mb-2">
                                             <label class="form-label small mb-1">Email Address</label>
@@ -960,7 +960,7 @@
                                 {% endif %}
 
                                 <small class="text-muted d-block mt-1">
-                                    The shared key works without signup. Paste a personal key above for a higher allowance.
+                                    The shared key works without signup at 300 requests/hour per source IP. A personal key is optional and currently has the same hourly allowance.
                                 </small>
                             </div>
 
@@ -2588,7 +2588,10 @@ setInterval(refreshLogs, 10000);
 
 // Clear API key
 function clearApiKey(keyName) {
-    if (!confirm('Remove this API key? You will need to re-enter it to use this service.')) return;
+    const prompt = keyName === 'bookdb_api_key'
+        ? 'Remove this personal Skaldleita key? No-signup shared access will remain available.'
+        : 'Remove this API key? You will need to re-enter it to use this service.';
+    if (!confirm(prompt)) return;
 
     fetch('/api/clear_api_key', {
         method: 'POST',

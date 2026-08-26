@@ -22,6 +22,19 @@ All notable changes to Library Manager will be documented in this file.
   keys. This keeps quarantined or looping old clients denied even when they know the
   bundled key, while the shared tier remains rate-limited per source IP.
 
+### Fixed
+- **Container entrypoint version signing** — Docker and Unraid start `app.py` as the
+  `__main__` module. Skaldleita requests now resolve `APP_VERSION` from that real startup
+  mode instead of signing as `LibraryManager/unknown` and being rejected by the client
+  version gate.
+- **Narrator lookup miss remains non-terminal** — Library Manager no longer follows a
+  normal voice lookup miss by calling Skaldleita's intentionally dashboard-only curated
+  narrator-write route, which would return a terminal `403` for ordinary users. Voice
+  signatures continue through the separate supported contribution workflow.
+- **Accurate personal-key controls** — Settings shows validation only for a saved
+  personal key, states the current equal 300/hour shared and personal allowances, and
+  explains that removing a personal key restores no-signup shared access.
+
 ## [0.9.0-beta.167] - 2026-08-25
 
 ### Added

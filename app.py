@@ -85,7 +85,7 @@ from library_manager.providers import (
     handle_rate_limit_response,
     API_RATE_LIMITS, API_CIRCUIT_BREAKER,
     search_audnexus, lookup_audnexus_by_asin, search_openlibrary, search_google_books, search_hardcover,
-    get_bookdb_headers, get_bookdb_url, handle_terminal_auth_response,
+    get_signed_headers, get_bookdb_headers, get_bookdb_url, handle_terminal_auth_response,
     get_terminal_server_denial, clear_terminal_server_denial,
     search_bookdb as _search_bookdb_raw, identify_audio_with_bookdb,
     identify_by_fingerprint,
@@ -11822,10 +11822,7 @@ def api_skaldleita_register():
                 'total_books': total_books,
                 'library_name': data.get('library_name', '')
             },
-            headers={
-                'User-Agent': f'LibraryManager/{APP_VERSION}',
-                'Content-Type': 'application/json'
-            },
+            headers={**get_signed_headers(), 'Content-Type': 'application/json'},
             timeout=30
         )
 

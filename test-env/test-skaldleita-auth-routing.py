@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from types import ModuleType
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -52,6 +53,24 @@ def test_headers_choose_one_credential():
         assert headers['X-LM-Signature']
         assert headers['X-LM-Timestamp']
         assert headers['X-LM-Nonce']
+
+
+def test_real_python_app_entrypoint_resolves_version_from_main():
+    """Docker/Unraid execute app.py as __main__, not as an app import."""
+    entrypoint_module = ModuleType('__main__')
+    entrypoint_module.APP_VERSION = "0.9.0-beta.168"
+
+    with patch.dict(sys.modules, {'__main__': entrypoint_module}):
+        loaded_app = sys.modules.pop('app', None)
+        try:
+            assert bookdb.get_lm_version() == "0.9.0-beta.168"
+            headers = bookdb.get_signed_headers()
+        finally:
+            if loaded_app is not None:
+                sys.modules['app'] = loaded_app
+
+    assert headers['User-Agent'] == "LibraryManager/0.9.0-beta.168"
+    assert headers['X-LM-Signature']
 
 
 def test_configured_route_and_personal_key():
@@ -212,6 +231,25 @@ def test_match_route_uses_configured_service_and_public_key():
     assert calls[0][0] == "http://127.0.0.1:9876/custom/match"
     assert calls[0][1]['headers']['X-API-Key'] == bookdb.BOOKDB_PUBLIC_KEY
     assert calls[0][1]['headers']['X-LM-Signature']
+
+
+def test_narrator_lookup_miss_does_not_call_admin_write_route():
+    reset()
+    with patch.object(fingerprint, "extract_voice_embedding", return_value=Embedding()), \
+            patch.object(fingerprint, "lookup_narrator", return_value={"match": False}), \
+            patch.object(
+                fingerprint,
+                "contribute_narrator",
+                side_effect=AssertionError("ordinary LM caller reached admin narrator write"),
+            ):
+        result = fingerprint.verify_narrator(
+            "/library/Author/Book/audio.m4b",
+            "Example Narrator",
+            api_key=None,
+        )
+
+    assert result['recommendation'] == 'no_profile'
+    assert bookdb.get_terminal_server_denial() is None
 
 
 if __name__ == "__main__":

@@ -699,14 +699,10 @@ def verify_narrator(
         result['recommendation'] = 'no_profile'
         logger.debug(f"[NARRATOR] No voice profile for: {tagged_narrator}")
 
-        # Still contribute this voice for future matching
-        if tagged_narrator:
-            contribute_narrator(
-                embedding, tagged_narrator,
-                book_title=os.path.basename(os.path.dirname(audio_path)),
-                api_key=api_key,
-                bookdb_url=bookdb_url,
-            )
+        # /api/narrator mutates the curated narrator library and intentionally
+        # requires Skaldleita's dashboard key. Ordinary LM callers must not
+        # auto-call that admin route after a harmless lookup miss. The separate
+        # /api/voice workflow stores opt-in voice signatures for later matching.
 
     return result
 

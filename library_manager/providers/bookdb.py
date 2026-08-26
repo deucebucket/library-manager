@@ -190,19 +190,27 @@ BOOKDB_PUBLIC_KEY = "lm-public-2024_85TbJ2lbrXGm38tBgliPAcAexLA_AeWxyqvHPbwRIrA"
 
 # User-Agent for tracking requests (helps identify Library Manager traffic)
 def get_lm_version():
-    """Get Library Manager version from app.py"""
+    """Get the version from the loaded Library Manager application module.
+
+    Docker and Unraid launch ``python app.py``, which registers the application
+    as ``__main__`` rather than ``app``. Check both names so production requests
+    are never signed as ``LibraryManager/unknown`` merely because of the entry
+    point used to start the same application.
+    """
     try:
         import sys
-        # Try to get version from app module if loaded
-        if 'app' in sys.modules:
-            return getattr(sys.modules['app'], 'APP_VERSION', 'unknown')
-    except:
+        for module_name in ('app', '__main__'):
+            module = sys.modules.get(module_name)
+            version = getattr(module, 'APP_VERSION', None) if module else None
+            if isinstance(version, str) and version.strip():
+                return version.strip()
+    except (AttributeError, TypeError):
         pass
     return 'unknown'
 
 
 def get_user_agent():
-    """Get User-Agent string with version from app.py"""
+    """Get the Library Manager User-Agent for Skaldleita requests."""
     return f"LibraryManager/{get_lm_version()}"
 
 
