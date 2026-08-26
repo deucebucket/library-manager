@@ -2,7 +2,7 @@
 
 All notable changes to Library Manager will be documented in this file.
 
-## [Unreleased]
+## [0.9.0-beta.169] - 2026-08-26
 
 ### Fixed
 - **#312: Jellyfin 10.11 exact video visibility** — Independent video-move
