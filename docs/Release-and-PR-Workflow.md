@@ -19,6 +19,7 @@ Documentation is part of every user-visible change. A pull request is not ready 
    - `docs/images/presort-review.png`
    - `docs/images/presort-committed-receipt.png`
    - `docs/images/presort-rollback-receipt.png`
+   - `docs/images/skaldleita-shared-access-settings.png`
 
 9. In the PR description, list documentation files reviewed, tests/browser flows run, screenshots, migration/rollback notes, and intentionally omitted uncertain claims.
 

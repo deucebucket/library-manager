@@ -34,6 +34,19 @@ Use **History → Undo**. Undo is blocked if both sides exist or either path lea
 
 Check provider credentials, model ID, endpoint reachability, and Docker networking. The local request limiter defaults to 200/hour and clamps to 10–500/hour; wait for provider backoff/circuit-breaker recovery before repeatedly retrying.
 
+## Skaldleita denied this client
+
+Use Library Manager `0.9.0-beta.168` or newer. Older Docker and Unraid builds can
+report an invalid client version and are intentionally rejected before metadata
+matching begins. A `401` means the selected credential was rejected; a `403`
+means the client, version, signature, or source address was denied. Both are
+terminal for the current process so a broken instance cannot keep looping or
+downgrade from a rejected personal key to the shared key.
+
+Correct the key or update Library Manager, then restart the app. A `429` is
+temporary: wait for the displayed `Retry-After` interval instead of repeatedly
+clicking Search or restarting.
+
 ## Database locked or worker stuck
 
 Stop overlapping scans/process requests and allow the current worker to finish. Restart if the lock persists, then inspect the first error in the logs. Keep one active worker per data directory.

@@ -37,6 +37,11 @@ docker compose up -d
   - [OpenRouter](https://openrouter.ai) (multiple models available)
 - Or a reachable Ollama, llama.cpp, or OpenAI-compatible server (local providers can run without a hosted key)
 
+Skaldleita metadata and audio identification do not require signup in
+`0.9.0-beta.168` or newer. Library Manager uses its bundled, per-IP-limited
+shared credential when no personal Skaldleita key is saved. A personal key is
+optional and is never exposed in configuration examples or logs.
+
 ## First Run
 
 1. Open http://localhost:5757

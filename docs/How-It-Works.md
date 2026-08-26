@@ -40,6 +40,13 @@ Folder and filename hints remain a fallback for items that earlier layers cannot
 
 Metadata can come from Skaldleita/BookDB, Audnexus, OpenLibrary, Google Books, and Hardcover. AI choices are Gemini, OpenRouter, Ollama, and llama.cpp/OpenAI-compatible servers.
 
+Skaldleita requests select one credential before sending: a saved personal key,
+or the bundled shared key when no personal key exists. Every protected route is
+signed with the real Library Manager version. Server-side source blocks,
+minimum-version policy, and signature checks run before key authorization;
+`401`/`403` responses abort the current task and suppress further Skaldleita
+traffic for that process, while `429` remains recoverable after its retry delay.
+
 ## Candidate checks
 
 Results are compared with title, author, language, and series hints. Garbage title/author matches, placeholder authors, and third-party summary/derivative matches are rejected unless the source filename clearly indicates a summary. Uncertain or drastic changes are held for review according to safety settings.
