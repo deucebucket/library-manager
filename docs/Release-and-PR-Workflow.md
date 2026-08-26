@@ -11,7 +11,12 @@ Documentation is part of every user-visible change. A pull request is not ready 
 5. Update `CHANGELOG.md`, `README.md`, `config.example.json`, and relevant docs when behavior, configuration, or version changes.
 6. Audit the GitHub wiki in an isolated wiki clone against the final branch. Remove obsolete claims, correct paths/ports/defaults/provider names, add verified behavior, and preserve useful navigation/history.
 7. Verify README/docs/wiki claims against source, templates, packaging, tests, or release notes. Do not publish provider quotas, performance percentages, database sizes, or future integrations without a current source.
-8. For UI changes, capture fresh screenshots from the final branch and include them in the PR. Receipt-related changes must include the History receipt list, committed receipt modal, and rollback/manual-recovery receipt views. Current references are:
+8. For coordinated Skaldleita contract/authentication changes, merge and deploy
+   the server first. Before publishing or merging the Library Manager client,
+   verify production `/health` reports `lm_public_access_configured: true` and
+   the intended `min_library_manager_version`, then exercise live signed success,
+   terminal `401`/`403`, and temporary `429` behavior from the final client branch.
+9. For UI changes, capture fresh screenshots from the final branch and include them in the PR. Receipt-related changes must include the History receipt list, committed receipt modal, and rollback/manual-recovery receipt views. Current references are:
 
    - `docs/images/transfer-receipts-history.png`
    - `docs/images/transfer-receipt-committed.png`
@@ -19,8 +24,9 @@ Documentation is part of every user-visible change. A pull request is not ready 
    - `docs/images/presort-review.png`
    - `docs/images/presort-committed-receipt.png`
    - `docs/images/presort-rollback-receipt.png`
+   - `docs/images/skaldleita-shared-access-settings.png`
 
-9. In the PR description, list documentation files reviewed, tests/browser flows run, screenshots, migration/rollback notes, and intentionally omitted uncertain claims.
+10. In the PR description, list documentation files reviewed, tests/browser flows run, screenshots, migration/rollback notes, and intentionally omitted uncertain claims.
 
 ## Documentation checklist
 

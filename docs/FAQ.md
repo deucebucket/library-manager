@@ -33,6 +33,20 @@ It can move a complete book folder or a loose media file into a generated destin
 
 Metadata can come from Skaldleita, Audnexus, OpenLibrary, Google Books, and Hardcover. Optional AI verification uses the configured Gemini, OpenRouter, Ollama, or OpenAI-compatible provider.
 
+### Do I need to register for a Skaldleita key?
+
+No. Library Manager `0.9.0-beta.168` and newer use a bundled Skaldleita key when
+no personal key is saved. Shared access is limited to 300 requests/hour per
+source IP. A personal key is optional and currently permits 300 requests/hour
+per key, giving you a dedicated credential and email-based recovery. Audio
+identification additionally allows 10 uploads/minute per source IP and 100 GPU
+jobs/hour per authenticated caller; the general 300/hour allowance is not the
+only audio limit.
+
+Skaldleita still enforces IP blocks, signed-client verification, and its minimum
+Library Manager version before authorizing either credential. A rejected
+personal key is never retried with the shared key.
+
 ### What are the provider limits?
 
 Hosted provider limits vary by account and model; check the provider's current documentation. Library Manager also applies its own configurable request limiter (default 200/hour, Settings clamp 10–500/hour).

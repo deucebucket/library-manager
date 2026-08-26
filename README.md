@@ -19,7 +19,7 @@
 > **beta.168** - **Safe no-signup Skaldleita access**
 > - Uses the bundled, per-IP-limited shared key when no personal Skaldleita key is configured.
 > - Signs every protected metadata, ISBN, fingerprint, narrator, voice, contribution, and audio-ID request with the full Library Manager version.
-> - Treats `401`/`403` as terminal and never downgrades a rejected personal key to the shared key; `429` remains temporary.
+> - Treats `401`/`403` as terminal for protected workflows until restart or explicit personal-key replacement/removal, and never downgrades a rejected personal key to the shared key; Settings validation can still report a rejection and `429` remains temporary.
 > - Skaldleita applies client blocks, minimum-version policy, and signature checks before either shared or personal key authorization.
 
 > **beta.161** - **#300: Verified apply-fix transfer receipts**
