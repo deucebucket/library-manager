@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama, OpenAI-compatible APIs)
 """
 
-APP_VERSION = "0.9.0-beta.167"
+APP_VERSION = "0.9.0-beta.168"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -85,7 +85,8 @@ from library_manager.providers import (
     handle_rate_limit_response,
     API_RATE_LIMITS, API_CIRCUIT_BREAKER,
     search_audnexus, lookup_audnexus_by_asin, search_openlibrary, search_google_books, search_hardcover,
-    BOOKDB_API_URL, BOOKDB_PUBLIC_KEY, get_signed_headers,
+    get_signed_headers, get_bookdb_headers, get_bookdb_url, handle_terminal_auth_response,
+    get_terminal_server_denial, clear_terminal_server_denial,
     search_bookdb as _search_bookdb_raw, identify_audio_with_bookdb,
     identify_by_fingerprint,
     call_ollama as _call_ollama_raw, call_ollama_simple as _call_ollama_simple_raw,
@@ -279,6 +280,7 @@ def contribute_to_community(title, author=None, narrator=None, series=None,
         return False
 
     try:
+        secrets = load_secrets()
         result = _contribute_to_bookdb_api(
             title=title,
             author=author,
@@ -286,7 +288,9 @@ def contribute_to_community(title, author=None, narrator=None, series=None,
             series=series,
             series_position=series_position,
             source=source,
-            confidence=confidence
+            confidence=confidence,
+            bookdb_url=config.get('bookdb_url'),
+            api_key=secrets.get('bookdb_api_key')
         )
         if result:
             logger.info(f"[COMMUNITY] Contributed: {author}/{title} (source: {source})")
@@ -317,7 +321,12 @@ def lookup_community_consensus(title, author=None):
         return None
 
     try:
-        consensus = _lookup_community_api(title, author)
+        config = load_config()
+        secrets = load_secrets()
+        consensus = _lookup_community_api(
+            title, author,
+            bookdb_url=config.get('bookdb_url'),
+            api_key=secrets.get('bookdb_api_key'))
         if consensus and consensus.get('found'):
             logger.debug(f"[COMMUNITY] Found consensus for {title}: {consensus.get('author')} ({consensus.get('confidence')})")
             return consensus
@@ -1333,9 +1342,14 @@ def lookup_book_metadata(messy_name, config, folder_path=None):
     audible_region = get_audible_region_for_language(preferred_lang)
 
     # 0. Try BookDB first (our private metadata service with fuzzy matching)
-    # Use user's key if configured, otherwise fall back to public key
-    bookdb_key = config.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
-    result = validate_result(search_bookdb(clean_title, author=author_hint, api_key=bookdb_key), clean_title)
+    # Credential selection happens once in the provider: a configured personal
+    # key is never retried with the shared public key after a denial.
+    result = validate_result(search_bookdb(
+        clean_title,
+        author=author_hint,
+        api_key=config.get('bookdb_api_key'),
+        bookdb_url=config.get('bookdb_url'),
+    ), clean_title)
     if result:
         return result
 
@@ -1383,7 +1397,9 @@ def gather_all_api_candidates(title, author=None, config=None):
     # Search each API and collect all results
     bookdb_url = config.get('bookdb_url') if config else None
     apis = [
-        ('BookDB', lambda t, a: search_bookdb(t, a, (config.get('bookdb_api_key') if config else None) or BOOKDB_PUBLIC_KEY, bookdb_url=bookdb_url)),
+        ('BookDB', lambda t, a: search_bookdb(
+            t, a, config.get('bookdb_api_key') if config else None,
+            bookdb_url=bookdb_url)),
         ('Audnexus', lambda t, a: search_audnexus(t, a, region=audible_region)),
         ('OpenLibrary', lambda t, a: search_openlibrary(t, a, lang=preferred_lang)),
         ('GoogleBooks', lambda t, a: search_google_books(t, a, config.get('google_books_api_key') if config else None, lang=preferred_lang)),
@@ -2043,13 +2059,15 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
     # ========== FINGERPRINT FAST PATH ==========
     # Try fingerprint lookup FIRST - instant if book is already known
     fingerprint_data = None
-    if config.get('enable_fingerprinting', True):  # Enabled by default
+    if config.get('enable_fingerprinting', True) and not get_terminal_server_denial():
         try:
             from library_manager.providers.fingerprint import try_fingerprint_identification, contribute_after_identification
             api_key = merged_config.get('bookdb_api_key')
 
             logger.info("[AUDIO CHAIN] Trying fingerprint lookup (fast path)...")
-            fingerprint_data = try_fingerprint_identification(audio_file, api_key=api_key, duration=120)
+            fingerprint_data = try_fingerprint_identification(
+                audio_file, api_key=api_key, duration=120,
+                bookdb_url=merged_config.get('bookdb_url'))
 
             if fingerprint_data and not fingerprint_data.get('_no_match'):
                 # Fingerprint matched! Use the result directly
@@ -2092,6 +2110,13 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
 
         try:
             if provider == 'bookdb':
+                denial = get_terminal_server_denial()
+                if denial:
+                    logger.warning("[AUDIO CHAIN] Skipping Skaldleita after terminal denial [%s]",
+                                   denial.get('code', 'invalid_client'))
+                    if not has_fallback:
+                        return None
+                    continue
                 # BookDB has GPU Whisper - best option
                 # Retry with backoff if connection fails (service might be restarting)
                 max_retries = 5 if not has_fallback else 2  # More retries if no fallback
@@ -2103,6 +2128,11 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
                         bookdb_url=merged_config.get('bookdb_url'),
                         api_key=merged_config.get('bookdb_api_key')
                     )
+                    denial = get_terminal_server_denial()
+                    if denial:
+                        logger.warning("[AUDIO CHAIN] Skaldleita denied this client [%s]; not retrying",
+                                       denial.get('code', 'invalid_client'))
+                        break
                     if result and result.get('title'):
                         logger.info(f"[AUDIO CHAIN] Success with bookdb: {result.get('author')} - {result.get('title')}")
                         # Contribute fingerprint - BookDB Whisper ID is different from fingerprint
@@ -2125,7 +2155,7 @@ def call_audio_provider_chain(audio_file, config, mode='credits', duration=90):
                     else:
                         break
 
-                if not has_fallback:
+                if not has_fallback and not get_terminal_server_denial():
                     # No fallback available, keep waiting for BookDB
                     logger.warning("[AUDIO CHAIN] BookDB failed and no fallback configured - will retry on next queue cycle")
                     return None  # Let the queue retry later
@@ -2233,7 +2263,8 @@ def _contribute_fingerprint_async(fingerprint_data, result, config):
                 'series': result.get('series', ''),
                 'series_position': result.get('series_position')
             },
-            api_key=api_key
+            api_key=api_key,
+            bookdb_url=config.get('bookdb_url'),
         )
 
         if success:
@@ -2274,7 +2305,9 @@ def _verify_and_correct_narrator(audio_file, result, config):
     try:
         from library_manager.providers.fingerprint import store_voice_after_identification
         api_key = config.get('bookdb_api_key')
-        store_voice_after_identification(audio_file, result, api_key=api_key)
+        store_voice_after_identification(
+            audio_file, result, api_key=api_key,
+            bookdb_url=config.get('bookdb_url'))
     except Exception as e:
         logger.debug(f"[VOICE] Storage error (non-fatal): {e}")
 
@@ -2285,7 +2318,9 @@ def _verify_and_correct_narrator(audio_file, result, config):
             from library_manager.providers.fingerprint import identify_narrator_by_voice
             api_key = config.get('bookdb_api_key')
 
-            identified = identify_narrator_by_voice(audio_file, threshold=0.6, api_key=api_key)
+            identified = identify_narrator_by_voice(
+                audio_file, threshold=0.6, api_key=api_key,
+                bookdb_url=config.get('bookdb_url'))
             if identified:
                 logger.info(f"[NARRATOR] Identified by voice: {identified}")
                 result['narrator'] = identified
@@ -2298,7 +2333,9 @@ def _verify_and_correct_narrator(audio_file, result, config):
         from library_manager.providers.fingerprint import verify_narrator, contribute_narrator, extract_voice_embedding
         api_key = config.get('bookdb_api_key')
 
-        verification = verify_narrator(audio_file, tagged_narrator, threshold=0.5, api_key=api_key)
+        verification = verify_narrator(
+            audio_file, tagged_narrator, threshold=0.5, api_key=api_key,
+            bookdb_url=config.get('bookdb_url'))
 
         if verification.get('recommendation') == 'correct':
             # Voice matches tagged narrator
@@ -2531,7 +2568,11 @@ def identify_ebook_from_filename(filename, folder_path, config):
     if config.get('enable_isbn_lookup', True) and folder_path:
         try:
             from library_manager.providers.isbn_lookup import identify_ebook_by_isbn
-            isbn_result = identify_ebook_by_isbn(folder_path)
+            isbn_result = identify_ebook_by_isbn(
+                folder_path,
+                api_key=config.get('bookdb_api_key'),
+                bookdb_url=config.get('bookdb_url'),
+            )
             if isbn_result:
                 logger.info(f"[EBOOK] ISBN lookup success: {isbn_result.get('author_name')} - {isbn_result.get('title')}")
                 return {
@@ -2594,35 +2635,25 @@ def identify_ebook_from_filename(filename, folder_path, config):
         search_query = f"{author} {title}" if author else title
         logger.debug(f"[EBOOK] Searching BookDB for: {search_query}")
 
-        api_key = config.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
-        headers = get_signed_headers() or {}
-        headers['X-API-Key'] = api_key
-
-        resp = requests.get(
-            f"{BOOKDB_API_URL}/search",
-            params={'q': search_query[:100]},  # Limit query length
-            headers=headers,
-            timeout=10
+        best = search_bookdb(
+            title,
+            author=author,
+            api_key=config.get('bookdb_api_key'),
+            bookdb_url=config.get('bookdb_url'),
         )
-
-        if resp.status_code == 200:
-            results = resp.json()
-            if results and len(results) > 0:
-                best = results[0]
-                # Check if it's a reasonable match
-                result_title = best.get('name', '')
-                result_author = best.get('author_name', '')
-
-                if result_title:
-                    logger.info(f"[EBOOK] BookDB found: {result_author} - {result_title}")
-                    return {
-                        'author': result_author or author,
-                        'title': result_title,
-                        'series': best.get('series_name'),
-                        'series_num': best.get('series_position'),
-                        'confidence': 'high' if result_author else 'medium',
-                        'source': 'bookdb'
-                    }
+        if best:
+            result_title = best.get('title') or best.get('name', '')
+            result_author = best.get('author') or best.get('author_name', '')
+            if result_title:
+                logger.info(f"[EBOOK] BookDB found: {result_author} - {result_title}")
+                return {
+                    'author': result_author or author,
+                    'title': result_title,
+                    'series': best.get('series') or best.get('series_name'),
+                    'series_num': best.get('series_num') or best.get('series_position'),
+                    'confidence': 'high' if result_author else 'medium',
+                    'source': 'bookdb'
+                }
     except Exception as e:
         logger.debug(f"[EBOOK] BookDB search error: {e}")
 
@@ -3417,13 +3448,18 @@ def search_bookdb_api(title, author=None, retry_count=0):
         logger.debug(f"BookDB API: Skipping unsearchable query '{search_title}'")
         return None
 
+    if get_terminal_server_denial():
+        logger.debug("BookDB API: terminal denial active, skipping search")
+        return None
+
     rate_limit_wait('bookdb')  # 3.6s delay = max 1000/hr, never skips
 
-    # Build headers with auth (Skaldleita requires auth on all endpoints)
+    # Select one credential before the request. A rejected personal key is
+    # terminal and must never be retried with the shared public credential.
+    config = load_config()
     secrets = load_secrets()
-    api_key = secrets.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
-    headers = get_signed_headers() or {}
-    headers['X-API-Key'] = api_key
+    api_key = secrets.get('bookdb_api_key')
+    base_url = get_bookdb_url(config.get('bookdb_url'))
 
     try:
         # Use longer timeout for cold start (embedding model can take 45-60s to load)
@@ -3431,9 +3467,9 @@ def search_bookdb_api(title, author=None, retry_count=0):
         for attempt in range(2):
             try:
                 response = requests.get(
-                    f"{BOOKDB_API_URL}/search",
+                    f"{base_url}/search",
                     params={"q": search_title, "limit": 5},
-                    headers=headers,
+                    headers=get_bookdb_headers(api_key),
                     timeout=60 if attempt == 0 else 30
                 )
                 break
@@ -3442,6 +3478,9 @@ def search_bookdb_api(title, author=None, retry_count=0):
                     logger.debug(f"BookDB API timeout on first attempt, retrying...")
                     continue
                 raise
+
+        if handle_terminal_auth_response(response, 'SKALDLEITA SEARCH'):
+            return None
 
         # Handle rate limiting with exponential backoff
         if response.status_code == 429:
@@ -7185,9 +7224,11 @@ def _scan_watch_presort(config):
     if config.get('presort_use_fingerprints', True):
         secrets = load_secrets()
         api_key = secrets.get('bookdb_api_key') or None
+        bookdb_url = config.get('bookdb_url')
 
         def identifier(audio_path):
-            return identify_by_fingerprint(audio_path, api_key=api_key)
+            return identify_by_fingerprint(
+                audio_path, api_key=api_key, bookdb_url=bookdb_url)
 
     return scan_presort_plans(get_db, config, identify_audio=identifier)
 
@@ -8014,6 +8055,8 @@ def settings_page():
         if new_google_books_key:
             secrets['google_books_api_key'] = new_google_books_key
         if new_bookdb_key:
+            if new_bookdb_key != secrets.get('bookdb_api_key'):
+                clear_terminal_server_denial()
             secrets['bookdb_api_key'] = new_bookdb_key
         save_secrets(secrets)
 
@@ -11480,7 +11523,7 @@ def api_bug_report():
         api_status['audiobookshelf'] = 'not configured'
 
     # BookDB
-    bookdb_url = config.get('bookdb_url', 'https://bookdb.deucebucket.com')
+    bookdb_url = get_bookdb_url(config.get('bookdb_url'))
     try:
         resp = requests.get(f"{bookdb_url}/health", timeout=5)
         api_status['bookdb'] = 'connected' if resp.status_code == 200 else f'error ({resp.status_code})'
@@ -11756,7 +11799,7 @@ def api_skaldleita_register():
         return jsonify({'success': False, 'error': 'Valid email address required'})
 
     config = load_config()
-    bookdb_url = config.get('bookdb_url', 'https://bookdb.deucebucket.com')
+    bookdb_url = get_bookdb_url(config.get('bookdb_url'))
     instance_id = get_instance_id()
 
     # Get library stats for registration metadata
@@ -11779,10 +11822,7 @@ def api_skaldleita_register():
                 'total_books': total_books,
                 'library_name': data.get('library_name', '')
             },
-            headers={
-                'User-Agent': f'LibraryManager/{APP_VERSION}',
-                'Content-Type': 'application/json'
-            },
+            headers={**get_signed_headers(), 'Content-Type': 'application/json'},
             timeout=30
         )
 
@@ -11794,6 +11834,7 @@ def api_skaldleita_register():
                     secrets = load_secrets()
                     secrets['bookdb_api_key'] = result['api_key']
                     save_secrets(secrets)
+                    clear_terminal_server_denial()
                 except Exception as e:
                     logger.error(f"Failed to save API key to secrets: {e}")
                     return jsonify({'success': False, 'error': 'Got key but failed to save it locally'})
@@ -11836,12 +11877,12 @@ def api_skaldleita_validate():
     if not api_key:
         return jsonify({'success': False, 'valid': False, 'error': 'No API key configured'})
 
-    bookdb_url = config.get('bookdb_url', 'https://bookdb.deucebucket.com')
+    bookdb_url = get_bookdb_url(config.get('bookdb_url'))
 
     try:
         resp = requests.get(
             f"{bookdb_url}/api/validate-key",
-            headers={'X-API-Key': api_key, 'User-Agent': f'LibraryManager/{APP_VERSION}'},
+            headers=get_bookdb_headers(api_key),
             timeout=10
         )
 
@@ -11877,7 +11918,7 @@ def api_instance_info():
 def api_test_bookdb():
     """Test connection to BookDB."""
     config = load_config()
-    bookdb_url = config.get('bookdb_url', 'https://bookdb.deucebucket.com')
+    bookdb_url = get_bookdb_url(config.get('bookdb_url'))
 
     try:
         resp = requests.get(f"{bookdb_url}/stats", timeout=5)
@@ -11941,6 +11982,10 @@ def api_clear_api_key():
         if key_name in secrets:
             del secrets[key_name]
             save_secrets(secrets)
+            if key_name == 'bookdb_api_key':
+                # This is an explicit credential change, not an automatic
+                # fallback after a rejected request.
+                clear_terminal_server_denial()
             logger.info(f"Cleared API key: {key_name}")
             return jsonify({
                 'success': True,
@@ -12619,6 +12664,11 @@ def api_search_bookdb():
     if not query or len(query) < 2:
         return jsonify({'error': 'Query must be at least 2 characters', 'results': []})
 
+    denial = get_terminal_server_denial()
+    if denial:
+        return jsonify({'error': 'Skaldleita denied this client',
+                        'error_code': denial['code'], 'results': []}), denial['status_code']
+
     # Keep original query for series number extraction
     original_query = query
 
@@ -12659,18 +12709,19 @@ def api_search_bookdb():
             params['author'] = author
 
         # Build headers with auth (Skaldleita requires auth on all endpoints)
+        config = load_config()
         secrets = load_secrets()
-        api_key = secrets.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
-        headers = get_signed_headers() or {}
-        headers['X-API-Key'] = api_key
+        api_key = secrets.get('bookdb_api_key')
+        base_url = get_bookdb_url(config.get('bookdb_url'))
 
         if search_type == 'all':
-            endpoint = f"{BOOKDB_API_URL}/search"
+            endpoint = f"{base_url}/search"
         else:
-            endpoint = f"{BOOKDB_API_URL}/search/{search_type}"
+            endpoint = f"{base_url}/search/{search_type}"
 
         # Longer timeout for cold start (embedding model can take 45-60s to load)
-        resp = requests.get(endpoint, params=params, headers=headers, timeout=60)
+        resp = requests.get(
+            endpoint, params=params, headers=get_bookdb_headers(api_key), timeout=60)
 
         if resp.status_code == 429:
             retry_after = resp.headers.get('Retry-After', '60')
@@ -12685,7 +12736,14 @@ def api_search_bookdb():
                 'results': []
             }), 429
 
-        if resp.status_code == 200:
+        denial = handle_terminal_auth_response(resp, 'MANUAL SKALDLEITA SEARCH')
+        if denial:
+            return jsonify({
+                'error': 'Skaldleita denied this client',
+                'error_code': denial['code'],
+                'results': [],
+            }), denial['status_code']
+        elif resp.status_code == 200:
             results = resp.json()
             # Enrich results with extracted series info if they lack it
             if results and extracted_series_num:
@@ -12805,7 +12863,8 @@ def api_bookdb_stats():
     Uses public /stats endpoint - no API key required.
     """
     try:
-        resp = requests.get(f"{BOOKDB_API_URL}/stats", timeout=5)
+        config = load_config()
+        resp = requests.get(f"{get_bookdb_url(config.get('bookdb_url'))}/stats", timeout=5)
         if resp.status_code == 200:
             return jsonify(resp.json())
         return jsonify({'error': f'BookBucket API error: {resp.status_code}'})
@@ -12821,13 +12880,23 @@ def api_book_detail(book_id):
     Get full book details from BookBucket + ABS status.
     Used for hover cards and detail modals.
     """
+    denial = get_terminal_server_denial()
+    if denial:
+        return jsonify({'error': 'Skaldleita denied this client',
+                        'error_code': denial['code']}), denial['status_code']
     try:
         # Fetch full book details from BookBucket
+        config = load_config()
         secrets = load_secrets()
-        api_key = secrets.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
-        headers = get_signed_headers() or {}
-        headers['X-API-Key'] = api_key
-        resp = requests.get(f"{BOOKDB_API_URL}/book/{book_id}", headers=headers, timeout=10)
+        api_key = secrets.get('bookdb_api_key')
+        resp = requests.get(
+            f"{get_bookdb_url(config.get('bookdb_url'))}/book/{book_id}",
+            headers=get_bookdb_headers(api_key), timeout=10)
+
+        denial = handle_terminal_auth_response(resp, 'SKALDLEITA BOOK DETAIL')
+        if denial:
+            return jsonify({'error': 'Skaldleita denied this client',
+                            'error_code': denial['code']}), denial['status_code']
 
         if resp.status_code != 200:
             return jsonify({'error': f'Book not found (status {resp.status_code})'})
@@ -12899,12 +12968,22 @@ def api_author_detail(author_id):
     Get author details from BookBucket.
     Used for hover cards on author search results.
     """
+    denial = get_terminal_server_denial()
+    if denial:
+        return jsonify({'error': 'Skaldleita denied this client',
+                        'error_code': denial['code']}), denial['status_code']
     try:
+        config = load_config()
         secrets = load_secrets()
-        api_key = secrets.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
-        headers = get_signed_headers() or {}
-        headers['X-API-Key'] = api_key
-        resp = requests.get(f"{BOOKDB_API_URL}/author/{author_id}", headers=headers, timeout=10)
+        api_key = secrets.get('bookdb_api_key')
+        resp = requests.get(
+            f"{get_bookdb_url(config.get('bookdb_url'))}/author/{author_id}",
+            headers=get_bookdb_headers(api_key), timeout=10)
+
+        denial = handle_terminal_auth_response(resp, 'SKALDLEITA AUTHOR DETAIL')
+        if denial:
+            return jsonify({'error': 'Skaldleita denied this client',
+                            'error_code': denial['code']}), denial['status_code']
 
         if resp.status_code != 200:
             return jsonify({'error': f'Author not found (status {resp.status_code})'})
@@ -12925,12 +13004,22 @@ def api_series_detail(series_id):
     Get series details from BookBucket.
     Used for hover cards on series search results.
     """
+    denial = get_terminal_server_denial()
+    if denial:
+        return jsonify({'error': 'Skaldleita denied this client',
+                        'error_code': denial['code']}), denial['status_code']
     try:
+        config = load_config()
         secrets = load_secrets()
-        api_key = secrets.get('bookdb_api_key') or BOOKDB_PUBLIC_KEY
-        headers = get_signed_headers() or {}
-        headers['X-API-Key'] = api_key
-        resp = requests.get(f"{BOOKDB_API_URL}/series/{series_id}", headers=headers, timeout=10)
+        api_key = secrets.get('bookdb_api_key')
+        resp = requests.get(
+            f"{get_bookdb_url(config.get('bookdb_url'))}/series/{series_id}",
+            headers=get_bookdb_headers(api_key), timeout=10)
+
+        denial = handle_terminal_auth_response(resp, 'SKALDLEITA SERIES DETAIL')
+        if denial:
+            return jsonify({'error': 'Skaldleita denied this client',
+                            'error_code': denial['code']}), denial['status_code']
 
         if resp.status_code != 200:
             return jsonify({'error': f'Series not found (status {resp.status_code})'})

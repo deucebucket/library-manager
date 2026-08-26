@@ -176,7 +176,8 @@ def _store_voice_and_identify_narrator(
             identified_narrator = identify_narrator_by_voice(
                 str(audio_path),
                 threshold=0.6,
-                api_key=api_key
+                api_key=api_key,
+                bookdb_url=config.get('bookdb_url'),
             )
             if identified_narrator:
                 logger.info(f"[VOICE] Identified narrator by voice: {identified_narrator}")
@@ -190,7 +191,8 @@ def _store_voice_and_identify_narrator(
         stored = store_voice_after_identification(
             str(audio_path),
             store_result,
-            api_key=api_key
+            api_key=api_key,
+            bookdb_url=config.get('bookdb_url'),
         )
 
         if stored:

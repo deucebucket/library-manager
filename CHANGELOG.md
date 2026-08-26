@@ -2,6 +2,39 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.168] - 2026-08-26
+
+### Added
+- **No-signup Skaldleita access** — When no personal key is configured, metadata,
+  ISBN, fingerprint, narrator, voice, contribution, and audio-identification requests
+  use Library Manager's bundled shared credential. Requests use the configured
+  `bookdb_url` and include the signed full Library Manager version on every protected
+  route; personal keys remain supported and are always preferred when configured.
+
+### Safety
+- **Terminal authentication denials** — A Skaldleita `401` or `403` aborts the current
+  watch task and suppresses every further Skaldleita request for the process lifetime.
+  A rejected personal key is never retried with the shared credential. Only a restart
+  or an explicit credential replacement/removal clears the local denial; `429` remains
+  temporary and honors normal rate-limit handling.
+- **Coordinated old-client gate** — Skaldleita checks IP bans, blocked/minimum Library
+  Manager versions, and request signatures before authorizing either shared or personal
+  keys. This keeps quarantined or looping old clients denied even when they know the
+  bundled key, while the shared tier remains rate-limited per source IP.
+
+### Fixed
+- **Container entrypoint version signing** — Docker and Unraid start `app.py` as the
+  `__main__` module. Skaldleita requests now resolve `APP_VERSION` from that real startup
+  mode instead of signing as `LibraryManager/unknown` and being rejected by the client
+  version gate.
+- **Narrator lookup miss remains non-terminal** — Library Manager no longer follows a
+  normal voice lookup miss by calling Skaldleita's intentionally dashboard-only curated
+  narrator-write route, which would return a terminal `403` for ordinary users. Voice
+  signatures continue through the separate supported contribution workflow.
+- **Accurate personal-key controls** — Settings shows validation only for a saved
+  personal key, states the current equal 300/hour shared and personal allowances, and
+  explains that removing a personal key restores no-signup shared access.
+
 ## [0.9.0-beta.167] - 2026-08-25
 
 ### Added

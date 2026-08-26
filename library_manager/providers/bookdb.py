@@ -44,6 +44,17 @@ logger = logging.getLogger(__name__)
 # without a 30-second retry loop. Thread-local keeps the signal scoped to the
 # thread that issued the matching request.
 _abort_state = threading.local()
+_terminal_denial_lock = threading.Lock()
+_terminal_denial = None
+
+_TERMINAL_CODES = {
+    'authentication_required',
+    'client_blocked',
+    'invalid_client',
+    'upgrade_required',
+}
+_MAX_DENIAL_BODY = 16 * 1024
+_MAX_DENIAL_TEXT = 500
 
 
 def get_and_clear_server_abort():
@@ -53,6 +64,85 @@ def get_and_clear_server_abort():
     if notice is not None:
         _abort_state.notice = None
     return notice
+
+
+def get_terminal_server_denial():
+    """Return the process-wide terminal Skaldleita denial, if one was received.
+
+    A terminal 401/403 must stop every provider path from trying another
+    Skaldleita credential or endpoint.  The state intentionally lasts until the
+    process restarts or a user explicitly replaces the configured key.
+    """
+    with _terminal_denial_lock:
+        return dict(_terminal_denial) if _terminal_denial else None
+
+
+def clear_terminal_server_denial():
+    """Clear terminal denial state after an explicit credential change."""
+    global _terminal_denial
+    with _terminal_denial_lock:
+        _terminal_denial = None
+
+
+def _bounded_denial_text(value, default=''):
+    """Return bounded single-line text safe for logs and user-facing notices."""
+    if not isinstance(value, str):
+        return default
+    value = re.sub(r'[\x00-\x1f\x7f]+', ' ', value)
+    value = re.sub(r'<[^>]+>', '', value).strip()
+    return value[:_MAX_DENIAL_TEXT] or default
+
+
+def _denial_detail(response):
+    """Parse only the bounded public fields from an auth-denial response."""
+    status = getattr(response, 'status_code', 0)
+    default_code = 'authentication_required' if status == 401 else 'invalid_client'
+    default_message = ('Skaldleita authentication was rejected.' if status == 401
+                       else 'Skaldleita denied this Library Manager client.')
+    payload = {}
+    content = getattr(response, 'content', b'') or b''
+    if len(content) <= _MAX_DENIAL_BODY:
+        try:
+            parsed = response.json()
+            if isinstance(parsed, dict):
+                payload = parsed
+        except (TypeError, ValueError):
+            pass
+    detail = payload.get('detail', payload)
+    if not isinstance(detail, dict):
+        detail = {'message': detail}
+    code = _bounded_denial_text(detail.get('code'), default_code)
+    if code not in _TERMINAL_CODES:
+        code = default_code
+    return {
+        'severity': 'error',
+        'code': code,
+        'message': _bounded_denial_text(detail.get('message'), default_message),
+        'action': 'abort_task',
+        'upgrade_url': _bounded_denial_text(detail.get('upgrade_url')),
+        'status_code': status,
+    }
+
+
+def handle_terminal_auth_response(response, context='Skaldleita'):
+    """Persist a terminal 401/403 and prevent credential downgrade/retry.
+
+    Public-key fallback is selected before a request only when no personal key
+    exists.  It is never attempted in response to a rejected personal key.
+    """
+    global _terminal_denial
+    if getattr(response, 'status_code', 0) not in (401, 403):
+        return None
+    notice = _denial_detail(response)
+    with _terminal_denial_lock:
+        _terminal_denial = dict(notice)
+    _abort_state.notice = dict(notice)
+    logger.error('[%s] terminal denial [%s] (HTTP %s): %s',
+                 context, notice['code'], notice['status_code'], notice['message'])
+    if notice.get('upgrade_url'):
+        logger.error('[%s] upgrade: %s', context, notice['upgrade_url'])
+    return notice
+
 
 def _sanitize_api_response(data, context='bookdb'):
     """Sanitize string fields from API responses to prevent path traversal, XSS, and oversized data."""
@@ -100,19 +190,27 @@ BOOKDB_PUBLIC_KEY = "lm-public-2024_85TbJ2lbrXGm38tBgliPAcAexLA_AeWxyqvHPbwRIrA"
 
 # User-Agent for tracking requests (helps identify Library Manager traffic)
 def get_lm_version():
-    """Get Library Manager version from app.py"""
+    """Get the version from the loaded Library Manager application module.
+
+    Docker and Unraid launch ``python app.py``, which registers the application
+    as ``__main__`` rather than ``app``. Check both names so production requests
+    are never signed as ``LibraryManager/unknown`` merely because of the entry
+    point used to start the same application.
+    """
     try:
         import sys
-        # Try to get version from app module if loaded
-        if 'app' in sys.modules:
-            return getattr(sys.modules['app'], 'APP_VERSION', 'unknown')
-    except:
+        for module_name in ('app', '__main__'):
+            module = sys.modules.get(module_name)
+            version = getattr(module, 'APP_VERSION', None) if module else None
+            if isinstance(version, str) and version.strip():
+                return version.strip()
+    except (AttributeError, TypeError):
         pass
     return 'unknown'
 
 
 def get_user_agent():
-    """Get User-Agent string with version from app.py"""
+    """Get the Library Manager User-Agent for Skaldleita requests."""
     return f"LibraryManager/{get_lm_version()}"
 
 
@@ -146,6 +244,26 @@ def get_signed_headers():
     }
 
 
+def get_bookdb_api_key(api_key=None):
+    """Choose one credential before a request; never downgrade after denial."""
+    return api_key.strip() if isinstance(api_key, str) and api_key.strip() else BOOKDB_PUBLIC_KEY
+
+
+def get_bookdb_headers(api_key=None, content_type=None):
+    """Build the common signed and authenticated Skaldleita headers."""
+    headers = get_signed_headers()
+    headers['X-API-Key'] = get_bookdb_api_key(api_key)
+    if content_type:
+        headers['Content-Type'] = content_type
+    return headers
+
+
+def get_bookdb_url(bookdb_url=None):
+    """Resolve the configured Skaldleita URL without changing its authority."""
+    value = bookdb_url or os.environ.get('BOOKDB_URL') or BOOKDB_API_URL
+    return str(value).rstrip('/')
+
+
 def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=None, config=None,
                   data_dir=None, cache_getter=None):
     """
@@ -168,8 +286,10 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
     Returns:
         dict with title, author, year, series, series_num, etc. or None
     """
-    if not api_key:
+    if get_terminal_server_denial():
+        logger.debug("Skaldleita: terminal denial active, skipping search")
         return None
+    api_key = get_bookdb_api_key(api_key)
 
     # Check cache first (local + P2P if enabled)
     if cache_getter and config and data_dir:
@@ -196,19 +316,16 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
     rate_limit_wait('bookdb')  # 12.0s delay = max 300/hr (API key tier), never skips
 
     # Use configured URL or fall back to default cloud URL
-    base_url = bookdb_url or BOOKDB_API_URL
+    base_url = get_bookdb_url(bookdb_url)
 
     try:
         # Build the filename to match - include author if we have it
         filename = f"{author} - {title}" if author else title
 
-        headers = get_signed_headers()
-        headers["X-API-Key"] = api_key
-
         resp = requests.post(
             f"{base_url}/match",
             json={"filename": filename},
-            headers=headers,
+            headers=get_bookdb_headers(api_key),
             timeout=10
         )
 
@@ -232,6 +349,9 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
                 time.sleep(rl['wait_seconds'])
                 return search_bookdb(title, author, api_key, retry_count + 1, bookdb_url,
                                      config, data_dir, cache_getter)
+            return None
+
+        if handle_terminal_auth_response(resp, 'SKALDLEITA MATCH'):
             return None
 
         if resp.status_code != 200:
@@ -377,8 +497,11 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None, 
     Returns:
         dict with author, title, narrator, series, etc. or None
     """
-    url = bookdb_url or os.environ.get('BOOKDB_URL', BOOKDB_API_URL)
-    api_key = api_key or BOOKDB_PUBLIC_KEY
+    if get_terminal_server_denial():
+        logger.debug("[SKALDLEITA] Terminal denial active, skipping audio identification")
+        return None
+    url = get_bookdb_url(bookdb_url)
+    api_key = get_bookdb_api_key(api_key)
     logger.info(f"[SKALDLEITA] Starting identification for: {audio_file}")
     logger.debug(f"[SKALDLEITA] Using API URL: {url}")
 
@@ -440,13 +563,11 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None, 
                     data['voice_embedding'] = json.dumps(voice_embedding)
                     logger.debug("[SKALDLEITA] Including voice embedding in request")
 
-                headers = get_signed_headers()
-                headers["X-API-Key"] = api_key
                 response = requests.post(
                     f"{url}/api/identify_audio",
                     files=files,
                     data=data,
-                    headers=headers,
+                    headers=get_bookdb_headers(api_key),
                     timeout=30  # Just submitting, should be fast
                 )
 
@@ -468,8 +589,11 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None, 
                 logger.warning("[SKALDLEITA] Rate limited (429) on audio identify")
                 return None
 
+            if handle_terminal_auth_response(response, 'SKALDLEITA AUDIO SUBMIT'):
+                return None
+
             if response.status_code != 200:
-                logger.warning(f"[SKALDLEITA] API returned {response.status_code}: {response.text[:200]}")
+                logger.warning(f"[SKALDLEITA] API returned {response.status_code}")
                 return None
 
             submit_data = response.json()
@@ -510,9 +634,11 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None, 
                     waited += poll_interval
 
                     try:
-                        poll_headers = get_signed_headers()
-                        poll_headers["X-API-Key"] = api_key
-                        poll_response = requests.get(poll_url, headers=poll_headers, timeout=10)
+                        poll_response = requests.get(
+                            poll_url, headers=get_bookdb_headers(api_key), timeout=10)
+                        if handle_terminal_auth_response(
+                                poll_response, 'SKALDLEITA AUDIO POLL'):
+                            return None
                         if poll_response.status_code != 200:
                             continue
 
@@ -662,7 +788,7 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None, 
 
 def contribute_to_bookdb(title, author=None, narrator=None, series=None,
                          series_position=None, source='unknown', confidence='medium',
-                         bookdb_url=None):
+                         bookdb_url=None, api_key=None):
     """
     Contribute book metadata to the Skaldleita community database.
 
@@ -687,13 +813,17 @@ def contribute_to_bookdb(title, author=None, narrator=None, series=None,
         logger.debug("[SKALDLEITA CONTRIBUTE] Title too short, skipping")
         return None
 
+    if get_terminal_server_denial():
+        logger.debug("[SKALDLEITA CONTRIBUTE] Terminal denial active, skipping")
+        return None
+
     # Check circuit breaker - don't spam if rate limited
     cb = API_CIRCUIT_BREAKER.get('bookdb', {})
     if cb.get('circuit_open_until', 0) > time.time():
         logger.debug("[SKALDLEITA CONTRIBUTE] Circuit open, skipping")
         return None
 
-    url = bookdb_url or BOOKDB_API_URL
+    url = get_bookdb_url(bookdb_url)
 
     rate_limit_wait('bookdb')
 
@@ -711,12 +841,15 @@ def contribute_to_bookdb(title, author=None, narrator=None, series=None,
         response = requests.post(
             f"{url}/api/contribute",
             json=payload,
-            headers=get_signed_headers(),
+            headers=get_bookdb_headers(api_key),
             timeout=10
         )
 
         if response.status_code == 429:
             logger.debug("[SKALDLEITA CONTRIBUTE] Rate limited, skipping")
+            return None
+
+        if handle_terminal_auth_response(response, 'SKALDLEITA CONTRIBUTE'):
             return None
 
         if response.status_code != 200:
@@ -742,7 +875,7 @@ def contribute_to_bookdb(title, author=None, narrator=None, series=None,
         return None
 
 
-def lookup_community_consensus(title, author=None, bookdb_url=None):
+def lookup_community_consensus(title, author=None, bookdb_url=None, api_key=None):
     """
     Look up community consensus for a book.
 
@@ -760,12 +893,16 @@ def lookup_community_consensus(title, author=None, bookdb_url=None):
     if not title or len(title.strip()) < 2:
         return None
 
+    if get_terminal_server_denial():
+        logger.debug("[SKALDLEITA COMMUNITY] Terminal denial active, skipping")
+        return None
+
     # Check circuit breaker - skip if we've been rate limited too much
     if is_circuit_open('bookdb'):
         logger.debug("[SKALDLEITA COMMUNITY] Circuit open, skipping")
         return None
 
-    url = bookdb_url or BOOKDB_API_URL
+    url = get_bookdb_url(bookdb_url)
 
     rate_limit_wait('bookdb')
 
@@ -777,9 +914,12 @@ def lookup_community_consensus(title, author=None, bookdb_url=None):
         response = requests.get(
             f"{url}/api/community/lookup",
             params=params,
-            headers=get_signed_headers(),
+            headers=get_bookdb_headers(api_key),
             timeout=10
         )
+
+        if handle_terminal_auth_response(response, 'SKALDLEITA COMMUNITY'):
+            return None
 
         if response.status_code != 200:
             return None
@@ -803,6 +943,13 @@ __all__ = [
     'BOOKDB_PUBLIC_KEY',
     '_sanitize_api_response',
     'get_signed_headers',
+    'get_bookdb_api_key',
+    'get_bookdb_headers',
+    'get_bookdb_url',
+    'get_terminal_server_denial',
+    'clear_terminal_server_denial',
+    'handle_terminal_auth_response',
+    'get_and_clear_server_abort',
     'search_bookdb',
     'identify_audio_with_bookdb',
     'contribute_to_bookdb',

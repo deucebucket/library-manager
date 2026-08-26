@@ -4,6 +4,7 @@
   "tv_manager_enabled": false,
   "plex_db_path": "",
   "ai_provider": "gemini",
+  "bookdb_url": "https://bookdb.deucebucket.com",
   "gemini_model": "",
   "openrouter_model": "",
   "ollama_url": "http://localhost:11434",

@@ -32,6 +32,11 @@ from library_manager.providers.bookdb import (
     BOOKDB_API_URL,
     BOOKDB_PUBLIC_KEY,
     get_signed_headers,
+    get_bookdb_headers,
+    get_bookdb_url,
+    get_terminal_server_denial,
+    clear_terminal_server_denial,
+    handle_terminal_auth_response,
     search_bookdb,
     identify_audio_with_bookdb,
 )
@@ -103,6 +108,11 @@ __all__ = [
     'BOOKDB_API_URL',
     'BOOKDB_PUBLIC_KEY',
     'get_signed_headers',
+    'get_bookdb_headers',
+    'get_bookdb_url',
+    'get_terminal_server_denial',
+    'clear_terminal_server_denial',
+    'handle_terminal_auth_response',
     'search_bookdb',
     'identify_audio_with_bookdb',
     # Ollama
