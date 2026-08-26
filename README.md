@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.162-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.168-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 
@@ -16,11 +16,11 @@
 
 ## Recent Changes (develop / beta)
 
-> **beta.162** - **#292/#298: Verified watch-folder pre-sort**
-> - Detects multi-book bundles, multipart sibling folders, and redundant nesting before normal ingestion.
-> - Stores an exact source/destination inventory with sizes and SHA-256 hashes before moving anything, then verifies every destination.
-> - Adds a review UI with Apply, Reject, complete receipts, verified rollback, startup recovery, and Undo.
-> - Remains opt-in; only fully assigned high-confidence plans can auto-apply. Multipart merge does not convert audio to M4B.
+> **beta.168** - **Safe no-signup Skaldleita access**
+> - Uses the bundled, per-IP-limited shared key when no personal Skaldleita key is configured.
+> - Signs every protected metadata, ISBN, fingerprint, narrator, voice, contribution, and audio-ID request with the full Library Manager version.
+> - Treats `401`/`403` as terminal and never downgrades a rejected personal key to the shared key; `429` remains temporary.
+> - Skaldleita applies client blocks, minimum-version policy, and signature checks before either shared or personal key authorization.
 
 > **beta.161** - **#300: Verified apply-fix transfer receipts**
 > - Builds a complete pre-move inventory with file sizes, entry types, and SHA-256 hashes.

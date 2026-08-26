@@ -700,7 +700,7 @@
                                     <i class="bi bi-cloud-arrow-up text-primary"></i> Use Skaldleita for Audio ID
                                     <span class="badge bg-success">Recommended</span>
                                     <span class="hint-icon" aria-label="Help">?<span class="hint-text">{{ hints.skaldleita }}</span></span>
-                                    <br><small class="text-muted">GPU Whisper with Skaldleita's live metadata index. Requires a Skaldleita API key. Disable to use your own AI/Whisper.</small>
+                                    <br><small class="text-muted">GPU Whisper with Skaldleita's live metadata index. Uses the shared key when no personal key is saved. Disable to use your own AI/Whisper.</small>
                                 </label>
                             </div>
 
@@ -852,7 +852,7 @@
                     <div class="card mb-3">
                         <div class="card-header py-2">
                             <i class="bi bi-key"></i> API Keys
-                            <small class="text-muted float-end">Enter all keys - system uses fallbacks automatically</small>
+                            <small class="text-muted float-end">Personal keys are optional where noted</small>
                         </div>
                         <div class="card-body">
                             <!-- Gemini API Key -->
@@ -905,7 +905,7 @@
                             <div class="mb-3">
                                 <label class="form-label">
                                     <i class="bi bi-book text-primary"></i> Skaldleita API Key
-                                    <span class="badge bg-warning text-dark ms-1">Required</span>
+                                    <span class="badge bg-secondary ms-1">Optional</span>
                                 </label>
 
                                 <!-- Instance ID display -->
@@ -943,8 +943,8 @@
                                     </div>
                                     <div class="card-body">
                                         <p class="small text-muted mb-2">
-                                            Skaldleita now requires an API key for metadata and audio identification.
-                                            Your key will be emailed to you and automatically applied.
+                                            No signup is required: Library Manager uses a heavily rate-limited shared key by default.
+                                            Register a personal key for a higher allowance; it will be emailed to you and automatically applied.
                                         </p>
                                         <div class="mb-2">
                                             <label class="form-label small mb-1">Email Address</label>
@@ -960,7 +960,7 @@
                                 {% endif %}
 
                                 <small class="text-muted d-block mt-1">
-                                    Required to use Skaldleita. Already have a key? Paste it above and save settings.
+                                    The shared key works without signup. Paste a personal key above for a higher allowance.
                                 </small>
                             </div>
 

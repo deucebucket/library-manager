@@ -18,7 +18,14 @@ from typing import Optional, Dict, Any, Tuple
 
 import requests
 
-from library_manager.providers.bookdb import _sanitize_api_response
+from library_manager.providers.bookdb import (
+    BOOKDB_API_URL,
+    _sanitize_api_response,
+    get_bookdb_headers,
+    get_bookdb_url,
+    get_terminal_server_denial,
+    handle_terminal_auth_response,
+)
 from library_manager.providers.rate_limiter import handle_rate_limit_response
 from library_manager.utils.audio import build_limited_ffmpeg_command
 
@@ -26,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Skaldleita fingerprint endpoints
 # Skaldleita = "Shazam for audiobooks" - instant identification via audio fingerprint + voice ID
-SKALDLEITA_BASE_URL = "https://skaldleita.com"
+SKALDLEITA_BASE_URL = BOOKDB_API_URL
 SKALDLEITA_FINGERPRINT_URL = f"{SKALDLEITA_BASE_URL}/api/fingerprint"
 
 # Default fingerprint duration (seconds)
@@ -122,7 +129,8 @@ def generate_fingerprint(
 def lookup_fingerprint(
     fingerprint: str,
     api_key: Optional[str] = None,
-    threshold: float = 0.8
+    threshold: float = 0.8,
+    bookdb_url: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Look up a fingerprint in Skaldleita.
@@ -134,15 +142,15 @@ def lookup_fingerprint(
     Returns:
         Book metadata dict if match found, None otherwise
     """
-    try:
-        headers = {}
-        if api_key:
-            headers['X-API-Key'] = api_key
+    if get_terminal_server_denial():
+        logger.debug("[FINGERPRINT] Terminal denial active, skipping lookup")
+        return None
 
+    try:
         response = requests.get(
-            f"{SKALDLEITA_FINGERPRINT_URL}/lookup",
+            f"{get_bookdb_url(bookdb_url)}/api/fingerprint/lookup",
             params={'fp': fingerprint, 'threshold': threshold},
-            headers=headers,
+            headers=get_bookdb_headers(api_key),
             timeout=10
         )
 
@@ -151,6 +159,9 @@ def lookup_fingerprint(
             # The circuit breaker will back off future requests automatically.
             rl = handle_rate_limit_response(response, 'bookdb')
             logger.warning(f"[FINGERPRINT] Rate limited (retry_after: {rl['retry_after']})")
+            return None
+
+        if handle_terminal_auth_response(response, 'FINGERPRINT LOOKUP'):
             return None
 
         if response.status_code == 200:
@@ -186,7 +197,8 @@ def contribute_fingerprint(
     fingerprint: str,
     duration: int,
     book_metadata: Dict[str, Any],
-    api_key: Optional[str] = None
+    api_key: Optional[str] = None,
+    bookdb_url: Optional[str] = None,
 ) -> bool:
     """
     Contribute a fingerprint to Skaldleita.
@@ -200,11 +212,11 @@ def contribute_fingerprint(
     Returns:
         True if contribution successful, False otherwise
     """
-    try:
-        headers = {'Content-Type': 'application/json'}
-        if api_key:
-            headers['X-API-Key'] = api_key
+    if get_terminal_server_denial():
+        logger.debug("[FINGERPRINT] Terminal denial active, skipping contribution")
+        return False
 
+    try:
         # Handle series_position - must be float or None, not empty string
         series_pos = book_metadata.get('series_position')
         if series_pos == '' or series_pos is None:
@@ -226,9 +238,9 @@ def contribute_fingerprint(
         }
 
         response = requests.post(
-            SKALDLEITA_FINGERPRINT_URL,
+            f"{get_bookdb_url(bookdb_url)}/api/fingerprint",
             json=payload,
-            headers=headers,
+            headers=get_bookdb_headers(api_key, 'application/json'),
             timeout=10
         )
 
@@ -236,6 +248,9 @@ def contribute_fingerprint(
             # Contributions are best-effort - fail fast, don't retry
             rl = handle_rate_limit_response(response, 'bookdb')
             logger.warning(f"[FINGERPRINT] Contribution rate limited (retry_after: {rl['retry_after']})")
+            return False
+
+        if handle_terminal_auth_response(response, 'FINGERPRINT CONTRIBUTE'):
             return False
 
         if response.status_code in (200, 201):
@@ -257,7 +272,8 @@ def contribute_fingerprint(
 def identify_by_fingerprint(
     audio_path: str,
     api_key: Optional[str] = None,
-    duration: int = DEFAULT_DURATION
+    duration: int = DEFAULT_DURATION,
+    bookdb_url: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Attempt to identify an audiobook by its audio fingerprint.
@@ -280,7 +296,8 @@ def identify_by_fingerprint(
     fingerprint, actual_duration = result
 
     # Look up in Skaldleita
-    return lookup_fingerprint(fingerprint, api_key=api_key)
+    return lookup_fingerprint(
+        fingerprint, api_key=api_key, bookdb_url=bookdb_url)
 
 
 def generate_dual_fingerprints(
@@ -327,7 +344,8 @@ def generate_dual_fingerprints(
 def try_fingerprint_identification(
     audio_path: str,
     api_key: Optional[str] = None,
-    duration: int = DEFAULT_DURATION
+    duration: int = DEFAULT_DURATION,
+    bookdb_url: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Attempt to identify audiobook via fingerprint lookup.
@@ -356,7 +374,8 @@ def try_fingerprint_identification(
     fingerprint, actual_duration = result
 
     # Look up in Skaldleita
-    match = lookup_fingerprint(fingerprint, api_key=api_key)
+    match = lookup_fingerprint(
+        fingerprint, api_key=api_key, bookdb_url=bookdb_url)
 
     if match:
         # Add the fingerprint to the result for potential contribution
@@ -376,7 +395,8 @@ def try_fingerprint_identification(
 def contribute_after_identification(
     fingerprint_data: Dict[str, Any],
     identified_metadata: Dict[str, Any],
-    api_key: Optional[str] = None
+    api_key: Optional[str] = None,
+    bookdb_url: Optional[str] = None,
 ) -> bool:
     """
     Contribute fingerprint to Skaldleita after successful identification.
@@ -407,7 +427,8 @@ def contribute_after_identification(
         fingerprint=fingerprint,
         duration=duration,
         book_metadata=identified_metadata,
-        api_key=api_key
+        api_key=api_key,
+        bookdb_url=bookdb_url,
     )
 
 
@@ -494,7 +515,8 @@ def extract_voice_embedding(
 def lookup_narrator(
     embedding: Any,
     threshold: float = 0.6,
-    api_key: str = None
+    api_key: str = None,
+    bookdb_url: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Look up narrator by voice embedding in Skaldleita.
@@ -509,17 +531,17 @@ def lookup_narrator(
     """
     import base64
 
+    if get_terminal_server_denial():
+        logger.debug("[NARRATOR] Terminal denial active, skipping lookup")
+        return None
+
     try:
         emb_b64 = base64.b64encode(embedding.tobytes()).decode()
 
-        headers = {}
-        if api_key:
-            headers['X-API-Key'] = api_key
-
         response = requests.get(
-            f"{SKALDLEITA_NARRATOR_URL}/lookup",
+            f"{get_bookdb_url(bookdb_url)}/api/narrator/lookup",
             params={'embedding': emb_b64, 'threshold': threshold},
-            headers=headers,
+            headers=get_bookdb_headers(api_key),
             timeout=10
         )
 
@@ -527,6 +549,9 @@ def lookup_narrator(
             # Narrator lookups are supplementary - fail fast, don't retry
             handle_rate_limit_response(response, 'bookdb')
             logger.warning("[NARRATOR] Lookup rate limited")
+            return None
+
+        if handle_terminal_auth_response(response, 'NARRATOR LOOKUP'):
             return None
 
         if response.status_code == 200:
@@ -548,7 +573,8 @@ def contribute_narrator(
     narrator_name: str,
     book_title: str = "",
     book_author: str = "",
-    api_key: str = None
+    api_key: str = None,
+    bookdb_url: Optional[str] = None,
 ) -> bool:
     """
     Contribute narrator voice embedding to Skaldleita.
@@ -563,11 +589,11 @@ def contribute_narrator(
     Returns:
         True if contribution accepted
     """
-    try:
-        headers = {'Content-Type': 'application/json'}
-        if api_key:
-            headers['X-API-Key'] = api_key
+    if get_terminal_server_denial():
+        logger.debug("[NARRATOR] Terminal denial active, skipping contribution")
+        return False
 
+    try:
         payload = {
             'narrator_name': narrator_name,
             'embedding': embedding.tolist(),
@@ -576,11 +602,14 @@ def contribute_narrator(
         }
 
         response = requests.post(
-            SKALDLEITA_NARRATOR_URL,
+            f"{get_bookdb_url(bookdb_url)}/api/narrator",
             json=payload,
-            headers=headers,
+            headers=get_bookdb_headers(api_key, 'application/json'),
             timeout=10
         )
+
+        if handle_terminal_auth_response(response, 'NARRATOR CONTRIBUTE'):
+            return False
 
         if response.status_code == 200:
             data = response.json()
@@ -602,7 +631,8 @@ def verify_narrator(
     audio_path: str,
     tagged_narrator: str,
     threshold: float = 0.5,
-    api_key: str = None
+    api_key: str = None,
+    bookdb_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Verify if the tagged narrator matches the voice in the audio.
@@ -637,7 +667,9 @@ def verify_narrator(
         return result
 
     # Look up in voice database
-    match = lookup_narrator(embedding, threshold=threshold, api_key=api_key)
+    match = lookup_narrator(
+        embedding, threshold=threshold, api_key=api_key,
+        bookdb_url=bookdb_url)
 
     if match and match.get('match'):
         matched_name = match.get('narrator_name', '')
@@ -672,7 +704,8 @@ def verify_narrator(
             contribute_narrator(
                 embedding, tagged_narrator,
                 book_title=os.path.basename(os.path.dirname(audio_path)),
-                api_key=api_key
+                api_key=api_key,
+                bookdb_url=bookdb_url,
             )
 
     return result
@@ -681,7 +714,8 @@ def verify_narrator(
 def identify_narrator_by_voice(
     audio_path: str,
     threshold: float = 0.5,
-    api_key: str = None
+    api_key: str = None,
+    bookdb_url: Optional[str] = None,
 ) -> Optional[str]:
     """
     Identify narrator purely from voice, ignoring any metadata.
@@ -698,7 +732,9 @@ def identify_narrator_by_voice(
     if embedding is None:
         return None
 
-    match = lookup_narrator(embedding, threshold=threshold, api_key=api_key)
+    match = lookup_narrator(
+        embedding, threshold=threshold, api_key=api_key,
+        bookdb_url=bookdb_url)
 
     if match and match.get('match') and match.get('confidence', 0) >= threshold:
         return match.get('narrator_name')
@@ -715,7 +751,8 @@ def store_voice_signature(
     book_title: str,
     book_author: str,
     narrator_name: str = None,
-    api_key: str = None
+    api_key: str = None,
+    bookdb_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Store a voice signature for this audiobook.
@@ -739,11 +776,11 @@ def store_voice_signature(
     if embedding is None:
         return {'success': False, 'error': 'Could not extract voice embedding'}
 
-    try:
-        headers = {'Content-Type': 'application/json'}
-        if api_key:
-            headers['X-API-Key'] = api_key
+    if get_terminal_server_denial():
+        logger.debug("[VOICE] Terminal denial active, skipping storage")
+        return {'success': False, 'error': 'Skaldleita access denied'}
 
+    try:
         payload = {
             'embedding': embedding.tolist(),
             'book_title': book_title,
@@ -752,11 +789,14 @@ def store_voice_signature(
         }
 
         response = requests.post(
-            SKALDLEITA_VOICE_URL,
+            f"{get_bookdb_url(bookdb_url)}/api/voice",
             json=payload,
-            headers=headers,
+            headers=get_bookdb_headers(api_key, 'application/json'),
             timeout=15
         )
+
+        if handle_terminal_auth_response(response, 'VOICE STORAGE'):
+            return {'success': False, 'error': 'Skaldleita access denied'}
 
         if response.status_code == 200:
             data = response.json()
@@ -780,7 +820,8 @@ def store_voice_signature(
 def store_voice_after_identification(
     audio_path: str,
     result: Dict[str, Any],
-    api_key: str = None
+    api_key: str = None,
+    bookdb_url: Optional[str] = None,
 ) -> bool:
     """
     Store voice signature after successful book identification.
@@ -811,7 +852,8 @@ def store_voice_after_identification(
         book_title=book_title,
         book_author=book_author,
         narrator_name=narrator if narrator else None,
-        api_key=api_key
+        api_key=api_key,
+        bookdb_url=bookdb_url,
     )
 
     return response.get('success', False)

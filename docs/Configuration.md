@@ -32,6 +32,25 @@ All settings are configured through the web UI at **Settings**. The current UI g
 
 Library Manager continues to use Skaldleita for hosted metadata and audio identification. A self-hosted AI endpoint is an optional fallback for text verification and for parsing transcripts that Skaldleita or local Whisper produced.
 
+### Skaldleita access
+
+No signup is required for the default hosted service. If `bookdb_api_key` is empty,
+Library Manager selects its bundled shared key before each request; that tier is heavily
+rate-limited per source IP. A configured personal key is preferred and is never retried
+with the shared key after a rejection. Every protected Skaldleita route receives signed
+client/version headers, including metadata search, ISBN, fingerprint, narrator, voice,
+community contribution, and audio identification.
+
+Authentication responses are intentionally fail-closed: `401` and `403` stop the current
+task and suppress further Skaldleita traffic until Library Manager restarts or the user
+explicitly changes the credential. `429` is temporary and uses the server's
+`Retry-After` guidance. Server-side client blocks and minimum-version checks happen
+before key authorization, so an old or quarantined instance cannot bypass its denial by
+switching between personal and shared keys.
+
+Self-hosted compatible deployments can set `bookdb_url` in `config.json`; the default is
+`https://bookdb.deucebucket.com`.
+
 ### Self-Hosted AI
 
 Ollama model IDs are loaded from its `/api/tags` endpoint. Other local servers use the OpenAI-compatible `/v1/models` and `/v1/chat/completions` endpoints. When a server returns one model, Library Manager selects it automatically; when it returns several, choose from the live list.

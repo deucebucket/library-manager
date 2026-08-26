@@ -9,10 +9,14 @@ import requests
 from typing import Optional, Dict, Any
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from .bookdb import (
+    get_bookdb_headers,
+    get_bookdb_url,
+    get_terminal_server_denial,
+    handle_terminal_auth_response,
+)
 
-# BookDB API for ISBN lookup
-BOOKDB_API_URL = "https://bookdb.deucebucket.com"
+logger = logging.getLogger(__name__)
 
 
 def normalize_isbn(isbn: str) -> tuple:
@@ -213,14 +217,26 @@ def extract_isbn_from_file(filepath: str) -> Optional[str]:
         return None
 
 
-def lookup_isbn(isbn: str, timeout: int = 10) -> Optional[Dict[str, Any]]:
+def lookup_isbn(isbn: str, timeout: int = 10, api_key: Optional[str] = None,
+                bookdb_url: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     Look up book metadata by ISBN via BookDB API.
     Returns book metadata dict or None.
     """
+    if get_terminal_server_denial():
+        logger.debug("ISBN lookup skipped while Skaldleita denial is terminal")
+        return None
+
     try:
-        url = f"{BOOKDB_API_URL}/api/isbn/{isbn}"
-        response = requests.get(url, timeout=timeout)
+        url = f"{get_bookdb_url(bookdb_url)}/api/isbn/{isbn}"
+        response = requests.get(
+            url,
+            headers=get_bookdb_headers(api_key),
+            timeout=timeout,
+        )
+
+        if handle_terminal_auth_response(response, 'SKALDLEITA ISBN'):
+            return None
 
         if response.status_code == 200:
             data = response.json()
@@ -238,7 +254,8 @@ def lookup_isbn(isbn: str, timeout: int = 10) -> Optional[Dict[str, Any]]:
         return None
 
 
-def identify_ebook_by_isbn(filepath: str) -> Optional[Dict[str, Any]]:
+def identify_ebook_by_isbn(filepath: str, api_key: Optional[str] = None,
+                           bookdb_url: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     Full pipeline: extract ISBN from ebook file and look up metadata.
     Returns book metadata dict or None.
@@ -247,4 +264,4 @@ def identify_ebook_by_isbn(filepath: str) -> Optional[Dict[str, Any]]:
     if not isbn:
         return None
 
-    return lookup_isbn(isbn)
+    return lookup_isbn(isbn, api_key=api_key, bookdb_url=bookdb_url)
