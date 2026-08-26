@@ -46,6 +46,8 @@ first Docker/Unraid release that signs the real application version from its `py
 app.py` entrypoint; older containers report an invalid version and are intentionally
 denied with upgrade guidance.
 
+![Optional personal key and no-signup shared access](images/skaldleita-shared-access-settings.png)
+
 Authentication responses are intentionally fail-closed: `401` and `403` stop the current
 task and suppress further Skaldleita traffic until Library Manager restarts or the user
 explicitly changes the credential. `429` is temporary and uses the server's
