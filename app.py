@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama, OpenAI-compatible APIs)
 """
 
-APP_VERSION = "0.9.0-beta.168"
+APP_VERSION = "0.9.0-beta.169"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:

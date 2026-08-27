@@ -54,12 +54,14 @@ class RadarrSession:
 
 class JellyfinSession:
     def __init__(self, *, duplicate=False, malformed=False, malformed_identity=False,
-                 sessions=None, status=200):
+                 sessions=None, status=200, unrelated=0, total_override=None):
         self.duplicate = duplicate
         self.malformed = malformed
         self.malformed_identity = malformed_identity
         self.status = status
         self.sessions = sessions
+        self.unrelated = unrelated
+        self.total_override = total_override
         self.calls = []
 
     def get(self, url, **kwargs):
@@ -68,11 +70,19 @@ class JellyfinSession:
             return Response(self.sessions, self.status)
         if self.malformed:
             return Response({"Items": "not-a-list"}, self.status)
-        items = [{"Id": "one", "ProviderIds": (
-            [] if self.malformed_identity else {"Tmdb": "123"})}]
+        items = [
+            {"Id": f"unrelated-{index}", "ProviderIds": {"Tmdb": str(index + 1000)}}
+            for index in range(self.unrelated)
+        ]
+        items.append({"Id": "one", "ProviderIds": (
+            [] if self.malformed_identity else {"Tmdb": "123"})})
         if self.duplicate:
             items.append({"Id": "two", "ProviderIds": {"Tmdb": "123"}})
-        return Response({"Items": items}, self.status)
+        start = kwargs["params"]["StartIndex"]
+        limit = kwargs["params"]["Limit"]
+        total = len(items) if self.total_override is None else self.total_override
+        return Response({"Items": items[start:start + limit],
+                         "TotalRecordCount": total}, self.status)
 
 
 def test_radarr_move_and_readback():
@@ -101,8 +111,16 @@ def test_jellyfin_exact_library_identity():
     _, call = session.calls[0]
     assert call["headers"] == {"X-Emby-Token": "secret"}
     assert call["params"]["ParentId"] == "documentary-library"
-    assert call["params"]["AnyProviderIdEquals"] == "Tmdb.123"
+    assert "AnyProviderIdEquals" not in call["params"]
+    assert call["params"]["StartIndex"] == 0
+    assert call["params"]["Limit"] == 200
     assert call["params"]["IncludeItemTypes"] == "Movie"
+
+    paged_session = JellyfinSession(unrelated=200)
+    paged = JellyfinVisibilityAdapter(
+        "http://jellyfin.invalid", "secret", session=paged_session)
+    assert asyncio.run(paged.visible_in("tmdb", "123", "documentary-library"))
+    assert [call[1]["params"]["StartIndex"] for call in paged_session.calls] == [0, 200]
 
     duplicate = JellyfinVisibilityAdapter(
         "http://jellyfin.invalid", "secret", session=JellyfinSession(duplicate=True))
@@ -113,11 +131,24 @@ def test_jellyfin_exact_library_identity():
         session=JellyfinSession(malformed_identity=True))
     unavailable = JellyfinVisibilityAdapter(
         "http://jellyfin.invalid", "secret", session=JellyfinSession(status=503))
+    oversized = JellyfinVisibilityAdapter(
+        "http://jellyfin.invalid", "secret",
+        session=JellyfinSession(total_override=10_001))
+    inconsistent = JellyfinVisibilityAdapter(
+        "http://jellyfin.invalid", "secret",
+        session=JellyfinSession(total_override=0))
+    truncated = JellyfinVisibilityAdapter(
+        "http://jellyfin.invalid", "secret",
+        session=JellyfinSession(total_override=201))
     assert not asyncio.run(duplicate.visible_in("tmdb", "123", "documentary-library"))
     assert not asyncio.run(malformed.visible_in("tmdb", "123", "documentary-library"))
     assert not asyncio.run(malformed_identity.visible_in(
         "tmdb", "123", "documentary-library"))
     assert not asyncio.run(unavailable.visible_in("tmdb", "123", "documentary-library"))
+    assert not asyncio.run(oversized.visible_in("tmdb", "123", "documentary-library"))
+    assert not asyncio.run(inconsistent.visible_in(
+        "tmdb", "123", "documentary-library"))
+    assert not asyncio.run(truncated.visible_in("tmdb", "123", "documentary-library"))
     assert not asyncio.run(adapter.visible_in("tvdb", "123", "documentary-library"))
     print("[PASS] Jellyfin verification is exact-library, exact-provider, and fail-closed")
 

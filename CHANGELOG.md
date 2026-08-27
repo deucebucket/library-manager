@@ -2,6 +2,15 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.169] - 2026-08-26
+
+### Fixed
+- **#312: Jellyfin 10.11 exact video visibility** — Independent video-move
+  verification no longer relies on the removed `AnyProviderIdEquals` query parameter.
+  It enumerates only the configured destination library in bounded 200-item pages,
+  matches TMDb/IMDb identity locally, requires exactly one match, and fails closed on
+  malformed, duplicate, oversized, truncated, or unavailable observations.
+
 ## [0.9.0-beta.168] - 2026-08-26
 
 ### Added

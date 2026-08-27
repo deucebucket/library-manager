@@ -15,6 +15,8 @@ from library_manager.video.organize import PlaybackObservation
 
 
 DEFAULT_TIMEOUT = (5, 900)
+JELLYFIN_PAGE_SIZE = 200
+JELLYFIN_MAX_LIBRARY_ITEMS = 10_000
 
 
 def _within(path: str, root: str) -> bool:
@@ -115,28 +117,51 @@ class JellyfinVisibilityAdapter:
             return False
 
         def verify() -> bool:
-            try:
-                response = self.session.get(
-                    f"{self.url}/Items",
-                    headers={"X-Emby-Token": self.api_key},
-                    params={"ParentId": library_ref, "Recursive": "true",
-                            "IncludeItemTypes": "Movie", "Fields": "ProviderIds",
-                            "AnyProviderIdEquals": f"{key}.{provider_id}",
-                            "Limit": 10},
-                    timeout=(5, 45))
-                response.raise_for_status()
-                payload = response.json()
-            except (requests.RequestException, ValueError):
-                return False
-            items = payload.get("Items") if isinstance(payload, dict) else None
-            if not isinstance(items, list):
-                return False
             matches = []
-            for item in items:
-                provider_ids = item.get("ProviderIds") if isinstance(item, dict) else None
-                if (isinstance(provider_ids, dict)
-                        and str(provider_ids.get(key) or "") == str(provider_id)):
-                    matches.append(item)
+            start = 0
+            expected_total = None
+            while start < JELLYFIN_MAX_LIBRARY_ITEMS:
+                try:
+                    response = self.session.get(
+                        f"{self.url}/Items",
+                        headers={"X-Emby-Token": self.api_key},
+                        params={"ParentId": library_ref, "Recursive": "true",
+                                "IncludeItemTypes": "Movie", "Fields": "ProviderIds",
+                                "StartIndex": start, "Limit": JELLYFIN_PAGE_SIZE},
+                        timeout=(5, 45))
+                    response.raise_for_status()
+                    payload = response.json()
+                except (requests.RequestException, ValueError):
+                    return False
+                items = payload.get("Items") if isinstance(payload, dict) else None
+                total = payload.get("TotalRecordCount") if isinstance(payload, dict) else None
+                if (not isinstance(items, list)
+                        or len(items) > JELLYFIN_PAGE_SIZE
+                        or not isinstance(total, int) or isinstance(total, bool)
+                        or total < 0 or total > JELLYFIN_MAX_LIBRARY_ITEMS
+                        or start > total
+                        or start + len(items) > total
+                        or (expected_total is not None and total != expected_total)
+                        or (not items and start < total)):
+                    return False
+                expected_total = total
+                for item in items:
+                    if not isinstance(item, dict):
+                        return False
+                    provider_ids = item.get("ProviderIds")
+                    if provider_ids is None:
+                        continue
+                    if not isinstance(provider_ids, dict):
+                        return False
+                    if str(provider_ids.get(key) or "") == str(provider_id):
+                        matches.append(item)
+                        if len(matches) > 1:
+                            return False
+                start += len(items)
+                if start >= total:
+                    break
+            else:
+                return False
             return len(matches) == 1
 
         return await asyncio.to_thread(verify)

@@ -44,7 +44,7 @@ Library Manager automatically fixes messy audiobook folder names using real book
 - Verified watch-folder pre-sort for multi-book splits, multipart folder merges, and redundant nesting
 - Web dashboard
 
-The develop branch currently reports beta.168. Skaldleita works without signup through a heavily per-IP-limited shared key, while signed client/version policy keeps blocked or outdated instances denied before either shared or personal key authorization. The #292/#298 pre-sort and beta.161 #300 apply-fix flows retain exact, hash-verified transfer and rollback receipts. These controls improve auditability but are not a substitute for filesystem or hardware backups.
+The develop branch currently reports beta.169. Exact Jellyfin 10.11 video-move verification now scans only the configured destination library with a bounded exact-identity check instead of relying on a removed server-side provider filter. Skaldleita works without signup through a heavily per-IP-limited shared key, while signed client/version policy keeps blocked or outdated instances denied before either shared or personal key authorization. The #292/#298 pre-sort and beta.161 #300 apply-fix flows retain exact, hash-verified transfer and rollback receipts. These controls improve auditability but are not a substitute for filesystem or hardware backups.
 
 ![Verified pre-sort review](images/presort-review.png)
 

@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.168-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.169-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 
@@ -15,6 +15,14 @@
 ---
 
 ## Recent Changes (develop / beta)
+
+> **beta.169** - **Jellyfin 10.11 exact video verification**
+> - Replaces Jellyfin's removed provider-ID query with a bounded scan of only the
+>   configured destination library.
+> - Requires exactly one matching TMDb/IMDb identity and fails closed on duplicate,
+>   malformed, inconsistent, truncated, unavailable, or over-10,000-item results.
+> - Keeps the video-move receipt free of titles, paths, URLs, credentials, and household
+>   identity; no mutation contract changed.
 
 > **beta.168** - **Safe no-signup Skaldleita access**
 > - Uses the bundled, per-IP-limited shared key when no personal Skaldleita key is configured.
