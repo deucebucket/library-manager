@@ -18,12 +18,14 @@ from library_manager.video.organize import PlaybackObservation  # noqa: E402
 from video_organization_service import (  # noqa: E402
     REQUEST_SCHEMA,
     VERIFY_REQUEST_SCHEMA,
+    ReceiptDatabaseUnsafe,
     ServiceConfig,
     ThreadingHTTPServer,
     VideoOrganizationService,
     capability_signature,
     make_handler,
     plan_from_payload,
+    prepare_receipt_database,
     verification_from_payload,
 )
 
@@ -100,15 +102,17 @@ def test_plan_and_capability_boundary():
         visibility = Visibility()
         service = VideoOrganizationService(
             cfg, catalogue=catalogue, visibility=visibility, idle_probe=idle)
+        assert cfg.database.is_file()
+        assert cfg.database.stat().st_mode & 0o777 == 0o600
         status, result = asyncio.run(service.apply(PAYLOAD, "sha256=wrong"))
         assert status == 401 and result["error_code"] == "capability_invalid"
-        assert catalogue.calls == [] and not cfg.database.exists()
+        assert catalogue.calls == []
 
         absent = verification_payload("vm_" + "0" * 32)
         status, result = asyncio.run(service.verify(
             absent, capability_signature(absent, SECRET)))
         assert status == 409 and result["error_code"] == "move_receipt_absent"
-        assert catalogue.calls == [] and not cfg.database.exists()
+        assert catalogue.calls == []
 
         signature = capability_signature(PAYLOAD, SECRET)
         status, result = asyncio.run(service.apply(PAYLOAD, signature))
@@ -176,6 +180,49 @@ def test_plan_and_capability_boundary():
     print("[PASS] exact capability is one-use and receipts remain path/title-free")
 
 
+def test_receipt_database_is_private_before_requests():
+    with tempfile.TemporaryDirectory(prefix="lm-video-db-") as root:
+        database = Path(root) / "receipts.db"
+        prepare_receipt_database(database)
+        assert database.is_file()
+        assert database.stat().st_mode & 0o777 == 0o600
+        connection = sqlite3.connect(database)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM video_move_receipts").fetchone()[0] == 0
+        connection.close()
+
+        database.chmod(0o644)
+        prepare_receipt_database(database)
+        assert database.stat().st_mode & 0o777 == 0o600
+
+        linked_target = Path(root) / "linked-target.db"
+        linked_target.write_bytes(b"")
+        linked_database = Path(root) / "linked.db"
+        linked_database.symlink_to(linked_target)
+        try:
+            prepare_receipt_database(linked_database)
+            raise AssertionError("symlink receipt database unexpectedly accepted")
+        except ReceiptDatabaseUnsafe:
+            pass
+
+        directory_database = Path(root) / "directory.db"
+        directory_database.mkdir()
+        try:
+            prepare_receipt_database(directory_database)
+            raise AssertionError("non-regular receipt database unexpectedly accepted")
+        except ReceiptDatabaseUnsafe:
+            pass
+
+        hardlink_database = Path(root) / "hardlink.db"
+        hardlink_database.hardlink_to(linked_target)
+        try:
+            prepare_receipt_database(hardlink_database)
+            raise AssertionError("hard-linked receipt database unexpectedly accepted")
+        except ReceiptDatabaseUnsafe:
+            pass
+    print("[PASS] receipt database is private before serving and hostile paths fail closed")
+
+
 def test_http_surface():
     with tempfile.TemporaryDirectory(prefix="lm-video-http-") as root:
         cfg = config(root)
@@ -221,6 +268,7 @@ def test_http_surface():
 
 
 if __name__ == "__main__":
+    test_receipt_database_is_private_before_requests()
     test_plan_and_capability_boundary()
     test_http_surface()
     print("All video organization service tests passed.")

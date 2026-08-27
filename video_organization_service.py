@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import stat
 from typing import Optional
 
 from library_manager.video.adapters import (
@@ -21,6 +22,7 @@ from library_manager.video.adapters import (
 from library_manager.video.organize import (
     OrganizationRefused,
     VideoMovePlan,
+    ensure_schema,
     execute_move,
     verify_committed_move,
 )
@@ -40,6 +42,42 @@ _IMDB_ID = re.compile(r"tt[0-9]{5,12}")
 
 class RequestRefused(RuntimeError):
     """A bounded public error code, safe to return without private data."""
+
+
+class ReceiptDatabaseUnsafe(RuntimeError):
+    """The configured receipt ledger cannot be opened as one private file."""
+
+
+def prepare_receipt_database(path: Path) -> None:
+    """Create/tighten the receipt ledger before SQLite can write to it.
+
+    The final path must be one regular, unlinked file. Opening it with
+    ``O_NOFOLLOW`` keeps a local symlink from redirecting receipt writes, while
+    ``O_NONBLOCK`` prevents a hostile FIFO from hanging service startup.
+    """
+    if not path.is_absolute():
+        raise ReceiptDatabaseUnsafe("receipt_database_unsafe")
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NONBLOCK
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags, 0o600)
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise ReceiptDatabaseUnsafe("receipt_database_unsafe")
+            os.fchmod(descriptor, 0o600)
+        finally:
+            os.close(descriptor)
+        connection = sqlite3.connect(str(path), timeout=60)
+        try:
+            ensure_schema(connection)
+        finally:
+            connection.close()
+    except ReceiptDatabaseUnsafe:
+        raise
+    except (OSError, sqlite3.Error):
+        raise ReceiptDatabaseUnsafe("receipt_database_unsafe") from None
 
 
 def canonical_payload(payload: dict) -> bytes:
@@ -156,6 +194,8 @@ def verification_from_payload(payload: object, config: ServiceConfig
 class VideoOrganizationService:
     def __init__(self, config: ServiceConfig, *, catalogue, visibility,
                  idle_probe) -> None:
+        if config.ready():
+            prepare_receipt_database(config.database)
         self.config = config
         self.catalogue = catalogue
         self.visibility = visibility
@@ -177,6 +217,7 @@ class VideoOrganizationService:
         self.config.database.parent.mkdir(parents=True, exist_ok=True)
         conn: Optional[sqlite3.Connection] = None
         try:
+            prepare_receipt_database(self.config.database)
             conn = sqlite3.connect(str(self.config.database), timeout=60)
             result = await execute_move(
                 plan, conn=conn, catalogue=self.catalogue,

@@ -2,6 +2,14 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.170] - 2026-08-27
+
+### Security
+- **#314: Private video receipts before first write** — The loopback video organizer
+  creates or tightens its SQLite receipt ledger as one mode-0600 regular file before
+  schema initialization or request handling. Symlink, non-regular, hard-linked, and
+  otherwise unsafe paths fail startup instead of redirecting or exposing receipt data.
+
 ## [0.9.0-beta.169] - 2026-08-26
 
 ### Fixed
