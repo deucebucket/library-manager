@@ -2,6 +2,16 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.170] - 2026-08-27
+
+### Security
+- **#314: Private video receipts before first write** — The loopback video organizer
+  uses one symlink-free, private-parent, inode-bound connection path for startup,
+  apply, and verify. It creates or tightens its SQLite ledger as mode 0600 before
+  schema initialization, binds application/schema versions, validates the exact table
+  and partial-unique-index definitions, and rejects substituted files, hard links,
+  non-regular paths, added triggers/views, or permissive lookalike schemas.
+
 ## [0.9.0-beta.169] - 2026-08-26
 
 ### Fixed

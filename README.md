@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.169-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.170-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 
@@ -15,6 +15,14 @@
 ---
 
 ## Recent Changes (develop / beta)
+
+> **beta.170** - **Private video receipts before first write**
+> - Creates or tightens the loopback video organizer's receipt database as mode 0600
+>   before SQLite initializes the ledger or accepts a request.
+> - Uses one symlink-free, private-parent, inode-bound connection path for startup,
+>   apply, and verify; substituted files, hard links, and non-regular paths are refused.
+> - Marks and validates the exact table/index schema and rejects added triggers or
+>   permissive lookalike ledgers before operation evidence can be trusted.
 
 > **beta.169** - **Jellyfin 10.11 exact video verification**
 > - Replaces Jellyfin's removed provider-ID query with a bounded scan of only the

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hashlib
@@ -11,7 +12,9 @@ import os
 from pathlib import Path
 import re
 import sqlite3
-from typing import Optional
+import stat
+from typing import Iterator, Optional
+from urllib.parse import quote
 
 from library_manager.video.adapters import (
     JellyfinPlaybackProbe,
@@ -21,12 +24,15 @@ from library_manager.video.adapters import (
 from library_manager.video.organize import (
     OrganizationRefused,
     VideoMovePlan,
+    ensure_schema,
     execute_move,
     verify_committed_move,
 )
 
 
 MAX_BODY = 64 * 1024
+RECEIPT_APPLICATION_ID = 0x4C4D5652  # "LMVR"
+RECEIPT_SCHEMA_VERSION = 1
 REQUEST_SCHEMA = "video.move.request.v1"
 RESPONSE_SCHEMA = "video.move.result.v1"
 VERIFY_REQUEST_SCHEMA = "video.move.verify.request.v1"
@@ -40,6 +46,151 @@ _IMDB_ID = re.compile(r"tt[0-9]{5,12}")
 
 class RequestRefused(RuntimeError):
     """A bounded public error code, safe to return without private data."""
+
+
+class ReceiptDatabaseUnsafe(RuntimeError):
+    """The configured receipt ledger cannot be opened as one private file."""
+
+
+def _open_private_parent(path: Path) -> int:
+    """Open an absolute, symlink-free parent owned privately by this service."""
+    if not path.is_absolute() or path.name in {"", ".", ".."}:
+        raise ReceiptDatabaseUnsafe("receipt_database_unsafe")
+    directory_flags = (os.O_RDONLY | os.O_DIRECTORY
+                       | getattr(os, "O_CLOEXEC", 0)
+                       | getattr(os, "O_NOFOLLOW", 0))
+    descriptor = os.open("/", directory_flags)
+    try:
+        for component in path.parent.parts[1:]:
+            try:
+                child = os.open(component, directory_flags, dir_fd=descriptor)
+            except FileNotFoundError:
+                os.mkdir(component, mode=0o700, dir_fd=descriptor)
+                child = os.open(component, directory_flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        metadata = os.fstat(descriptor)
+        if (not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or stat.S_IMODE(metadata.st_mode) & 0o022):
+            raise ReceiptDatabaseUnsafe("receipt_database_unsafe")
+        return descriptor
+    except ReceiptDatabaseUnsafe:
+        os.close(descriptor)
+        raise
+    except OSError:
+        os.close(descriptor)
+        raise ReceiptDatabaseUnsafe("receipt_database_unsafe") from None
+
+
+def _schema_objects(connection: sqlite3.Connection) -> list[tuple[str, str, str, str]]:
+    return [
+        (str(row[0]), str(row[1]), str(row[2]), " ".join(str(row[3]).split()))
+        for row in connection.execute(
+            "SELECT type,name,tbl_name,sql FROM sqlite_master "
+            "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")
+    ]
+
+
+def _expected_schema_objects() -> list[tuple[str, str, str, str]]:
+    expected = sqlite3.connect(":memory:")
+    try:
+        ensure_schema(expected)
+        return _schema_objects(expected)
+    finally:
+        expected.close()
+
+
+EXPECTED_RECEIPT_SCHEMA = _expected_schema_objects()
+
+
+def _validate_receipt_schema(connection: sqlite3.Connection) -> None:
+    application_id = int(connection.execute("PRAGMA application_id").fetchone()[0])
+    user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if (application_id != RECEIPT_APPLICATION_ID
+            or user_version != RECEIPT_SCHEMA_VERSION
+            or _schema_objects(connection) != EXPECTED_RECEIPT_SCHEMA
+            or connection.execute("PRAGMA quick_check").fetchone()[0] != "ok"):
+        raise ReceiptDatabaseUnsafe("receipt_database_unsafe")
+
+
+def _initialize_or_validate_schema(
+        connection: sqlite3.Connection, *, allow_legacy_initialization: bool) -> None:
+    application_id = int(connection.execute("PRAGMA application_id").fetchone()[0])
+    user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    objects = _schema_objects(connection)
+    if application_id == 0 and user_version == 0 and allow_legacy_initialization:
+        if objects:
+            expected_without_markers = EXPECTED_RECEIPT_SCHEMA
+            if objects != expected_without_markers:
+                raise ReceiptDatabaseUnsafe("receipt_database_unsafe")
+        else:
+            ensure_schema(connection)
+        connection.execute(f"PRAGMA application_id={RECEIPT_APPLICATION_ID}")
+        connection.execute(f"PRAGMA user_version={RECEIPT_SCHEMA_VERSION}")
+        connection.commit()
+    _validate_receipt_schema(connection)
+
+
+@contextmanager
+def secure_receipt_connection(
+        path: Path, *, initialize: bool = False,
+        readonly: bool = False) -> Iterator[sqlite3.Connection]:
+    """Yield SQLite only while its private parent and checked inode stay bound."""
+    parent_descriptor = _open_private_parent(path)
+    database_descriptor = -1
+    connection: Optional[sqlite3.Connection] = None
+    try:
+        file_flags = (os.O_RDWR | os.O_CREAT
+                      | getattr(os, "O_CLOEXEC", 0)
+                      | getattr(os, "O_NONBLOCK", 0)
+                      | getattr(os, "O_NOFOLLOW", 0))
+        database_descriptor = os.open(
+            path.name, file_flags, 0o600, dir_fd=parent_descriptor)
+        expected = os.fstat(database_descriptor)
+        if not stat.S_ISREG(expected.st_mode) or expected.st_nlink != 1:
+            raise ReceiptDatabaseUnsafe("receipt_database_unsafe")
+        os.fchmod(database_descriptor, 0o600)
+
+        stable_path = f"/proc/self/fd/{parent_descriptor}/{quote(path.name, safe='')}"
+        connection = sqlite3.connect(
+            f"file:{stable_path}?mode=rw", uri=True, timeout=60)
+        observed = os.stat(
+            path.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        after_open = os.fstat(database_descriptor)
+        def identity(value: os.stat_result) -> tuple[int, int, int, int]:
+            return (value.st_dev, value.st_ino, value.st_nlink,
+                    stat.S_IFMT(value.st_mode))
+        if (identity(observed) != identity(expected)
+                or identity(after_open) != identity(expected)
+                or stat.S_IMODE(observed.st_mode) != 0o600):
+            raise ReceiptDatabaseUnsafe("receipt_database_unsafe")
+        _initialize_or_validate_schema(
+            connection, allow_legacy_initialization=initialize)
+        if readonly:
+            connection.execute("PRAGMA query_only=ON")
+        yield connection
+    except ReceiptDatabaseUnsafe:
+        raise
+    except (OSError, sqlite3.Error):
+        raise ReceiptDatabaseUnsafe("receipt_database_unsafe") from None
+    finally:
+        if connection is not None:
+            connection.close()
+        if database_descriptor >= 0:
+            os.close(database_descriptor)
+        os.close(parent_descriptor)
+
+
+def prepare_receipt_database(path: Path) -> None:
+    """Create, mark, and validate a private receipt ledger before serving."""
+    try:
+        with secure_receipt_connection(path, initialize=True):
+            pass
+    except ReceiptDatabaseUnsafe:
+        raise
+    except (OSError, sqlite3.Error):
+        raise ReceiptDatabaseUnsafe("receipt_database_unsafe") from None
 
 
 def canonical_payload(payload: dict) -> bytes:
@@ -156,6 +307,8 @@ def verification_from_payload(payload: object, config: ServiceConfig
 class VideoOrganizationService:
     def __init__(self, config: ServiceConfig, *, catalogue, visibility,
                  idle_probe) -> None:
+        if config.ready():
+            prepare_receipt_database(config.database)
         self.config = config
         self.catalogue = catalogue
         self.visibility = visibility
@@ -174,23 +327,17 @@ class VideoOrganizationService:
         except RequestRefused as exc:
             return 400, {"schema": RESPONSE_SCHEMA, "status": "refused",
                          "error_code": str(exc)}
-        self.config.database.parent.mkdir(parents=True, exist_ok=True)
-        conn: Optional[sqlite3.Connection] = None
         try:
-            conn = sqlite3.connect(str(self.config.database), timeout=60)
-            result = await execute_move(
-                plan, conn=conn, catalogue=self.catalogue,
-                visibility=self.visibility, idle_probe=self.idle_probe)
-            os.chmod(self.config.database, 0o600)
+            with secure_receipt_connection(self.config.database) as conn:
+                result = await execute_move(
+                    plan, conn=conn, catalogue=self.catalogue,
+                    visibility=self.visibility, idle_probe=self.idle_probe)
         except OrganizationRefused as exc:
             return 409, {"schema": RESPONSE_SCHEMA, "status": "refused",
                          "error_code": str(exc)}
         except Exception:
             return 503, {"schema": RESPONSE_SCHEMA, "status": "unavailable",
                          "error_code": "operation_unavailable"}
-        finally:
-            if conn is not None:
-                conn.close()
         status = 200 if result["status"] == "committed" else (
             503 if result["status"] == "manual_recovery" else 409)
         return status, {"schema": RESPONSE_SCHEMA, **result}
@@ -208,27 +355,19 @@ class VideoOrganizationService:
         except RequestRefused as exc:
             return 400, {"schema": VERIFY_RESPONSE_SCHEMA, "status": "refused",
                          "error_code": str(exc)}
-        if not self.config.database.is_file():
-            return 409, {"schema": VERIFY_RESPONSE_SCHEMA, "status": "unverified",
-                         "error_code": "move_receipt_absent"}
-        conn: Optional[sqlite3.Connection] = None
         try:
-            conn = sqlite3.connect(
-                self.config.database.resolve().as_uri() + "?mode=ro",
-                uri=True, timeout=60)
-            conn.row_factory = sqlite3.Row
-            result = await verify_committed_move(
-                operation_id, plan, conn=conn, catalogue=self.catalogue,
-                visibility=self.visibility)
+            with secure_receipt_connection(
+                    self.config.database, readonly=True) as conn:
+                conn.row_factory = sqlite3.Row
+                result = await verify_committed_move(
+                    operation_id, plan, conn=conn, catalogue=self.catalogue,
+                    visibility=self.visibility)
         except OrganizationRefused as exc:
             return 409, {"schema": VERIFY_RESPONSE_SCHEMA, "status": "unverified",
                          "error_code": str(exc)}
         except Exception:
             return 503, {"schema": VERIFY_RESPONSE_SCHEMA, "status": "unavailable",
                          "error_code": "operation_unavailable"}
-        finally:
-            if conn is not None:
-                conn.close()
         status = 200 if result["status"] == "verified" else 409
         return status, {"schema": VERIFY_RESPONSE_SCHEMA, **result}
 
