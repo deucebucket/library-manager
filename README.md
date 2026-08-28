@@ -19,8 +19,10 @@
 > **beta.170** - **Private video receipts before first write**
 > - Creates or tightens the loopback video organizer's receipt database as mode 0600
 >   before SQLite initializes the ledger or accepts a request.
-> - Refuses symlinks, non-regular files, and hard-linked receipt paths at startup so a
->   local path substitution cannot redirect operation evidence.
+> - Uses one symlink-free, private-parent, inode-bound connection path for startup,
+>   apply, and verify; substituted files, hard links, and non-regular paths are refused.
+> - Marks and validates the exact table/index schema and rejects added triggers or
+>   permissive lookalike ledgers before operation evidence can be trusted.
 
 > **beta.169** - **Jellyfin 10.11 exact video verification**
 > - Replaces Jellyfin's removed provider-ID query with a bounded scan of only the

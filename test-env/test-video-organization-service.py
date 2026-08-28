@@ -15,7 +15,10 @@ from urllib.request import Request, urlopen
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from library_manager.video.organize import PlaybackObservation  # noqa: E402
+import video_organization_service as service_module  # noqa: E402
 from video_organization_service import (  # noqa: E402
+    RECEIPT_APPLICATION_ID,
+    RECEIPT_SCHEMA_VERSION,
     REQUEST_SCHEMA,
     VERIFY_REQUEST_SCHEMA,
     ReceiptDatabaseUnsafe,
@@ -189,6 +192,10 @@ def test_receipt_database_is_private_before_requests():
         connection = sqlite3.connect(database)
         assert connection.execute(
             "SELECT COUNT(*) FROM video_move_receipts").fetchone()[0] == 0
+        assert connection.execute("PRAGMA application_id").fetchone()[0] == (
+            RECEIPT_APPLICATION_ID)
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == (
+            RECEIPT_SCHEMA_VERSION)
         connection.close()
 
         database.chmod(0o644)
@@ -202,6 +209,16 @@ def test_receipt_database_is_private_before_requests():
         try:
             prepare_receipt_database(linked_database)
             raise AssertionError("symlink receipt database unexpectedly accepted")
+        except ReceiptDatabaseUnsafe:
+            pass
+
+        real_parent = Path(root) / "real-parent"
+        real_parent.mkdir()
+        linked_parent = Path(root) / "linked-parent"
+        linked_parent.symlink_to(real_parent, target_is_directory=True)
+        try:
+            prepare_receipt_database(linked_parent / "receipts.db")
+            raise AssertionError("symlinked receipt parent unexpectedly accepted")
         except ReceiptDatabaseUnsafe:
             pass
 
@@ -220,6 +237,67 @@ def test_receipt_database_is_private_before_requests():
             raise AssertionError("hard-linked receipt database unexpectedly accepted")
         except ReceiptDatabaseUnsafe:
             pass
+
+        hostile_schema = Path(root) / "hostile-schema.db"
+        hostile = sqlite3.connect(hostile_schema)
+        hostile.execute("CREATE TABLE video_move_receipts (operation_id TEXT)")
+        hostile.commit()
+        hostile.close()
+        hostile_schema.chmod(0o600)
+        try:
+            prepare_receipt_database(hostile_schema)
+            raise AssertionError("hostile receipt schema unexpectedly accepted")
+        except ReceiptDatabaseUnsafe:
+            pass
+
+        trigger_database = Path(root) / "trigger.db"
+        prepare_receipt_database(trigger_database)
+        trigger = sqlite3.connect(trigger_database)
+        trigger.execute(
+            "CREATE TRIGGER copy_receipt AFTER INSERT ON video_move_receipts "
+            "BEGIN SELECT 1; END")
+        trigger.commit()
+        trigger.close()
+        try:
+            prepare_receipt_database(trigger_database)
+            raise AssertionError("receipt trigger unexpectedly accepted")
+        except ReceiptDatabaseUnsafe:
+            pass
+
+        raced_database = Path(root) / "raced.db"
+        victim_database = Path(root) / "victim.db"
+        prepare_receipt_database(raced_database)
+        victim = sqlite3.connect(victim_database)
+        victim.execute("CREATE TABLE untouched (value TEXT)")
+        victim.commit()
+        victim.close()
+        victim_database.chmod(0o600)
+        original_connect = sqlite3.connect
+        swapped = False
+
+        def swap_before_sqlite_open(target, *args, **kwargs):
+            nonlocal swapped
+            if (not swapped and isinstance(target, str)
+                    and target.startswith("file:/proc/self/fd/")):
+                raced_database.unlink()
+                raced_database.symlink_to(victim_database)
+                swapped = True
+            return original_connect(target, *args, **kwargs)
+
+        service_module.sqlite3.connect = swap_before_sqlite_open
+        try:
+            prepare_receipt_database(raced_database)
+            raise AssertionError("check-to-connect substitution unexpectedly accepted")
+        except ReceiptDatabaseUnsafe:
+            pass
+        finally:
+            service_module.sqlite3.connect = original_connect
+        assert swapped
+        victim = sqlite3.connect(victim_database)
+        assert victim.execute(
+            "SELECT COUNT(*) FROM sqlite_master "
+            "WHERE name='video_move_receipts'").fetchone()[0] == 0
+        victim.close()
     print("[PASS] receipt database is private before serving and hostile paths fail closed")
 
 
