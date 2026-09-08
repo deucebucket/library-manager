@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple, Type
 
 from library_manager.database import insert_history_entry
+from library_manager.utils.skaldleita_identity import skaldleita_identity
 from library_manager.utils.validation import (
     is_valid_author_for_recommendation, is_valid_title_for_recommendation,
     looks_like_asin,
@@ -1283,6 +1284,10 @@ def process_queue(
             else:
                 # Create profile documenting that AI verified this book
                 profile = BookProfile()
+                profile.book_id = _extract_book_id(row.get('profile'))
+                identity = skaldleita_identity(row.get('profile'))
+                profile.skaldleita_book_id = identity.get('skaldleita_book_id')
+                profile.skaldleita_source_url = identity.get('skaldleita_source_url')
                 profile.add_author('ai', new_author)
                 profile.add_title('ai', new_title)
                 if new_series:

@@ -5,6 +5,8 @@
   "plex_db_path": "",
   "ai_provider": "gemini",
   "bookdb_url": "https://bookdb.deucebucket.com",
+  "receive_corrections": false,
+  "auto_apply_corrections": false,
   "gemini_model": "",
   "openrouter_model": "",
   "ollama_url": "http://localhost:11434",

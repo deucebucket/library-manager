@@ -2,6 +2,20 @@
 {% block title %}{{ _('Dashboard') }} - {{ _('Library Manager') }}{% endblock %}
 
 {% block content %}
+<div id="corrections-dashboard" class="alert alert-info d-none">
+    <strong id="corrections-pending-count">0</strong> metadata corrections available.
+    <a href="/corrections" class="alert-link">Review corrections</a>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    fetch('/api/corrections/summary').then(response => response.json()).then(data => {
+        if (data.pending > 0) {
+            document.getElementById('corrections-pending-count').textContent = data.pending;
+            document.getElementById('corrections-dashboard').classList.remove('d-none');
+        }
+    }).catch(() => {});
+});
+</script>
 <div class="row mb-4">
     <div class="col-md-3">
         <div class="card stat-card h-100" title="{{ _('All audiobook folders found in your library') }}">

@@ -22,6 +22,7 @@ from typing import Callable, Dict, Optional, Tuple
 
 from library_manager.config import use_skaldleita_for_audio
 from library_manager.database import insert_history_entry, get_series_language_override
+from library_manager.utils.skaldleita_identity import skaldleita_identity
 from library_manager.utils.path_safety import ISO_639_2_TO_1
 from library_manager.utils.validation import (
     is_garbage_author_match, is_placeholder_author,
@@ -518,6 +519,7 @@ def process_layer_1_audio(
                     }
                     if ebook_book_id:
                         profile['book_id'] = ebook_book_id
+                    profile.update(skaldleita_identity(ebook_result))
                     if ebook_result.get('series'):
                         profile['series'] = {'value': ebook_result['series'], 'source': source, 'confidence': 70}
                     if ebook_result.get('series_num'):
@@ -675,6 +677,7 @@ def process_layer_1_audio(
                         'sl_source': sl_source,
                         'requeue_suggested': True
                     }
+                    result.update(skaldleita_identity(bookdb_result))
                     # Issue #127: Complete truncated SL results using path info
                     result = _complete_result_from_path(result, folder_hint, book_path)
                     # Continue processing - let the normal flow create pending_fix
@@ -827,6 +830,7 @@ def process_layer_1_audio(
                 }
                 if result_book_id:
                     profile['book_id'] = result_book_id
+                profile.update(skaldleita_identity(result))
                 if narrator:
                     profile['narrator'] = {'value': narrator, 'source': profile_source, 'confidence': 80}
                 if series:
@@ -951,6 +955,21 @@ def process_layer_1_audio(
 
                 conn = get_db()
                 c = conn.cursor()
+                c.execute('SELECT profile FROM books WHERE id = ?', (row['book_id'],))
+                stored = c.fetchone()
+                try:
+                    profile = json.loads(stored['profile'] or '{}') if stored else {}
+                except (ValueError, TypeError):
+                    profile = {}
+                if not isinstance(profile, dict):
+                    profile = {}
+                profile.pop('skaldleita_book_id', None)
+                profile.pop('skaldleita_source_url', None)
+                profile.update(skaldleita_identity(result))
+                if result_book_id and not _extract_book_id(profile):
+                    profile['book_id'] = result_book_id
+                c.execute('UPDATE books SET profile = ? WHERE id = ?',
+                          (json.dumps(profile), row['book_id']))
                 c.execute('UPDATE books SET status = ?, verification_layer = 3, confidence = ? WHERE id = ?',
                          ('verified', audio_confidence, row['book_id']))
                 c.execute('DELETE FROM queue WHERE id = ?', (row['queue_id'],))

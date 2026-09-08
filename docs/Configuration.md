@@ -62,6 +62,16 @@ keys.
 Self-hosted compatible deployments can set `bookdb_url` in `config.json`; the default is
 `https://bookdb.deucebucket.com`.
 
+When Skaldleita supplies its dedicated `skaldleita_book_id`, development builds
+retain it in the book profile separately from the existing ASIN/ISBN `book_id`.
+The accompanying `skaldleita_source_url` identifies the configured server; numeric
+IDs from different servers must not be treated as the same book. Older profiles
+without this explicit provenance remain unmapped. The unreleased corrections
+client (#205) uses this identity for its opt-in review workflow. Receiving and
+automatic application are disabled by default; enabling them requires a compatible
+deployed corrections feed. See [Metadata corrections](#metadata-corrections-unreleased)
+for matching limits, review, and checkpoint behavior.
+
 ### Self-Hosted AI
 
 Ollama model IDs are loaded from its `/api/tags` endpoint. Other local servers use the OpenAI-compatible `/v1/models` and `/v1/chat/completions` endpoints. When a server returns one model, Library Manager selects it automatically; when it returns several, choose from the live list.
@@ -180,6 +190,49 @@ Settings are stored in:
 - `library.db` - Database
 
 For Docker, these are stored in the `/data` volume.
+
+## Metadata corrections (unreleased)
+
+Under **Settings → Integrations**, `receive_corrections` opts into Skaldleita
+correction checks at startup and every 24 hours. It defaults to `false`.
+`auto_apply_corrections` is a separate opt-in, also `false` by default, and only
+has effect while receiving is enabled. A compatible deployed corrections feed
+is required; an older server reporting feature unavailable is not an empty feed.
+
+The dashboard links to the **Corrections** page when decisions await review.
+Use **Check now** for a bounded background check; authentication and quota
+cooldowns still apply. Review shows the reason, stored/proposed metadata,
+conflicts, and decision receipts. Status filters show total counts;
+**Older decisions** and **Newest decisions**
+navigate bounded 100-decision pages so older pending reviews remain reachable.
+Application changes the stored LM metadata
+only: it does not rename folders, move media, or write tags. Use ordinary
+organizer workflows separately for file changes. User locks, stale prior values,
+and conflicting matches are protected; identity replacements require explicit
+review. A missing or ambiguous canonical identity is not guessed from ASIN,
+Chromaprint, a transfer receipt, or the old mixed book-ID field.
+The initial client matches canonical numeric IDs only. Hash-only and opaque
+SL-ID-only targets remain unmatched and reviewable; re-identification can add
+canonical provenance to a legacy profile. Unsupported identity patches do not
+silently apply their other fields.
+
+Feed checkpoints advance only after durable page ingestion. Replayed immutable
+events are deduplicated. If the backend reports a reset, review retained
+decisions before confirming **Review feed restart**; this retains prior work
+and begins a separate local feed generation. A malformed request or temporary
+failure never silently clears the checkpoint. Metadata receipts are distinct
+from filesystem transfer/Undo receipts; this page does not provide file Undo.
+
+These screenshots show the unreleased beta.171 client with synthetic audiobooks
+and the pinned backend contract fixture, not a production corrections rollout.
+
+![Corrections opt-in settings](images/corrections-settings.png)
+![Corrections review list](images/corrections-review.png)
+![Older correction decisions remain reachable](images/corrections-pagination.png)
+![Pending status filter with total count](images/corrections-filtered-review.png)
+![Explicit identity correction review](images/corrections-identity-review.png)
+![Applied metadata receipt](images/corrections-receipt.png)
+![Conflicting correction remains blocked](images/corrections-conflict.png)
 
 ## Transfer receipts (beta.161 develop)
 

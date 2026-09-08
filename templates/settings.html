@@ -1722,6 +1722,22 @@
 
         <!-- ==================== INTEGRATIONS TAB ==================== -->
         <div class="tab-pane fade" id="tab-integrations">
+            <div class="card mb-4" id="correction-settings">
+                <div class="card-header">Skaldleita metadata corrections</div>
+                <div class="card-body">
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" name="receive_corrections" id="receive_corrections" {% if config.receive_corrections %}checked{% endif %}>
+                        <label class="form-check-label" for="receive_corrections">Receive corrections (opt in)</label>
+                    </div>
+                    <p class="small text-muted">Check at startup and every 24 hours. A supported Skaldleita corrections feed is required. Review proposed changes on the Corrections page.</p>
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" name="auto_apply_corrections" id="auto_apply_corrections" {% if config.auto_apply_corrections %}checked{% endif %}>
+                        <label class="form-check-label" for="auto_apply_corrections">Automatically apply safe metadata corrections</label>
+                    </div>
+                    <p class="small text-muted">Independent opt-in; receiving must also be enabled. Changes affect stored LM metadata only, never file paths or audio tags. Identity changes, locks and conflicts require review or remain blocked.</p>
+                    <a href="/corrections" class="btn btn-sm btn-outline-info">Review corrections</a>
+                </div>
+            </div>
             <h5 class="mb-3"><i class="bi bi-terminal"></i> Post-Processing Hooks</h5>
             {% include 'hooks_settings.html' %}
 

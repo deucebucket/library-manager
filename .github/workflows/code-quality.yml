@@ -54,6 +54,11 @@ jobs:
       - name: Run Tests
         run: |
           python test-env/test-naming-issues.py
+          python test-env/test-skaldleita-identity.py
+          python test-env/test-corrections-feed.py
+          python test-env/test-corrections-service.py
+          python test-env/test-corrections-application.py
+          python test-env/test-corrections-routes.py
           python test-env/test-apply-fix-atomicity.py
           python test-env/test-presort.py
           python test-env/test-ai-providers.py
