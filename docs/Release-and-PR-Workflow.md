@@ -25,6 +25,16 @@ Documentation is part of every user-visible change. A pull request is not ready 
    - `docs/images/presort-committed-receipt.png`
    - `docs/images/presort-rollback-receipt.png`
    - `docs/images/skaldleita-shared-access-settings.png`
+   - `docs/images/corrections-settings.png`
+   - `docs/images/corrections-review.png`
+   - `docs/images/corrections-identity-review.png`
+   - `docs/images/corrections-receipt.png`
+   - `docs/images/corrections-conflict.png`
+
+   Corrections metadata receipts are separate from filesystem transfer receipts.
+   Verify disabled defaults, explicit review, lock/conflict handling, retry/backoff,
+   and feed-reset reconciliation. Fixture acceptance does not replace the
+   coordinated backend deployment and live acceptance gate in step 8.
 
 10. In the PR description, list documentation files reviewed, tests/browser flows run, screenshots, migration/rollback notes, and intentionally omitted uncertain claims.
 

@@ -35,6 +35,9 @@ from library_manager.utils.voice_embedding import (
     extract_voice_embedding_from_clip,
 )
 from library_manager.utils.audio import build_limited_ffmpeg_command
+from library_manager.utils.skaldleita_identity import (
+    provider_skaldleita_identity, skaldleita_identity, canonical_skaldleita_source_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +304,11 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
             if cache:
                 cached = cache.get(title, author)
                 if cached:
+                    cached = dict(cached)
+                    identity = skaldleita_identity(cached)
+                    if identity.get('skaldleita_source_url') != canonical_skaldleita_source_url(get_bookdb_url(bookdb_url)):
+                        cached.pop('skaldleita_book_id', None)
+                        cached.pop('skaldleita_source_url', None)
                     logger.info(f"[CACHE] Hit for: {author} - {title} (source: {cached.get('_cache_source', 'local')})")
                     return cached
         except Exception as e:
@@ -436,6 +444,7 @@ def search_bookdb(title, author=None, api_key=None, retry_count=0, bookdb_url=No
             'source': 'bookdb',
             'confidence': data.get('confidence', 0)
         }
+        result.update(provider_skaldleita_identity(data, base_url))
 
         # Defense-in-depth: also checked in BookProfile.finalize(), but catching
         # here prevents bad data propagation through cache and downstream layers
@@ -761,6 +770,7 @@ def identify_audio_with_bookdb(audio_file, extract_seconds=90, bookdb_url=None, 
                 'transcript': transcript[:500],
             }
             result = _sanitize_api_response(result, context='SKALDLEITA')
+            result.update(provider_skaldleita_identity(data, url))
 
             if result['author'] and result['title']:
                 logger.info(f"[SKALDLEITA] Identified: {result['author']} - {result['title']}" +
