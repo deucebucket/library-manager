@@ -9,9 +9,19 @@ def register_corrections_routes(app, components, load_config):
 
     @routes.get('/corrections')
     def review():
+        status = request.args.get('status', 'all')
+        if status not in ('all', 'pending', 'conflict', 'unmatched', 'applied', 'dismissed', 'superseded'):
+            return jsonify(success=False, error='Unknown correction status.'), 400
+        raw_cursor = request.args.get('before_id')
+        if raw_cursor is not None and (not raw_cursor.isascii() or not raw_cursor.isdecimal() or len(raw_cursor) > 18 or int(raw_cursor) < 1):
+            return jsonify(success=False, error='Invalid correction page cursor.'), 400
+        before_id = int(raw_cursor) if raw_cursor is not None else None
         service, application = components()
+        decision_page = application.decision_page(status=status, limit=100, before_id=before_id)
         return render_template('corrections.html', config=load_config(),
-                               feed=service.summary(), decisions=application.list_decisions())
+                               feed=service.summary(), decisions=decision_page['items'],
+                               decision_page=decision_page, selected_status=status, before_id=before_id,
+                               counts=decision_page['status_counts'])
 
     @routes.get('/api/corrections/summary')
     def summary():

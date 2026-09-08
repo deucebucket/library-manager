@@ -135,11 +135,24 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.fetcher.call_args.kwargs['cursor'], 'first-snapshot')
 
     def test_callback_failure_keeps_page_for_later_durable_reconciliation(self):
+        connections = []
+
+        def tracked_db():
+            conn = self.db()
+            connections.append(conn)
+            return conn
+
         def callback(source):
             if self.events():
                 raise RuntimeError('local processing fixture failure')
+        self.service.get_db = tracked_db
         self.service.on_ingested = callback
         self.assertEqual(self.service.poll_once()['error'], 'processing_unavailable')
+        self.assertEqual(len(connections), 1)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connections[0].execute('SELECT 1')
+        self.assertIsNone(self.state().lease_owner)
+        self.assertEqual(self.state().lease_expires, 0)
         self.assertEqual(self.state().cursor, fixture_page().next_cursor)
         self.assertEqual(len(self.events()), 1)
         self.now += 300

@@ -18,6 +18,7 @@ FIELDS = {
 }
 IDENTITY_FIELDS = {"skaldleita_book_id", "sl_id", "asin"}
 TERMINAL = {"applied", "dismissed", "superseded"}
+DECISION_STATUSES = TERMINAL | {"pending", "conflict", "unmatched"}
 AUTO_ONLY = {"missing_original", "identity_change", "identity_reason", "multiple_local_matches"}
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS correction_decisions (
@@ -298,6 +299,9 @@ class CorrectionsApplication:
             events = list_events(conn, active, after_rowid=progress[0] if progress else 0, limit=100)
             # Retry a durable pending decision after a callback/process failure.
             # Apply's original/snapshot/lock checks still protect intervening edits.
+            # Rows are materialized and no write transaction is active here.
+            # Apply deliberately owns a fresh transaction; the per-event calls
+            # below likewise run only after the recording transaction commits.
             if config.get("auto_apply_corrections", False) is True:
                 for row in _rows(conn, "SELECT id,revision FROM correction_decisions WHERE source=? AND status='pending' ORDER BY id LIMIT 100", (active,)):
                     self.apply(row["id"], row["revision"], explicit=False)
@@ -359,16 +363,28 @@ class CorrectionsApplication:
         finally:
             conn.close()
 
-    def list_decisions(self, status="all", limit=100):
-        if not isinstance(limit, int) or not 1 <= limit <= 1000:
+    def decision_page(self, status="all", limit=100, before_id=None):
+        if type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("invalid_limit")
+        if not isinstance(status, str) or status not in DECISION_STATUSES | {"all"}:
+            raise ValueError("invalid_status")
+        if before_id is not None and (type(before_id) is not int or not 1 <= before_id <= 9223372036854775807):
+            raise ValueError("invalid_before_id")
         conn = self.get_db()
         try:
             rows = _rows(conn, """SELECT * FROM correction_decisions
-                WHERE (?='all' OR status=?) ORDER BY id DESC LIMIT ?""", (status, status, limit))
-            return [self._detail(conn, row) for row in rows]
+                WHERE (?='all' OR status=?) AND (? IS NULL OR id<?)
+                ORDER BY id DESC LIMIT ?""", (status, status, before_id, before_id, limit + 1))
+            has_more = len(rows) > limit
+            items = [self._detail(conn, row) for row in rows[:limit]]
+            return {"items": items, "has_more": has_more, "status": status,
+                    "status_counts": dict(conn.execute("SELECT status,COUNT(*) FROM correction_decisions GROUP BY status")),
+                    "next_before_id": items[-1]["id"] if has_more else None}
         finally:
             conn.close()
+
+    def list_decisions(self, status="all", limit=100, before_id=None):
+        return self.decision_page(status, limit, before_id)["items"]
 
     def list_pending(self):
         return [row for row in self.list_decisions(limit=1000) if row["status"] not in TERMINAL]

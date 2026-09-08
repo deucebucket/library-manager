@@ -202,8 +202,39 @@ def main():
                     assert replay['prior_decision_id'] == decision['id']
                     assert replay['receipts'] == application.detail(decision['id'])['receipts']
                     checks.append('identical identity-changing replay after reset preserves the prior applied decision and original receipt')
-                    page.set_viewport_size({'width': 390, 'height': 844})
+                    # A normal retained backlog must not hide an older pending review.
+                    conn = app.get_db()
+                    conn.execute("UPDATE correction_decisions SET status='pending' WHERE id=?", (decision['id'],))
+                    for number in range(101):
+                        conn.execute('''INSERT INTO correction_decisions
+                            (source,generation,event_id,reconciliation_key,book_id,event_json,snapshot_json,status,conflicts_json)
+                            SELECT source,generation,?,reconciliation_key,book_id,event_json,snapshot_json,'dismissed',conflicts_json
+                            FROM correction_decisions WHERE id=?''', ('backlog-' + str(number), decision['id']))
+                    conn.commit()
+                    conn.close()
                     page.goto(url + '/corrections', wait_until='networkidle')
+                    assert page.locator('.correction-review').count() == 100
+                    assert page.locator(f'.correction-review[data-id="{decision["id"]}"]').count() == 0
+                    page.locator('#corrections-older').click()
+                    page.wait_for_load_state('networkidle')
+                    page.locator(f'.correction-review[data-id="{decision["id"]}"]').click()
+                    page.locator('#correction-modal.show').wait_for()
+                    assert 'pending' in page.locator('#correction-reason').inner_text()
+                    page.locator('#correction-modal .modal-footer [data-bs-dismiss]').click()
+                    page.wait_for_timeout(300)
+                    page.screenshot(path=str(artifacts / 'corrections-pagination.png'))
+                    page.locator('#corrections-newest').click()
+                    page.wait_for_load_state('networkidle')
+                    page.locator('#correction-status').select_option('pending')
+                    with page.expect_navigation(wait_until='networkidle'):
+                        page.get_by_role('button', name='Filter', exact=True).click()
+                    assert page.locator('.correction-review').count() == 1
+                    assert page.locator('#correction-status option:checked').inner_text() == 'Pending (1)'
+                    assert page.locator(f'.correction-review[data-id="{decision["id"]}"]').count() == 1
+                    page.screenshot(path=str(artifacts / 'corrections-filtered-review.png'))
+                    checks.append('older pending decision stays reachable beyond100 newer rows; newest navigation and status filter preserve accurate total')
+                    page.set_viewport_size({'width': 390, 'height': 844})
+                    page.goto(url + '/corrections?status=pending', wait_until='networkidle')
                     assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
                     page.screenshot(path=str(artifacts / 'corrections-phone.png'), full_page=True)
                     checks.append('390px review page has no horizontal page overflow')

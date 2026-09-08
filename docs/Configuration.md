@@ -202,7 +202,10 @@ is required; an older server reporting feature unavailable is not an empty feed.
 The dashboard links to the **Corrections** page when decisions await review.
 Use **Check now** for a bounded background check; authentication and quota
 cooldowns still apply. Review shows the reason, stored/proposed metadata,
-conflicts, and decision receipts. Application changes the stored LM metadata
+conflicts, and decision receipts. Status filters show total counts;
+**Older decisions** and **Newest decisions**
+navigate bounded 100-decision pages so older pending reviews remain reachable.
+Application changes the stored LM metadata
 only: it does not rename folders, move media, or write tags. Use ordinary
 organizer workflows separately for file changes. User locks, stale prior values,
 and conflicting matches are protected; identity replacements require explicit
@@ -225,6 +228,8 @@ and the pinned backend contract fixture, not a production corrections rollout.
 
 ![Corrections opt-in settings](images/corrections-settings.png)
 ![Corrections review list](images/corrections-review.png)
+![Older correction decisions remain reachable](images/corrections-pagination.png)
+![Pending status filter with total count](images/corrections-filtered-review.png)
 ![Explicit identity correction review](images/corrections-identity-review.png)
 ![Applied metadata receipt](images/corrections-receipt.png)
 ![Conflicting correction remains blocked](images/corrections-conflict.png)

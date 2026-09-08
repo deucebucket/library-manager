@@ -3,7 +3,7 @@
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from flask import Flask
 
@@ -24,6 +24,23 @@ class RoutesTests(unittest.TestCase):
     def test_summary_uses_exact_count(self):
         response = self.client.get('/api/corrections/summary')
         self.assertEqual(response.json['pending'], 1201)
+
+    def test_review_pagination_rejects_invalid_query(self):
+        for query in ('status=unknown', 'before_id=0', 'before_id=-1', 'before_id=1.2',
+                      'before_id=true', 'before_id=', 'before_id=999999999999999999999'):
+            response = self.client.get('/corrections?' + query)
+            self.assertEqual(response.status_code, 400)
+            self.assertFalse(response.json['success'])
+        self.application.decision_page.assert_not_called()
+
+    def test_review_passes_bounded_keyset_and_status(self):
+        self.application.decision_page.return_value = {'items': [], 'has_more': False, 'next_before_id': None,
+                                                     'status_counts': {'pending': 1201}}
+        with patch('library_manager.corrections.routes.render_template', return_value='review') as render:
+            self.assertEqual(self.client.get('/corrections?status=pending&before_id=123').status_code, 200)
+        self.application.decision_page.assert_called_once_with(status='pending', limit=100, before_id=123)
+        self.assertEqual(render.call_args.kwargs['selected_status'], 'pending')
+        self.assertEqual(render.call_args.kwargs['counts']['pending'], 1201)
 
     def test_decision_requires_revision(self):
         for value in ({}, {'expected_revision': True}, {'expected_revision': -1}, []):

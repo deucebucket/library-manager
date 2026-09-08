@@ -9,7 +9,8 @@ All notable changes to Library Manager will be documented in this file.
   with the configured provider endpoint as their namespace.
 - Opt-in Skaldleita metadata corrections (#205): startup/daily polling, durable
   checkpoints, dashboard count, review and explicit metadata application with
-  decision receipts. Receiving and safe automatic application default off.
+  decision receipts, status filters and bounded older/newest review pages.
+  Receiving and safe automatic application default off.
   Corrections change stored LM metadata only, never files or audio tags; locks,
   stale metadata and identity conflicts remain protected. Requires a compatible
   deployed corrections feed; coordinated release/live acceptance is pending.

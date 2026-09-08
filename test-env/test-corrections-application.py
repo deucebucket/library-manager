@@ -105,6 +105,69 @@ class ApplicationTests(unittest.TestCase):
         self.assertEqual(len(detail["receipts"]), 1)
         self.assertFalse(self.app.apply(decision["id"], 1)["success"])
 
+    def test_auto_apply_has_no_active_outer_transaction(self):
+        self.ingest(self.event(after={"narrator": "Middle Narrator"}))
+        opened = []
+        original_apply = self.app.apply
+        calls = []
+
+        def tracked_connect():
+            conn = self.connect()
+            opened.append(conn)
+            return conn
+
+        def checked_apply(*args, **kwargs):
+            for conn in opened:
+                try:
+                    self.assertFalse(conn.in_transaction)
+                except sqlite3.ProgrammingError:
+                    pass  # Earlier application connections are already closed.
+            calls.append(args[0])
+            return original_apply(*args, **kwargs)
+
+        self.app.get_db = tracked_connect
+        self.app.apply = checked_apply
+        self.settings["auto_apply_corrections"] = True
+        self.ingest(self.event(2, before={"narrator": "Middle Narrator"},
+                               after={"narrator": "Final Narrator"}))
+        self.assertEqual(len(calls), 2)  # Durable retry, then newly recorded event.
+        self.assertEqual(self.book()["decoded"]["narrator"]["value"], "Final Narrator")
+
+    def test_decision_pages_reach_older_pending_without_duplicates(self):
+        conn = self.connect()
+        expected = checkpoint(conn, SOURCE)
+        events = tuple(self.event(i) for i in range(1, 106))
+        ingest_page(conn, expected, CorrectionPage(events, "many-decisions", False),
+                    validator=validate_event, now=1, next_poll_at=2)
+        conn.close()
+        self.app.reconcile(SOURCE)
+        self.app.reconcile(SOURCE)
+        newest = self.app.list_decisions()[0]
+        self.assertTrue(self.app.dismiss(newest["id"], newest["revision"])["success"])
+        first = self.app.decision_page(status="pending")
+        self.assertEqual(len(first["items"]), 100)
+        self.assertTrue(first["has_more"])
+        self.assertEqual(first["status_counts"], {"pending": 104, "dismissed": 1})
+        # A new arrival between reads must not shift the older page boundary.
+        self.ingest(self.event(106))
+        second = self.app.decision_page(status="pending", before_id=first["next_before_id"])
+        self.assertEqual(len(second["items"]), 4)
+        self.assertFalse(second["has_more"])
+        self.assertIsNone(second["next_before_id"])
+        ids = [item["id"] for item in first["items"] + second["items"]]
+        self.assertEqual(len(set(ids)), 104)
+        self.assertIn(1, ids)
+        self.assertNotIn(newest["id"], ids)
+        self.assertEqual(self.app.list_decisions(status="dismissed")[0]["id"], newest["id"])
+        # Historical-source decisions remain visible, unlike the active-source dashboard.
+        self.settings["bookdb_url"] = "https://other.example.test"
+        self.assertEqual(self.app.decision_page()["status_counts"], {"pending": 105, "dismissed": 1})
+        self.assertEqual(self.app.summary()["pending"], 0)
+        for kwargs in ({"status": "unknown"}, {"status": []}, {"before_id": 0},
+                       {"before_id": True}, {"before_id": "1"}, {"before_id": 2**63}, {"limit": True}):
+            with self.assertRaises(ValueError):
+                self.app.decision_page(**kwargs)
+
     def test_auto_apply_requires_explicit_optin(self):
         self.settings["auto_apply_corrections"] = True
         decision = self.ingest(self.event())
