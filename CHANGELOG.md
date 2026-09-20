@@ -2,6 +2,19 @@
 
 All notable changes to Library Manager will be documented in this file.
 
+## [0.9.0-beta.171] - Unreleased
+
+### Added
+- Preserve explicit Skaldleita book IDs separately from ASIN/ISBN profile IDs,
+  with the configured provider endpoint as their namespace.
+- Opt-in Skaldleita metadata corrections (#205): startup/daily polling, durable
+  checkpoints, dashboard count, review and explicit metadata application with
+  decision receipts, status filters and bounded older/newest review pages.
+  Receiving and safe automatic application default off.
+  Corrections change stored LM metadata only, never files or audio tags; locks,
+  stale metadata and identity conflicts remain protected. Requires a compatible
+  deployed corrections feed; coordinated release/live acceptance is pending.
+
 ## [0.9.0-beta.169] - 2026-08-26
 
 ### Fixed

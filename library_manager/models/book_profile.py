@@ -7,6 +7,7 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
+from library_manager.utils.skaldleita_identity import skaldleita_identity
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +252,8 @@ class BookProfile:
     audio_fingerprint: Optional[str] = None      # Chromaprint fingerprint
     narrator_id: Optional[str] = None            # Narrator voice ID (TBD_xxx or known name)
     book_id: Optional[str] = None                # Book ID (ISBN, ASIN, internal)
+    skaldleita_book_id: Optional[str] = None     # Explicit backend metadata.books.id
+    skaldleita_source_url: Optional[str] = None  # Configured instance namespace
     version_id: Optional[str] = None             # Unique recording version ID
     voice_cluster_id: Optional[str] = None       # Voice cluster for unknown narrators
     ripper: Optional[str] = None                 # Issue #295: preserved ripper/release tag from original folder
@@ -475,6 +478,10 @@ class BookProfile:
         result['audio_fingerprint'] = self.audio_fingerprint
         result['narrator_id'] = self.narrator_id
         result['book_id'] = self.book_id
+        result.update(skaldleita_identity({
+            'skaldleita_book_id': self.skaldleita_book_id,
+            'skaldleita_source_url': self.skaldleita_source_url,
+        }))
         result['version_id'] = self.version_id
         result['voice_cluster_id'] = self.voice_cluster_id
         result['ripper'] = self.ripper
@@ -504,6 +511,9 @@ class BookProfile:
         profile.audio_fingerprint = data.get('audio_fingerprint')
         profile.narrator_id = data.get('narrator_id')
         profile.book_id = data.get('book_id')
+        identity = skaldleita_identity(data)
+        profile.skaldleita_book_id = identity.get('skaldleita_book_id')
+        profile.skaldleita_source_url = identity.get('skaldleita_source_url')
         profile.version_id = data.get('version_id')
         profile.voice_cluster_id = data.get('voice_cluster_id')
         profile.ripper = data.get('ripper')
@@ -703,6 +713,7 @@ def build_profile_from_sources(
     Each source adds evidence to the profile's fields.
     """
     profile = BookProfile()
+    identity_candidate = None
 
     # Layer 1: Path analysis
     if path_info:
@@ -761,6 +772,14 @@ def build_profile_from_sources(
                 candidate_book_id = _extract_book_id(candidate)
                 if candidate_book_id:
                     profile.book_id = candidate_book_id
+                    profile.skaldleita_book_id = None
+                    profile.skaldleita_source_url = None
+                    identity_candidate = None
+            identity = skaldleita_identity(candidate)
+            if identity and (not profile.book_id or _extract_book_id(candidate) == profile.book_id):
+                profile.skaldleita_book_id = identity['skaldleita_book_id']
+                profile.skaldleita_source_url = identity['skaldleita_source_url']
+                identity_candidate = candidate
 
     # Layer 3: AI result
     if ai_result:
@@ -797,6 +816,11 @@ def build_profile_from_sources(
             profile.series.add_source('audio', audio_result['series'])
         if audio_result.get('language'):
             profile.language.add_source('audio', audio_result['language'])
+        identity = skaldleita_identity(audio_result)
+        if identity or audio_result.get('author') or audio_result.get('title'):
+            profile.skaldleita_book_id = identity.get('skaldleita_book_id')
+            profile.skaldleita_source_url = identity.get('skaldleita_source_url')
+            identity_candidate = audio_result
 
     # Skaldleita fingerprint/voice data
     if fingerprint_data:
@@ -809,12 +833,26 @@ def build_profile_from_sources(
         if fingerprint_data.get('voice_cluster_id'):
             profile.voice_cluster_id = fingerprint_data['voice_cluster_id']
         if fingerprint_data.get('book_id'):
+            if fingerprint_data['book_id'] != profile.book_id:
+                profile.skaldleita_book_id = None
+                profile.skaldleita_source_url = None
+                identity_candidate = None
             profile.book_id = fingerprint_data['book_id']
         if fingerprint_data.get('version_id'):
             profile.version_id = fingerprint_data['version_id']
 
     # Finalize - calculate consensus values and confidence
     profile.finalize()
+    # Consensus can select metadata from another source. Do not attach an ID
+    # from a losing identification to that book.
+    if identity_candidate and profile.skaldleita_book_id:
+        for name in ('author', 'title'):
+            value = identity_candidate.get(name)
+            winner = getattr(profile, name).value
+            if value and (not winner or str(value).strip().casefold() != str(winner).strip().casefold()):
+                profile.skaldleita_book_id = None
+                profile.skaldleita_source_url = None
+                break
 
     # Flag low confidence for attention
     if profile.overall_confidence < 50:

@@ -121,6 +121,8 @@ DEFAULT_CONFIG = {
     # Skaldleita Trust Mode - controls how much LM trusts SL audio identification
     "sl_trust_mode": "full",               # "full" = trust 80%+ audio ID, "boost" = verify with APIs, "legacy" = use AI fallback
     "sl_confidence_threshold": 80,         # Minimum confidence to trust SL audio ID without AI verification
+    "receive_corrections": False,         # Opt in to startup/daily metadata corrections
+    "auto_apply_corrections": False,      # Independent opt-in; safe stored metadata only
     # Provider Chains - ordered lists of providers to try (first = primary, rest = fallbacks)
     # Audio providers: "bookdb" (Skaldleita), "gemini", "openrouter", "ollama", "openai_compatible"
     # Text providers: "gemini", "openrouter", "ollama", "openai_compatible"

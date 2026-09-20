@@ -11,7 +11,7 @@ Features:
 - Multi-provider AI (Gemini, OpenRouter, Ollama, OpenAI-compatible APIs)
 """
 
-APP_VERSION = "0.9.0-beta.169"
+APP_VERSION = "0.9.0-beta.171"
 GITHUB_REPO = "deucebucket/library-manager"  # Your GitHub repo
 
 # Versioning Guide:
@@ -7603,6 +7603,29 @@ def inject_hints():
 
 # ============== ROUTES ==============
 
+_corrections_components = None
+_corrections_lock = threading.Lock()
+
+
+def get_corrections_components():
+    """Initialize local correction storage once, without starting a poller."""
+    global _corrections_components
+    with _corrections_lock:
+        if _corrections_components is None:
+            from library_manager.corrections.application import CorrectionsApplication
+            from library_manager.corrections.service import CorrectionsService
+            application = CorrectionsApplication(get_db, load_config)
+            service = CorrectionsService(get_db, load_config, load_secrets,
+                                         on_ingested=application.reconcile)
+            service.initialize()
+            application.initialize()
+            _corrections_components = service, application
+    return _corrections_components
+
+
+from library_manager.corrections.routes import register_corrections_routes
+register_corrections_routes(app, get_corrections_components, load_config)
+
 @app.route('/')
 def dashboard():
     """Main dashboard."""
@@ -8002,6 +8025,8 @@ def settings_page():
         config['strip_unabridged'] = 'strip_unabridged' in request.form
         # Community contributions setting
         config['contribute_to_community'] = 'contribute_to_community' in request.form
+        config['receive_corrections'] = 'receive_corrections' in request.form
+        config['auto_apply_corrections'] = 'auto_apply_corrections' in request.form
         # P2P cache setting (Issue #62)
         config['enable_p2p_cache'] = 'enable_p2p_cache' in request.form
 
@@ -13571,6 +13596,7 @@ if __name__ == '__main__':
     migrate_legacy_config()  # Migrate from old location if needed (Issue #23)
     init_config()  # Create config files if they don't exist
     init_db()
+    get_corrections_components()[0].start()
     recover_interrupted_apply_fixes(get_db, load_config())
     recover_interrupted_presort_operations(get_db, load_config())
     cleanup_garbage_entries()  # Remove @eaDir, #recycle, etc. from database (Issue #88)

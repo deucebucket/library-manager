@@ -4,7 +4,7 @@
 
 **Smart Audiobook Library Organizer with Multi-Source Metadata & AI Verification**
 
-[![Version](https://img.shields.io/badge/version-0.9.0--beta.169-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0--beta.171--unreleased-blue.svg)](CHANGELOG.md)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/deucebucket/library-manager)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 
@@ -90,6 +90,16 @@ Your Library (After):
 ---
 
 ## Features
+
+### Metadata Corrections (beta.171 branch, unreleased)
+
+Opt into Skaldleita correction checks under **Settings → Integrations**, then review
+proposed changes on **Corrections**. Receiving and safe automatic application are
+separate settings, both off by default. Changes update stored metadata, not media
+paths or audio tags. Canonical Skaldleita IDs are scoped to the configured backend;
+legacy, hash-only, and opaque-ID-only matches are not guessed. A compatible deployed
+feed and coordinated production acceptance are still required. See
+[correction settings and review](docs/Configuration.md#metadata-corrections-unreleased).
 
 ### Smart Path Analysis
 - Works backwards from audio files to understand folder structure

@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Corrections - Library Manager{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-3">
+  <div><h2><i class="bi bi-pencil-square"></i> Metadata corrections</h2>
+    <p class="text-muted mb-0">Review verified Skaldleita catalog changes for your audiobooks.</p></div>
+  <button class="btn btn-primary" id="check-corrections" {% if not config.receive_corrections %}disabled{% endif %}>Check now</button>
+</div>
+<div class="alert alert-info">Corrections update stored Library Manager metadata only. They do not rename folders, move files, or write audio tags. Existing locks and conflicting edits are protected.</div>
+{% if not config.receive_corrections %}
+<div class="alert alert-warning">Receiving corrections is off. Enable it in <a href="/settings">Settings → Integrations</a>. Previously received decisions remain available here.</div>
+{% endif %}
+<div class="card mb-3"><div class="card-body d-flex flex-wrap justify-content-between gap-2">
+  <div><strong>Feed status</strong><div id="feed-status" class="text-muted">{{ feed.status|replace('_',' ') }}{% if feed.last_error %} — {{ feed.last_error }}{% endif %}</div>
+    {% if feed.status == 'authentication_terminal' or feed.last_error == 'authentication_terminal' %}<small>Authentication was denied. Check the configured credential; ordinary checks cannot bypass this terminal state.</small>
+    {% elif feed.last_error == 'rate_limited' %}<small>Quota cooldown is active. Check now respects the server retry delay.</small>
+    {% elif feed.last_error == 'feature_unavailable' %}<small>This backend does not provide the corrections feed yet. No checkpoint was discarded.</small>{% endif %}
+  </div>
+  <div>Automatic application: <strong>{{ 'Enabled for safe metadata changes' if config.auto_apply_corrections else 'Off — review first' }}</strong></div>
+</div></div>
+<div id="corrections-message" role="status" class="alert d-none"></div>
+<p class="small text-muted">Matching uses an explicit canonical Skaldleita book ID from the same configured backend. Legacy profiles, hash-only targets and opaque SL-ID-only targets stay unmatched; re-identify the audiobook before expecting a match.</p>
+<p class="small text-muted">This list and its status counts include retained decisions from earlier backend settings. Only the currently configured backend can apply metadata; the dashboard count covers that backend only.</p>
+{% if feed.bootstrap_required %}
+<div class="alert alert-warning"><strong>Feed reset needs reconciliation.</strong> Old decisions and receipts are retained. Review them before restarting from all retained events; nothing is automatically discarded.
+  <button id="reset-corrections" class="btn btn-outline-warning ms-2" {% if not config.receive_corrections %}disabled{% endif %}>Review feed restart</button>
+</div>
+{% endif %}
+<div class="card"><div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+  <span>Correction decisions <small class="text-muted">(up to 100 per page)</small></span>
+  <form method="get" action="/corrections" class="d-flex align-items-center gap-2">
+    <label for="correction-status" class="small">Status</label>
+    <select id="correction-status" name="status" class="form-select form-select-sm" aria-label="Filter correction status">
+      {% for status in ['all','pending','conflict','unmatched','applied','dismissed','superseded'] %}
+      <option value="{{ status }}" {% if selected_status == status %}selected{% endif %}>{{ status|capitalize }}{% if status != 'all' %} ({{ counts.get(status, 0) }}){% endif %}</option>
+      {% endfor %}
+    </select>
+    <button class="btn btn-sm btn-outline-info" type="submit">Filter</button>
+  </form>
+</div>
+<div class="table-responsive"><table class="table table-hover mb-0"><thead><tr><th>Audiobook</th><th>Reason</th><th>Status</th><th>Review</th></tr></thead><tbody>
+{% for decision in decisions %}
+<tr><td>{{ decision.title or 'Unmatched audiobook' }}</td><td>{{ (decision.reason or '')|replace('_',' ') }}</td><td><span class="badge bg-secondary">{{ decision.status }}</span></td>
+<td><button class="btn btn-sm btn-outline-info correction-review" data-id="{{ decision.id }}">View correction</button></td></tr>
+{% else %}<tr><td colspan="4" class="text-muted py-4 text-center">No decisions on this page for the selected status. Unmatched events are retained; no book is guessed.</td></tr>{% endfor %}
+</tbody></table></div>
+<nav class="card-footer d-flex justify-content-between" aria-label="Correction pages">
+  {% if before_id %}<a id="corrections-newest" class="btn btn-sm btn-outline-secondary" href="{{ url_for('corrections.review', status=selected_status) }}">Newest decisions</a>{% else %}<span class="small text-muted">Newest decisions</span>{% endif %}
+  {% if decision_page.has_more %}<a id="corrections-older" class="btn btn-sm btn-outline-info" href="{{ url_for('corrections.review', status=selected_status, before_id=decision_page.next_before_id) }}">Older decisions</a>{% endif %}
+</nav></div>
+<div class="modal fade" id="correction-modal" tabindex="-1" aria-labelledby="correction-title" aria-hidden="true"><div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content">
+<div class="modal-header"><h5 class="modal-title" id="correction-title">Review correction</h5><button class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button></div>
+<div class="modal-body"><p id="correction-reason"></p><div id="correction-conflicts" class="alert alert-warning d-none"></div>
+<div class="table-responsive"><table class="table"><thead><tr><th>Field</th><th>Stored before review</th><th>Proposed value</th></tr></thead><tbody id="correction-fields"></tbody></table></div>
+<p class="small text-muted">Clear removes that metadata value. Fields omitted by the correction stay unchanged. Applying checks the stored revision and current book again.</p>
+<details><summary>Metadata decision receipts</summary><pre id="correction-receipts" class="small text-wrap mt-2"></pre></details>
+</div><div class="modal-footer"><button class="btn btn-secondary" data-bs-dismiss="modal">Close</button><button class="btn btn-outline-warning" id="dismiss-correction">Dismiss</button><button class="btn btn-primary" id="apply-correction">Apply stored metadata</button></div>
+</div></div></div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/corrections.js') }}"></script>{% endblock %}

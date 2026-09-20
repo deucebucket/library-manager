@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Callable, Dict, List, Optional, Tuple
 
 from library_manager.models.book_profile import BookProfile
+from library_manager.utils.skaldleita_identity import skaldleita_identity
 from library_manager.utils.naming import calculate_title_similarity, extract_series_from_title
 from library_manager.utils.validation import is_placeholder_author
 from library_manager.worker import set_current_provider
@@ -278,6 +279,7 @@ def process_layer_1_api(
                 best_match = candidates[0]  # Ultimate fallback
 
             action['candidate_book_id'] = _extract_book_id(best_match)
+            action['skaldleita_identity'] = skaldleita_identity(best_match)
             action['candidate_language'] = best_match.get('language') or best_match.get('detected_language')
 
             # Check if this is a good enough match
@@ -326,6 +328,13 @@ def process_layer_1_api(
                                         profile.series_num.add_source('path', extracted_num)
                             if action['candidate_book_id']:
                                 profile.book_id = action['candidate_book_id']
+                            identity = action['skaldleita_identity']
+                            if (not identity and not best_match.get('source', '').startswith('bookdb')
+                                    and match_author.casefold() == (current_author or '').casefold()
+                                    and match_title.casefold() == (current_title or '').casefold()):
+                                identity = skaldleita_identity(row.get('profile'))
+                            profile.skaldleita_book_id = identity.get('skaldleita_book_id')
+                            profile.skaldleita_source_url = identity.get('skaldleita_source_url')
                             if action['candidate_language']:
                                 profile.language.add_source(api_source, action['candidate_language'])
 
@@ -382,9 +391,9 @@ def process_layer_1_api(
     conn = get_db()
     c = conn.cursor()
 
-    def _persist_candidate_profile(book_id, candidate_book_id, candidate_language):
+    def _persist_candidate_profile(book_id, candidate_book_id, candidate_language, identity):
         """Merge API candidate identifiers into the existing book profile."""
-        if not candidate_book_id and not candidate_language:
+        if not candidate_book_id and not candidate_language and identity is None:
             return
         c.execute('SELECT profile FROM books WHERE id = ?', (book_id,))
         row = c.fetchone()
@@ -396,6 +405,12 @@ def process_layer_1_api(
             profile['book_id'] = candidate_book_id
         if candidate_language and not _extract_detected_language(profile):
             profile['detected_language'] = candidate_language
+        # A candidate passed forward is a new identification. An absent explicit
+        # identity must not retain a previous book's correction mapping.
+        if identity is not None:
+            profile.pop('skaldleita_book_id', None)
+            profile.pop('skaldleita_source_url', None)
+            profile.update(identity)
         c.execute('UPDATE books SET profile = ? WHERE id = ?', (json.dumps(profile), book_id))
 
     processed = 0
@@ -423,12 +438,12 @@ def process_layer_1_api(
             resolved += 1
         elif action['type'] == 'advance_to_layer4':
             # Skip Layer 2 (AI), go directly to Layer 4 (final verification/fix)
-            _persist_candidate_profile(action['book_id'], action['candidate_book_id'], action['candidate_language'])
+            _persist_candidate_profile(action['book_id'], action['candidate_book_id'], action['candidate_language'], action.get('skaldleita_identity'))
             c.execute('''UPDATE books SET verification_layer = 4,
                         max_layer_reached = MAX(COALESCE(max_layer_reached, 0), 4)
                         WHERE id = ?''', (action['book_id'],))
         elif action['type'] == 'advance_to_layer2':
-            _persist_candidate_profile(action['book_id'], action['candidate_book_id'], action['candidate_language'])
+            _persist_candidate_profile(action['book_id'], action['candidate_book_id'], action['candidate_language'], action.get('skaldleita_identity'))
             c.execute('''UPDATE books SET verification_layer = 2,
                         max_layer_reached = MAX(COALESCE(max_layer_reached, 0), 2)
                         WHERE id = ?''', (action['book_id'],))
@@ -536,6 +551,9 @@ def process_sl_requeue_verification(
 
                 # Update profile - remove requeue flag, add SL verification
                 profile.pop('sl_requeue', None)
+                profile.pop('skaldleita_book_id', None)
+                profile.pop('skaldleita_source_url', None)
+                profile.update(skaldleita_identity(best_match))
                 profile['sl_verified'] = {
                     'book_id': candidate_book_id,
                     'verified_at': datetime.now().isoformat(),

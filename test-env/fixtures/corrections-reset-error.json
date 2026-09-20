@@ -1,0 +1,7 @@
+{
+  "detail": {
+    "code": "corrections_cursor_reset_required",
+    "message": "cursor belongs to a different feed; rebootstrap using since",
+    "reset_required": true
+  }
+}
